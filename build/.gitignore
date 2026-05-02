@@ -1,0 +1,19 @@
+# Build outputs
+bin/
+bin-retail/
+*.log
+
+# Reference/backup copies (not part of the build)
+thinkpad-patched/
+git-clean/
+
+# XDK content is copyrighted -- keep local, don't commit
+xbox/
+xdk-libs/
+
+# Old/temp Makefiles
+Makefile.thinkpad
+Makefile.git-test
+
+# IDE/OS
+.DS_Store

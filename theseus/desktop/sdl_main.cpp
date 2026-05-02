@@ -1,0 +1,1094 @@
+// sdl_main.cpp: desktop entry point. Creates an SDL window with an
+// OpenGL 3.2 Core context, hands off to dashinit / dashapp, and
+// runs the main loop. Counterpart to xbox/main.cpp.
+
+#include "std.h"
+#include "dashapp.h"
+#include "node.h"
+#include "runner.h"
+#include "shape_render.h"
+#include "asset_loader.h"
+#include "audio_sdl.h"
+#include "xiso.h"
+#include "hdd_browser.h"
+#include "title_maker.h"
+#include "menu_bar.h"
+#include "media_player.h"
+#include "xap_editor.h"
+#include "inspector.h"
+#include "preloader.h"
+#include "panel_shared.h"
+#include <signal.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>  // _NSGetExecutablePath
+#endif
+#ifdef __linux__
+#include <sys/wait.h>
+#endif
+
+#ifdef _WIN32
+#include <io.h>
+#include <direct.h>
+#include <process.h>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+
+// Watchdog: dumps main thread stack to hang_dump.txt after 10s of detected hang
+static DWORD WINAPI HangWatchdog(LPVOID param) {
+    DWORD mainThread = (DWORD)(uintptr_t)param;
+    while (true) {
+        Sleep(2000);
+        extern volatile bool g_hangCheck;
+        extern volatile DWORD g_hangStartTime;
+        if (!g_hangCheck) continue;
+        if (GetTickCount() - g_hangStartTime < 10000) continue;
+
+        FILE* f = fopen("hang_dump.txt", "w");
+        if (!f) continue;
+        fprintf(f, "=== HANG DETECTED (>10s) ===\n");
+        fprintf(f, "Main thread ID: %lu\n\n", mainThread);
+
+        HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, mainThread);
+        if (hThread) {
+            SuspendThread(hThread);
+            CONTEXT ctx = {};
+            ctx.ContextFlags = CONTEXT_FULL;
+            GetThreadContext(hThread, &ctx);
+
+            SymInitialize(GetCurrentProcess(), NULL, TRUE);
+            STACKFRAME64 sf = {};
+            sf.AddrPC.Offset = ctx.Rip; sf.AddrPC.Mode = AddrModeFlat;
+            sf.AddrFrame.Offset = ctx.Rbp; sf.AddrFrame.Mode = AddrModeFlat;
+            sf.AddrStack.Offset = ctx.Rsp; sf.AddrStack.Mode = AddrModeFlat;
+
+            fprintf(f, "Call stack:\n");
+            for (int i = 0; i < 50; i++) {
+                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), hThread, &sf, &ctx, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
+                    break;
+                char symBuf[sizeof(SYMBOL_INFO) + 256];
+                SYMBOL_INFO* sym = (SYMBOL_INFO*)symBuf;
+                sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+                sym->MaxNameLen = 255;
+                DWORD64 disp = 0;
+                if (SymFromAddr(GetCurrentProcess(), sf.AddrPC.Offset, &disp, sym))
+                    fprintf(f, "  [%d] %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
+                else
+                    fprintf(f, "  [%d] 0x%llx\n", i, (unsigned long long)sf.AddrPC.Offset);
+            }
+            SymCleanup(GetCurrentProcess());
+            ResumeThread(hThread);
+            CloseHandle(hThread);
+        }
+        fclose(f);
+        fprintf(stderr, "[Watchdog] Hang dump written to hang_dump.txt\n");
+        g_hangCheck = false;
+    }
+    return 0;
+}
+volatile bool g_hangCheck = false;
+volatile DWORD g_hangStartTime = 0;
+#define strcasecmp _stricmp
+#define rmdir _rmdir
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#endif
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
+#else
+#include <unistd.h>
+#include <dirent.h>
+#if defined(__APPLE__) || defined(__GLIBC__)
+#include <execinfo.h>
+#define HAS_BACKTRACE 1
+#endif
+#endif
+
+// Dear ImGui
+#include "imgui.h"
+#include "imgui_impl_sdl2.h"
+#include "imgui_impl_opengl3.h"
+#include "imfilebrowser.h"
+// stb_image for Title Maker icon preview (implementation compiled here)
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#define STBI_ONLY_BMP
+#include "stb_image.h"
+
+// Platform code uses native file I/O; undo Xbox filesystem macros
+// Dashboard engine files (config.cpp, Runner.cpp, xip.cpp, etc.) keep the macros
+// so they think they're on an Xbox. We don't.
+#undef fopen
+#undef _tfopen
+#ifdef _WIN32
+#undef CreateFile
+#undef CreateFileA
+#undef FindFirstFile
+#undef FindFirstFileA
+#undef FindNextFile
+#undef FindNextFileA
+#undef FindClose
+#undef GetFileAttributes
+#undef GetFileAttributesA
+#undef GetFileAttributesEx
+#undef GetFileAttributesExA
+#undef RemoveDirectory
+#undef RemoveDirectoryA
+#endif
+
+// Virtual games database
+VirtualGameDB g_vgames = {};
+
+// Global SDL/GL state; used by D3D8 stubs to render
+SDL_Window*   g_pSDLWindow = NULL;
+SDL_GLContext  g_pGLContext = NULL;
+GLState        g_gl = {};
+
+// CRT post-process state
+CRTState g_crt = {
+    false,   // enabled
+    false,   // settingsOpen
+    0.5f,    // scanlineIntensity
+    0.4f,    // curvature
+    0.3f,    // phosphorMask
+    0.3f,    // vignette
+    0.15f,   // bloom
+    0.2f,    // flickerAmount
+    1.0f,    // colorBleed
+    1.05f,   // brightness
+    0, 0, 0, 0, 0,  // GL resources (zeroed)
+    0, 0, 0, 0, 0, 0, 0, 0, 0,  // uniform locations
+    0, 0     // texW, texH
+};
+static float s_crtTime = 0.0f;
+
+#ifdef _WIN32
+// Hint to NVIDIA Optimus and AMD switchable-graphics drivers that this
+// process should run on the discrete GPU instead of the integrated one.
+// Both drivers scan the running EXE's export table on startup for these
+// named symbols and route OpenGL calls accordingly. Without these, hybrid
+// laptops silently default to the iGPU and fps tanks.
+extern "C" {
+    __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+
+// Dumps the active GPU, driver, GL context, vsync, MSAA, and display
+// info to stderr and to a `theseus_graphics.log` file next to the binary.
+// Called when --graphics-debug is passed on the command line. Used to
+// diagnose performance reports remotely (which GPU did the user end up
+// on, was vsync forced, what MSAA samples were obtained, etc).
+static void DumpGraphicsInfo()
+{
+    FILE* logFp = fopen("theseus_graphics.log", "w");
+
+    auto write2 = [&logFp](const char* line) {
+        fprintf(stderr, "%s", line);
+        if (logFp) fprintf(logFp, "%s", line);
+    };
+
+    char buf[1024];
+
+    write2("=== Theseus graphics debug ===\n");
+
+    snprintf(buf, sizeof(buf), "GL_VENDOR:   %s\n", (const char*)glGetString(GL_VENDOR));
+    write2(buf);
+    snprintf(buf, sizeof(buf), "GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
+    write2(buf);
+    snprintf(buf, sizeof(buf), "GL_VERSION:  %s\n", (const char*)glGetString(GL_VERSION));
+    write2(buf);
+    const GLubyte* glsl = glGetString(GL_SHADING_LANGUAGE_VERSION);
+    snprintf(buf, sizeof(buf), "GLSL:        %s\n", glsl ? (const char*)glsl : "(unknown)");
+    write2(buf);
+
+    int swap = SDL_GL_GetSwapInterval();
+    snprintf(buf, sizeof(buf), "Swap interval: %d (vsync %s)\n",
+        swap, (swap == 0) ? "off" : (swap < 0 ? "adaptive" : "on"));
+    write2(buf);
+
+    int msaaBuffers = 0, msaaSamples = 0;
+    SDL_GL_GetAttribute(SDL_GL_MULTISAMPLEBUFFERS, &msaaBuffers);
+    SDL_GL_GetAttribute(SDL_GL_MULTISAMPLESAMPLES, &msaaSamples);
+    snprintf(buf, sizeof(buf), "MSAA: buffers=%d samples=%d\n", msaaBuffers, msaaSamples);
+    write2(buf);
+
+    if (g_pSDLWindow) {
+        SDL_DisplayMode dm;
+        if (SDL_GetWindowDisplayMode(g_pSDLWindow, &dm) == 0) {
+            snprintf(buf, sizeof(buf), "Display mode: %dx%d @ %dHz\n",
+                dm.w, dm.h, dm.refresh_rate);
+            write2(buf);
+        }
+        int winW = 0, winH = 0;
+        SDL_GetWindowSize(g_pSDLWindow, &winW, &winH);
+        snprintf(buf, sizeof(buf), "Window size: %dx%d\n", winW, winH);
+        write2(buf);
+    }
+
+#ifdef _WIN32
+    snprintf(buf, sizeof(buf), "NvOptimusEnablement=%lu, AmdPowerXpressRequestHighPerformance=%d\n",
+        (unsigned long)NvOptimusEnablement, AmdPowerXpressRequestHighPerformance);
+    write2(buf);
+#endif
+
+    write2("==============================\n");
+
+    if (logFp) fclose(logFp);
+    fflush(stderr);
+}
+
+// Desktop restart flag (set by launch() in runner.cpp, handled by main loop)
+bool g_desktopRestartRequested = false;
+bool g_desktopRestartMuted = false;
+static char* s_execPath = NULL;
+
+// Saved argv/argc for execv restart
+int g_argc = 0;
+char** g_argv = NULL;
+
+// Game process tracking; hide dashboard while game runs, soft restart on exit
+#ifdef _WIN32
+static DWORD  s_gamePID = 0;        // PID of launched game (0 = none)
+#else
+#include <signal.h>
+#include <spawn.h>
+extern char **environ;
+static pid_t  s_gamePID = 0;        // PID of launched game (0 = none)
+#endif
+static bool   s_gameRunning = false; // true while waiting for game to exit
+static bool   s_softRestartPending = false; // reinit after game exits
+
+// Audio mute state (Ctrl+M toggle, auto-muted during game launch)
+bool g_audioMuted = false;
+bool g_startMinimized = false;
+bool g_graphicsDebug = false;
+float g_muteOverlayTimer = 0.0f; // seconds remaining to show the overlay toast
+
+// Static instance tracking for GL context reset
+IDirect3DTexture8* IDirect3DTexture8::s_firstTex = NULL;
+IDirect3DVertexBuffer8* IDirect3DVertexBuffer8::s_firstVB = NULL;
+IDirect3DIndexBuffer8* IDirect3DIndexBuffer8::s_firstIB = NULL;
+IDirect3DDevice8::PreSwapCallback IDirect3DDevice8::s_preSwapCB = NULL;
+
+
+// Load/save desktop settings (xemu path, CRT effect, etc.)
+char s_xemuPath[512] = "";
+char g_qcowPath[512] = "";  // global, used by desktop_nodes.cpp for SavedGameGrid
+char s_steamPath[512] = ""; // Steam install root (parent of steamapps/)
+int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
+bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
+
+class CKeyboard;
+extern CKeyboard* g_pActiveKeyboard;
+extern void Keyboard_InsertText(CKeyboard* pKb, const char* sz);
+extern void Keyboard_HandleKey(CKeyboard* pKb, int sdlKey);
+
+void LoadDesktopSettings() {
+    FILE* fp = fopen("xboxfs/C/UIX Configs/desktop.ini", "r");
+    if (!fp) return;
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+        char* nl = strchr(line, '\n'); if (nl) *nl = 0;
+        char* cr = strchr(line, '\r'); if (cr) *cr = 0;
+        if (strncmp(line, "XemuPath=", 9) == 0)
+            strncpy(s_xemuPath, line + 9, sizeof(s_xemuPath) - 1);
+        else if (strncmp(line, "QcowPath=", 9) == 0)
+            strncpy(g_qcowPath, line + 9, sizeof(g_qcowPath) - 1);
+        else if (strncmp(line, "SteamPath=", 10) == 0)
+            strncpy(s_steamPath, line + 10, sizeof(s_steamPath) - 1);
+        else if (strncmp(line, "CRT_Enabled=", 12) == 0)
+            g_crt.enabled = atoi(line + 12) != 0;
+        else if (strncmp(line, "CRT_Scanlines=", 14) == 0)
+            g_crt.scanlineIntensity = (float)atof(line + 14);
+        else if (strncmp(line, "CRT_Curvature=", 14) == 0)
+            g_crt.curvature = (float)atof(line + 14);
+        else if (strncmp(line, "CRT_Phosphor=", 13) == 0)
+            g_crt.phosphorMask = (float)atof(line + 13);
+        else if (strncmp(line, "CRT_Vignette=", 13) == 0)
+            g_crt.vignette = (float)atof(line + 13);
+        else if (strncmp(line, "CRT_Bloom=", 10) == 0)
+            g_crt.bloom = (float)atof(line + 10);
+        else if (strncmp(line, "CRT_Flicker=", 12) == 0)
+            g_crt.flickerAmount = (float)atof(line + 12);
+        else if (strncmp(line, "CRT_ColorBleed=", 15) == 0)
+            g_crt.colorBleed = (float)atof(line + 15);
+        else if (strncmp(line, "CRT_Brightness=", 15) == 0)
+            g_crt.brightness = (float)atof(line + 15);
+        else if (strncmp(line, "UseOnScreenKeyboard=", 20) == 0)
+            g_bUseOnScreenKeyboard = atoi(line + 20) != 0;
+        else if (strncmp(line, "StartupMode=", 12) == 0) {
+            if (strncmp(line + 12, "dashboard", 9) == 0) g_startupMode = 1;
+            else if (strncmp(line + 12, "development", 11) == 0) g_startupMode = 2;
+            else g_startupMode = 0;
+        }
+    }
+    fclose(fp);
+}
+
+void SaveDesktopSettings() {
+    // Ensure directory exists
+    struct stat st;
+    if (stat("xboxfs/C/UIX Configs", &st) != 0) {
+        system("mkdir -p \"xboxfs/C/UIX Configs\"");
+    }
+    FILE* fp = fopen("xboxfs/C/UIX Configs/desktop.ini", "w");
+    if (!fp) return;
+    fprintf(fp, "[Desktop]\n");
+    fprintf(fp, "XemuPath=%s\n", s_xemuPath);
+    fprintf(fp, "QcowPath=%s\n", g_qcowPath);
+    fprintf(fp, "SteamPath=%s\n", s_steamPath);
+    fprintf(fp, "StartupMode=%s\n", g_startupMode == 2 ? "development" : g_startupMode == 1 ? "dashboard" : "");
+    fprintf(fp, "UseOnScreenKeyboard=%d\n", g_bUseOnScreenKeyboard ? 1 : 0);
+    fprintf(fp, "\n[CRT]\n");
+    fprintf(fp, "CRT_Enabled=%d\n", g_crt.enabled ? 1 : 0);
+    fprintf(fp, "CRT_Scanlines=%.3f\n", g_crt.scanlineIntensity);
+    fprintf(fp, "CRT_Curvature=%.3f\n", g_crt.curvature);
+    fprintf(fp, "CRT_Phosphor=%.3f\n", g_crt.phosphorMask);
+    fprintf(fp, "CRT_Vignette=%.3f\n", g_crt.vignette);
+    fprintf(fp, "CRT_Bloom=%.3f\n", g_crt.bloom);
+    fprintf(fp, "CRT_Flicker=%.3f\n", g_crt.flickerAmount);
+    fprintf(fp, "CRT_ColorBleed=%.3f\n", g_crt.colorBleed);
+    fprintf(fp, "CRT_Brightness=%.3f\n", g_crt.brightness);
+    fclose(fp);
+}
+
+// Helper: returns true when ImGui has an active text input widget (Title Maker, inspector search, etc.)
+static bool s_imguiHasRendered = false;
+bool ImGui_WantsKeyboard() {
+    if (!s_imguiHasRendered) return false;
+    return ImGui::GetIO().WantCaptureKeyboard;
+}
+
+// Forward declarations for PreSwapOverlays
+bool g_debugMode = false;
+bool g_showMenuBar = true;   // toggled by F10 / View > Hide Menu Bar / --no-toolbar
+
+// Pre-swap callback: renders ImGui overlays on top of the 3D scene before Present() swaps.
+// This runs in a single ImGui frame so all overlays (mute toast, Title Maker, selection highlight) share input.
+static void PreSwapOverlays() {
+    bool needMute = (g_muteOverlayTimer > 0.0f || g_audioMuted);
+    bool needHighlight = (g_debugMode && g_pD3DDev &&
+                          g_pD3DDev->m_inspectorSelectedNode &&
+                          g_pD3DDev->m_drawRecordCount > 0);
+    // Always render ImGui frame for the menu bar
+    // Video renders inside CDVDPlayer::Render() during the scene graph pass
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplSDL2_NewFrame();
+    ImGui::NewFrame();
+
+    // Menu bar (toggle with F10)
+    if (g_showMenuBar)
+        RenderMainMenuBar();
+
+    // Settings, About, and Shortcuts windows
+    RenderSettingsWindow();
+    RenderAboutWindow();
+    RenderShortcutsWindow();
+
+    // Mute overlay toast
+    if (needMute) {
+        float alpha = 1.0f;
+        if (!g_audioMuted && g_muteOverlayTimer > 0.0f) {
+            alpha = (g_muteOverlayTimer < 1.0f) ? g_muteOverlayTimer : 1.0f;
+        } else if (g_audioMuted && g_muteOverlayTimer <= 0.0f) {
+            alpha = 0.5f;
+        } else if (g_audioMuted) {
+            alpha = (g_muteOverlayTimer < 1.0f && g_muteOverlayTimer > 0.0f) ? 1.0f : 0.5f;
+        }
+        int winW, winH;
+        SDL_GetWindowSize(g_pSDLWindow, &winW, &winH);
+        ImU32 bgCol = IM_COL32(0, 0, 0, (int)(180 * alpha));
+        ImU32 txtCol = g_audioMuted
+            ? IM_COL32(255, 100, 100, (int)(255 * alpha))
+            : IM_COL32(100, 255, 100, (int)(255 * alpha));
+        const char* label = g_audioMuted ? "AUDIO MUTED  ----  Ctrl+M to unmute (restore dashboard from dock)" : "UNMUTED";
+        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        ImVec2 textSize = ImGui::CalcTextSize(label);
+        float px = 10.0f;
+        float py = winH - textSize.y - 14.0f;
+        dl->AddRectFilled(ImVec2(px - 8, py - 4), ImVec2(px + textSize.x + 8, py + textSize.y + 4), bgCol, 6.0f);
+        dl->AddText(ImVec2(px, py), txtCol, label);
+    }
+
+    // Title Maker floating window
+    RenderTitleMaker();
+
+    // Selection highlight overlay (pulsing AABB + hover tooltip)
+    if (needHighlight)
+        DrawSelectionHighlight(g_pD3DDev);
+
+    // Xbox HDD Browser (F5)
+    RenderHDDBrowser();
+
+    // Inspector (F1); floating ImGui window
+    RenderInspectorPanel(g_pD3DDev);
+
+    // XAP Editor (F2); floating ImGui window
+    RenderXAPEditor();
+
+
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    s_imguiHasRendered = true;
+
+    // Video rendering moved before ImGui frame
+}
+
+// g_inspectorOpen is now in inspector.cpp; inspector renders as floating ImGui panel
+SDL_Window* g_pXapEditorWindow = NULL;
+int  g_msaaSamples = 4;       // 0=off, 2/4/8x MSAA (default 4x)
+bool g_msaaChangeRequested = false;
+bool g_scrollToSelected = false; // set true when 3D click selects a node
+bool  g_wireframe = false;
+
+// g_xapEditorOpen is now in xap_editor.cpp
+
+// XAP Editor; now a floating ImGui window, no separate SDL window needed
+void CreateXapEditorWindow() { /* no-op: editor is an ImGui panel now */ }
+void DestroyXapEditorWindow() { /* no-op */ }
+
+// g_extractedMode and inline editing state are now in xap_editor.cpp
+
+// XapEditor_LoadFile, XapEditor_SaveFile, XapEditor_ScanDir,
+// XapEditor_GetFileList are now in xap_editor.cpp
+
+// CountNodes, SetVisibilityRecursive, FindNodeDefName*, MatchesFilter,
+// SubtreeMatchesFilter, RenderNodeTree, RenderInspectorPanel, DrawSelectionHighlight
+// are now in inspector.cpp
+
+// ReloadSceneFromEditor is now in xap_editor.cpp
+
+static void crash_handler(int sig) {
+    fprintf(stderr, "\n[CRASH] Signal %d (%s)\n", sig, sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : "OTHER");
+    fflush(stderr);
+#ifdef HAS_BACKTRACE
+    void* bt[64];
+    int n = backtrace(bt, 64);
+    backtrace_symbols_fd(bt, n, 2);
+#endif
+#ifndef _WIN32
+    _exit(128 + sig);
+#else
+    exit(128 + sig);
+#endif
+}
+
+#ifdef _WIN32
+#include <windows.h>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+static LONG WINAPI WindowsCrashHandler(EXCEPTION_POINTERS* ep) {
+    fprintf(stderr, "\n[CRASH] Exception 0x%08lX at address 0x%p\n",
+            ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
+    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
+        fprintf(stderr, "[CRASH] %s address 0x%p\n",
+                ep->ExceptionRecord->ExceptionInformation[0] ? "Writing" : "Reading",
+                (void*)ep->ExceptionRecord->ExceptionInformation[1]);
+    }
+    // Walk the stack
+    HANDLE process = GetCurrentProcess();
+    SymInitialize(process, NULL, TRUE);
+    STACKFRAME64 frame = {};
+    CONTEXT* ctx = ep->ContextRecord;
+    frame.AddrPC.Offset = ctx->Rip;
+    frame.AddrPC.Mode = AddrModeFlat;
+    frame.AddrFrame.Offset = ctx->Rbp;
+    frame.AddrFrame.Mode = AddrModeFlat;
+    frame.AddrStack.Offset = ctx->Rsp;
+    frame.AddrStack.Mode = AddrModeFlat;
+    fprintf(stderr, "[CRASH] Stack trace:\n");
+    for (int i = 0; i < 32; i++) {
+        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, ctx, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
+            break;
+        char symBuf[sizeof(SYMBOL_INFO) + 256];
+        SYMBOL_INFO* sym = (SYMBOL_INFO*)symBuf;
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen = 255;
+        DWORD64 disp = 0;
+        if (SymFromAddr(process, frame.AddrPC.Offset, &disp, sym))
+            fprintf(stderr, "  [%d] %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
+        else
+            fprintf(stderr, "  [%d] 0x%p\n", i, (void*)frame.AddrPC.Offset);
+    }
+    fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+#endif
+
+
+
+// Inspector panel (DrawSelectionHighlight, RenderNodeTree, RenderInspectorPanel,
+// etc.) is now in inspector.cpp
+// RenderXAPEditor is now in xap_editor.cpp
+
+// Preloader UI and XIP extraction are now in preloader.cpp
+
+int main(int argc, char* argv[]) {
+    g_argc = argc;
+    g_argv = argv;
+    s_execPath = argv[0];
+
+#ifdef _WIN32
+    // Linked as /SUBSYSTEM:WINDOWS so explorer launches don't pop a console.
+    // If we were launched from cmd.exe / PowerShell / Windows Terminal, attach
+    // to the parent's console so testers running with --dashboard etc. from a
+    // shell still see startup logs and the [VGames] / [launch] traces.
+    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+        freopen("CONOUT$", "w", stdout);
+        freopen("CONOUT$", "w", stderr);
+        freopen("CONIN$", "r", stdin);
+    }
+#endif
+
+    // Change working directory to the executable's directory so that
+    // relative paths (xboxfs/, etc.) work when launched from Finder/Explorer.
+    {
+        char exeDir[1024];
+#ifdef _WIN32
+        // GetModuleFileName + strip filename
+        DWORD len = GetModuleFileNameA(NULL, exeDir, sizeof(exeDir));
+        if (len > 0) {
+            char* last = strrchr(exeDir, '\\');
+            if (last) *last = '\0';
+            _chdir(exeDir);
+        }
+#elif defined(__APPLE__)
+        uint32_t sz = sizeof(exeDir);
+        if (_NSGetExecutablePath(exeDir, &sz) == 0) {
+            char* last = strrchr(exeDir, '/');
+            if (last) *last = '\0';
+            chdir(exeDir);
+        }
+#else
+        ssize_t len = readlink("/proc/self/exe", exeDir, sizeof(exeDir) - 1);
+        if (len > 0) {
+            exeDir[len] = '\0';
+            char* last = strrchr(exeDir, '/');
+            if (last) *last = '\0';
+            chdir(exeDir);
+        }
+#endif
+    }
+
+#if !defined(__has_feature) || !__has_feature(address_sanitizer)
+    // ASan installs its own SIGSEGV/SIGBUS handlers that print rich
+    // reports with allocation/deallocation history; ours would eat them.
+    // Skip our handler entirely on asan builds.
+#  ifdef _WIN32
+    SetUnhandledExceptionFilter(WindowsCrashHandler);
+#  else
+    signal(SIGSEGV, crash_handler);
+    signal(SIGBUS, crash_handler);
+#  endif
+    signal(SIGABRT, crash_handler);
+#endif
+
+    // Initialize SDL
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) < 0) {
+        fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
+        return 1;
+    }
+
+    // Request OpenGL 3.2 Core Profile (required for GLSL #version 150)
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4); // request 4x MSAA
+
+    // Create window
+    g_pSDLWindow = SDL_CreateWindow(
+        "UIX Desktop - Preview",
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        1280, 720,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL
+    );
+
+    if (!g_pSDLWindow) {
+        // Fallback 1: drop MSAA but keep GL 3.2 core + double buffer
+        fprintf(stderr, "SDL_CreateWindow failed (%s), retrying without MSAA...\n", SDL_GetError());
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+        SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+        g_pSDLWindow = SDL_CreateWindow(
+            "UIX Desktop - Preview",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            1280, 720,
+            SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL
+        );
+    }
+
+    if (!g_pSDLWindow) {
+        // Fallback 2: drop to GL 3.0 compatibility profile (Xvfb / software renderers)
+        fprintf(stderr, "SDL_CreateWindow failed (%s), retrying with compatibility profile...\n", SDL_GetError());
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+        g_pSDLWindow = SDL_CreateWindow(
+            "UIX Desktop - Preview",
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            1280, 720,
+            SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL
+        );
+    }
+
+    if (!g_pSDLWindow) {
+        fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+
+    // Create OpenGL context
+    g_pGLContext = SDL_GL_CreateContext(g_pSDLWindow);
+    if (!g_pGLContext) {
+        fprintf(stderr, "SDL_GL_CreateContext failed: %s\n", SDL_GetError());
+        SDL_DestroyWindow(g_pSDLWindow);
+        SDL_Quit();
+        return 1;
+    }
+
+    // Enable vsync
+    SDL_GL_SetSwapInterval(1);
+
+    fprintf(stdout, "UIX Desktop - SDL/OpenGL Preview Tool\n");
+    fprintf(stdout, "OpenGL: %s\n", glGetString(GL_VERSION));
+    fprintf(stdout, "Renderer: %s\n", glGetString(GL_RENDERER));
+    fprintf(stdout, "F1: Toggle Debug Tools | F2: XAP Editor | F10: Toggle Menu Bar\n");
+    fflush(stdout); fflush(stderr);
+
+#ifdef _WIN32
+    // Initialize GLEW (must be called after GL context creation, before any GL calls)
+    glewExperimental = GL_TRUE;
+    GLenum glewErr = glewInit();
+    if (glewErr != GLEW_OK) {
+        fprintf(stderr, "glewInit() failed: %s\n", glewGetErrorString(glewErr));
+        SDL_GL_DeleteContext(g_pGLContext);
+        SDL_DestroyWindow(g_pSDLWindow);
+        SDL_Quit();
+        return 1;
+    }
+    // Clear any GL error set by glewInit (common with core profile)
+    glGetError();
+#endif
+
+    // Enable MSAA
+    glEnable(GL_MULTISAMPLE);
+
+    // Set viewport for 3D rendering (left portion only)
+    glViewport(0, 0, 1280, 720);
+
+    // Initialize shaders and GL state
+    if (!InitGLShaders()) {
+        fprintf(stderr, "InitGLShaders() failed!\n");
+        SDL_GL_DeleteContext(g_pGLContext);
+        SDL_DestroyWindow(g_pSDLWindow);
+        SDL_Quit();
+        return 1;
+    }
+
+    // Initialize CRT post-process shader
+    InitCRTShader(1280, 720);
+
+    // Load desktop settings (xemu path, CRT effect, etc.)
+    LoadDesktopSettings();
+
+    // Initialize Dear ImGui
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    // Dark green theme to match Xbox aesthetic
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.05f, 0.08f, 0.05f, 0.95f);
+    style.Colors[ImGuiCol_TitleBg] = ImVec4(0.1f, 0.2f, 0.1f, 1.0f);
+    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.15f, 0.3f, 0.15f, 1.0f);
+    style.Colors[ImGuiCol_Header] = ImVec4(0.1f, 0.25f, 0.1f, 1.0f);
+    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.15f, 0.35f, 0.15f, 1.0f);
+    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.2f, 0.4f, 0.2f, 1.0f);
+    style.Colors[ImGuiCol_CheckMark] = ImVec4(0.4f, 1.0f, 0.4f, 1.0f);
+    style.Colors[ImGuiCol_Separator] = ImVec4(0.2f, 0.4f, 0.2f, 0.5f);
+    style.WindowRounding = 0.0f;
+    style.FrameRounding = 2.0f;
+
+    ImGui_ImplSDL2_InitForOpenGL(g_pSDLWindow, g_pGLContext);
+    ImGui_ImplOpenGL3_Init("#version 150");
+
+    // Check for CLI flags
+    float cliUiScale = 0.0f; // 0 = unset, default 1.0 if not specified
+    bool cliFullscreen = false;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--dashboard") == 0) g_startupMode = 1;
+        else if (strcmp(argv[i], "--development") == 0) g_startupMode = 2;
+        else if (strcmp(argv[i], "--preview") == 0) g_startupMode = 1; // legacy compat
+        else if (strcmp(argv[i], "--muted") == 0) g_audioMuted = true;
+        else if (strcmp(argv[i], "--minimized") == 0) g_startMinimized = true;
+        else if (strcmp(argv[i], "--graphics-debug") == 0) g_graphicsDebug = true;
+        else if (strcmp(argv[i], "--fullscreen") == 0) cliFullscreen = true;
+        else if (strcmp(argv[i], "--no-toolbar") == 0) g_showMenuBar = false;
+        else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc) {
+            cliUiScale = (float)atof(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--4k") == 0) {
+            // 4K mode: fullscreen + 2x UI scale. Native 4K backbuffer +
+            // ImGui at 2x feels right on a 27"+ 3840x2160 panel.
+            cliFullscreen = true;
+            if (cliUiScale == 0.0f) cliUiScale = 2.0f;
+        }
+    }
+
+    // Apply CLI overrides
+    if (cliFullscreen && g_pSDLWindow) {
+        SDL_SetWindowFullscreen(g_pSDLWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+    }
+    if (cliUiScale > 0.0f) {
+        ImGui::GetIO().FontGlobalScale = cliUiScale;
+        fprintf(stderr, "[ui] FontGlobalScale = %.2f\n", cliUiScale);
+    }
+    if (g_startMinimized && g_pSDLWindow) {
+        SDL_MinimizeWindow(g_pSDLWindow);
+    }
+    if (g_graphicsDebug) {
+        DumpGraphicsInfo();
+    }
+
+    // Show startup mode selector (skipped if preference saved or CLI override)
+    g_extractedMode = RunPreloader(g_pSDLWindow);
+
+    // Update window title
+    SDL_SetWindowTitle(g_pSDLWindow, g_extractedMode
+        ? "UIX Desktop - Development Mode"
+        : "UIX Desktop");
+
+    // Initialize app globals
+    g_dwMainThreadId = GetCurrentThreadId();
+    g_dwStartTick = g_dwFrameTick = GetTickCount();
+    g_now = 0.0;
+
+    if (!InitApp()) {
+        fprintf(stderr, "InitApp() failed!\n");
+        CleanupApp();
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplSDL2_Shutdown();
+        ImGui::DestroyContext();
+        SDL_GL_DeleteContext(g_pGLContext);
+        SDL_DestroyWindow(g_pSDLWindow);
+        SDL_Quit();
+        return 1;
+    }
+
+    fprintf(stdout, "InitApp() succeeded - entering main loop\n");
+
+    // Register pre-swap overlay callback for mute toast
+    IDirect3DDevice8::s_preSwapCB = PreSwapOverlays;
+
+    // Apply muted state if restarting after a game launch
+    if (g_audioMuted) {
+        DashAudio_MuteAll();
+        g_muteOverlayTimer = 5.0f; // show mute toast on restart
+    }
+
+    // In development mode: open editor and load extracted XAPs
+    if (g_extractedMode) {
+        g_xapEditorOpen = true;
+        XapEditor_LoadFile("xboxfs/Q/Xips/default/default.xap");
+        if (XapEditor_HasBuffer())
+            ReloadSceneFromEditor();
+    }
+
+    bool running = true;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            // Let ImGui handle events first
+            ImGui_ImplSDL2_ProcessEvent(&event);
+
+            switch (event.type) {
+                case SDL_QUIT:
+                    running = false;
+                    break;
+                case SDL_WINDOWEVENT:
+                    if (event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
+                        Uint32 mainWinID = SDL_GetWindowID(g_pSDLWindow);
+                        if (event.window.windowID == mainWinID) {
+                            int w = event.window.data1, h = event.window.data2;
+                            glViewport(0, 0, w, h);
+                            g_pp.BackBufferWidth = w;
+                            g_pp.BackBufferHeight = h;
+                            g_nViewWidth = (float)w;
+                            g_nViewHeight = (float)h;
+                            g_bProjectionDirty = true;
+                        }
+                    }
+                    if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
+                        Uint32 evWinID = event.window.windowID;
+                        Uint32 mainWinID = SDL_GetWindowID(g_pSDLWindow);
+                        if (evWinID == mainWinID) {
+                            running = false;
+                        }
+                    }
+                    break;
+                case SDL_MOUSEMOTION:
+                    if (g_pD3DDev) {
+                        g_pD3DDev->m_mouseX = event.motion.x;
+                        g_pD3DDev->m_mouseY = event.motion.y;
+                    }
+                    break;
+                case SDL_MOUSEBUTTONDOWN:
+                    // Click in 3D viewport to select node (debug mode only)
+                    // Only process on the main window, not inspector/editor windows
+                    if (event.button.button == SDL_BUTTON_LEFT && g_debugMode && g_pD3DDev &&
+                        event.button.windowID == SDL_GetWindowID(g_pSDLWindow)) {
+                        ImGuiIO& mio = ImGui::GetIO();
+                        if (!mio.WantCaptureMouse) {
+                            int mx = event.button.x, my = event.button.y;
+                            // Find the draw record under cursor (back-to-front)
+                            for (int i = g_pD3DDev->m_drawRecordCount - 1; i >= 0; i--) {
+                                const auto& r = g_pD3DDev->m_drawRecords[i];
+                                if (mx >= r.screenMinX && mx <= r.screenMaxX &&
+                                    my >= r.screenMinY && my <= r.screenMaxY &&
+                                    (r.screenMaxX - r.screenMinX) >= 4 &&
+                                    (r.screenMaxY - r.screenMinY) >= 4) {
+                                    g_pD3DDev->m_inspectorSelectedNode = r.sceneNode;
+                                    g_scrollToSelected = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    break;
+                case SDL_TEXTINPUT:
+                    if (g_pActiveKeyboard && !ImGui_WantsKeyboard() && !g_bUseOnScreenKeyboard)
+                        Keyboard_InsertText(g_pActiveKeyboard, event.text.text);
+                    break;
+                case SDL_KEYDOWN:
+                    if (event.key.keysym.sym == SDLK_ESCAPE && g_debugMode && g_pD3DDev) {
+                        g_pD3DDev->m_inspectorSelectedNode = NULL;
+                    }
+                    if (g_pActiveKeyboard && !ImGui_WantsKeyboard() && !g_bUseOnScreenKeyboard)
+                        Keyboard_HandleKey(g_pActiveKeyboard, event.key.keysym.sym);
+                    if (event.key.keysym.sym == SDLK_F2) {
+                        g_xapEditorOpen = !g_xapEditorOpen;
+                        if (g_xapEditorOpen && !XapEditor_HasBuffer())
+                            XapEditor_LoadFile("xboxfs/Q/Xips/default/default.xap");
+                    }
+                    if (event.key.keysym.sym == SDLK_F3) {
+                        g_titleMakerOpen = !g_titleMakerOpen;
+                    }
+                    if (event.key.keysym.sym == SDLK_F4) {
+                        ToggleSettingsWindow();
+                    }
+                    if (event.key.keysym.sym == SDLK_F5) {
+                        g_hddBrowserOpen = !g_hddBrowserOpen;
+                    }
+                    if (event.key.keysym.sym == SDLK_F10) {
+                        g_showMenuBar = !g_showMenuBar;
+                    }
+                    if (event.key.keysym.sym == SDLK_F11) {
+                        // F11: toggle fullscreen-desktop (covers the whole
+                        // monitor at desktop resolution).
+                        Uint32 flags = SDL_GetWindowFlags(g_pSDLWindow);
+                        bool isFs = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
+                        SDL_SetWindowFullscreen(g_pSDLWindow, isFs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                    }
+                    if (event.key.keysym.sym == SDLK_F12) {
+                        // F12: toggle borderless windowed (no title bar /
+                        // resize handles, but keeps the current window
+                        // size and position). Independent from fullscreen.
+                        Uint32 flags = SDL_GetWindowFlags(g_pSDLWindow);
+                        bool isBorderless = (flags & SDL_WINDOW_BORDERLESS) != 0;
+                        SDL_SetWindowBordered(g_pSDLWindow, isBorderless ? SDL_TRUE : SDL_FALSE);
+                    }
+                    if (event.key.keysym.sym == SDLK_F1) {
+                        g_debugMode = !g_debugMode;
+                        g_inspectorOpen = g_debugMode;
+                        if (!g_debugMode && g_wireframe) {
+                            g_wireframe = false;
+                            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                        }
+                        if (g_pD3DDev) {
+                            g_pD3DDev->m_inspectorEnabled = g_debugMode;
+                            if (!g_debugMode) {
+                                g_pD3DDev->m_inspectorSelectedNode = NULL;
+                                g_pD3DDev->m_inspectorHitID = -1;
+                            }
+                        }
+                    }
+                    // Ctrl+R (or Cmd+R on Mac): restart dashboard
+                    if (event.key.keysym.sym == SDLK_r && (event.key.keysym.mod & (KMOD_CTRL | KMOD_GUI))) {
+                        g_desktopRestartRequested = true;
+                        g_desktopRestartMuted = g_audioMuted;
+                    }
+                    // Ctrl+M (or Cmd+M on Mac): toggle audio mute
+                    if (event.key.keysym.sym == SDLK_m && (event.key.keysym.mod & (KMOD_CTRL | KMOD_GUI))) {
+                        g_audioMuted = !g_audioMuted;
+                        if (g_audioMuted) {
+                            DashAudio_MuteAll();
+                        } else {
+                            DashAudio_UnmuteAll();
+                        }
+                        g_muteOverlayTimer = 3.0f; // show toast for 3 seconds
+                    }
+                    break;
+            }
+        }
+
+        // All panels are floating ImGui windows in the main window now.
+        {
+            SDL_Window* focusedWin = SDL_GetKeyboardFocus();
+            if (focusedWin == g_pSDLWindow)
+                ImGui::GetIO().AddFocusEvent(true);
+        }
+
+
+        // Game launch is now blocking in DesktopLaunchGame() + execv restart,
+        // so no polling needed here. Handle any pending restart requests
+        // (e.g. from Title Maker "Save & Restart") that still use the old flag.
+        if (g_desktopRestartRequested) {
+            bool muted = g_desktopRestartMuted;
+            g_desktopRestartRequested = false;
+            g_desktopRestartMuted = false;
+            fprintf(stderr, "[Desktop] Restarting preview...%s\n", muted ? " (muted)" : "");
+
+            // Build argv with --preview appended (if not already present)
+            bool hasPreview = false;
+            for (int i = 0; i < g_argc; i++)
+                if (strcmp(g_argv[i], "--preview") == 0) { hasPreview = true; break; }
+
+            char** newArgv;
+            if (hasPreview) {
+                newArgv = g_argv;
+            } else {
+                newArgv = (char**)malloc(sizeof(char*) * (g_argc + 2));
+                for (int i = 0; i < g_argc; i++) newArgv[i] = g_argv[i];
+                newArgv[g_argc] = (char*)"--preview";
+                newArgv[g_argc + 1] = NULL;
+            }
+
+#ifdef _WIN32
+            // Show window again if it was hidden (game launch)
+            if (g_pSDLWindow) SDL_ShowWindow(g_pSDLWindow);
+            _execv(g_argv[0], newArgv);
+#else
+            execv(g_argv[0], newArgv);
+#endif
+            // fallthrough if execv fails
+            fprintf(stderr, "[Desktop] execv failed: %s\n", strerror(errno));
+        }
+
+        Advance();
+
+        // Apply wireframe before 3D rendering
+        if (g_wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+
+        // CRT: render to FBO if enabled
+        if (g_crt.enabled && g_crt.fbo) {
+            int ww, wh;
+            SDL_GL_GetDrawableSize(g_pSDLWindow, &ww, &wh);
+            CRT_ResizeFBO(ww, wh);
+            CRT_BeginCapture();
+            glViewport(0, 0, ww, wh);
+        }
+
+        // Render 3D scene (viewport set to left portion; Present() skips swap when inspector is open)
+        Draw();
+
+        // Restore fill mode after 3D rendering (wireframe must not affect ImGui)
+        if (g_wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+        // CRT: blit with post-process shader
+        if (g_crt.enabled && g_crt.fbo) {
+            s_crtTime += 0.016f;
+            CRT_EndAndBlit(s_crtTime);
+        }
+
+        // Overlays (menu bar, inspector, Title Maker, etc.); always render
+        if (IDirect3DDevice8::s_preSwapCB) IDirect3DDevice8::s_preSwapCB();
+
+        // Swap
+        if (g_pSDLWindow) SDL_GL_SwapWindow(g_pSDLWindow);
+
+        // Mute: keep halting audio every frame (scripts may start new sounds)
+        if (g_audioMuted) DashAudio_MuteAll();
+        if (g_muteOverlayTimer > 0.0f) g_muteOverlayTimer -= 0.016f;
+
+        // Inspector, XAP editor, Title Maker all render via PreSwapOverlays callback
+
+        // Handle XAP scene reload (must happen outside rendering)
+        if (XapEditor_ConsumeReloadRequest()) {
+            ReloadSceneFromEditor();
+        }
+
+        // Handle MSAA change; recreate GL context with new sample count
+        if (g_msaaChangeRequested) {
+            g_msaaChangeRequested = false;
+
+            // Shutdown ImGui GL backend (uses old context)
+            ImGui_ImplOpenGL3_Shutdown();
+
+            // Destroy old GL context
+            SDL_GL_DeleteContext(g_pGLContext);
+
+            // Set new MSAA attributes
+            if (g_msaaSamples > 0) {
+                SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+                SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, g_msaaSamples);
+            } else {
+                SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+                SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+            }
+
+            // Create new GL context on the same window
+            g_pGLContext = SDL_GL_CreateContext(g_pSDLWindow);
+            if (!g_pGLContext) {
+                fprintf(stderr, "[MSAA] Failed to create new GL context! Falling back...\n");
+                SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 0);
+                SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 0);
+                g_pGLContext = SDL_GL_CreateContext(g_pSDLWindow);
+                g_msaaSamples = 0;
+            }
+            SDL_GL_SetSwapInterval(1);
+
+            // Enable/disable MSAA
+            if (g_msaaSamples > 0) glEnable(GL_MULTISAMPLE);
+            else glDisable(GL_MULTISAMPLE);
+
+            // Reinit shaders and GL state
+            memset(&g_gl, 0, sizeof(g_gl));
+            InitGLShaders();
+            InitCRTShader(1280, 720);
+
+            // Re-upload all textures and buffers from CPU memory
+            ReuploadAllGLResources();
+
+            // Reinit ImGui GL backend
+            ImGui_ImplOpenGL3_Init("#version 150");
+
+            // Restore viewport (full main window; inspector is separate)
+            int winW, winH;
+            SDL_GetWindowSize(g_pSDLWindow, &winW, &winH);
+            glViewport(0, 0, winW, winH);
+
+        }
+    }
+
+    // Cleanup
+    DestroyXapEditorWindow();
+    XapEditor_Cleanup();
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplSDL2_Shutdown();
+    ImGui::DestroyContext();
+
+    CleanupApp();
+    SDL_GL_DeleteContext(g_pGLContext);
+    SDL_DestroyWindow(g_pSDLWindow);
+    SDL_Quit();
+
+    return 0;
+}

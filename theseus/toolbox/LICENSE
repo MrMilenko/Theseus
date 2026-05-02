@@ -1,0 +1,13 @@
+The code in this directory is licensed under the GNU General Public License,
+version 3 (or, at your option, any later version).
+
+Lineage:
+
+  Team-Resurgent/PrometheOS-Firmware (GPL-3.0)
+    -> Team-Resurgent/UIXLiteFTP        (gifted to TeamUIX, inherits GPL-3.0)
+    -> OfficialTeamUIX/UIX-Lite-Toolbox (TeamUIX, inherits GPL-3.0)
+    -> theseus/toolbox/                 (this directory)
+
+The full GPL-3.0 license text is in the repository root LICENSE file. See
+LICENSE-THIRD-PARTY.md at the repository root for the complete catalog of
+inherited and third-party components.

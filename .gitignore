@@ -1,0 +1,57 @@
+# Build artifacts
+*.ncb
+*.suo
+*.user
+*.exe
+*.xbe
+*.obj
+*.pch
+*.pdb
+*.map
+*.log
+*.wrn
+*.ilk
+*.idb
+Debug/
+Release/
+Profile/
+Profile_FastCap/
+Release_LTCG/
+obj/
+ddk/
+xdk/
+build-env/
+
+# Reference builds
+UIX-Lite-Build/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.claude/
+.mcp.json
+ghidra/
+ida/
+binary-analysis/
+
+# Desktop build artifacts
+build-desktop/
+
+# Xbox filesystem mount (desktop runtime data)
+xboxfs/
+
+# Local build staging and backup trees (not part of the public source)
+build/git-clean/
+build/thinkpad-patched/
+build/bin-git/
+build/xbox/
+build/xdk-libs/
+build/build.log
+build/Makefile.git-test
+build/Makefile.thinkpad
+
+# Backup files
+*.bak
