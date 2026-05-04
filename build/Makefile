@@ -445,7 +445,7 @@ clean:
 #   - SDL2_mixer (brew install sdl2_mixer / apt install libsdl2-mixer-dev)
 #   - OpenGL headers (system-provided)
 
-DESKTOP_DIR    = $(BUILDS_ROOT)/desktop
+DESKTOP_DIR    ?= $(BUILDS_ROOT)/desktop
 DESKTOP_TARGET = $(DESKTOP_DIR)/theseus
 
 # Detect platform
