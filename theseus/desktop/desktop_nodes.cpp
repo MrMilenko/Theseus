@@ -141,6 +141,7 @@ public:
 		if (m_transportMode == 2) {
 			if (IsCdUrl(m_loadedUrl)) {
 				CdAudio_Resume();
+				DashAudio_MuteAll();
 			} else if (m_isStreaming) {
 				DashAudio_ResumeMusic();
 			} else if (m_channel >= 0) {
@@ -158,6 +159,7 @@ public:
 			int track = atoi(m_loadedUrl + 3);
 			if (track < 1) track = 1;
 			if (CdAudio_Play(track)) {
+				DashAudio_MuteAll();
 				m_transportMode = 1;
 				m_isActive = true;
 				CallFunction(this, _T("onPlay"));
@@ -195,6 +197,7 @@ public:
 	{
 		if (IsCdUrl(m_loadedUrl)) {
 			CdAudio_Stop();
+			DashAudio_UnmuteAll();
 			m_transportMode = 0;
 			m_isActive = false;
 			m_progress = 0.0f;
@@ -224,9 +227,14 @@ public:
 	{
 		if (m_transportMode == 2) {
 			// Toggle: resume if already paused
-			if (IsCdUrl(m_loadedUrl))      CdAudio_Resume();
-			else if (m_isStreaming)         DashAudio_ResumeMusic();
-			else if (m_channel >= 0)        DashAudio_ResumeChannel(m_channel);
+			if (IsCdUrl(m_loadedUrl)) {
+				CdAudio_Resume();
+				DashAudio_MuteAll();
+			} else if (m_isStreaming) {
+				DashAudio_ResumeMusic();
+			} else if (m_channel >= 0) {
+				DashAudio_ResumeChannel(m_channel);
+			}
 			m_transportMode = 1;
 			CallFunction(this, _T("onPlay"));
 			CallFunction(this, _T("OnTransportModeChanged"));
@@ -237,6 +245,7 @@ public:
 
 		if (IsCdUrl(m_loadedUrl)) {
 			CdAudio_Pause();
+			DashAudio_UnmuteAll();
 			m_transportMode = 2;
 			CallFunction(this, _T("onPause"));
 			CallFunction(this, _T("OnTransportModeChanged"));
@@ -313,6 +322,7 @@ public:
 			}
 
 			if (!CdAudio_IsPlaying() && !CdAudio_IsPaused()) {
+				DashAudio_UnmuteAll();
 				m_transportMode = 0;
 				m_isActive = false;
 				m_progress = 1.0f;
