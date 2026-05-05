@@ -277,6 +277,14 @@ IDirect3DDevice8::PreSwapCallback IDirect3DDevice8::s_preSwapCB = NULL;
 char s_xemuPath[512] = "";
 char g_qcowPath[512] = "";  // global, used by desktop_nodes.cpp for SavedGameGrid
 char s_steamPath[512] = ""; // Steam install root (parent of steamapps/)
+
+// Library roots — desktop-only paths to media collections.
+// Read from desktop.ini [Library] section; consumed by audio_sdl.cpp
+// (DashMusic_Scan) and desktop_nodes.cpp (CMediaCollection).
+char g_musicRoot[512]  = "";
+char g_moviesRoot[512] = "";
+char g_tvRoot[512]     = "";
+char g_tmdbKey[128]    = "";  // TMDB v3 API key, optional
 int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
 bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
 
@@ -323,6 +331,14 @@ void LoadDesktopSettings() {
             else if (strncmp(line + 12, "development", 11) == 0) g_startupMode = 2;
             else g_startupMode = 0;
         }
+        else if (strncmp(line, "MusicRoot=", 10) == 0)
+            strncpy(g_musicRoot, line + 10, sizeof(g_musicRoot) - 1);
+        else if (strncmp(line, "MoviesRoot=", 11) == 0)
+            strncpy(g_moviesRoot, line + 11, sizeof(g_moviesRoot) - 1);
+        else if (strncmp(line, "TvRoot=", 7) == 0)
+            strncpy(g_tvRoot, line + 7, sizeof(g_tvRoot) - 1);
+        else if (strncmp(line, "TMDBKey=", 8) == 0)
+            strncpy(g_tmdbKey, line + 8, sizeof(g_tmdbKey) - 1);
     }
     fclose(fp);
 }
@@ -351,6 +367,11 @@ void SaveDesktopSettings() {
     fprintf(fp, "CRT_Flicker=%.3f\n", g_crt.flickerAmount);
     fprintf(fp, "CRT_ColorBleed=%.3f\n", g_crt.colorBleed);
     fprintf(fp, "CRT_Brightness=%.3f\n", g_crt.brightness);
+    fprintf(fp, "\n[Library]\n");
+    fprintf(fp, "MusicRoot=%s\n", g_musicRoot);
+    fprintf(fp, "MoviesRoot=%s\n", g_moviesRoot);
+    fprintf(fp, "TvRoot=%s\n", g_tvRoot);
+    fprintf(fp, "TMDBKey=%s\n", g_tmdbKey);
     fclose(fp);
 }
 
@@ -367,6 +388,12 @@ bool g_showMenuBar = true;   // toggled by F10 / View > Hide Menu Bar / --no-too
 
 // Pre-swap callback: renders ImGui overlays on top of the 3D scene before Present() swaps.
 // This runs in a single ImGui frame so all overlays (mute toast, Title Maker, selection highlight) share input.
+// Forward decls (g_mediaFullscreen lives lower; PreSwapOverlays uses it).
+extern bool g_mediaFullscreen;
+void MediaPlayer_Update();
+void MediaUI_NoteActivity();
+bool MediaUI_OsdVisible();
+
 static void PreSwapOverlays() {
     bool needMute = (g_muteOverlayTimer > 0.0f || g_audioMuted);
     bool needHighlight = (g_debugMode && g_pD3DDev &&
@@ -379,14 +406,29 @@ static void PreSwapOverlays() {
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
-    // Menu bar (toggle with F10)
-    if (g_showMenuBar)
+    // Pump mpv events every frame regardless of fullscreen state. If we
+    // only pump while fullscreen, stale END_FILE events from the previous
+    // playback queue up between videos and stall the render context.
+    MediaPlayer_Update();
+
+    if (g_mediaFullscreen) {
+        extern void MediaUI_RenderOSD();
+        MediaUI_RenderOSD();
+    }
+
+    // Menu bar (toggle with F10). In fullscreen video, also auto-hide
+    // alongside the OSD chrome.
+    if (g_showMenuBar && (!g_mediaFullscreen || MediaUI_OsdVisible()))
         RenderMainMenuBar();
 
     // Settings, About, and Shortcuts windows
     RenderSettingsWindow();
     RenderAboutWindow();
     RenderShortcutsWindow();
+
+    // Modal scan progress (blocks input while MediaDB_ScanAndCache runs).
+    extern void RenderScanProgressModal();
+    RenderScanProgressModal();
 
     // Mute overlay toast
     if (needMute) {
@@ -443,7 +485,22 @@ SDL_Window* g_pXapEditorWindow = NULL;
 int  g_msaaSamples = 4;       // 0=off, 2/4/8x MSAA (default 4x)
 bool g_msaaChangeRequested = false;
 bool g_scrollToSelected = false; // set true when 3D click selects a node
-bool  g_wireframe = false;
+// g_bWireframe is the canonical wireframe flag, defined in dashapp.cpp.
+// dashapp.cpp's render loop converts it to D3DRS_FILLMODE every frame, which
+// the D3D8->GL translator turns into glPolygonMode. No need to set
+// glPolygonMode here — that path was getting clobbered by the per-frame reset.
+extern bool g_bWireframe;
+
+// Media fullscreen mode: when true, sdl_main.cpp draws the libmpv video frame
+// fullscreen (with our ImGui OSD on top + CRT post-process) instead of the
+// dashboard 3D scene. CMediaCollection::PlayMovie/PlayEpisode set this; Esc
+// or B button clears it.
+bool g_mediaFullscreen = false;
+char g_mediaFullscreenTitle[256] = "";
+char g_mediaFullscreenSubtitle[256] = "";
+// Latched pulse: media_ui::MediaUI_StopFullscreen sets this when user leaves
+// playback. CMediaCollection::ConsumePlaybackExited reads-and-clears it.
+int g_mediaPlaybackExited = 0;
 
 // g_xapEditorOpen is now in xap_editor.cpp
 
@@ -714,19 +771,76 @@ int main(int argc, char* argv[]) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    // Dark green theme to match Xbox aesthetic
+    // Xbox-green theme — applied globally so every ImGui window in the app
+    // (Settings, Title Maker, HDD Browser, Inspector, etc.) gets a unified
+    // look. Goals: high-contrast green text on near-black bg, subtle green
+    // tint on chrome (titles/borders/buttons), brighter green for active
+    // states. Tighter spacing and rounding match the dashboard's hard-edged
+    // aesthetic (no big rounded corners — feels modern web app, not Xbox).
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.05f, 0.08f, 0.05f, 0.95f);
-    style.Colors[ImGuiCol_TitleBg] = ImVec4(0.1f, 0.2f, 0.1f, 1.0f);
-    style.Colors[ImGuiCol_TitleBgActive] = ImVec4(0.15f, 0.3f, 0.15f, 1.0f);
-    style.Colors[ImGuiCol_Header] = ImVec4(0.1f, 0.25f, 0.1f, 1.0f);
-    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.15f, 0.35f, 0.15f, 1.0f);
-    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.2f, 0.4f, 0.2f, 1.0f);
-    style.Colors[ImGuiCol_CheckMark] = ImVec4(0.4f, 1.0f, 0.4f, 1.0f);
-    style.Colors[ImGuiCol_Separator] = ImVec4(0.2f, 0.4f, 0.2f, 0.5f);
-    style.WindowRounding = 0.0f;
-    style.FrameRounding = 2.0f;
+    ImVec4* c = style.Colors;
+
+    const ImVec4 kBgDeep   = ImVec4(0.02f, 0.05f, 0.02f, 0.96f);
+    const ImVec4 kBgChrome = ImVec4(0.04f, 0.12f, 0.05f, 0.96f);
+    const ImVec4 kBgFrame  = ImVec4(0.05f, 0.10f, 0.05f, 0.85f);
+    const ImVec4 kAccent   = ImVec4(0.20f, 0.55f, 0.22f, 1.00f);
+    const ImVec4 kAccentHi = ImVec4(0.30f, 0.75f, 0.30f, 1.00f);
+    const ImVec4 kAccentLo = ImVec4(0.10f, 0.30f, 0.12f, 0.80f);
+    const ImVec4 kText     = ImVec4(0.85f, 1.00f, 0.85f, 1.00f);
+    const ImVec4 kTextDim  = ImVec4(0.55f, 0.78f, 0.55f, 0.85f);
+    const ImVec4 kBorder   = ImVec4(0.15f, 0.35f, 0.18f, 0.80f);
+
+    c[ImGuiCol_Text]                 = kText;
+    c[ImGuiCol_TextDisabled]         = kTextDim;
+    c[ImGuiCol_WindowBg]             = kBgDeep;
+    c[ImGuiCol_PopupBg]              = kBgDeep;
+    c[ImGuiCol_Border]               = kBorder;
+    c[ImGuiCol_FrameBg]              = kBgFrame;
+    c[ImGuiCol_FrameBgHovered]       = ImVec4(0.10f, 0.20f, 0.10f, 0.95f);
+    c[ImGuiCol_FrameBgActive]        = ImVec4(0.12f, 0.28f, 0.14f, 1.00f);
+    c[ImGuiCol_TitleBg]              = kBgChrome;
+    c[ImGuiCol_TitleBgActive]        = ImVec4(0.06f, 0.22f, 0.08f, 1.00f);
+    c[ImGuiCol_TitleBgCollapsed]     = ImVec4(0.04f, 0.10f, 0.05f, 0.85f);
+    c[ImGuiCol_MenuBarBg]            = kBgChrome;
+    c[ImGuiCol_ScrollbarBg]          = ImVec4(0.02f, 0.05f, 0.02f, 0.60f);
+    c[ImGuiCol_ScrollbarGrab]        = kAccentLo;
+    c[ImGuiCol_ScrollbarGrabHovered] = kAccent;
+    c[ImGuiCol_ScrollbarGrabActive]  = kAccentHi;
+    c[ImGuiCol_CheckMark]            = ImVec4(0.40f, 1.00f, 0.40f, 1.00f);
+    c[ImGuiCol_SliderGrab]           = kAccent;
+    c[ImGuiCol_SliderGrabActive]     = kAccentHi;
+    c[ImGuiCol_Button]               = kAccentLo;
+    c[ImGuiCol_ButtonHovered]        = kAccent;
+    c[ImGuiCol_ButtonActive]         = kAccentHi;
+    c[ImGuiCol_Header]               = kAccentLo;
+    c[ImGuiCol_HeaderHovered]        = kAccent;
+    c[ImGuiCol_HeaderActive]         = kAccentHi;
+    c[ImGuiCol_Separator]            = kBorder;
+    c[ImGuiCol_SeparatorHovered]     = kAccent;
+    c[ImGuiCol_SeparatorActive]      = kAccentHi;
+    c[ImGuiCol_Tab]                  = ImVec4(0.05f, 0.15f, 0.07f, 0.85f);
+    c[ImGuiCol_TabHovered]           = kAccent;
+    c[ImGuiCol_TabActive]            = ImVec4(0.15f, 0.40f, 0.18f, 1.00f);
+    c[ImGuiCol_TabUnfocused]         = ImVec4(0.05f, 0.10f, 0.05f, 0.80f);
+    c[ImGuiCol_TabUnfocusedActive]   = ImVec4(0.10f, 0.25f, 0.10f, 0.90f);
+    c[ImGuiCol_PlotHistogram]        = kAccent;
+    c[ImGuiCol_PlotHistogramHovered] = kAccentHi;
+    c[ImGuiCol_DragDropTarget]       = kAccentHi;
+    c[ImGuiCol_NavHighlight]         = kAccentHi;
+
+    style.WindowRounding    = 0.0f;
+    style.FrameRounding     = 2.0f;
+    style.GrabRounding      = 2.0f;
+    style.PopupRounding     = 0.0f;
+    style.TabRounding       = 2.0f;
+    style.ScrollbarRounding = 2.0f;
+    style.WindowBorderSize  = 1.0f;
+    style.FrameBorderSize   = 0.0f;
+    style.ItemSpacing       = ImVec2(8, 6);
+    style.FramePadding      = ImVec2(8, 4);
+    style.WindowPadding     = ImVec2(12, 10);
+    style.IndentSpacing     = 18.0f;
 
     ImGui_ImplSDL2_InitForOpenGL(g_pSDLWindow, g_pGLContext);
     ImGui_ImplOpenGL3_Init("#version 150");
@@ -850,8 +964,13 @@ int main(int argc, char* argv[]) {
                         g_pD3DDev->m_mouseX = event.motion.x;
                         g_pD3DDev->m_mouseY = event.motion.y;
                     }
+                    if (g_mediaFullscreen) MediaUI_NoteActivity();
+                    break;
+                case SDL_MOUSEWHEEL:
+                    if (g_mediaFullscreen) MediaUI_NoteActivity();
                     break;
                 case SDL_MOUSEBUTTONDOWN:
+                    if (g_mediaFullscreen) MediaUI_NoteActivity();
                     // Click in 3D viewport to select node (debug mode only)
                     // Only process on the main window, not inspector/editor windows
                     if (event.button.button == SDL_BUTTON_LEFT && g_debugMode && g_pD3DDev &&
@@ -879,6 +998,21 @@ int main(int argc, char* argv[]) {
                         Keyboard_InsertText(g_pActiveKeyboard, event.text.text);
                     break;
                 case SDL_KEYDOWN:
+                    if (g_mediaFullscreen) MediaUI_NoteActivity();
+                    // Esc / Q / Backspace exits fullscreen video, before any
+                    // other key handling (so it works even when keyboard is
+                    // captured by an XAP keyboard widget).
+                    if (g_mediaFullscreen) {
+                        SDL_Keycode k = event.key.keysym.sym;
+                        if (k == SDLK_ESCAPE || k == SDLK_q || k == SDLK_BACKSPACE) {
+                            extern void MediaUI_StopFullscreen();
+                            MediaUI_StopFullscreen();
+                            break;
+                        }
+                        if (k == SDLK_SPACE) { MediaPlayer_TogglePause(); break; }
+                        if (k == SDLK_LEFT)  { MediaPlayer_SeekRelative(-5.0); break; }
+                        if (k == SDLK_RIGHT) { MediaPlayer_SeekRelative( 5.0); break; }
+                    }
                     if (event.key.keysym.sym == SDLK_ESCAPE && g_debugMode && g_pD3DDev) {
                         g_pD3DDev->m_inspectorSelectedNode = NULL;
                     }
@@ -919,8 +1053,8 @@ int main(int argc, char* argv[]) {
                     if (event.key.keysym.sym == SDLK_F1) {
                         g_debugMode = !g_debugMode;
                         g_inspectorOpen = g_debugMode;
-                        if (!g_debugMode && g_wireframe) {
-                            g_wireframe = false;
+                        if (!g_debugMode && g_bWireframe) {
+                            g_bWireframe = false;
                             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                         }
                         if (g_pD3DDev) {
@@ -993,10 +1127,11 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "[Desktop] execv failed: %s\n", strerror(errno));
         }
 
-        Advance();
-
-        // Apply wireframe before 3D rendering
-        if (g_wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+        // While fullscreen video is up, freeze the dashboard scene VM so
+        // controller input doesn't drift around the menu (joystick polling
+        // still runs globally), and so animations/timers don't fast-forward
+        // when the user comes back. media_ui handles its own input.
+        if (!g_mediaFullscreen) Advance();
 
         // CRT: render to FBO if enabled
         if (g_crt.enabled && g_crt.fbo) {
@@ -1008,10 +1143,16 @@ int main(int argc, char* argv[]) {
         }
 
         // Render 3D scene (viewport set to left portion; Present() skips swap when inspector is open)
-        Draw();
+        if (g_mediaFullscreen) {
+            extern void MediaUI_DrawFullscreenVideo();
+            MediaUI_DrawFullscreenVideo();
+        } else {
+            Draw();
+        }
 
-        // Restore fill mode after 3D rendering (wireframe must not affect ImGui)
-        if (g_wireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        // dashapp.cpp resets D3DRS_FILLMODE -> glPolygonMode(GL_FILL) at end
+        // of frame anyway; ImGui below renders solid.
+        if (g_bWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
         // CRT: blit with post-process shader
         if (g_crt.enabled && g_crt.fbo) {
@@ -1025,8 +1166,11 @@ int main(int argc, char* argv[]) {
         // Swap
         if (g_pSDLWindow) SDL_GL_SwapWindow(g_pSDLWindow);
 
-        // Mute: keep halting audio every frame (scripts may start new sounds)
-        if (g_audioMuted) DashAudio_MuteAll();
+        // (Old code re-applied Mix_Volume(-1, 0) every frame while muted.
+        //  Removed: rapid per-frame volume writes on playing channels were
+        //  creating audible discontinuities. New sounds started while muted
+        //  are silenced inside DashAudio_PlaySound's s_muted check, so the
+        //  per-frame hammer wasn't actually needed.)
         if (g_muteOverlayTimer > 0.0f) g_muteOverlayTimer -= 0.016f;
 
         // Inspector, XAP editor, Title Maker all render via PreSwapOverlays callback

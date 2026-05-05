@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <climits>   // INT_MAX referenced indirectly by <linux/cdrom.h> macros
 #include <errno.h>
 #include <climits>
 #define MAX_CDTRACKS 99

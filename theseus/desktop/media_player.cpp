@@ -1,9 +1,11 @@
-// media_player.cpp: libmpv wrapper for media playback. Uses mpv's
-// OpenGL render API to render video frames to an FBO, then exposes
-// it as a GL texture for the dashboard's DVD player scene to
-// display. Desktop-only.
-
-#ifdef UIX_MEDIA_PLAYER  // only compile if libmpv is available
+// media_player.cpp: libmpv wrapper. mpv renders video to a private GL
+// FBO; we expose its color texture to media_ui.cpp for compositing.
+//
+// Each Play is a fresh mpv instance, each Stop is a full teardown.
+// Partial-stop strategies leave the render pipeline wedged on Apple
+// Silicon. s_fboWidth/Height tracks the actual FBO size, distinct from
+// s_videoWidth/Height (mpv's reported video native dims) so the
+// video-params event can't lie to EnsureFBO about FBO state.
 
 #include "media_player.h"
 
@@ -12,10 +14,19 @@
 
 #include <SDL.h>
 
+// OpenGL 3.2 Core Profile -- match d3d8_sdl.h's per-platform pattern.
+// Linux gl.h ships only the 1.x ABI; we need GL_GLEXT_PROTOTYPES + glext.h
+// to pick up framebuffer / shader / VAO entry points. Windows mingw goes
+// through GLEW because there's no equivalent prototype-on-demand mechanism.
 #ifdef __APPLE__
+#define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl3.h>
+#elif defined(_WIN32)
+#include <GL/glew.h>
 #else
+#define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
+#include <GL/glext.h>
 #endif
 
 #include <cstdio>
@@ -34,8 +45,10 @@ static MediaPlayerState    s_state = MP_IDLE;
 // Video FBO
 static GLuint s_fbo = 0;
 static GLuint s_videoTex = 0;
-static int    s_videoWidth = 0;
-static int    s_videoHeight = 0;
+static int    s_videoWidth = 0;    // mpv-reported video native width
+static int    s_videoHeight = 0;   // mpv-reported video native height
+static int    s_fboWidth = 0;      // size we created the render FBO at
+static int    s_fboHeight = 0;
 static bool   s_hasVideo = false;
 static bool   s_needsRender = false;
 
@@ -63,15 +76,15 @@ static int    s_subTrack = 0;
 // ============================================================================
 
 static void EnsureFBO(int w, int h) {
-    if (s_fbo && s_videoWidth == w && s_videoHeight == h)
+    if (s_fbo && s_fboWidth == w && s_fboHeight == h)
         return;
 
     // Delete old
     if (s_fbo) glDeleteFramebuffers(1, &s_fbo);
     if (s_videoTex) glDeleteTextures(1, &s_videoTex);
 
-    s_videoWidth = w;
-    s_videoHeight = h;
+    s_fboWidth  = w;
+    s_fboHeight = h;
 
     // Create texture - use rgba16f to match mpv's preferred format
     glGenTextures(1, &s_videoTex);
@@ -106,6 +119,7 @@ static void* GetProcAddress(void* ctx, const char* name) {
 // ============================================================================
 
 bool MediaPlayer_Init() {
+    if (s_mpv) return true;  // already initialised
     s_mpv = mpv_create();
     if (!s_mpv) {
         fprintf(stderr, "[MediaPlayer] mpv_create() failed\n");
@@ -184,7 +198,11 @@ void MediaPlayer_Shutdown() {
 // ============================================================================
 
 bool MediaPlayer_Open(const char* path) {
-    if (!s_mpv) return false;
+    // Re-init if a previous Stop tore mpv down. This is the normal path
+    // for any playback after the first one in the session.
+    if (!s_mpv) {
+        if (!MediaPlayer_Init()) return false;
+    }
 
     const char* cmd[] = { "loadfile", path, NULL };
     mpv_command(s_mpv, cmd);
@@ -193,6 +211,8 @@ bool MediaPlayer_Open(const char* path) {
     s_position = 0.0;
     s_duration = 0.0;
     s_hasVideo = false;
+    s_videoWidth  = 0;
+    s_videoHeight = 0;
     fprintf(stderr, "[MediaPlayer] Opening: %s\n", path);
     return true;
 }
@@ -215,12 +235,28 @@ void MediaPlayer_TogglePause() {
 }
 
 void MediaPlayer_Stop() {
-    if (!s_mpv) return;
-    const char* cmd[] = { "stop", NULL };
-    mpv_command(s_mpv, cmd);
-    s_state = MP_STOPPED;
-    s_position = 0.0;
-    s_hasVideo = false;
+    // Full teardown. Partial-stop strategies (mpv "stop", pause+mute) leave
+    // the render context in a wedged state on some GL stacks. Open
+    // re-inits lazily, so next playback gets a fresh pipeline.
+    if (s_mpvGL) {
+        mpv_render_context_free(s_mpvGL);
+        s_mpvGL = nullptr;
+    }
+    if (s_mpv) {
+        mpv_destroy(s_mpv);
+        s_mpv = nullptr;
+    }
+    if (s_fbo)      { glDeleteFramebuffers(1, &s_fbo); s_fbo = 0; }
+    if (s_videoTex) { glDeleteTextures(1, &s_videoTex); s_videoTex = 0; }
+    s_state       = MP_IDLE;
+    s_position    = 0.0;
+    s_duration    = 0.0;
+    s_hasVideo    = false;
+    s_videoWidth  = 0;
+    s_videoHeight = 0;
+    s_fboWidth    = 0;
+    s_fboHeight   = 0;
+    fprintf(stderr, "[MediaPlayer] Torn down\n");
 }
 
 void MediaPlayer_Seek(double seconds) {
@@ -325,9 +361,16 @@ void MediaPlayer_Update() {
                     s_subTrack = (int)*(int64_t*)prop->data;
                 break;
             }
-            case MPV_EVENT_END_FILE:
-                s_state = MP_STOPPED;
+            case MPV_EVENT_END_FILE: {
+                // Only treat natural EOF as a true stop. STOP/QUIT/REDIRECT
+                // get fired during user-driven transitions (loadfile to a
+                // new file, etc.) and shouldn't trigger MediaUI's auto-exit.
+                mpv_event_end_file* ef = (mpv_event_end_file*)event->data;
+                if (ef && ef->reason == MPV_END_FILE_REASON_EOF) {
+                    s_state = MP_STOPPED;
+                }
                 break;
+            }
             case MPV_EVENT_FILE_LOADED:
                 s_state = MP_PLAYING;
                 break;
@@ -338,9 +381,14 @@ void MediaPlayer_Update() {
 
     // Render video frame whenever mpv has an update
     if (s_mpvGL && (mpv_render_context_update(s_mpvGL) & MPV_RENDER_UPDATE_FRAME)) {
-        // Use video dimensions if known, otherwise default to 640x480
-        int w = s_videoWidth > 0 ? s_videoWidth : 640;
-        int h = s_videoHeight > 0 ? s_videoHeight : 480;
+        // Use the latest mpv-reported native dims; fall back to the previous
+        // FBO's size if no video-params have arrived yet (which keeps mpv's
+        // render pump fed and avoids "render not called or stuck" warnings).
+        // EnsureFBO recreates the FBO if dims actually change, and
+        // GetVideoTexture reports FBO dims so the blit src rect always
+        // matches what's in the texture.
+        int w = s_videoWidth  > 0 ? s_videoWidth  : (s_fboWidth  > 0 ? s_fboWidth  : 640);
+        int h = s_videoHeight > 0 ? s_videoHeight : (s_fboHeight > 0 ? s_fboHeight : 480);
 
         EnsureFBO(w, h);
         s_hasVideo = true;
@@ -393,8 +441,12 @@ void MediaPlayer_Update() {
 
 unsigned int MediaPlayer_GetVideoTexture(int* outWidth, int* outHeight) {
     if (!s_hasVideo || !s_videoTex) return 0;
-    if (outWidth) *outWidth = s_videoWidth;
-    if (outHeight) *outHeight = s_videoHeight;
+    // Return FBO dims (what the texture *actually contains*), not the
+    // mpv-reported video native dims. If those drift apart (e.g. we
+    // created the FBO before video-params arrived), reading past FBO
+    // extent gives garbage in the blit.
+    if (outWidth)  *outWidth  = s_fboWidth;
+    if (outHeight) *outHeight = s_fboHeight;
     return s_videoTex;
 }
 
@@ -537,52 +589,3 @@ const char* MediaPlayer_GetSubtitleLanguage() {
 }
 
 int MediaPlayer_GetSubtitleTrack() { return s_subTrack; }
-
-#else  // UIX_MEDIA_PLAYER not defined - stub implementations
-
-#include "media_player.h"
-#include <cstdio>
-
-bool MediaPlayer_Init() {
-    fprintf(stderr, "[MediaPlayer] Not available (libmpv not found at build time)\n");
-    return false;
-}
-void MediaPlayer_Shutdown() {}
-bool MediaPlayer_Open(const char*) { return false; }
-void MediaPlayer_Play() {}
-void MediaPlayer_Pause() {}
-void MediaPlayer_TogglePause() {}
-void MediaPlayer_Stop() {}
-void MediaPlayer_Seek(double) {}
-void MediaPlayer_SeekRelative(double) {}
-void MediaPlayer_NextChapter() {}
-void MediaPlayer_PrevChapter() {}
-int  MediaPlayer_GetChapter() { return 0; }
-int  MediaPlayer_GetChapterCount() { return 0; }
-void MediaPlayer_NextAudioTrack() {}
-void MediaPlayer_NextSubtitleTrack() {}
-void MediaPlayer_SetSpeed(double) {}
-double MediaPlayer_GetSpeed() { return 1.0; }
-MediaPlayerState MediaPlayer_GetState() { return MP_IDLE; }
-double MediaPlayer_GetPosition() { return 0.0; }
-double MediaPlayer_GetDuration() { return 0.0; }
-bool   MediaPlayer_HasVideo() { return false; }
-unsigned int MediaPlayer_GetVideoTexture(int*, int*) { return 0; }
-unsigned int MediaPlayer_GetFBO() { return 0; }
-void MediaPlayer_RenderToScreen(int, int) {}
-void MediaPlayer_Update() {}
-void MediaPlayer_FrameStep() {}
-void MediaPlayer_FrameBackStep() {}
-void MediaPlayer_SetZoom(double) {}
-void MediaPlayer_SetZoomPos(double, double) {}
-void MediaPlayer_SetABLoopA() {}
-void MediaPlayer_SetABLoopB() {}
-void MediaPlayer_ClearABLoop() {}
-int  MediaPlayer_GetABRepeatState() { return 0; }
-int  MediaPlayer_GetAudioChannels() { return 0; }
-int  MediaPlayer_GetAudioFormat() { return 3; }
-const char* MediaPlayer_GetAudioLanguage() { return ""; }
-const char* MediaPlayer_GetSubtitleLanguage() { return ""; }
-int  MediaPlayer_GetSubtitleTrack() { return 0; }
-
-#endif // UIX_MEDIA_PLAYER

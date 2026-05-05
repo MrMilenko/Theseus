@@ -50,6 +50,7 @@ int  DashAudio_DidChannelFinish(int channel);
 // Music collection; scans a directory for soundtracks
 // A "soundtrack" is a subdirectory of the music root. Songs are audio files within.
 int  DashMusic_Scan(const char* musicRoot);   // e.g. "xboxfs/Q/Music"
+const char* DashMusic_GetConfiguredRoot(void); // desktop.ini g_musicRoot or fallback
 int  DashMusic_GetSoundtrackCount(void);
 int  DashMusic_GetSoundtrackID(int index);
 int  DashMusic_GetSoundtrackIndexFromID(int id);

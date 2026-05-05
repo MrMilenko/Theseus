@@ -309,6 +309,33 @@ inline void FadeRightEdge(TEXTVERTEX* verts, int nVertexCount, float nStart, flo
 	HorizontalFade(verts, nVertexCount, nStart, nEnd, true);
 }
 
+static void HorizontalFade(TEXTVERTEX* verts, int nVertexCount, float nLeft, float nRight, float nScroll)
+{
+	for (int i = 0; i < nVertexCount; i += 1)
+	{
+		float a = 1.0f;
+		float x = verts[i].x + nScroll;
+
+		if (x < nLeft || x > nRight)
+		{
+			a = 0.0f;
+		}
+		else if (x < nLeft + 1.0f)
+		{
+			a = 1.0f - ((nLeft + 1.0f) - x);
+		}
+		else if (x > nRight - 1.0f)
+		{
+			a = 1.0f - (x - (nRight - 1.0f));
+		}
+
+		if (a < 0.0f) a = 0.0f;
+		if (a > 1.0f) a = 1.0f;
+		a = smoothstep(0.0f, 1.0f, a);
+		verts[i].color = (verts[i].color & 0x00ffffff) | (((uint32_t)(255.0f * a)) << 24);
+	}
+}
+
 static void VerticalFade(TEXTVERTEX* verts, int nVertexCount, float nTop, float nBottom, float nScroll)
 {
 	for (int i = 0; i < nVertexCount; i += 1)
@@ -1026,6 +1053,7 @@ public:
 	float m_scroll;
 	float m_scrollRate;
 	float m_scrollDelay;
+	bool  m_scrollHorizontal;
 
 	DECLARE_NODE_PROPS()
 
@@ -1051,6 +1079,7 @@ START_NODE_PROPS(CTextNode, CNode)
 	NODE_PROP(pt_number, CTextNode, scroll)
 	NODE_PROP(pt_number, CTextNode, scrollRate)
 	NODE_PROP(pt_number, CTextNode, scrollDelay)
+	NODE_PROP(pt_boolean, CTextNode, scrollHorizontal)
 END_NODE_PROPS()
 
 CTextNode::CTextNode() :
@@ -1064,7 +1093,8 @@ CTextNode::CTextNode() :
 	m_height(0.0f),
 	m_scroll(0.0f),
 	m_scrollRate(0.0f),
-	m_scrollDelay(0.0f)
+	m_scrollDelay(0.0f),
+	m_scrollHorizontal(false)
 {
 	m_pMesh = NULL;
 	m_nLanguage = 0;
@@ -1094,12 +1124,26 @@ void CTextNode::Advance(float nSeconds)
 
 		if (now >= m_timeToScroll)
 		{
-			float nContentHeight = m_bboxMax.y - m_bboxMin.y;
-			if (nContentHeight > m_height)
+			if (m_scrollHorizontal)
 			{
-				m_scroll += m_height * nSeconds * m_scrollRate;
-				if (m_scroll >= nContentHeight + nScrollSpace)
-					m_scroll -= nContentHeight + nScrollSpace;
+				float nContentWidth = m_bboxMax.x - m_bboxMin.x;
+				float windowW = fabsf(m_width);
+				if (windowW > 0.0f && nContentWidth > windowW)
+				{
+					m_scroll += windowW * nSeconds * m_scrollRate;
+					if (m_scroll >= nContentWidth + nScrollSpace)
+						m_scroll -= nContentWidth + nScrollSpace;
+				}
+			}
+			else
+			{
+				float nContentHeight = m_bboxMax.y - m_bboxMin.y;
+				if (nContentHeight > m_height)
+				{
+					m_scroll += m_height * nSeconds * m_scrollRate;
+					if (m_scroll >= nContentHeight + nScrollSpace)
+						m_scroll -= nContentHeight + nScrollSpace;
+				}
 			}
 		}
 	}
@@ -1209,9 +1253,22 @@ void CTextNode::Render()
 		}
 	}
 
+	float nContentWidth = m_bboxMax.x - m_bboxMin.x;
+	float windowW = fabsf(m_width);
+	bool bHScroll = m_scrollHorizontal && windowW > 0.0f && nContentWidth > windowW;
+
 	for (int i = 0; i < 2; i += 1)
 	{
-		if (m_height != 0.0f && nContentHeight > m_height)
+		if (bHScroll)
+		{
+			TEXTVERTEX* verts;
+			m_pMesh->LockVertexBuffer(0, (uint8_t**)&verts);
+			float xLeft  = m_scroll - 1.0f;
+			float xRight = xLeft + windowW + 2.0f;
+			HorizontalFade(verts, m_pMesh->GetNumVertices(), xLeft, xRight, i == 0 ? 0 : (nContentWidth + nScrollSpace));
+			m_pMesh->UnlockVertexBuffer();
+		}
+		else if (m_height != 0.0f && nContentHeight > m_height)
 		{
 			TEXTVERTEX* verts;
 			m_pMesh->LockVertexBuffer(0, (uint8_t**)&verts);
@@ -1229,11 +1286,16 @@ void CTextNode::Render()
 		}
 
 		// Don't need second pass unless part of it is visible...
-		if (i == 1 && m_scroll + m_height < nContentHeight)
+		if (!bHScroll && i == 1 && m_scroll + m_height < nContentHeight)
+			break;
+		if (bHScroll && i == 1 && m_scroll + windowW < nContentWidth)
 			break;
 
 		TheseusPushWorld();
-		TheseusTranslateWorld(xOffset, (i == 0 ? 0 : -(nContentHeight + nScrollSpace)) + m_scroll, 0.0f);
+		if (bHScroll)
+			TheseusTranslateWorld(xOffset + (i == 0 ? 0 : (nContentWidth + nScrollSpace)) - m_scroll, 0.0f, 0.0f);
+		else
+			TheseusTranslateWorld(xOffset, (i == 0 ? 0 : -(nContentHeight + nScrollSpace)) + m_scroll, 0.0f);
 		TheseusUpdateWorld();
 
 		// VerticalFade clears per-vertex alpha to 0 outside the visible

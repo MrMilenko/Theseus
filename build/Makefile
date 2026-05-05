@@ -465,35 +465,57 @@ else ifeq ($(UNAME_S),Linux)
   SDL2_LDFLAGS := $(shell sdl2-config --libs)
   DESKTOP_PLATFORM_LDFLAGS = -lGL -lSDL2_mixer
 else
-  # Windows (MSYS2/MinGW)
+  # Windows (MSYS2/MinGW). d3d8_sdl.h pulls <GL/glew.h> on _WIN32, so we
+  # need -lglew32 at link time. -DGLEW_STATIC isn't set here because the
+  # mingw-w64-x86_64-glew package ships a DLL, not a static lib.
+  #
+  # ws2_32: config.cpp's hostname / gethostbyname (network discovery).
+  # dbghelp: sdl_main.cpp's StackWalk64-based panic crash handler.
+  # Same set as the Win64 cross link line.
   DESKTOP_CXX  ?= g++
   DESKTOP_CC   ?= gcc
   SDL2_CFLAGS  := $(shell sdl2-config --cflags)
   SDL2_LDFLAGS := $(shell sdl2-config --libs)
-  DESKTOP_PLATFORM_LDFLAGS = -lopengl32 -lSDL2_mixer
+  DESKTOP_PLATFORM_LDFLAGS = -lopengl32 -lglew32 -lSDL2_mixer -lws2_32 -ldbghelp
 endif
 
-# Media playback (libmpv) is intentionally NOT wired into the build.
-# The desktop has rendering issues that need a scene-graph lifetime
-# audit before media playback can ship cleanly. The stub branch in
-# theseus/desktop/media_player.cpp keeps "Open Media..." silent until
-# someone restores the wiring (pkg-config mpv + -DUIX_MEDIA_PLAYER).
-MPV_CFLAGS   =
-MPV_LDFLAGS  =
-MPV_DEFINES  =
-
-# CD Audio playback (libmpv, audio-only - no OpenGL render context).
-# Enabled automatically when pkg-config finds libmpv.
-# Disc detection and TOC reading work regardless (platform ioctls only).
-ifeq ($(shell pkg-config --exists mpv 2>/dev/null && echo yes),yes)
-  CDAUDIO_CFLAGS  := $(shell pkg-config --cflags mpv)
-  CDAUDIO_LDFLAGS := $(shell pkg-config --libs mpv)
-  CDAUDIO_DEFINES := -DUIX_CDAUDIO=1
-else
-  CDAUDIO_CFLAGS  :=
-  CDAUDIO_LDFLAGS :=
-  CDAUDIO_DEFINES :=
+# libmpv + libcurl: REQUIRED for the native desktop target.
+#
+#   libmpv -- fullscreen video playback (media_player.cpp + media_ui.cpp)
+#             and CD audio (cdaudio.cpp).
+#   libcurl -- in-process HTTPS for TMDB metadata (tmdb.cpp).
+#
+# The dashboard ships with these features always-on; there is no
+# fallback / stub build. We probe via pkg-config and error out loudly
+# with install hints if either library is missing.
+#
+# These checks gate ONLY the native `desktop` target. Cross-compile
+# targets (desktop-win64, desktop-linux-arm64) wire in their own copies
+# via target-scoped CFLAGS/LDFLAGS later in this file, so we skip the
+# host-side pkg-config check when the user is only invoking a cross
+# target. (Detected via MAKECMDGOALS.)
+DESKTOP_NATIVE_GOALS := desktop desktop-clean
+ifneq ($(filter $(DESKTOP_NATIVE_GOALS),$(or $(MAKECMDGOALS),desktop)),)
+  ifeq ($(shell pkg-config --exists mpv 2>/dev/null && echo yes),yes)
+    MPV_CFLAGS  := $(shell pkg-config --cflags mpv)
+    MPV_LDFLAGS := $(shell pkg-config --libs mpv)
+  else
+    $(error libmpv (mpv.pc) not found via pkg-config. Install: macOS \
+`brew install mpv`; Debian/Ubuntu `sudo apt install libmpv-dev`; \
+MSYS2 `pacman -S mingw-w64-x86_64-mpv`)
+  endif
+  ifeq ($(shell pkg-config --exists libcurl 2>/dev/null && echo yes),yes)
+    CURL_CFLAGS  := $(shell pkg-config --cflags libcurl)
+    CURL_LDFLAGS := $(shell pkg-config --libs libcurl)
+  else
+    $(error libcurl (libcurl.pc) not found via pkg-config. Install: macOS \
+`brew install curl`; Debian/Ubuntu `sudo apt install libcurl4-openssl-dev`; \
+MSYS2 `pacman -S mingw-w64-x86_64-curl`)
+  endif
 endif
+CDAUDIO_CFLAGS  := $(MPV_CFLAGS)
+CDAUDIO_LDFLAGS :=
+CDAUDIO_DEFINES := -DUIX_CDAUDIO=1
 
 DESKTOP_CFLAGS = \
 	-std=c++17 \
@@ -530,12 +552,12 @@ DESKTOP_CFLAGS = \
 	-Wno-microsoft \
 	-Wno-null-conversion \
 	-Wno-c++11-narrowing \
-	$(MPV_DEFINES) \
 	$(MPV_CFLAGS) \
 	$(CDAUDIO_DEFINES) \
-	$(CDAUDIO_CFLAGS)
+	$(CDAUDIO_CFLAGS) \
+	$(CURL_CFLAGS)
 
-DESKTOP_LDFLAGS = $(SDL2_LDFLAGS) $(DESKTOP_PLATFORM_LDFLAGS) $(MPV_LDFLAGS) $(CDAUDIO_LDFLAGS) -lm
+DESKTOP_LDFLAGS = $(SDL2_LDFLAGS) $(DESKTOP_PLATFORM_LDFLAGS) $(MPV_LDFLAGS) $(CDAUDIO_LDFLAGS) $(CURL_LDFLAGS) -lm
 
 # Toggle: build the desktop with AddressSanitizer to catch UB / UAF
 # at runtime. Use: `make desktop ASAN=1`.
@@ -616,6 +638,8 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/title_maker.cpp \
 	$(THESEUS_SRC)/desktop/preloader.cpp \
 	$(THESEUS_SRC)/desktop/media_player.cpp \
+	$(THESEUS_SRC)/desktop/media_ui.cpp \
+	$(THESEUS_SRC)/desktop/tmdb.cpp \
 	$(THESEUS_SRC)/desktop/xiso.cpp
 
 # ImGui sources
@@ -658,7 +682,19 @@ $(DESKTOP_TARGET): $(DESKTOP_OBJS)
 		rm -rf $(DESKTOP_DIR)/xboxfs && mkdir -p $(DESKTOP_DIR)/xboxfs && \
 		cp -R $(THESEUS_SRC)/../xboxfs/. $(DESKTOP_DIR)/xboxfs/; \
 	fi
-	@echo "    (synced xboxfs -> $(DESKTOP_DIR)/xboxfs)"
+	@# Stamp xboxfs/C/version. Canon version lives in the source-tree
+	@# xboxfs/C/version (`version=X.Y.YYMMDD`) and is hand-bumped on
+	@# release. The build appends `-YYMMDD-<short-sha>` so artifact
+	@# versions are traceable back to a build date + commit while still
+	@# carrying the canonical release tag they were built from.
+	@VFILE="$(DESKTOP_DIR)/xboxfs/C/version"; \
+	 mkdir -p "$$(dirname $$VFILE)"; \
+	 CANON=$$(grep -E '^version=' "$$VFILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true); \
+	 [ -n "$$CANON" ] || CANON="0.0.000000"; \
+	 BASE=$$(echo "$$CANON" | cut -d- -f1); \
+	 STAMP="$$BASE-$$(date -u '+%y%m%d')-$$(git -C $(THESEUS_SRC)/.. rev-parse --short HEAD 2>/dev/null || echo unknown)"; \
+	 printf '[default]\nversion=%s\n' "$$STAMP" > "$$VFILE"
+	@echo "    (synced xboxfs + stamped version)"
 
 $(DESKTOP_DIR)/%.o: $(THESEUS_SRC)/%.cpp
 	@mkdir -p $(dir $@)
@@ -717,8 +753,22 @@ GLEW_MINGW_DIR    ?= $(HOME)/cross/glew-src/glew-2.2.0
 GLEW_MINGW_INC    = $(GLEW_MINGW_DIR)/include
 GLEW_MINGW_LIB    = $(GLEW_MINGW_DIR)/build-mingw
 
-# DESKTOP_CFLAGS but with the mingw SDL2 paths instead of the macOS ones,
-# and SDL_MAIN_HANDLED so SDL2 doesn't try to substitute its own main().
+# libmpv + libcurl mingw devel archives. shinchiro publishes mpv-mingw
+# build outputs at https://github.com/shinchiro/mpv-winbuild-cmake/releases
+# (look for `mpv-dev-x86_64-*.7z`). For libcurl, use the official mingw
+# devel package from https://curl.se/windows/. Unpack each so that
+# `include/mpv/client.h` and `include/curl/curl.h` resolve, then point
+# the env vars at the unpacked roots.
+MPV_MINGW_DIR    ?= $(HOME)/cross/mpv-mingw
+CURL_MINGW_DIR   ?= $(HOME)/cross/curl-mingw
+MPV_MINGW_INC    = $(MPV_MINGW_DIR)/include
+MPV_MINGW_LIB    = $(MPV_MINGW_DIR)
+CURL_MINGW_INC   = $(CURL_MINGW_DIR)/include
+CURL_MINGW_LIB   = $(CURL_MINGW_DIR)/lib
+
+# DESKTOP_CFLAGS but with the mingw SDL2 / mpv / curl paths instead of
+# the macOS ones, and SDL_MAIN_HANDLED so SDL2 doesn't try to substitute
+# its own main().
 WIN64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
@@ -730,10 +780,13 @@ WIN64_CFLAGS = \
 	-D_THESEUS_STD_H=1 \
 	-DSDL_MAIN_HANDLED \
 	-DGLEW_STATIC \
+	-DUIX_CDAUDIO=1 \
 	-fpermissive \
 	-I$(SDL2_MINGW_INC)/SDL2 \
 	-I$(MIXER_MINGW_INC)/SDL2 \
 	-I$(GLEW_MINGW_INC) \
+	-I$(MPV_MINGW_INC) \
+	-I$(CURL_MINGW_INC) \
 	-I$(THESEUS_SRC)/desktop \
 	-I$(THESEUS_SRC)/desktop/imgui \
 	-I$(THESEUS_SRC)/shared \
@@ -762,11 +815,14 @@ WIN64_LDFLAGS = \
 	-L$(SDL2_MINGW_LIB) \
 	-L$(MIXER_MINGW_LIB) \
 	-L$(GLEW_MINGW_LIB) \
+	-L$(MPV_MINGW_LIB) \
+	-L$(CURL_MINGW_LIB) \
 	-static-libgcc -static-libstdc++ \
 	-Wl,--subsystem,windows -Wl,-emainCRTStartup \
 	-Wl,--export-all-symbols \
 	-lmingw32 -lSDL2main -lSDL2 -lSDL2_mixer \
 	-lglew32 \
+	-lmpv -lcurl \
 	-lopengl32 -lgdi32 -limm32 -lole32 -loleaut32 -lsetupapi -lversion -lwinmm -luuid \
 	-lws2_32 -ldbghelp
 
@@ -783,23 +839,31 @@ desktop-win64: $(WIN64_TARGET)
 $(WIN64_TARGET): $(WIN64_OBJS)
 	@mkdir -p $(WIN64_DIR)
 	$(WIN64_CXX) -o $@ $(WIN64_OBJS) $(WIN64_LDFLAGS)
-	@# Drop in the runtime DLLs alongside the exe so the build directory
-	@# is a self-contained Windows drop. SDL2 + SDL2_mixer come from the
-	@# downloaded mingw devel packages; libwinpthread-1.dll is the one
-	@# mingw GCC runtime DLL that doesn't get linked statically by
-	@# -static-libgcc -static-libstdc++ (it's a separate threading lib).
+	@# Bundle every DLL the exe needs so the build directory is a self-
+	@# contained Windows drop. -static-libgcc -static-libstdc++ folds the
+	@# core runtime in; SDL2 / SDL2_mixer / libmpv / libcurl / libwinpthread
+	@# are dynamic and have to ship alongside.
 	@cp $(SDL2_MINGW_BIN)/SDL2.dll $(WIN64_DIR)/
 	@cp $(MIXER_MINGW_BIN)/SDL2_mixer.dll $(WIN64_DIR)/
 	@cp $(WIN64_PTHREAD_DLL) $(WIN64_DIR)/
-	@# xboxfs/ next to the binary, same as native desktop. Prefer rsync,
-	@# fall back to cp -R if not installed.
+	@if [ -f $(MPV_MINGW_DIR)/libmpv-2.dll ]; then cp $(MPV_MINGW_DIR)/libmpv-2.dll $(WIN64_DIR)/; fi
+	@for f in $(CURL_MINGW_DIR)/bin/libcurl*.dll $(CURL_MINGW_DIR)/libcurl*.dll; do \
+		[ -f "$$f" ] && cp "$$f" $(WIN64_DIR)/ || true ; \
+	done; true
 	@if command -v rsync >/dev/null 2>&1; then \
 		rsync -a --delete $(THESEUS_SRC)/../xboxfs/ $(WIN64_DIR)/xboxfs/; \
 	else \
 		rm -rf $(WIN64_DIR)/xboxfs && mkdir -p $(WIN64_DIR)/xboxfs && \
 		cp -R $(THESEUS_SRC)/../xboxfs/. $(WIN64_DIR)/xboxfs/; \
 	fi
-	@echo "    (copied SDL2.dll, SDL2_mixer.dll, libwinpthread-1.dll, xboxfs -> $(WIN64_DIR))"
+	@VFILE="$(WIN64_DIR)/xboxfs/C/version"; \
+	 mkdir -p "$$(dirname $$VFILE)"; \
+	 CANON=$$(grep -E '^version=' "$$VFILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' || true); \
+	 [ -n "$$CANON" ] || CANON="0.0.000000"; \
+	 BASE=$$(echo "$$CANON" | cut -d- -f1); \
+	 STAMP="$$BASE-$$(date -u '+%y%m%d')-$$(git -C $(THESEUS_SRC)/.. rev-parse --short HEAD 2>/dev/null || echo unknown)"; \
+	 printf '[default]\nversion=%s\n' "$$STAMP" > "$$VFILE"
+	@echo "    (bundled DLLs + xboxfs + stamped version -> $(WIN64_DIR))"
 
 $(WIN64_DIR)/%.o: $(THESEUS_SRC)/%.cpp
 	@mkdir -p $(dir $@)
@@ -841,6 +905,17 @@ LINUX_ARM64_CXX     = aarch64-linux-gnu-g++
 LINUX_ARM64_SDL2_INC = /usr/include/SDL2
 LINUX_ARM64_SDL2_LIB = /usr/lib/aarch64-linux-gnu
 
+# libmpv + libcurl for ARM64 cross. apt installs libmpv-dev:arm64 and
+# libcurl4-openssl-dev:arm64 with pkgconfig under
+# /usr/lib/aarch64-linux-gnu/pkgconfig; caller is expected to set
+# PKG_CONFIG_LIBDIR to that path before invoking make. Falls back to
+# system pkg-config if the user has already set it up correctly.
+LINUX_ARM64_PKG_CONFIG := PKG_CONFIG_LIBDIR=$${PKG_CONFIG_LIBDIR:-/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig} pkg-config
+LINUX_ARM64_MPV_CFLAGS  := $(shell $(LINUX_ARM64_PKG_CONFIG) --cflags mpv 2>/dev/null)
+LINUX_ARM64_MPV_LDFLAGS := $(shell $(LINUX_ARM64_PKG_CONFIG) --libs mpv 2>/dev/null)
+LINUX_ARM64_CURL_CFLAGS := $(shell $(LINUX_ARM64_PKG_CONFIG) --cflags libcurl 2>/dev/null)
+LINUX_ARM64_CURL_LDFLAGS:= $(shell $(LINUX_ARM64_PKG_CONFIG) --libs libcurl 2>/dev/null)
+
 LINUX_ARM64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
@@ -850,6 +925,7 @@ LINUX_ARM64_CFLAGS = \
 	-DUIX_DESKTOP=1 \
 	-D_WINDOWS=1 \
 	-D_THESEUS_STD_H=1 \
+	-DUIX_CDAUDIO=1 \
 	-fpermissive \
 	-I$(LINUX_ARM64_SDL2_INC) \
 	-I$(THESEUS_SRC)/desktop \
@@ -857,6 +933,8 @@ LINUX_ARM64_CFLAGS = \
 	-I$(THESEUS_SRC)/shared \
 	-I$(THESEUS_SRC)/engine \
 	-I$(THESEUS_SRC)/render \
+	$(LINUX_ARM64_MPV_CFLAGS) \
+	$(LINUX_ARM64_CURL_CFLAGS) \
 	-Wno-write-strings \
 	-Wno-deprecated-declarations \
 	-Wno-reorder \
@@ -874,6 +952,8 @@ LINUX_ARM64_LDFLAGS = \
 	-L$(LINUX_ARM64_SDL2_LIB) \
 	-lSDL2 -lSDL2_mixer \
 	-lGL \
+	$(LINUX_ARM64_MPV_LDFLAGS) \
+	$(LINUX_ARM64_CURL_LDFLAGS) \
 	-lm -ldl -lpthread
 
 # Same source list as desktop -- the compiler reads the same files.

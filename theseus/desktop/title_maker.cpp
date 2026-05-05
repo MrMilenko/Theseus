@@ -138,9 +138,15 @@ static void TM_WriteIconsIni(char keys[][128], char vals[][128], int count) {
 void RenderTitleMaker() {
     if (!g_titleMakerOpen) return;
 
-    // Position and size on first open
-    ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(720, 740), ImGuiCond_FirstUseEver);
+    // Position and size on first open. Cap max size to the viewport so the
+    // title bar can't get pushed off-screen if the user's window is small.
+    ImVec2 vp = ImGui::GetMainViewport()->Size;
+    float maxW = vp.x - 40.0f, maxH = vp.y - 80.0f;
+    if (maxW < 640) maxW = 640;
+    if (maxH < 480) maxH = 480;
+    ImGui::SetNextWindowPos(ImVec2(20, 40), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(640, 480), ImVec2(maxW, maxH));
+    ImGui::SetNextWindowSize(ImVec2(820, maxH < 680 ? maxH : 680), ImGuiCond_FirstUseEver);
 
     ImGui::Begin("UIX Title Maker", &g_titleMakerOpen);
 
@@ -256,7 +262,9 @@ void RenderTitleMaker() {
     {
         ImGui::Text("xemu:");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 100);
+        // Reserve room for [Save][Find] + their gaps + a 12px right margin so
+        // the rightmost button doesn't snug against the window edge.
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 150);
         ImGui::InputText("##xemupath", s_xemuPath, sizeof(s_xemuPath));
         ImGui::SameLine();
         if (ImGui::SmallButton("Save##xemu")) {
@@ -300,7 +308,8 @@ void RenderTitleMaker() {
     {
         ImGui::Text("Steam:");
         ImGui::SameLine();
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 150);
+        // [Save][Find][Browse] + gaps + right margin.
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 220);
         ImGui::InputText("##steampath", s_steamPath, sizeof(s_steamPath));
         ImGui::SameLine();
         if (ImGui::SmallButton("Save##steam")) {
@@ -394,7 +403,7 @@ void RenderTitleMaker() {
 
     // Split view: title list on left, editor on right
     float listWidth = 260.0f;
-    ImGui::BeginChild("TitleList", ImVec2(listWidth, -ImGui::GetFrameHeightWithSpacing() * 3), true);
+    ImGui::BeginChild("TitleList", ImVec2(listWidth, -ImGui::GetFrameHeightWithSpacing() * 1.6f), true);
     for (int i = 0; i < s_entryCount; i++) {
         TmEntry& e = s_entries[i];
 
@@ -443,7 +452,7 @@ void RenderTitleMaker() {
     ImGui::SameLine();
 
     // Editor panel
-    ImGui::BeginChild("TitleEditor", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 3), true);
+    ImGui::BeginChild("TitleEditor", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() * 1.6f), true);
     if (s_selectedIdx >= 0 && s_selectedIdx < s_entryCount) {
         TmEntry& sel = s_entries[s_selectedIdx];
         ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", sel.name);
@@ -627,12 +636,10 @@ void RenderTitleMaker() {
     }
     ImGui::SameLine();
 
-    // Add ISO button
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.1f, 0.3f, 0.5f, 1.0f));
+    // Add ISO button — use the global theme so it matches Create / Import.
     if (ImGui::Button("Add ISO")) {
         ImGui::OpenPopup("AddISOPopup");
     }
-    ImGui::PopStyleColor();
 
     // ISO file browser + result window
     {

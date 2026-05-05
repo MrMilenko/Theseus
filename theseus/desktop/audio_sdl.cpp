@@ -355,7 +355,11 @@ int DashAudio_Init(void)
 {
     if (s_initialized) return 0;
 
-    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
+    // 4096-sample buffer (~93ms at 44.1kHz). Higher than ideal for game
+    // audio latency, but the dashboard isn't latency-sensitive, and the
+    // bigger buffer keeps audio stable when the scan thread / libmpv decode
+    // / TMDB curl bursts hog CPU. Smaller buffer = popping under load.
+    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 4096) < 0) {
         fprintf(stderr, "[Audio] Mix_OpenAudio failed: %s\n", Mix_GetError());
         return -1;
     }
@@ -379,10 +383,23 @@ int DashAudio_Init(void)
     s_initialized = true;
 
 
-    // Auto-scan music collection
-    DashMusic_Scan("xboxfs/Q/Music");
+    // Auto-scan music collection. Root is configurable via desktop.ini
+    // [Library] MusicRoot=...; falls back to xboxfs/Q/Music for legacy
+    // installs. Declared in audio_sdl.h.
+    DashMusic_Scan(DashMusic_GetConfiguredRoot());
 
     return 0;
+}
+
+// Read the configured music root from desktop.ini's g_musicRoot global
+// (loaded by sdl_main.cpp::LoadDesktopSettings). Falls back to the
+// legacy xboxfs/Q/Music path if the user hasn't configured one.
+extern "C" char g_musicRoot[512];
+
+const char* DashMusic_GetConfiguredRoot(void)
+{
+    if (g_musicRoot[0]) return g_musicRoot;
+    return "xboxfs/Q/Music";
 }
 
 static bool s_muted = false;
@@ -482,9 +499,13 @@ int DashAudio_PlaySound(int handle, int loops, int fadeInMs)
     if (ch < 0) {
         fprintf(stderr, "[Audio] PlaySound failed: %s\n", Mix_GetError());
     }
-    // If muted, immediately zero this channel's volume so it doesn't pop for one frame
-    if (ch >= 0 && s_muted) {
-        Mix_Volume(ch, 0);
+    // SDL_mixer's ChannelFinishedCallback latches s_channelFinished[ch] = 1 on
+    // any halt or natural end. When the channel gets reused, that stale flag
+    // lies to DashAudio_DidChannelFinish, which causes Advance() to immediately
+    // mark the new playback finished. Clear it on every fresh play.
+    if (ch >= 0) {
+        s_channelFinished[ch] = 0;
+        if (s_muted) Mix_Volume(ch, 0);
     }
     return ch;
 }

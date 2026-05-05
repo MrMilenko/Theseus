@@ -443,7 +443,8 @@ void RenderHDDBrowser() {
         s_statusTime -= 1.0f / 60.0f;
 
     ImGui::SetNextWindowPos(ImVec2(40, 40), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(720, 560), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(560, 380), ImVec2(1200, 900));
+    ImGui::SetNextWindowSize(ImVec2(720, 480), ImGuiCond_FirstUseEver);
 
     ImGui::Begin("Xbox HDD Browser", &g_hddBrowserOpen);
 

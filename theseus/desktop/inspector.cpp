@@ -12,6 +12,8 @@
 #include "inspector.h"
 #include "imgui.h"
 
+extern bool g_bWireframe;
+
 // ============================================================================
 // Inspector state
 // ============================================================================
@@ -373,7 +375,7 @@ void RenderInspectorPanel(IDirect3DDevice8* dev) {
         // Sync debug mode when closed via X button
         if (!g_inspectorOpen) {
             g_debugMode = false;
-            if (g_wireframe) { g_wireframe = false; glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); }
+            if (g_bWireframe) { g_bWireframe = false; glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); }
             dev->m_inspectorEnabled = false;
             dev->m_inspectorSelectedNode = NULL;
             dev->m_inspectorHitID = -1;
@@ -390,8 +392,8 @@ void RenderInspectorPanel(IDirect3DDevice8* dev) {
 
     // Wireframe toggle
     ImGui::SameLine();
-    if (ImGui::SmallButton(g_wireframe ? "Wire:ON" : "Wire:OFF"))
-        g_wireframe = !g_wireframe;
+    if (ImGui::SmallButton(g_bWireframe ? "Wire:ON" : "Wire:OFF"))
+        g_bWireframe = !g_bWireframe;
 
     ImGui::Separator();
 

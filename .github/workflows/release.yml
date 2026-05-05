@@ -1,0 +1,224 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release as (e.g. v0.5.0)'
+        required: true
+
+# Per-platform: build, package binary + xboxfs + runtime libs into a
+# platform-named archive, attach to the GitHub Release.
+
+jobs:
+  release-macos:
+    name: Release / macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: brew install sdl2 sdl2_mixer mpv curl pkg-config
+
+      - name: Stub xboxfs
+        run: mkdir -p xboxfs/Q xboxfs/E xboxfs/C
+
+      - name: Build
+        run: PKG_CONFIG_PATH="$(brew --prefix curl)/lib/pkgconfig:${PKG_CONFIG_PATH}" make -C build desktop
+
+      - name: Package
+        # macOS users are expected to have Homebrew SDL2/mpv/curl installed.
+        # We ship the binary + xboxfs + version stamp; dylibs come from brew.
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DROP="Theseus-${TAG}-macos"
+          mkdir -p "${DROP}"
+          cp ~/builds/theseus/desktop/theseus "${DROP}/"
+          cp -R ~/builds/theseus/desktop/xboxfs "${DROP}/xboxfs"
+          zip -r "${DROP}.zip" "${DROP}"
+          echo "ARCHIVE=${DROP}.zip" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ env.ARCHIVE }}
+          fail_on_unmatched_files: true
+
+  release-linux:
+    name: Release / Linux x64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential pkg-config \
+                              libsdl2-dev libsdl2-mixer-dev libgl-dev \
+                              libmpv-dev libcurl4-openssl-dev
+
+      - name: Stub xboxfs
+        run: mkdir -p xboxfs/Q xboxfs/E xboxfs/C
+
+      - name: Build
+        run: make -C build desktop
+
+      - name: Package
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DROP="Theseus-${TAG}-linux-x64"
+          mkdir -p "${DROP}"
+          cp ~/builds/theseus/desktop/theseus "${DROP}/"
+          cp -R ~/builds/theseus/desktop/xboxfs "${DROP}/xboxfs"
+          tar czf "${DROP}.tar.gz" "${DROP}"
+          echo "ARCHIVE=${DROP}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ env.ARCHIVE }}
+          fail_on_unmatched_files: true
+
+  release-linux-arm64:
+    name: Release / Linux ARM64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential pkg-config \
+                              libsdl2-dev libsdl2-mixer-dev libgl-dev \
+                              libmpv-dev libcurl4-openssl-dev
+
+      - name: Stub xboxfs
+        run: mkdir -p xboxfs/Q xboxfs/E xboxfs/C
+
+      - name: Build
+        run: make -C build desktop
+
+      - name: Package
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DROP="Theseus-${TAG}-linux-arm64"
+          mkdir -p "${DROP}"
+          cp ~/builds/theseus/desktop/theseus "${DROP}/"
+          cp -R ~/builds/theseus/desktop/xboxfs "${DROP}/xboxfs"
+          tar czf "${DROP}.tar.gz" "${DROP}"
+          echo "ARCHIVE=${DROP}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ env.ARCHIVE }}
+          fail_on_unmatched_files: true
+
+  release-win64:
+    name: Release / Win64
+    runs-on: ubuntu-latest
+    env:
+      SDL2_VER: 2.32.10
+      SDL2_MIXER_VER: 2.8.1
+      GLEW_VER: 2.2.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mingw-w64 (posix thread model)
+        run: |
+          sudo apt update
+          sudo apt install -y mingw-w64 p7zip-full \
+                              g++-mingw-w64-x86-64-posix \
+                              gcc-mingw-w64-x86-64-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
+
+      - name: Cache mingw devel libs
+        id: cache-cross
+        uses: actions/cache@v4
+        with:
+          path: ~/cross
+          key: cross-mingw-sdl${{ env.SDL2_VER }}-mixer${{ env.SDL2_MIXER_VER }}-glew${{ env.GLEW_VER }}-mpv-curl-v1
+
+      - name: Fetch SDL2 + SDL2_mixer
+        if: steps.cache-cross.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/cross/sdl2-mingw
+          cd ~/cross/sdl2-mingw
+          curl -fsSL -O https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VER}/SDL2-devel-${SDL2_VER}-mingw.tar.gz
+          curl -fsSL -O https://github.com/libsdl-org/SDL_mixer/releases/download/release-${SDL2_MIXER_VER}/SDL2_mixer-devel-${SDL2_MIXER_VER}-mingw.tar.gz
+          tar xzf SDL2-devel-${SDL2_VER}-mingw.tar.gz
+          tar xzf SDL2_mixer-devel-${SDL2_MIXER_VER}-mingw.tar.gz
+
+      - name: Build GLEW
+        if: steps.cache-cross.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/cross/glew-src
+          cd ~/cross/glew-src
+          curl -fsSL -o glew-${GLEW_VER}.tgz https://sourceforge.net/projects/glew/files/glew/${GLEW_VER}/glew-${GLEW_VER}.tgz/download
+          tar xzf glew-${GLEW_VER}.tgz
+          cd glew-${GLEW_VER}
+          mkdir -p build-mingw
+          x86_64-w64-mingw32-gcc -DGLEW_STATIC -Iinclude -c src/glew.c -o build-mingw/glew.o
+          x86_64-w64-mingw32-ar rcs build-mingw/libglew32.a build-mingw/glew.o
+
+      - name: Fetch libmpv mingw devel
+        if: steps.cache-cross.outputs.cache-hit != 'true'
+        timeout-minutes: 8
+        run: |
+          mkdir -p ~/cross/mpv-mingw
+          cd ~/cross/mpv-mingw
+          LATEST=$(curl -fsSL --max-time 30 \
+                   https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest \
+                   | grep -oE 'https://[^"]+mpv-dev-x86_64-[0-9]+-git-[0-9a-f]+\.7z' | head -1)
+          test -n "$LATEST" || { echo "no shinchiro release found"; exit 1; }
+          curl -fsSL --max-time 360 --speed-time 30 --speed-limit 1024 \
+               -o mpv-dev.7z "$LATEST"
+          7z x -y mpv-dev.7z
+
+      - name: Fetch libcurl mingw devel
+        if: steps.cache-cross.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/cross/curl-mingw
+          cd ~/cross/curl-mingw
+          INDEX_URL=https://curl.se/windows/
+          ZIP_PATH=$(curl -fsSL "$INDEX_URL" | grep -oE 'dl-[0-9._]+/curl-[0-9._]+-win64-mingw\.zip' | head -1)
+          test -n "$ZIP_PATH" || { echo "no curl mingw zip found"; exit 1; }
+          curl -fsSL -o curl-mingw.zip "${INDEX_URL}${ZIP_PATH}"
+          unzip -q curl-mingw.zip
+          mv curl-*-win64-mingw/* . || true
+          rmdir curl-*-win64-mingw 2>/dev/null || true
+
+      - name: Stub xboxfs
+        run: mkdir -p xboxfs/Q xboxfs/E xboxfs/C
+
+      - name: Build
+        run: make -C build desktop-win64
+
+      - name: Package
+        # The Makefile has already copied the runtime DLLs into the build
+        # dir (SDL2.dll, SDL2_mixer.dll, libmpv-2.dll, libcurl-x64.dll,
+        # libwinpthread-1.dll). Ship the whole directory.
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DROP="Theseus-${TAG}-windows-x64"
+          mkdir -p "${DROP}"
+          cp -R ~/builds/theseus/desktop-win64/. "${DROP}/"
+          # Zip up; remove the *.o cruft from object subdirs first.
+          find "${DROP}" -name '*.o' -delete
+          find "${DROP}" -name '*.d' -delete
+          rm -rf "${DROP}/desktop" "${DROP}/shared" "${DROP}/engine" "${DROP}/render" "${DROP}/xbox" || true
+          zip -r "${DROP}.zip" "${DROP}"
+          echo "ARCHIVE=${DROP}.zip" >> "$GITHUB_ENV"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ env.ARCHIVE }}
+          fail_on_unmatched_files: true

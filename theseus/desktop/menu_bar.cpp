@@ -8,13 +8,34 @@
 #include "panel_shared.h"
 #include "title_maker.h"
 #include "hdd_browser.h"
-#include "media_player.h"
+#include "audio_sdl.h"
 #include "imgui.h"
-#include "imfilebrowser.h"
+
+extern bool g_bWireframe;
 
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
+
+extern bool s_scanPanelVisible;   // defined later in this file
+
+extern "C" void MediaDB_ScanAndCache();
+extern "C" void MediaDB_RefreshMovies();
+extern "C" void MediaDB_RefreshShows();
+extern "C" int  MediaDB_GetMovieCount();
+extern "C" int  MediaDB_GetShowCount();
+extern "C" int  MediaDB_IsScanning();
+extern "C" int  MediaDB_GetScanProgress();
+extern "C" int  MediaDB_GetScanTotal();
+extern "C" const char* MediaDB_GetScanPhase();
+
+// Library roots (defined in sdl_main.cpp).
+extern char g_musicRoot[512];
+extern char g_moviesRoot[512];
+extern char g_tvRoot[512];
+extern char g_tmdbKey[128];
+
+// DashMusic_* declared in audio_sdl.h (already included above).
 
 // ============================================================================
 // Internal State
@@ -24,8 +45,10 @@ static bool s_settingsOpen = false;
 static bool s_aboutOpen = false;
 static bool s_shortcutsOpen = false;
 
-static ImGui::FileBrowser s_mediaBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
-static bool s_mediaBrowserInit = false;
+// Old "Open Media..." file-browser removed. Playback now flows through
+// the Media Library (CMediaCollection.PlayMovie/PlayEpisode -> MediaUI
+// fullscreen). The legacy CDVDPlayer XAP scene was painful to wire up
+// and is no longer the desktop's playback path.
 
 void ToggleSettingsWindow() { s_settingsOpen = !s_settingsOpen; }
 
@@ -79,31 +102,8 @@ void RenderMainMenuBar() {
     if (!ImGui::BeginMainMenuBar())
         return;
 
-    // Init media browser on first use
-    if (!s_mediaBrowserInit) {
-        s_mediaBrowser.SetTitle("Open Media File");
-        s_mediaBrowser.SetTypeFilters({
-            ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm",
-            ".mp3", ".flac", ".wav", ".ogg", ".wma", ".aac", ".m4a",
-            ".MP4", ".MKV", ".AVI", ".MOV", ".MP3", ".FLAC", ".WAV"
-        });
-        s_mediaBrowserInit = true;
-    }
-
     // ---- File ----
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("Open Media...", "Ctrl+O")) {
-            s_mediaBrowser.Open();
-        }
-        if (MediaPlayer_GetState() != MP_IDLE) {
-            if (ImGui::MenuItem("Eject / Stop Media")) {
-                MediaPlayer_Stop();
-                DashAudio_UnmuteAll();
-                extern void DiscDrive_SetDiscType(const char*);
-                DiscDrive_SetDiscType("none");
-            }
-        }
-        ImGui::Separator();
         if (ImGui::MenuItem("Restart Dashboard", "Ctrl+R")) {
             g_desktopRestartRequested = true;
         }
@@ -147,8 +147,8 @@ void RenderMainMenuBar() {
                         g_pD3DDev->m_inspectorHitID = -1;
                     }
                 }
-                if (!g_debugMode && g_wireframe) {
-                    g_wireframe = false;
+                if (!g_debugMode && g_bWireframe) {
+                    g_bWireframe = false;
                     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                 }
             }
@@ -177,8 +177,8 @@ void RenderMainMenuBar() {
             g_muteOverlayTimer = 2.0f;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Wireframe", NULL, g_wireframe)) {
-            g_wireframe = !g_wireframe;
+        if (ImGui::MenuItem("Wireframe", NULL, g_bWireframe)) {
+            g_bWireframe = !g_bWireframe;
         }
         if (ImGui::BeginMenu("MSAA")) {
             for (int i = 0; i < s_msaaCount; i++) {
@@ -205,25 +205,6 @@ void RenderMainMenuBar() {
     }
 
     ImGui::EndMainMenuBar();
-
-    // Media file browser (must render every frame)
-    s_mediaBrowser.Display();
-    if (s_mediaBrowser.HasSelected()) {
-        std::string path = s_mediaBrowser.GetSelected().string();
-        s_mediaBrowser.ClearSelected();
-
-        static bool s_mpvInited = false;
-        if (!s_mpvInited)
-            s_mpvInited = MediaPlayer_Init();
-
-        if (s_mpvInited && MediaPlayer_Open(path.c_str())) {
-            DashAudio_MuteAll();
-            extern void DiscDrive_SetDiscType(const char*);
-            DiscDrive_SetDiscType("Video");
-        }
-    }
-
-    MediaPlayer_Update();
 }
 
 // ============================================================================
@@ -233,8 +214,10 @@ void RenderMainMenuBar() {
 void RenderSettingsWindow() {
     if (!s_settingsOpen) return;
 
-    ImGui::SetNextWindowSize(ImVec2(500, 450), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Settings", &s_settingsOpen)) {
+    ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(540, 0), ImVec2(540, 800));
+    ImGuiWindowFlags settingsFlags = ImGuiWindowFlags_AlwaysAutoResize;
+    if (!ImGui::Begin("Settings", &s_settingsOpen, settingsFlags)) {
         ImGui::End();
         return;
     }
@@ -319,7 +302,7 @@ void RenderSettingsWindow() {
             ImGui::Separator();
             ImGui::Spacing();
 
-            ImGui::Checkbox("Wireframe", &g_wireframe);
+            ImGui::Checkbox("Wireframe", &g_bWireframe);
 
             ImGui::Text("MSAA:");
             ImGui::SameLine();
@@ -331,6 +314,109 @@ void RenderSettingsWindow() {
 
             ImGui::Spacing();
             if (ImGui::Button("Save Display Settings"))
+                SaveDesktopSettings();
+
+            ImGui::EndTabItem();
+        }
+
+        // ---- Media Library ----
+        if (ImGui::BeginTabItem("Media Library")) {
+            ImGui::Spacing();
+            ImGui::TextWrapped("Configure where the dashboard scans for media. Empty values fall back to the bundled defaults shown in placeholder text.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            // Music
+            ImGui::Text("Music Root");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%d soundtrack%s loaded)",
+                DashMusic_GetSoundtrackCount(),
+                DashMusic_GetSoundtrackCount() == 1 ? "" : "s");
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 130);
+            ImGui::InputTextWithHint("##musicroot", "xboxfs/Q/Music",
+                g_musicRoot, sizeof(g_musicRoot));
+            ImGui::SameLine();
+            if (ImGui::Button("Refresh##music")) {
+                DashMusic_Scan(DashMusic_GetConfiguredRoot());
+                SaveDesktopSettings();
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            bool scanning = MediaDB_IsScanning() != 0;
+
+            // Movies
+            ImGui::Text("Movies Root");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%d movies)", MediaDB_GetMovieCount());
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            ImGui::InputTextWithHint("##moviesroot", "e.g. /Users/you/Movies",
+                g_moviesRoot, sizeof(g_moviesRoot));
+
+            ImGui::Spacing();
+
+            // TV
+            ImGui::Text("TV Shows Root");
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%d shows)", MediaDB_GetShowCount());
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            ImGui::InputTextWithHint("##tvroot", "e.g. /Users/you/TV",
+                g_tvRoot, sizeof(g_tvRoot));
+
+            ImGui::Spacing();
+
+            if (scanning) {
+                // Inline progress instead of a floating panel — user is
+                // already on this tab, show the scan status here.
+                const char* phase = MediaDB_GetScanPhase();
+                int prog  = MediaDB_GetScanProgress();
+                int total = MediaDB_GetScanTotal();
+                ImGui::TextColored(ImVec4(0.55f, 1.0f, 0.55f, 1.0f),
+                    "%s", (phase && *phase) ? phase : "Working...");
+                if (total > 0) {
+                    char overlay[64];
+                    snprintf(overlay, sizeof(overlay), "%d / %d", prog, total);
+                    ImGui::ProgressBar((float)prog / (float)total, ImVec2(-FLT_MIN, 0.0f), overlay);
+                } else if (prog > 0) {
+                    char overlay[64];
+                    snprintf(overlay, sizeof(overlay), "%d found", prog);
+                    float pulse = 0.5f + 0.5f * sinf((float)ImGui::GetTime() * 2.0f);
+                    ImGui::ProgressBar(pulse, ImVec2(-FLT_MIN, 0.0f), overlay);
+                } else {
+                    float pulse = 0.5f + 0.5f * sinf((float)ImGui::GetTime() * 2.0f);
+                    ImGui::ProgressBar(pulse, ImVec2(-FLT_MIN, 0.0f), "");
+                }
+                ImGui::TextDisabled("Scan continues if you close this window.");
+            } else {
+                if (ImGui::Button("Refresh Media Library")) {
+                    SaveDesktopSettings();
+                    MediaDB_ScanAndCache();
+                }
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            // TMDB API key (optional; enables plot/poster lookups).
+            ImGui::Text("TMDB API Key");
+            ImGui::SameLine();
+            if (g_tmdbKey[0])
+                ImGui::TextDisabled("(configured)");
+            else
+                ImGui::TextDisabled("(empty - plots/posters disabled)");
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
+            ImGui::InputTextWithHint("##tmdbkey", "Get a free v3 key at themoviedb.org",
+                g_tmdbKey, sizeof(g_tmdbKey), ImGuiInputTextFlags_Password);
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if (ImGui::Button("Save Library Paths"))
                 SaveDesktopSettings();
 
             ImGui::EndTabItem();
@@ -465,3 +551,9 @@ void RenderShortcutsWindow() {
     }
     ImGui::End();
 }
+
+
+// Scan progress is now rendered inline in the Settings -> Media Library tab.
+// No floating panel. Keep this stub so sdl_main.cpp's PreSwap call is a no-op.
+bool s_scanPanelVisible = false;
+void RenderScanProgressModal() {}

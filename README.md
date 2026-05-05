@@ -1,5 +1,9 @@
 # Theseus
 
+[![build](https://github.com/MrMilenko/Theseus/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/MrMilenko/Theseus/actions/workflows/build.yml)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Xbox%20%7C%20macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#)
+
 Theseus is a reverse-engineered reconstruction of the original Xbox 5960 dashboard. It runs on Xbox hardware, and on desktop (macOS, Linux, Windows) where the same engine is being grown into a 3D launcher for PC games, Steam titles, and emulator-hosted Xbox ISOs (via [xemu](https://xemu.app)). Authoring tools for skin and content creators (XAP editor, scene inspector, Title Maker) ship alongside it.
 
 The reconstruction is built on binary analysis of the retail Xbox dashboard binaries (4920-5960) in [Ghidra](https://ghidra-sre.org/), backed by the TeamUIX lineage's two-decades-plus history with the dashboard (see [Heritage](#heritage) below). The methodology is documented in [Decomp Methodology](#decomp-methodology).
@@ -173,50 +177,81 @@ UIX Desktop takes the Theseus engine and runs it natively on macOS, Linux, and (
 - **Title Maker (F3)**: Create game shortcuts with custom icons, categories, and launch commands.
 - **Scene inspector (F1)**: Full scene graph browser with node properties, visibility toggles, and 3D click-to-select.
 - **Xbox HDD browser (F5)**: Mount and browse qcow2/FATX Xbox hard drive images.
-- **Media player**: DVD player UI wired to libmpv for video playback with full transport controls.
+- **Media library + player** *(beta)*: Three-scene browser (movies / TV shows / season-episode) backed by your filesystem and a TMDB-enriched local cache. Configurable library roots in Settings. Fullscreen video via libmpv with custom Xbox-themed OSD; optional CRT post-process applied to the picture. Expect bugs — the lifecycle around mpv state, scene transitions, and CRT compositing is still settling.
 - **CRT post-processing**: Scanline, curvature, phosphor, and bloom filters.
 
 ### Building
 
 The desktop source lives in `theseus/desktop/` and shares code with the Xbox build via `theseus/shared/`, `engine/`, and `render/`. Same Makefile, same repo.
 
-**Requirements:** C++17 compiler, OpenGL 3.2, SDL2, SDL2_mixer
+**Requirements:** C++17 compiler, OpenGL 3.2, SDL2, SDL2_mixer, libmpv, libcurl, pkg-config.
+
+`libmpv` powers fullscreen video playback (Movies/TV browser) and CD audio. `libcurl` powers the in-process TMDB metadata enrichment that populates the media library. Both are mandatory; the Makefile errors out with install hints if pkg-config can't find them.
 
 **macOS:**
 ```
-brew install sdl2 sdl2_mixer
+brew install sdl2 sdl2_mixer mpv curl pkg-config
 cd build && make desktop
 ~/builds/theseus/desktop/theseus
 ```
+
+If `make` reports libcurl missing, prepend `PKG_CONFIG_PATH="$(brew --prefix curl)/lib/pkgconfig:${PKG_CONFIG_PATH}"` (Homebrew's curl is keg-only).
 
 **Linux (Debian/Ubuntu):**
 ```
-sudo apt install build-essential libsdl2-dev libsdl2-mixer-dev libgl-dev
+sudo apt install build-essential pkg-config \
+                 libsdl2-dev libsdl2-mixer-dev libgl-dev \
+                 libmpv-dev libcurl4-openssl-dev
 cd build && make desktop
 ~/builds/theseus/desktop/theseus
 ```
 
-**Windows (cross-compile from macOS/Linux):**
+**Windows (MSYS2 / MinGW64):**
+
+Install [MSYS2](https://www.msys2.org/), then in the **MSYS2 MinGW64** shell:
+
 ```
-brew install mingw-w64        # Linux: sudo apt install mingw-w64
-# One-time: download SDL2 + SDL2_mixer mingw devel libs to ~/cross/sdl2-mingw/
-# One-time: build GLEW from source against mingw to ~/cross/glew-src/
-cd build && make desktop-win64
-# Output: ~/builds/theseus/desktop-win64/theseus.exe + SDL2.dll + SDL2_mixer.dll
+pacman -S make pkg-config \
+          mingw-w64-x86_64-gcc \
+          mingw-w64-x86_64-SDL2 \
+          mingw-w64-x86_64-SDL2_mixer \
+          mingw-w64-x86_64-mpv \
+          mingw-w64-x86_64-curl
+cd build && make desktop
+~/builds/theseus/desktop/theseus.exe
 ```
 
-The Windows binary is a real PE32+ x86-64 executable. Ship the `.exe` alongside the DLLs and the `xboxfs/` directory. See the `desktop-win64` target preamble in `build/Makefile` for the full one-time setup.
+The output `.exe` is a real PE32+ x86-64 binary. Ship it alongside the MSYS2-runtime DLLs (SDL2.dll, SDL2_mixer.dll, libmpv-2.dll, libcurl-4.dll, etc. — `ldd theseus.exe` from inside MSYS2 lists them) and the `xboxfs/` directory.
+
+**Windows (cross-compile from macOS/Linux):**
+
+Less polished than the MSYS2 path but useful if you don't want to launch a Windows VM. Requires SDL2 / SDL2_mixer / libmpv / libcurl mingw devel libs unpacked under `~/cross/`.
+
+```
+sudo apt install mingw-w64                    # macOS: brew install mingw-w64
+# One-time: SDL2 + SDL2_mixer mingw devel  -> ~/cross/sdl2-mingw/
+# One-time: GLEW from source (mingw)       -> ~/cross/glew-src/glew-2.2.0/
+# One-time: libmpv mingw devel             -> ~/cross/mpv-mingw/      (shinchiro/mpv-winbuild-cmake)
+# One-time: libcurl mingw devel            -> ~/cross/curl-mingw/     (curl.se/windows)
+cd build && make desktop-win64
+~/builds/theseus/desktop-win64/theseus.exe + SDL2.dll + SDL2_mixer.dll + libmpv-2.dll + libcurl-x64.dll
+```
+
+The CI workflow (`.github/workflows/build.yml`, job `desktop-win64-cross`) runs this path on every push and is the closest thing to executable docs for the one-time setup.
 
 **Linux ARM64 (cross-compile from x86_64 Linux):**
 ```
 sudo dpkg --add-architecture arm64
 sudo apt update
-sudo apt install g++-aarch64-linux-gnu libsdl2-dev:arm64 libsdl2-mixer-dev:arm64 libgl-dev:arm64
-cd build && make desktop-linux-arm64
+sudo apt install g++-aarch64-linux-gnu pkg-config \
+                 libsdl2-dev:arm64 libsdl2-mixer-dev:arm64 libgl-dev:arm64 \
+                 libmpv-dev:arm64 libcurl4-openssl-dev:arm64
+PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig \
+    make -C build desktop-linux-arm64
 # Output: ~/builds/theseus/desktop-linux-arm64/theseus
 ```
 
-For testers running aarch64 Linux on devices like jailbroken Switches, Pi 4/5 boxes, or ARM cloud VMs. The output is a dynamically linked aarch64 ELF; runtime deps on the target are `libsdl2-2.0-0`, `libsdl2-mixer-2.0-0`, and `libgl1`. Build host glibc must be <= target glibc; if your tester is on an older Ubuntu, build on a Debian Bookworm host or directly on the target. See the `desktop-linux-arm64` target preamble in `build/Makefile` for details.
+For testers running aarch64 Linux on devices like jailbroken Switches, Pi 4/5 boxes, or ARM cloud VMs. The output is a dynamically linked aarch64 ELF; runtime deps on the target are `libsdl2-2.0-0`, `libsdl2-mixer-2.0-0`, `libgl1`, `libmpv2` (or `libmpv1`), and `libcurl4`. Build host glibc must be <= target glibc; if your tester is on an older Ubuntu, build on a Debian Bookworm host or directly on the target. See the `desktop-linux-arm64` target preamble in `build/Makefile` for details.
 
 ### CLI flags (desktop)
 
