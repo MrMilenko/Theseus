@@ -17,7 +17,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-
+#include <climits>
 #define MAX_CDTRACKS 99
 
 // ============================================================================
