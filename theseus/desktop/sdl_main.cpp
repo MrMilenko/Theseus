@@ -17,6 +17,7 @@
 #include "xap_editor.h"
 #include "inspector.h"
 #include "preloader.h"
+#include "boot_anim.h"
 #include "panel_shared.h"
 #include <signal.h>
 #ifdef __APPLE__
@@ -297,6 +298,7 @@ char g_tvRoot[512]     = "";
 char g_tmdbKey[128]    = "";  // TMDB v3 API key, optional
 int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
 bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
+bool g_bShowBootAnimation   = true;   // play xbox_boot.mp4 once at startup before the dashboard
 
 class CKeyboard;
 extern CKeyboard* g_pActiveKeyboard;
@@ -336,6 +338,8 @@ void LoadDesktopSettings() {
             g_crt.brightness = (float)atof(line + 15);
         else if (strncmp(line, "UseOnScreenKeyboard=", 20) == 0)
             g_bUseOnScreenKeyboard = atoi(line + 20) != 0;
+        else if (strncmp(line, "ShowBootAnimation=", 18) == 0)
+            g_bShowBootAnimation = atoi(line + 18) != 0;
         else if (strncmp(line, "StartupMode=", 12) == 0) {
             if (strncmp(line + 12, "dashboard", 9) == 0) g_startupMode = 1;
             else if (strncmp(line + 12, "development", 11) == 0) g_startupMode = 2;
@@ -367,6 +371,7 @@ void SaveDesktopSettings() {
     fprintf(fp, "SteamPath=%s\n", s_steamPath);
     fprintf(fp, "StartupMode=%s\n", g_startupMode == 2 ? "development" : g_startupMode == 1 ? "dashboard" : "");
     fprintf(fp, "UseOnScreenKeyboard=%d\n", g_bUseOnScreenKeyboard ? 1 : 0);
+    fprintf(fp, "ShowBootAnimation=%d\n",   g_bShowBootAnimation   ? 1 : 0);
     fprintf(fp, "\n[CRT]\n");
     fprintf(fp, "CRT_Enabled=%d\n", g_crt.enabled ? 1 : 0);
     fprintf(fp, "CRT_Scanlines=%.3f\n", g_crt.scanlineIntensity);
@@ -900,6 +905,14 @@ int main(int argc, char* argv[]) {
     SDL_SetWindowTitle(g_pSDLWindow, g_extractedMode
         ? "UIX Desktop - Development Mode"
         : "UIX Desktop");
+
+    // Cold-boot animation. Plays once before dashboard init mirrors what the
+    // original Xbox does on power-on. Skipped in dev mode (the dashboard
+    // isn't the focus there) and toggleable via Settings > Show Boot Animation.
+    if (g_bShowBootAnimation && !g_extractedMode) {
+        BootAnim_PlayAndWait(g_pSDLWindow,
+            "xboxfs/C/UIX Configs/xbox_boot.mp4");
+    }
 
     // Initialize app globals
     g_dwMainThreadId = GetCurrentThreadId();

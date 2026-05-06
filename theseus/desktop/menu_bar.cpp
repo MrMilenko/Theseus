@@ -265,6 +265,14 @@ void RenderSettingsWindow() {
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("When checked, dashboard text fields ignore your physical\nkeyboard and require gamepad navigation of the on-screen keyboard.");
 
+            extern bool g_bShowBootAnimation;
+            if (ImGui::Checkbox("Show Boot Animation", &g_bShowBootAnimation))
+                SaveDesktopSettings();
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Plays the original Xbox boot animation once on app startup\nbefore the dashboard initializes. Press Esc/Enter/Space to skip.");
+
             ImGui::Spacing();
             if (ImGui::Button("Save All Settings"))
                 SaveDesktopSettings();
