@@ -12,8 +12,18 @@
 #include "boot_anim.h"
 
 #include <SDL.h>
+
+// OpenGL 3.2 Core Profile -- match media_player.cpp's per-platform pattern.
+#ifdef __APPLE__
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl3.h>
+#elif defined(_WIN32)
+#include <GL/glew.h>
+#else
+#define GL_GLEXT_PROTOTYPES
+#include <GL/gl.h>
+#include <GL/glext.h>
+#endif
 
 #include <mpv/client.h>
 #include <mpv/render.h>
