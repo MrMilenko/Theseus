@@ -623,6 +623,7 @@ DESKTOP_SRCS_SYSTEM = \
 DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/sdl_main.cpp \
 	$(THESEUS_SRC)/desktop/launch.cpp \
+	$(THESEUS_SRC)/desktop/path_template.cpp \
 	$(THESEUS_SRC)/xbox/modchip.cpp \
 	$(THESEUS_SRC)/xbox/network.cpp \
 	$(THESEUS_SRC)/desktop/desktop_stubs.cpp \

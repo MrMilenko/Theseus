@@ -39,6 +39,13 @@ void DesktopLaunchGame(const char* spec);
 // (fallback), then dispatches to DesktopLaunchGame.
 void DesktopLaunchTitle(const char* devicePath);
 
+// Last spawn diagnostic. Both DesktopLaunch and DesktopLaunchGame populate
+// a short human-readable status here ("Launched: <cmd>" on success,
+// "CreateProcess failed (error 2): <cmd>" on failure). Title Maker's
+// "Test Launch" surfaces this as a toast so users don't have to dig
+// through stderr to see why a spec didn't run.
+extern char g_launchLastResult[256];
+
 // Launch overlay (desktop-only fade transition emulating theLaunchGameLevel).
 // DesktopLaunchGame queues the spawn and arms the overlay; the SDL render loop
 // ticks every frame to advance the fade and fires the actual spawn + minimize

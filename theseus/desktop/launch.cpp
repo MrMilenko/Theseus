@@ -21,6 +21,7 @@
 
 #include "virtual_games.h"
 #include "stb_image.h"
+#include "path_template.h"
 #include <SDL_opengl.h>
 
 extern "C" void DashAudio_MuteAll(void);
@@ -73,19 +74,39 @@ static void ExecLaunch(const char* spec)
 }
 #endif
 
+// Last-launch diagnostic captured by SpawnLaunchSpec / DesktopLaunch so
+// Title Maker's "Test Launch" button can surface it as a status toast
+// instead of users having to dig in stderr.
+char g_launchLastResult[256] = "";
+
 void DesktopLaunch(const char* spec)
 {
 	if (!spec || !spec[0]) return;
 
-	fprintf(stderr, "[launch] %s\n", spec);
+	// Expand $XEMU_PATH / $STEAM_PATH / etc. before logging or spawning so
+	// the trace shows what we actually executed.
+	char expanded[2048];
+	PathTemplate_Expand(spec, expanded, sizeof(expanded));
+
+	fprintf(stderr, "[launch] in:  %s\n", spec);
+	if (strcmp(spec, expanded) != 0)
+		fprintf(stderr, "[launch] cmd: %s\n", expanded);
 
 #ifdef _WIN32
 	// URLs go through ShellExecute (handles steam:// via the registered
 	// handler, http(s) via default browser, etc.). Raw commands run
-	// through cmd /C in detached mode.
-	if (IsUrl(spec))
+	// through cmd /S /C in detached mode -- /S tells cmd to treat the
+	// outermost quotes as literal command boundaries instead of trying
+	// to be clever, which is what breaks UNC paths and quoted args.
+	if (IsUrl(expanded))
 	{
-		ShellExecuteA(NULL, "open", spec, NULL, NULL, SW_SHOWNORMAL);
+		HINSTANCE rc = ShellExecuteA(NULL, "open", expanded, NULL, NULL, SW_SHOWNORMAL);
+		if ((INT_PTR)rc <= 32) {
+			snprintf(g_launchLastResult, sizeof(g_launchLastResult),
+			         "ShellExecute failed (code %ld): %s", (long)(INT_PTR)rc, expanded);
+			fprintf(stderr, "[launch] %s\n", g_launchLastResult);
+			return;
+		}
 	}
 	else
 	{
@@ -93,23 +114,38 @@ void DesktopLaunch(const char* spec)
 		si.cb = sizeof(si);
 		PROCESS_INFORMATION pi = {};
 		char cmd[2048];
-		snprintf(cmd, sizeof(cmd), "cmd /C %s", spec);
-		if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
-		                   DETACHED_PROCESS, NULL, NULL, &si, &pi))
+		snprintf(cmd, sizeof(cmd), "cmd /S /C \"%s\"", expanded);
+		if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
+		                    DETACHED_PROCESS, NULL, NULL, &si, &pi))
 		{
-			CloseHandle(pi.hProcess);
-			CloseHandle(pi.hThread);
+			DWORD err = GetLastError();
+			snprintf(g_launchLastResult, sizeof(g_launchLastResult),
+			         "CreateProcess failed (error %lu): %s", err, expanded);
+			fprintf(stderr, "[launch] %s\n", g_launchLastResult);
+			return;
 		}
+		CloseHandle(pi.hProcess);
+		CloseHandle(pi.hThread);
 	}
 #else
 	pid_t pid = fork();
 	if (pid == 0)
 	{
-		ExecLaunch(spec);
+		ExecLaunch(expanded);
 		_exit(127);
+	}
+	else if (pid < 0)
+	{
+		snprintf(g_launchLastResult, sizeof(g_launchLastResult),
+		         "fork() failed: %s", strerror(errno));
+		fprintf(stderr, "[launch] %s\n", g_launchLastResult);
+		return;
 	}
 	// Parent: don't wait. Fire-and-forget.
 #endif
+
+	snprintf(g_launchLastResult, sizeof(g_launchLastResult),
+	         "Launched: %s", expanded);
 }
 
 // Actually fork/spawn the launch spec. Called by the overlay tick once the
@@ -119,18 +155,27 @@ static void SpawnLaunchSpec(const char* spec)
 {
 	if (!spec || !spec[0]) return;
 
-	fprintf(stderr, "[launch] Spawning: %s\n", spec);
+	// Expand template variables before spawning. Logged separately from
+	// the input so users can spot bad $VAR substitutions in the trace.
+	char expanded[2048];
+	PathTemplate_Expand(spec, expanded, sizeof(expanded));
+
+	fprintf(stderr, "[launch] in:  %s\n", spec);
+	if (strcmp(spec, expanded) != 0)
+		fprintf(stderr, "[launch] cmd: %s\n", expanded);
 
 #ifndef _WIN32
 	pid_t pid = fork();
 	if (pid == 0)
 	{
-		ExecLaunch(spec);
+		ExecLaunch(expanded);
 		_exit(127);
 	}
 	else if (pid < 0)
 	{
-		fprintf(stderr, "[launch] fork() failed: %s\n", strerror(errno));
+		snprintf(g_launchLastResult, sizeof(g_launchLastResult),
+		         "fork() failed: %s", strerror(errno));
+		fprintf(stderr, "[launch] %s\n", g_launchLastResult);
 		return;
 	}
 #else
@@ -139,28 +184,34 @@ static void SpawnLaunchSpec(const char* spec)
 	PROCESS_INFORMATION pi = {};
 	BOOL ok = FALSE;
 
-	if (IsUrl(spec))
+	if (IsUrl(expanded))
 	{
 		char cmd[2048];
-		snprintf(cmd, sizeof(cmd), "cmd /C start \"\" \"%s\"", spec);
+		snprintf(cmd, sizeof(cmd), "cmd /S /C start \"\" \"%s\"", expanded);
 		ok = CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
 	}
 	else
 	{
-		char* cmdCopy = _strdup(spec);
-		ok = CreateProcessA(NULL, cmdCopy, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
-		free(cmdCopy);
+		char cmd[2048];
+		snprintf(cmd, sizeof(cmd), "cmd /S /C \"%s\"", expanded);
+		ok = CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
 	}
 
 	if (!ok)
 	{
-		fprintf(stderr, "[launch] CreateProcess failed: %lu\n", GetLastError());
+		DWORD err = GetLastError();
+		snprintf(g_launchLastResult, sizeof(g_launchLastResult),
+		         "CreateProcess failed (error %lu): %s", err, expanded);
+		fprintf(stderr, "[launch] %s\n", g_launchLastResult);
 		return;
 	}
 
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
 #endif
+
+	snprintf(g_launchLastResult, sizeof(g_launchLastResult),
+	         "Launched: %s", expanded);
 
 	extern SDL_Window* g_pSDLWindow;
 	if (g_pSDLWindow) SDL_MinimizeWindow(g_pSDLWindow);

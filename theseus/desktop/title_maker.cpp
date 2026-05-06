@@ -560,10 +560,16 @@ void RenderTitleMaker() {
         ImGui::SameLine();
         if (ImGui::Button("Test Launch", ImVec2(110, 0)) && s_editLaunch[0]) {
             // Fire-and-forget; don't tear down the dashboard for a test launch.
+            // DesktopLaunch fills g_launchLastResult with a status string
+            // ("Launched: ..." or "CreateProcess failed (error 2): ..."),
+            // so we surface that verbatim instead of guessing success.
             extern void DesktopLaunch(const char*);
+            extern char g_launchLastResult[256];
+            g_launchLastResult[0] = 0;
             DesktopLaunch(s_editLaunch);
-            snprintf(s_statusMsg, sizeof(s_statusMsg), "Launched: %s", s_editLaunch);
-            s_statusTime = 3.0f;
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "%s",
+                     g_launchLastResult[0] ? g_launchLastResult : s_editLaunch);
+            s_statusTime = 6.0f;
         }
         ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.1f, 0.1f, 1.0f));

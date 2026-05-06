@@ -297,6 +297,7 @@ char g_musicRoot[512]  = "";
 char g_moviesRoot[512] = "";
 char g_tvRoot[512]     = "";
 char g_tmdbKey[128]    = "";  // TMDB v3 API key, optional
+char g_romsDir[512]    = "";  // Default ROMs/ISOs root, expanded as $ROMS_DIR in launch templates
 int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
 bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
 bool g_bShowBootAnimation   = true;   // play xbox_boot.mp4 once at startup before the dashboard
@@ -374,6 +375,8 @@ void LoadDesktopSettings() {
             strncpy(g_tvRoot, line + 7, sizeof(g_tvRoot) - 1);
         else if (strncmp(line, "TMDBKey=", 8) == 0)
             strncpy(g_tmdbKey, line + 8, sizeof(g_tmdbKey) - 1);
+        else if (strncmp(line, "RomsDir=", 8) == 0)
+            strncpy(g_romsDir, line + 8, sizeof(g_romsDir) - 1);
     }
     fclose(fp);
 }
@@ -435,6 +438,7 @@ void SaveDesktopSettings() {
     fprintf(fp, "MoviesRoot=%s\n", g_moviesRoot);
     fprintf(fp, "TvRoot=%s\n", g_tvRoot);
     fprintf(fp, "TMDBKey=%s\n", g_tmdbKey);
+    fprintf(fp, "RomsDir=%s\n", g_romsDir);
     // Legacy Q:\System\config.ini sections (aliased to this file by xboxfs.h).
     fprintf(fp, "\n[Progressive]\n");
     fprintf(fp, "Use 720p=%s\n",        g_use720p);
