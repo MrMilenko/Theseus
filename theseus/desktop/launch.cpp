@@ -116,16 +116,11 @@ void DesktopLaunchGame(const char* spec)
 
 	fprintf(stderr, "[launch] Starting: %s\n", spec);
 
-	// Match the Xbox-style launch cycle: mute audio, spawn the game launcher
-	// fire-and-forget (no waitpid loop, since many launchers like steam/xemu
-	// fork-and-exit and would falsely trigger a "game ended" pop-back), then
-	// re-exec the dashboard with --muted --minimized so it comes up fresh and
-	// out of the way. The user restores from dock/taskbar and hits Ctrl+M
-	// when they're done with the game.
-	DashAudio_MuteAll();
-	g_audioMuted = true;
-	g_muteOverlayTimer = 6.0f;
-
+	// Fire-and-forget the game launcher (no waitpid -- steam/xemu fork-and-
+	// exit and would falsely trigger a "game ended" pop-back). The XAP-side
+	// theLaunchGameLevel navigates back to main menu after a short delay,
+	// and minimizing the window cuts dashboard audio via the focus-loss
+	// path automatically.
 #ifndef _WIN32
 	pid_t pid = fork();
 	if (pid == 0)
@@ -138,28 +133,6 @@ void DesktopLaunchGame(const char* spec)
 		fprintf(stderr, "[launch] fork() failed: %s\n", strerror(errno));
 		return;
 	}
-	// Parent: don't wait. Re-exec self with --muted --minimized.
-
-	extern char** g_argv;
-	extern int g_argc;
-	bool hasMuted = false, hasMinimized = false, hasPreview = false;
-	for (int i = 0; i < g_argc; i++)
-	{
-		if (strcmp(g_argv[i], "--muted") == 0)      hasMuted = true;
-		if (strcmp(g_argv[i], "--minimized") == 0)  hasMinimized = true;
-		if (strcmp(g_argv[i], "--preview") == 0)    hasPreview = true;
-	}
-	int extraArgs = (hasMuted ? 0 : 1) + (hasMinimized ? 0 : 1) + (hasPreview ? 0 : 1);
-	char** newArgv = (char**)malloc(sizeof(char*) * (g_argc + extraArgs + 1));
-	int n = 0;
-	for (int i = 0; i < g_argc; i++) newArgv[n++] = g_argv[i];
-	if (!hasPreview)   newArgv[n++] = (char*)"--preview";
-	if (!hasMuted)     newArgv[n++] = (char*)"--muted";
-	if (!hasMinimized) newArgv[n++] = (char*)"--minimized";
-	newArgv[n] = NULL;
-	execv(newArgv[0], newArgv);
-	fprintf(stderr, "[launch] execv failed: %s\n", strerror(errno));
-	exit(1);
 #else
 	STARTUPINFOA si = {};
 	si.cb = sizeof(si);
@@ -185,35 +158,12 @@ void DesktopLaunchGame(const char* spec)
 		return;
 	}
 
-	// Don't wait on the launcher. Just close handles and re-exec self.
 	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
-
-	extern char** g_argv;
-	extern int g_argc;
-	char relaunchCmd[2048];
-	int n = 0;
-	bool hasMuted = false, hasMinimized = false, hasPreview = false;
-	for (int i = 0; i < g_argc; i++)
-	{
-		if (strcmp(g_argv[i], "--muted") == 0)      hasMuted = true;
-		if (strcmp(g_argv[i], "--minimized") == 0)  hasMinimized = true;
-		if (strcmp(g_argv[i], "--preview") == 0)    hasPreview = true;
-		n += snprintf(relaunchCmd + n, sizeof(relaunchCmd) - n, "\"%s\" ", g_argv[i]);
-	}
-	if (!hasPreview)   n += snprintf(relaunchCmd + n, sizeof(relaunchCmd) - n, "--preview ");
-	if (!hasMuted)     n += snprintf(relaunchCmd + n, sizeof(relaunchCmd) - n, "--muted ");
-	if (!hasMinimized) n += snprintf(relaunchCmd + n, sizeof(relaunchCmd) - n, "--minimized ");
-
-	STARTUPINFOA si2 = {}; si2.cb = sizeof(si2);
-	PROCESS_INFORMATION pi2 = {};
-	if (CreateProcessA(NULL, relaunchCmd, NULL, NULL, FALSE, 0, NULL, NULL, &si2, &pi2))
-	{
-		CloseHandle(pi2.hProcess);
-		CloseHandle(pi2.hThread);
-	}
-	exit(0);
 #endif
+
+	extern SDL_Window* g_pSDLWindow;
+	if (g_pSDLWindow) SDL_MinimizeWindow(g_pSDLWindow);
 }
 
 // ============================================================================

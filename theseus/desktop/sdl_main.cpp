@@ -261,7 +261,17 @@ static bool   s_gameRunning = false; // true while waiting for game to exit
 static bool   s_softRestartPending = false; // reinit after game exits
 
 // Audio mute state (Ctrl+M toggle, auto-muted during game launch)
-bool g_audioMuted = false;
+bool g_audioMuted = false;       // user choice (Ctrl+M)
+bool g_windowFocused = true;     // SDL focus state
+// Effective mute is the OR of the user choice and the focus state: silent
+// while the window is in the background or minimized, audible while it has
+// focus. Manual Ctrl+M overrides on top of that and stays muted regardless.
+static void ApplyEffectiveMute()
+{
+    bool shouldMute = g_audioMuted || !g_windowFocused;
+    if (shouldMute) DashAudio_MuteAll();
+    else            DashAudio_UnmuteAll();
+}
 bool g_startMinimized = false;
 bool g_graphicsDebug = false;
 float g_muteOverlayTimer = 0.0f; // seconds remaining to show the overlay toast
@@ -446,7 +456,7 @@ static void PreSwapOverlays() {
         ImU32 txtCol = g_audioMuted
             ? IM_COL32(255, 100, 100, (int)(255 * alpha))
             : IM_COL32(100, 255, 100, (int)(255 * alpha));
-        const char* label = g_audioMuted ? "AUDIO MUTED  ----  Ctrl+M to unmute (restore dashboard from dock)" : "UNMUTED";
+        const char* label = g_audioMuted ? "MUTED" : "UNMUTED";
         ImDrawList* dl = ImGui::GetForegroundDrawList();
         ImVec2 textSize = ImGui::CalcTextSize(label);
         float px = 10.0f;
@@ -958,6 +968,27 @@ int main(int argc, char* argv[]) {
                             running = false;
                         }
                     }
+                    if (event.window.windowID == SDL_GetWindowID(g_pSDLWindow)) {
+                        // Tie audio to focus: silent in background / minimized,
+                        // audible when the window is active. ApplyEffectiveMute
+                        // honors the manual g_audioMuted on top, so a user
+                        // Ctrl+M still wins.
+                        switch (event.window.event) {
+                        case SDL_WINDOWEVENT_FOCUS_LOST:
+                        case SDL_WINDOWEVENT_MINIMIZED:
+                        case SDL_WINDOWEVENT_HIDDEN:
+                            g_windowFocused = false;
+                            ApplyEffectiveMute();
+                            break;
+                        case SDL_WINDOWEVENT_FOCUS_GAINED:
+                        case SDL_WINDOWEVENT_RESTORED:
+                        case SDL_WINDOWEVENT_SHOWN:
+                            g_windowFocused = true;
+                            ApplyEffectiveMute();
+                            break;
+                        default: break;
+                        }
+                    }
                     break;
                 case SDL_MOUSEMOTION:
                     if (g_pD3DDev) {
@@ -1070,15 +1101,12 @@ int main(int argc, char* argv[]) {
                         g_desktopRestartRequested = true;
                         g_desktopRestartMuted = g_audioMuted;
                     }
-                    // Ctrl+M (or Cmd+M on Mac): toggle audio mute
+                    // Ctrl+M (or Cmd+M on Mac): toggle manual mute. Layered
+                    // on top of the focus-based auto mute via ApplyEffectiveMute.
                     if (event.key.keysym.sym == SDLK_m && (event.key.keysym.mod & (KMOD_CTRL | KMOD_GUI))) {
                         g_audioMuted = !g_audioMuted;
-                        if (g_audioMuted) {
-                            DashAudio_MuteAll();
-                        } else {
-                            DashAudio_UnmuteAll();
-                        }
-                        g_muteOverlayTimer = 3.0f; // show toast for 3 seconds
+                        ApplyEffectiveMute();
+                        g_muteOverlayTimer = 3.0f;
                     }
                     break;
             }
