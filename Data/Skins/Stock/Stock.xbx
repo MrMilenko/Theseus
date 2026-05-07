@@ -161,6 +161,10 @@ ColorB=20, 192, 0, 0
 ColorA=243, 255, 107, 192
 ColorB=20, 192, 0, 0
 
+[SC_SavedGame_Row01]
+ColorA=243, 255, 107, 192
+ColorB=20, 192, 0, 0
+
 [SavedEgg_Selected]
 ColorA=243, 255, 107, 192
 ColorB=20, 192, 0, 0

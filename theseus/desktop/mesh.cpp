@@ -306,23 +306,15 @@ void CMeshNode::load(const TCHAR *szFile)
 
 	m_mesh = NULL;
 
-	// Skin override first. Lets skin authors ship custom meshes
-	// (cellwall.xm, Inner_cell-FACES.xm, custom pod shapes) that
-	// replace the XIP defaults. Mirrors what LoadTexture does for
-	// textures; without this hook, anything in default.xip always
-	// wins regardless of what the active skin ships.
-	//
-	// CMesh::Load returns a bool we can trust -- the obvious "load
-	// then check GetFVF" pattern would assert on missing files
-	// because GetFVF() is hard-asserting m_fvf != 0 in debug.
+	// Skin override first: a skin's mesh wins over the XIP default.
+	// No allowlist gate -- UIX-era skins drop entire main-menu mesh
+	// packs (70+ files) into the skin folder and expect them to win
+	// over the bundled XIP.
 	if (g_sSkinDir && g_sSkinDir[0])
 	{
-		// Probe every member of the equivalence group, then fall
-		// through. NO allowlist gate on meshes -- UI.X-era skins
-		// drop entire main-menu mesh packs (71+ files) into the
-		// skin folder and expect them to win over the bundled XIP.
-		// One stat() per mesh reference is cheap; the canonical
-		// fast-path stays the XIP archive lookup below.
+		// Probe every member of the equivalence group so a skin
+		// shipping just cellwall.xm satisfies a request for
+		// Inner_cell-FACES.xm, etc.
 		const char *candidates[4];
 		int nCandidates = SkinCandidatesFor(szFile, candidates, 4);
 		for (int i = 0; i < nCandidates && m_mesh == NULL; i++)
@@ -351,8 +343,6 @@ void CMeshNode::load(const TCHAR *szFile)
 			m_ownMesh = false;
 	}
 
-	// Disk fallback. Use CMesh::Load's bool return (same reason as
-	// the skin override block) instead of LoadMesh + GetFVF probe.
 	if (m_mesh == NULL)
 	{
 		m_ownMesh = true;
