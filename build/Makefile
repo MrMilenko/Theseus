@@ -687,7 +687,7 @@ $(DESKTOP_TARGET): $(DESKTOP_OBJS)
 	@# to cp -R on barebones systems (some Debian installs ship without rsync).
 	@for D in Configs Data Library; do \
 		if command -v rsync >/dev/null 2>&1; then \
-			rsync -a --delete --exclude=Skins $(THESEUS_SRC)/../$$D/ $(DESKTOP_DIR)/$$D/; \
+			rsync -a --delete $(THESEUS_SRC)/../$$D/ $(DESKTOP_DIR)/$$D/; \
 		else \
 			rm -rf $(DESKTOP_DIR)/$$D && mkdir -p $(DESKTOP_DIR)/$$D && \
 			cp -R $(THESEUS_SRC)/../$$D/. $(DESKTOP_DIR)/$$D/; \
@@ -863,7 +863,7 @@ $(WIN64_TARGET): $(WIN64_OBJS)
 	done; true
 	@for D in Configs Data Library; do \
 		if command -v rsync >/dev/null 2>&1; then \
-			rsync -a --delete --exclude=Skins $(THESEUS_SRC)/../$$D/ $(WIN64_DIR)/$$D/; \
+			rsync -a --delete $(THESEUS_SRC)/../$$D/ $(WIN64_DIR)/$$D/; \
 		else \
 			rm -rf $(WIN64_DIR)/$$D && mkdir -p $(WIN64_DIR)/$$D && \
 			cp -R $(THESEUS_SRC)/../$$D/. $(WIN64_DIR)/$$D/; \
@@ -985,7 +985,7 @@ $(LINUX_ARM64_TARGET): $(LINUX_ARM64_OBJS)
 	@# Configs/Data/Library next to the binary, same as desktop target.
 	@for D in Configs Data Library; do \
 		if command -v rsync >/dev/null 2>&1; then \
-			rsync -a --delete --exclude=Skins $(THESEUS_SRC)/../$$D/ $(LINUX_ARM64_DIR)/$$D/; \
+			rsync -a --delete $(THESEUS_SRC)/../$$D/ $(LINUX_ARM64_DIR)/$$D/; \
 		else \
 			rm -rf $(LINUX_ARM64_DIR)/$$D && mkdir -p $(LINUX_ARM64_DIR)/$$D && \
 			cp -R $(THESEUS_SRC)/../$$D/. $(LINUX_ARM64_DIR)/$$D/; \
