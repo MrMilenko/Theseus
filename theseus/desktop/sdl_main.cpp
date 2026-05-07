@@ -377,6 +377,11 @@ void LoadDesktopSettings() {
             strncpy(g_tmdbKey, line + 8, sizeof(g_tmdbKey) - 1);
         else if (strncmp(line, "RomsDir=", 8) == 0)
             strncpy(g_romsDir, line + 8, sizeof(g_romsDir) - 1);
+        else if (strncmp(line, "MSAA=", 5) == 0) {
+            int n = atoi(line + 5);
+            if (n == 0 || n == 2 || n == 4 || n == 8)
+                g_msaaSamples = n;
+        }
     }
     fclose(fp);
 }
@@ -423,6 +428,7 @@ void SaveDesktopSettings() {
     fprintf(fp, "StartupMode=%s\n", g_startupMode == 2 ? "development" : g_startupMode == 1 ? "dashboard" : "");
     fprintf(fp, "UseOnScreenKeyboard=%d\n", g_bUseOnScreenKeyboard ? 1 : 0);
     fprintf(fp, "ShowBootAnimation=%d\n",   g_bShowBootAnimation   ? 1 : 0);
+    fprintf(fp, "MSAA=%d\n",                g_msaaSamples);
     fprintf(fp, "\n[CRT]\n");
     fprintf(fp, "CRT_Enabled=%d\n", g_crt.enabled ? 1 : 0);
     fprintf(fp, "CRT_Scanlines=%.3f\n", g_crt.scanlineIntensity);
@@ -767,14 +773,17 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Load before window create so g_msaaSamples is honored at boot.
+    LoadDesktopSettings();
+
     // Request OpenGL 3.2 Core Profile (required for GLSL #version 150)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 4); // request 4x MSAA
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, g_msaaSamples > 0 ? 1 : 0);
+    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, g_msaaSamples);
 
     // Create window
     g_pSDLWindow = SDL_CreateWindow(
@@ -867,9 +876,6 @@ int main(int argc, char* argv[]) {
 
     // Initialize CRT post-process shader
     InitCRTShader(1280, 720);
-
-    // Load desktop settings (xemu path, CRT effect, etc.)
-    LoadDesktopSettings();
 
     // Initialize Dear ImGui
     IMGUI_CHECKVERSION();
