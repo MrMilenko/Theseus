@@ -649,6 +649,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/boot_anim.cpp \
 	$(THESEUS_SRC)/desktop/media_ui.cpp \
 	$(THESEUS_SRC)/desktop/tmdb.cpp \
+	$(THESEUS_SRC)/desktop/http_util.cpp \
 	$(THESEUS_SRC)/desktop/xiso.cpp
 
 # ImGui sources

@@ -12,6 +12,7 @@
 #include "imgui.h"
 #include "imfilebrowser.h"
 #include "stb_image.h"
+#include "http_util.h"
 #include <sys/stat.h>
 #include <algorithm>
 #include <string>
@@ -967,7 +968,6 @@ void RenderTitleMaker() {
                 snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", VGAMES_ICONS, titleID);
                 struct stat ist;
                 if (stat(iconPath, &ist) != 0) {
-                    char curlCmd[1024];
                     char tmpPath[512];
                     bool gotIcon = false;
 
@@ -979,31 +979,30 @@ void RenderTitleMaker() {
                     };
                     for (int u = 0; tryUrls[u] && !gotIcon; u++) {
                         bool isPng = strstr(tryUrls[u], ".png") != NULL;
+                        char url[512];
                         snprintf(tmpPath, sizeof(tmpPath), "%s/%s_tmp%s", VGAMES_ICONS, titleID, isPng ? ".png" : ".jpg");
-                        snprintf(curlCmd, sizeof(curlCmd),
-                            "curl -sL -o \"%s\" \"https://cdn.akamai.steamstatic.com/steam/apps/%d/%s\" 2>/dev/null",
-                            tmpPath, games[i].appid, tryUrls[u]);
-                        if (system(curlCmd) == 0 && stat(tmpPath, &ist) == 0 && ist.st_size > 1000) {
+                        snprintf(url, sizeof(url),
+                            "https://cdn.akamai.steamstatic.com/steam/apps/%d/%s",
+                            games[i].appid, tryUrls[u]);
+                        if (Http_GetToFile(url, tmpPath) && stat(tmpPath, &ist) == 0 && ist.st_size > 1000) {
 #ifdef __APPLE__
-                            // macOS: sips ships with the OS, resize to 128x128.
-                            snprintf(curlCmd, sizeof(curlCmd),
+                            // sips ships with macOS, resize to 128x128.
+                            char cmd[1024];
+                            snprintf(cmd, sizeof(cmd),
                                 "sips -z 128 128 -s format jpeg \"%s\" --out \"%s\" >/dev/null 2>&1", tmpPath, iconPath);
+                            bool resizeOk = (system(cmd) == 0);
 #elif defined(_WIN32)
-                            // Windows: no ImageMagick on stock installs, and
-                            // bundling it for one resize call isn't worth the
-                            // weight. Steam CDN's library_icon.* is already
-                            // close to 128x128, and the dashboard scales at
-                            // render time anyway, so just copy as-is.
-                            snprintf(curlCmd, sizeof(curlCmd),
-                                "copy /Y \"%s\" \"%s\" >nul 2>&1", tmpPath, iconPath);
-                            for (char* p = curlCmd; *p; p++)
-                                if (*p == '/') *p = '\\';
+                            // No resize. CDN art is close to 128 and we scale at draw.
+                            // stdio copy avoids a cmd.exe console flash.
+                            bool resizeOk = TM_CopyFile(tmpPath, iconPath);
 #else
-                            // Linux: convert if installed, else fall back to cp.
-                            snprintf(curlCmd, sizeof(curlCmd),
+                            // convert if installed, else cp.
+                            char cmd[1024];
+                            snprintf(cmd, sizeof(cmd),
                                 "convert \"%s\" -resize 128x128! -quality 90 \"%s\" 2>/dev/null || cp \"%s\" \"%s\"", tmpPath, iconPath, tmpPath, iconPath);
+                            bool resizeOk = (system(cmd) == 0);
 #endif
-                            if (system(curlCmd) == 0 && stat(iconPath, &ist) == 0 && ist.st_size > 500)
+                            if (resizeOk && stat(iconPath, &ist) == 0 && ist.st_size > 500)
                                 gotIcon = true;
                         }
                         remove(tmpPath);

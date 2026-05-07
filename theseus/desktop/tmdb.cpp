@@ -15,7 +15,7 @@
 #include <mutex>
 #include <atomic>
 
-#include <curl/curl.h>
+#include "http_util.h"
 
 extern char g_tmdbKey[128];   // defined in sdl_main.cpp; loaded from desktop.ini
 
@@ -103,20 +103,11 @@ static void WriteFile(const std::string& path, const std::string& data)
 }
 
 
-// ============================================================================
-// HTTP (libcurl)
-// ============================================================================
-
-static size_t CurlWrite(void* ptr, size_t size, size_t nmemb, void* user)
-{
-    std::string* s = (std::string*)user;
-    s->append((char*)ptr, size * nmemb);
-    return size * nmemb;
-}
+// HTTP (via http_util)
 
 static std::string HttpGet(const std::string& url)
 {
-    // Redact api_key from the log so it doesn't leak.
+    // Redact api_key for the log.
     std::string redacted = url;
     size_t k = redacted.find("api_key=");
     if (k != std::string::npos) {
@@ -125,25 +116,8 @@ static std::string HttpGet(const std::string& url)
     }
     fprintf(stderr, "[TMDB] GET %s\n", redacted.c_str());
 
-    std::string out;
-    CURL* h = curl_easy_init();
-    if (!h) { fprintf(stderr, "[TMDB] curl_easy_init failed\n"); return out; }
-    curl_easy_setopt(h, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(h, CURLOPT_TIMEOUT, 10L);
-    curl_easy_setopt(h, CURLOPT_USERAGENT, "Theseus-Dashboard/1.0");
-    curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, CurlWrite);
-    curl_easy_setopt(h, CURLOPT_WRITEDATA, &out);
-    CURLcode rc = curl_easy_perform(h);
-    long httpCode = 0;
-    curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &httpCode);
-    if (rc != CURLE_OK) {
-        fprintf(stderr, "[TMDB] curl failed: %s\n", curl_easy_strerror(rc));
-        out.clear();
-    } else {
-        fprintf(stderr, "[TMDB] HTTP %ld, %zu bytes\n", httpCode, out.size());
-    }
-    curl_easy_cleanup(h);
+    std::string out = Http_GetToString(url);
+    fprintf(stderr, "[TMDB] %zu bytes\n", out.size());
     return out;
 }
 
@@ -380,14 +354,11 @@ static TmdbShow DoShowLookup(const std::string& title, const std::string& key)
 
 void TMDB_Init()
 {
-    if (s_initialized) return;
     s_initialized = true;
-    curl_global_init(CURL_GLOBAL_DEFAULT);
 }
 
 void TMDB_Shutdown()
 {
-    if (s_initialized) curl_global_cleanup();
     s_initialized = false;
 }
 
