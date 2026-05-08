@@ -80,23 +80,37 @@ Builds a bootable Xbox XBE using clang, lld-link, and cxbe. Works on macOS and L
    git clone https://github.com/MrMilenko/OXDK ~/OXDK
    cd ~/OXDK/tools/cxbe && make
    ```
-2. Make your XDK tree accessible at a path you'll pass as `XDK_BASE`.
+2. Drop your XDK tree somewhere the build can reach. The Makefile takes a `XDK_BASE` path; the simplest convention is to extract it into `theseus/xdk/` in the repo (gitignored, so it won't get committed). The build expects this layout:
+   ```
+   theseus/xdk/
+     include/                 # public headers
+     lib/                     # public libs
+     private/inc/             # plus crypto/
+     private/ntos/inc/
+     private/ntos/xapi/inc/
+     public/sdk/inc/          # plus crt/
+     public/ddk/inc/
+   ```
+   If your XDK lives elsewhere, pass that path as `XDK_BASE` instead (see Build below).
 
 **Build:**
 ```
 cd build
 
-# Debug build
+# If you put the XDK at theseus/xdk/, this is enough:
+make XDK_BASE=$(pwd)/../theseus/xdk
+
+# Otherwise pass your own path:
 make XDK_BASE=/path/to/xbox
 
-# Retail build
-make CONFIG=retail XDK_BASE=/path/to/xbox
+# Retail variant:
+make CONFIG=retail XDK_BASE=$(pwd)/../theseus/xdk
 
 # Clean
 make clean
 ```
 
-`XDK_BASE` points to your Xbox SDK tree. Override `OXDK_DIR` if OXDK is not at `~/OXDK`.
+Override `OXDK_DIR` if OXDK is not at `~/OXDK`.
 
 Output lands under `~/builds/theseus/` by default (override with `BUILDS_ROOT`):
 - `~/builds/theseus/xbox-debug/default.xbe`
