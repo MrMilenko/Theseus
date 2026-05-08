@@ -9,6 +9,7 @@
 #include "shape_render.h"
 #include "runner.h"
 #include "asset_loader.h"
+#include "skin_assets.h"
 #include "activefile.h"
 #include "xip_archive.h"
 #include "file_util.h"
@@ -652,9 +653,13 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR *szURL, UINT width, UINT height)
 	// defaults; if XIP wins (the previous order) skin overrides only
 	// fire for assets the XIP doesn't ship, which silently breaks
 	// every skin that retextures cellwall, hilites, panels, etc.
+	//
+	// Probe every member of the equivalence group via SkinCandidatesFor
+	// so a UI.X-era skin shipping menu_hilite.xbx alone can satisfy a
+	// retail XAP request for GameHilite_01.xbx (and vice versa). Xbox
+	// stays permissive: no IsSkinnableAsset gate.
 	if (TheseusGetSkinDir())
 	{
-		TCHAR SkinPath[MAX_PATH];
 		TCHAR OverrideName[MAX_PATH];
 		_tcscpy(OverrideName, szURL);
 
@@ -662,38 +667,46 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR *szURL, UINT width, UINT height)
 		if (ext != NULL)
 			_tcscpy(ext + 1, _T("xbx")); // force .xbx extension for override
 
-		_stprintf(SkinPath, _T("%s%s"), TheseusGetSkinDir(), OverrideName);
+		// Convert basename to ANSI for SkinCandidatesFor.
+		const TCHAR *baseW = OverrideName;
+		for (const TCHAR *p = OverrideName; *p; p++)
+			if (*p == _T('/') || *p == _T('\\')) baseW = p + 1;
+		char baseAnsi[MAX_PATH];
+		Ansi(baseAnsi, baseW, MAX_PATH);
 
-		if (file.Fetch(SkinPath, true))
+		const char *candidates[4];
+		int nCandidates = SkinCandidatesFor(baseAnsi, candidates, 4);
+
+		for (int i = 0; i < nCandidates; i++)
 		{
-			TCHAR *skinExt = _tcsrchr(SkinPath, '.');
+			TCHAR SkinPath[MAX_PATH];
+			_stprintf(SkinPath, _T("%s%hs"), TheseusGetSkinDir(), candidates[i]);
+
+			if (!file.Fetch(SkinPath, true))
+				continue;
+
+			TCHAR *skinExt = _tcsrchr(SkinPath, _T('.'));
+			LPDIRECT3DTEXTURE8 lpTexture = NULL;
+
 			if (skinExt && (_tcsicmp(skinExt, _T(".tga")) == 0 || _tcsicmp(skinExt, _T(".bmp")) == 0 || _tcsicmp(skinExt, _T(".dds")) == 0))
 			{
-				// Use D3DXCreateTextureFromFileA for standard formats
 				char ansiPath[MAX_PATH];
 				Ansi(ansiPath, SkinPath, MAX_PATH);
-				LPDIRECT3DTEXTURE8 lpTexture = NULL;
-				if (SUCCEEDED(D3DXCreateTextureFromFileA(TheseusGetD3DDev(), ansiPath, &lpTexture)))
-				{
-					OutputDebugString(_T("[Texture] Loaded standard image from skin override: "));
-					OutputDebugString(SkinPath);
-					OutputDebugString(_T("\n"));
-					ALERT(_T("Texture loaded: (%s)"), szURL);
-					return lpTexture;
-				}
+				if (FAILED(D3DXCreateTextureFromFileA(TheseusGetD3DDev(), ansiPath, &lpTexture)))
+					lpTexture = NULL;
 			}
 			else
 			{
-				// Use ParseTexture for .xbx or custom formats
-				LPDIRECT3DTEXTURE8 lpTexture = ParseTexture(SkinPath, file.GetContent(), file.GetContentLength(), width, height);
-				if (lpTexture != NULL)
-				{
-					OutputDebugString(_T("[Texture] Loaded from skin override: "));
-					OutputDebugString(SkinPath);
-					OutputDebugString(_T("\n"));
-					ALERT(_T("Texture loaded: (%s)"), szURL);
-					return lpTexture;
-				}
+				lpTexture = ParseTexture(SkinPath, file.GetContent(), file.GetContentLength(), width, height);
+			}
+
+			if (lpTexture != NULL)
+			{
+				OutputDebugString(_T("[Texture] Loaded from skin override: "));
+				OutputDebugString(SkinPath);
+				OutputDebugString(_T("\n"));
+				ALERT(_T("Texture loaded: (%s)"), szURL);
+				return lpTexture;
 			}
 		}
 	}
@@ -729,26 +742,12 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR *szURL, UINT width, UINT height)
 		}
 	}
 
-	// === FINAL fallback: Load "menu_hilite.xbx" from skin directory ===
-	if (TheseusGetSkinDir())
-	{
-		OutputDebugString(_T("[Texture] Attempting final fallback: menu_hilite.xbx\n"));
-
-		TCHAR FallbackPath[MAX_PATH];
-		_stprintf(FallbackPath, _T("%smenu_hilight.xbx"), TheseusGetSkinDir());
-
-		if (file.Fetch(FallbackPath, true))
-		{
-			LPDIRECT3DTEXTURE8 lpTexture = ParseTexture(FallbackPath, file.GetContent(), file.GetContentLength(), width, height);
-			if (lpTexture != NULL)
-			{
-				ALERT(_T("Fallback texture loaded: menu_hilite.xbx"));
-				return lpTexture;
-			}
-		}
-	}
-
-	ALERT(_T("Unable to load texture file (%s) and fallback failed"), szURL);
+	// No final fallback. Returning menu_hilight.xbx for any missing texture
+	// poisoned mesh UVs across the dashboard (e.g. skin.xm wrapped with an
+	// unresolved background.bmp came out as a giant smear of the menu-hilight
+	// pill). Better to fail loudly so missing assets are obvious during skin
+	// authoring.
+	ALERT(_T("Unable to load texture file (%s)"), szURL);
 	return NULL;
 }
 
@@ -1463,6 +1462,29 @@ class CMeshNode *g_pRenderMeshNode = NULL;
 
 CMeshNode *CMeshNode::c_pFirst;
 
+// Drop the cached mesh on every CMeshNode so the next render reloads from
+// the active skin / XIP / disk path. Called from ReloadSkin alongside the
+// texture cache flush; otherwise switching skins leaves stale meshes
+// resident in memory.
+void FlushMeshCache()
+{
+	for (CMeshNode *pNode = CMeshNode::c_pFirst; pNode != NULL; pNode = pNode->m_next)
+	{
+		if (pNode->m_mesh != NULL)
+		{
+			if (pNode->m_ownMesh)
+				delete pNode->m_mesh;
+			pNode->m_mesh = NULL;
+			pNode->m_ownMesh = true;
+		}
+		// Dirty every node, including ones whose previous load failed
+		// (m_mesh stayed NULL). Otherwise a skin missing cellwall.xm
+		// leaves those nodes permanently NULL even after the user
+		// switches back to a skin that ships it.
+		pNode->m_dirty = true;
+	}
+}
+
 IMPLEMENT_NODE("Mesh", CMeshNode, CNode)
 
 START_NODE_PROPS(CMeshNode, CNode)
@@ -1584,18 +1606,33 @@ void CMeshNode::load(const TCHAR *szFile)
 	// doesn't ship the mesh in question.
 	if (TheseusGetSkinDir() && TheseusGetSkinDir()[0])
 	{
-		TCHAR SkinMeshPath[MAX_PATH];
-		_stprintf(SkinMeshPath, _T("%s%s"), TheseusGetSkinDir(), szFile);
-		CMesh *pSkinMesh = new CMesh;
-		if (pSkinMesh->Load(SkinMeshPath))
+		// Probe every member of the equivalence group so a skin that ships
+		// only Inner_cell-FACES.xm can satisfy a request for cellwall.xm
+		// (and vice versa).
+		const TCHAR *baseW = szFile;
+		for (const TCHAR *p = szFile; *p; p++)
+			if (*p == _T('/') || *p == _T('\\')) baseW = p + 1;
+		char baseAnsi[MAX_PATH];
+		Ansi(baseAnsi, baseW, MAX_PATH);
+
+		const char *candidates[4];
+		int nCandidates = SkinCandidatesFor(baseAnsi, candidates, 4);
+
+		for (int i = 0; i < nCandidates && m_mesh == NULL; i++)
 		{
-			m_ownMesh = true;
-			m_mesh = pSkinMesh;
-			TRACE(_T("\002Loaded %s from skin override\n"), SkinMeshPath);
-		}
-		else
-		{
-			delete pSkinMesh;
+			TCHAR SkinMeshPath[MAX_PATH];
+			_stprintf(SkinMeshPath, _T("%s%hs"), TheseusGetSkinDir(), candidates[i]);
+			CMesh *pSkinMesh = new CMesh;
+			if (pSkinMesh->Load(SkinMeshPath))
+			{
+				m_ownMesh = true;
+				m_mesh = pSkinMesh;
+				TRACE(_T("\002Loaded %s from skin override\n"), SkinMeshPath);
+			}
+			else
+			{
+				delete pSkinMesh;
+			}
 		}
 	}
 

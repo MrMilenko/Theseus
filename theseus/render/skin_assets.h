@@ -63,7 +63,7 @@ static inline int SkinCandidatesFor(const char *name, const char **out, int max)
 	for (size_t i = 0; i < sizeof(kGroups) / sizeof(kGroups[0]); i++) {
 		bool inGroup = false;
 		for (int j = 0; j < 4 && kGroups[i][j]; j++) {
-			if (strcasecmp(base, kGroups[i][j]) == 0) {
+			if (_stricmp(base, kGroups[i][j]) == 0) {
 				inGroup = true;
 				break;
 			}
@@ -71,7 +71,7 @@ static inline int SkinCandidatesFor(const char *name, const char **out, int max)
 		if (!inGroup) continue;
 
 		for (int j = 0; j < 4 && kGroups[i][j] && n < max; j++) {
-			if (strcasecmp(base, kGroups[i][j]) != 0)
+			if (_stricmp(base, kGroups[i][j]) != 0)
 				out[n++] = kGroups[i][j];
 		}
 		break; // a name belongs to at most one group
@@ -124,7 +124,7 @@ static inline bool IsSkinnableAsset(const char *path)
 	};
 
 	for (int i = 0; kSkinnable[i]; i++) {
-		if (strcasecmp(base, kSkinnable[i]) == 0) return true;
+		if (_stricmp(base, kSkinnable[i]) == 0) return true;
 	}
 	return false;
 }

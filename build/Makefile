@@ -89,8 +89,8 @@ XDK_BASE    ?= $(error XDK_BASE not set. Point it at your Xbox SDK tree, e.g. XD
 # OXDK toolkit (provides cxbe and xdk_compat.h)
 OXDK_DIR    ?= $(HOME)/OXDK
 
-XDK_PUB_INC  = ./xbox/include
-XDK_PUB_LIB  = ./xbox/lib
+XDK_PUB_INC  = $(THESEUS_SRC)/xdk/include
+XDK_PUB_LIB  = $(THESEUS_SRC)/xdk/lib
 XDK_PRV_INC  = $(XDK_BASE)/private/inc
 XDK_PRV_LIB  = $(XDK_BASE)/private/lib/i386
 NTOS_INC     = $(XDK_BASE)/private/ntos/inc

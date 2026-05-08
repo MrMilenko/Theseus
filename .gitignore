@@ -44,8 +44,6 @@ build-desktop/
 build/git-clean/
 build/thinkpad-patched/
 build/bin-git/
-build/xbox/
-build/xdk-libs/
 build/build.log
 build/Makefile.git-test
 build/Makefile.thinkpad
