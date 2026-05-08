@@ -14,6 +14,7 @@
 #include "title_maker.h"
 #include "menu_bar.h"
 #include "media_player.h"
+#include "media_db.h"
 #include "xap_editor.h"
 #include "inspector.h"
 #include "preloader.h"
