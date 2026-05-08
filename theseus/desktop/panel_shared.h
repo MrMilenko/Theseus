@@ -41,6 +41,10 @@ extern bool g_hddBrowserOpen;    // hdd_browser.cpp
 extern bool g_wireframe;         // menu_bar.cpp
 extern int  g_msaaSamples;       // sdl_main.cpp
 extern bool g_msaaChangeRequested;
+extern int  g_vsyncMode;         // 0=adaptive, 1=on, 2=off
+extern bool g_vsyncChangeRequested;
+extern int  g_fpsCap;            // 0=unlimited; manual frame pacing target
+extern bool g_hwdec;             // mpv hwdec; takes effect on next media open
 extern bool g_scrollToSelected;
 
 // ============================================================================

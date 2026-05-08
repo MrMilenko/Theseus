@@ -382,6 +382,10 @@ int DashAudio_Init(void)
     s_soundCount = 0;
     s_initialized = true;
 
+    // Honor --muted before XAP initialize() fires Audio nodes during InitApp.
+    extern bool g_audioMuted;
+    if (g_audioMuted) DashAudio_MuteAll();
+
 
     // Auto-scan music collection. Root is configurable via desktop.ini
     // [Library] MusicRoot=...; falls back to Data/Music for legacy

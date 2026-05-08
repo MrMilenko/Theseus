@@ -88,6 +88,27 @@ static const char* s_msaaLabels[] = { "Off", "2x", "4x", "8x" };
 static const int   s_msaaValues[] = { 0, 2, 4, 8 };
 static const int   s_msaaCount = 4;
 
+static const char* s_vsyncLabels[] = { "Adaptive", "On", "Off" };
+
+static const char* s_fpsLabels[] = { "Unlimited", "30", "60", "90", "120", "144", "240" };
+static const int   s_fpsValues[] = { 0,           30,   60,   90,   120,   144,   240 };
+static const int   s_fpsCount    = 7;
+static int GetFpsIndex() {
+    for (int i = 0; i < s_fpsCount; i++)
+        if (s_fpsValues[i] == g_fpsCap) return i;
+    return 0;
+}
+
+static void RestoreDisplayDefaults() {
+    g_crt.enabled = false;
+    ApplyCRTPreset(s_crtPresets[1]); // "Classic"
+    g_bWireframe = false;
+    if (g_msaaSamples != 4) { g_msaaSamples = 4; g_msaaChangeRequested = true; }
+    if (g_vsyncMode  != 0) { g_vsyncMode  = 0; g_vsyncChangeRequested = true; }
+    g_fpsCap = 0;
+    g_hwdec  = false;
+}
+
 static int GetMSAAIndex() {
     for (int i = 0; i < s_msaaCount; i++)
         if (s_msaaValues[i] == g_msaaSamples) return i;
@@ -284,25 +305,29 @@ void RenderSettingsWindow() {
         if (ImGui::BeginTabItem("Display")) {
             ImGui::Spacing();
 
-            ImGui::Checkbox("CRT Effect", &g_crt.enabled);
+            // Slider drags fire IsItemDeactivatedAfterEdit on release; saves
+            // once at end of drag, not every frame.
+            if (ImGui::Checkbox("CRT Effect", &g_crt.enabled)) SaveDesktopSettings();
             if (g_crt.enabled) {
                 ImGui::Spacing();
-                ImGui::SliderFloat("Scanlines", &g_crt.scanlineIntensity, 0.0f, 1.0f, "%.2f");
-                ImGui::SliderFloat("Curvature", &g_crt.curvature, 0.0f, 2.0f, "%.2f");
-                ImGui::SliderFloat("Phosphor Mask", &g_crt.phosphorMask, 0.0f, 1.0f, "%.2f");
-                ImGui::SliderFloat("Vignette", &g_crt.vignette, 0.0f, 2.0f, "%.2f");
-                ImGui::SliderFloat("Bloom", &g_crt.bloom, 0.0f, 1.0f, "%.2f");
-                ImGui::SliderFloat("Flicker", &g_crt.flickerAmount, 0.0f, 1.0f, "%.2f");
-                ImGui::SliderFloat("Color Bleed", &g_crt.colorBleed, 0.0f, 4.0f, "%.2f");
-                ImGui::SliderFloat("Brightness", &g_crt.brightness, 0.8f, 1.3f, "%.2f");
+                ImGui::SliderFloat("Scanlines",     &g_crt.scanlineIntensity, 0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+                ImGui::SliderFloat("Curvature",     &g_crt.curvature,         0.0f, 2.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+                ImGui::SliderFloat("Phosphor Mask", &g_crt.phosphorMask,      0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+                ImGui::SliderFloat("Vignette",      &g_crt.vignette,          0.0f, 2.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+                ImGui::SliderFloat("Bloom",         &g_crt.bloom,             0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+                ImGui::SliderFloat("Flicker",       &g_crt.flickerAmount,     0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+                ImGui::SliderFloat("Color Bleed",   &g_crt.colorBleed,        0.0f, 4.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+                ImGui::SliderFloat("Brightness",    &g_crt.brightness,        0.8f, 1.3f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
 
                 ImGui::Spacing();
                 ImGui::Text("Presets:");
                 ImGui::SameLine();
                 for (int i = 0; i < (int)(sizeof(s_crtPresets) / sizeof(s_crtPresets[0])); i++) {
                     if (i > 0) ImGui::SameLine();
-                    if (ImGui::SmallButton(s_crtPresets[i].name))
+                    if (ImGui::SmallButton(s_crtPresets[i].name)) {
                         ApplyCRTPreset(s_crtPresets[i]);
+                        SaveDesktopSettings();
+                    }
                 }
             }
 
@@ -310,19 +335,47 @@ void RenderSettingsWindow() {
             ImGui::Separator();
             ImGui::Spacing();
 
-            ImGui::Checkbox("Wireframe", &g_bWireframe);
+            // Toggles grouped together
+            if (ImGui::Checkbox("Wireframe", &g_bWireframe)) SaveDesktopSettings();
+            if (ImGui::Checkbox("Hardware video decode (mpv)", &g_hwdec)) SaveDesktopSettings();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Off = software decode, safest. On = faster on AMD/NVIDIA.\nApplies to next media open.");
 
-            ImGui::Text("MSAA:");
-            ImGui::SameLine();
+            ImGui::Spacing();
+
+            // Dropdowns: fixed label column + widget column so they line up.
+            const float kLabelX  = 90.0f;
+            const float kWidgetW = 160.0f;
+
+            ImGui::AlignTextToFramePadding(); ImGui::Text("MSAA:");
+            ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
             int msaaIdx = GetMSAAIndex();
             if (ImGui::Combo("##msaa", &msaaIdx, s_msaaLabels, s_msaaCount)) {
                 g_msaaSamples = s_msaaValues[msaaIdx];
                 g_msaaChangeRequested = true;
+                SaveDesktopSettings();
+            }
+
+            ImGui::AlignTextToFramePadding(); ImGui::Text("VSync:");
+            ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
+            if (ImGui::Combo("##vsync", &g_vsyncMode, s_vsyncLabels, 3)) {
+                g_vsyncChangeRequested = true;
+                SaveDesktopSettings();
+            }
+
+            ImGui::AlignTextToFramePadding(); ImGui::Text("FPS Cap:");
+            ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
+            int fpsIdx = GetFpsIndex();
+            if (ImGui::Combo("##fpscap", &fpsIdx, s_fpsLabels, s_fpsCount)) {
+                g_fpsCap = s_fpsValues[fpsIdx];
+                SaveDesktopSettings();
             }
 
             ImGui::Spacing();
-            if (ImGui::Button("Save Display Settings"))
+            if (ImGui::Button("Restore Defaults")) {
+                RestoreDisplayDefaults();
                 SaveDesktopSettings();
+            }
 
             ImGui::EndTabItem();
         }

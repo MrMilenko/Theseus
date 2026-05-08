@@ -127,8 +127,9 @@ bool MediaPlayer_Init() {
     }
 
     // Set options before init
+    extern bool g_hwdec;
     mpv_set_option_string(s_mpv, "vo", "libmpv");       // render to our FBO, not a window
-    mpv_set_option_string(s_mpv, "hwdec", "no");           // software decode - avoids GL texture errors on macOS core profile
+    mpv_set_option_string(s_mpv, "hwdec", g_hwdec ? "auto" : "no");
     mpv_set_option_string(s_mpv, "keep-open", "yes");
     mpv_set_option_string(s_mpv, "video", "yes");
     mpv_set_option_string(s_mpv, "terminal", "no");

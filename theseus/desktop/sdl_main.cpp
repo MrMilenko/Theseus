@@ -281,6 +281,7 @@ static void ApplyEffectiveMute()
 void ApplyEffectiveMute_Public() { ApplyEffectiveMute(); }
 bool g_startMinimized = false;
 bool g_graphicsDebug = false;
+extern double g_perfDrawMs, g_perfImguiMs, g_perfSwapMs, g_perfFrameMs, g_perfFps;
 float g_muteOverlayTimer = 0.0f; // seconds remaining to show the overlay toast
 
 // Static instance tracking for GL context reset
@@ -387,6 +388,16 @@ void LoadDesktopSettings() {
             if (n == 0 || n == 2 || n == 4 || n == 8)
                 g_msaaSamples = n;
         }
+        else if (strncmp(line, "Vsync=", 6) == 0) {
+            int n = atoi(line + 6);
+            if (n >= 0 && n <= 2) g_vsyncMode = n;
+        }
+        else if (strncmp(line, "FpsCap=", 7) == 0) {
+            int n = atoi(line + 7);
+            if (n >= 0) g_fpsCap = n;
+        }
+        else if (strncmp(line, "Hwdec=", 6) == 0)
+            g_hwdec = atoi(line + 6) != 0;
     }
     fclose(fp);
 }
@@ -434,6 +445,9 @@ void SaveDesktopSettings() {
     fprintf(fp, "UseOnScreenKeyboard=%d\n", g_bUseOnScreenKeyboard ? 1 : 0);
     fprintf(fp, "ShowBootAnimation=%d\n",   g_bShowBootAnimation   ? 1 : 0);
     fprintf(fp, "MSAA=%d\n",                g_msaaSamples);
+    fprintf(fp, "Vsync=%d\n",               g_vsyncMode);
+    fprintf(fp, "FpsCap=%d\n",              g_fpsCap);
+    fprintf(fp, "Hwdec=%d\n",               g_hwdec ? 1 : 0);
     fprintf(fp, "\n[CRT]\n");
     fprintf(fp, "CRT_Enabled=%d\n", g_crt.enabled ? 1 : 0);
     fprintf(fp, "CRT_Scanlines=%.3f\n", g_crt.scanlineIntensity);
@@ -590,6 +604,22 @@ static void PreSwapOverlays() {
         }
     }
 
+    if (g_graphicsDebug) {
+        ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                              ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
+        ImGui::SetNextWindowBgAlpha(0.6f);
+        ImGui::SetNextWindowPos(ImVec2(8, 30), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("##perf", nullptr, fl)) {
+            ImGui::Text("FPS:    %.1f", g_perfFps);
+            ImGui::Text("Frame:  %.2f ms", g_perfFrameMs);
+            ImGui::Separator();
+            ImGui::Text("Draw:   %.2f ms", g_perfDrawMs);
+            ImGui::Text("ImGui:  %.2f ms", g_perfImguiMs);
+            ImGui::Text("Swap:   %.2f ms", g_perfSwapMs);
+        }
+        ImGui::End();
+    }
+
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
     s_imguiHasRendered = true;
@@ -601,6 +631,31 @@ static void PreSwapOverlays() {
 SDL_Window* g_pXapEditorWindow = NULL;
 int  g_msaaSamples = 4;       // 0=off, 2/4/8x MSAA (default 4x)
 bool g_msaaChangeRequested = false;
+// 0=adaptive (-1, fall back to 1), 1=on (1), 2=off (0). Default adaptive.
+int  g_vsyncMode = 0;
+bool g_vsyncChangeRequested = false;
+
+// Manual FPS cap (0 = unlimited). Applied via SDL_Delay before SwapWindow.
+int  g_fpsCap = 0;
+
+// mpv hwdec. false = "no" (software, GL core safe on macOS).
+// true = "auto" (faster on AMD/NVIDIA discrete, may corrupt on macOS).
+// Takes effect on next media open; existing mpv handle won't pick it up.
+bool g_hwdec = false;
+
+// Per-pass timings populated each frame in the main loop. Read by the
+// --graphics-debug overlay. Single-frame ms; FPS is EMA-smoothed.
+double g_perfDrawMs  = 0.0;
+double g_perfImguiMs = 0.0;
+double g_perfSwapMs  = 0.0;
+double g_perfFrameMs = 0.0;
+double g_perfFps     = 0.0;
+
+void ApplyVsyncMode() {
+    int interval = (g_vsyncMode == 2) ? 0 : (g_vsyncMode == 1) ? 1 : -1;
+    if (SDL_GL_SetSwapInterval(interval) != 0 && interval == -1)
+        SDL_GL_SetSwapInterval(1);
+}
 bool g_scrollToSelected = false; // set true when 3D click selects a node
 // g_bWireframe is the canonical wireframe flag, defined in dashapp.cpp.
 // dashapp.cpp's render loop converts it to D3DRS_FILLMODE every frame, which
@@ -801,6 +856,8 @@ int main(int argc, char* argv[]) {
 
     // Load before window create so g_msaaSamples is honored at boot.
     LoadDesktopSettings();
+    // Materialize the ini on first run / after adding new keys.
+    SaveDesktopSettings();
 
     // Request OpenGL 3.2 Core Profile (required for GLSL #version 150)
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
@@ -876,9 +933,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Adaptive vsync; fall back to hard vsync if unsupported.
-    if (SDL_GL_SetSwapInterval(-1) != 0)
-        SDL_GL_SetSwapInterval(1);
+    ApplyVsyncMode();
 
     fprintf(stdout, "UIX Desktop - SDL/OpenGL Preview Tool\n");
     fprintf(stdout, "OpenGL: %s\n", glGetString(GL_VERSION));
@@ -1023,8 +1078,10 @@ int main(int argc, char* argv[]) {
     }
 
     // Apply CLI overrides
+    // Exclusive mode bypasses DWM, so AMD Adrenaline (and equivalents)
+    // recognise the process as a fullscreen game and stop compositor-throttling.
     if (cliFullscreen && g_pSDLWindow) {
-        SDL_SetWindowFullscreen(g_pSDLWindow, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        SDL_SetWindowFullscreen(g_pSDLWindow, SDL_WINDOW_FULLSCREEN);
     }
     if (cliUiScale > 0.0f) {
         ImGui::GetIO().FontGlobalScale = cliUiScale;
@@ -1109,6 +1166,8 @@ int main(int argc, char* argv[]) {
     }
 
     bool running = true;
+    Uint64 fpsCapPrev = SDL_GetPerformanceCounter();
+    Uint64 perfFreq = SDL_GetPerformanceFrequency();
     while (running) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -1243,11 +1302,10 @@ int main(int argc, char* argv[]) {
                         g_showMenuBar = !g_showMenuBar;
                     }
                     if (event.key.keysym.sym == SDLK_F11) {
-                        // F11: toggle fullscreen-desktop (covers the whole
-                        // monitor at desktop resolution).
+                        // F11: toggle exclusive fullscreen.
                         Uint32 flags = SDL_GetWindowFlags(g_pSDLWindow);
-                        bool isFs = (flags & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0;
-                        SDL_SetWindowFullscreen(g_pSDLWindow, isFs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                        bool isFs = (flags & SDL_WINDOW_FULLSCREEN) != 0;
+                        SDL_SetWindowFullscreen(g_pSDLWindow, isFs ? 0 : SDL_WINDOW_FULLSCREEN);
                     }
                     if (event.key.keysym.sym == SDLK_F12) {
                         // F12: toggle borderless windowed (no title bar /
@@ -1347,16 +1405,20 @@ int main(int argc, char* argv[]) {
         }
 
         // Render 3D scene (viewport set to left portion; Present() skips swap when inspector is open)
+        Uint64 tDraw0 = SDL_GetPerformanceCounter();
         if (g_mediaFullscreen) {
             extern void MediaUI_DrawFullscreenVideo();
             MediaUI_DrawFullscreenVideo();
         } else {
             Draw();
         }
+        Uint64 tDraw1 = SDL_GetPerformanceCounter();
 
-        // dashapp.cpp resets D3DRS_FILLMODE -> glPolygonMode(GL_FILL) at end
-        // of frame anyway; ImGui below renders solid.
-        if (g_bWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        // Force fill before ImGui so overlays render solid. Goes through the
+        // shim so its FILLMODE cache stays in sync; otherwise next frame's
+        // SetRenderState(WIREFRAME) is a cache hit and never re-applies.
+        if (g_bWireframe && g_pD3DDev)
+            g_pD3DDev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
 
         // CRT: blit with post-process shader
         if (g_crt.enabled && g_crt.fbo) {
@@ -1365,10 +1427,36 @@ int main(int argc, char* argv[]) {
         }
 
         // Overlays (menu bar, inspector, Title Maker, etc.); always render
+        Uint64 tImgui0 = SDL_GetPerformanceCounter();
         if (IDirect3DDevice8::s_preSwapCB) IDirect3DDevice8::s_preSwapCB();
+        Uint64 tImgui1 = SDL_GetPerformanceCounter();
+
+        // FPS cap: sleep until budget elapsed. 0 = unlimited.
+        if (g_fpsCap > 0) {
+            Uint64 budget = perfFreq / (Uint64)g_fpsCap;
+            Uint64 now = SDL_GetPerformanceCounter();
+            Uint64 elapsed = now - fpsCapPrev;
+            if (elapsed < budget) {
+                Uint32 ms = (Uint32)((budget - elapsed) * 1000 / perfFreq);
+                if (ms > 0) SDL_Delay(ms);
+            }
+            fpsCapPrev = SDL_GetPerformanceCounter();
+        }
 
         // Swap
+        Uint64 tSwap0 = SDL_GetPerformanceCounter();
         if (g_pSDLWindow) SDL_GL_SwapWindow(g_pSDLWindow);
+        Uint64 tSwap1 = SDL_GetPerformanceCounter();
+
+        if (g_graphicsDebug) {
+            double freq = (double)perfFreq;
+            g_perfDrawMs  = (tDraw1 - tDraw0)   * 1000.0 / freq;
+            g_perfImguiMs = (tImgui1 - tImgui0) * 1000.0 / freq;
+            g_perfSwapMs  = (tSwap1 - tSwap0)   * 1000.0 / freq;
+            g_perfFrameMs = (tSwap1 - tDraw0)   * 1000.0 / freq;
+            double instFps = (g_perfFrameMs > 0.0) ? 1000.0 / g_perfFrameMs : 0.0;
+            g_perfFps = (g_perfFps == 0.0) ? instFps : 0.9 * g_perfFps + 0.1 * instFps;
+        }
 
         // (Old code re-applied Mix_Volume(-1, 0) every frame while muted.
         //  Removed: rapid per-frame volume writes on playing channels were
@@ -1382,6 +1470,11 @@ int main(int argc, char* argv[]) {
         // Handle XAP scene reload (must happen outside rendering)
         if (XapEditor_ConsumeReloadRequest()) {
             ReloadSceneFromEditor();
+        }
+
+        if (g_vsyncChangeRequested) {
+            g_vsyncChangeRequested = false;
+            ApplyVsyncMode();
         }
 
         // Handle MSAA change; recreate GL context with new sample count
@@ -1412,8 +1505,7 @@ int main(int argc, char* argv[]) {
                 g_pGLContext = SDL_GL_CreateContext(g_pSDLWindow);
                 g_msaaSamples = 0;
             }
-            if (SDL_GL_SetSwapInterval(-1) != 0)
-                SDL_GL_SetSwapInterval(1);
+            ApplyVsyncMode();
 
             // Enable/disable MSAA
             if (g_msaaSamples > 0) glEnable(GL_MULTISAMPLE);
