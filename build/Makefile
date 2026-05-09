@@ -471,12 +471,14 @@ else
   #
   # ws2_32: config.cpp's hostname / gethostbyname (network discovery).
   # dbghelp: sdl_main.cpp's StackWalk64-based panic crash handler.
+  # avrt/dwmapi: sdl_main.cpp's MMCSS scheduling hints for smoother audio/video.
   # Same set as the Win64 cross link line.
   DESKTOP_CXX  ?= g++
   DESKTOP_CC   ?= gcc
   SDL2_CFLAGS  := $(shell sdl2-config --cflags)
   SDL2_LDFLAGS := $(shell sdl2-config --libs)
-  DESKTOP_PLATFORM_LDFLAGS = -lopengl32 -lglew32 -lSDL2_mixer -lws2_32 -ldbghelp
+  DESKTOP_PLATFORM_LDFLAGS = -lopengl32 -lglew32 -lSDL2_mixer -lws2_32 -ldbghelp -lavrt -ldwmapi
+  DESKTOP_BUNDLE_MINGW_DLLS = 1
 endif
 
 # libmpv + libcurl: REQUIRED for the native desktop target.
@@ -684,6 +686,21 @@ desktop: $(DESKTOP_TARGET)
 $(DESKTOP_TARGET): $(DESKTOP_OBJS)
 	@mkdir -p $(DESKTOP_DIR)
 	$(DESKTOP_CXX) -o $@ $(DESKTOP_OBJS) $(DESKTOP_LDFLAGS)
+ifdef DESKTOP_BUNDLE_MINGW_DLLS
+	@# Bundle MinGW DLLs so the Windows build runs from File Explorer
+	@# without relying on the MSYS2 shell's PATH.
+	@EXE="$@"; [ -f "$$EXE" ] || EXE="$@.exe"; \
+	if command -v ntldd >/dev/null 2>&1; then \
+		ntldd -R "$$EXE"; \
+	elif command -v ldd >/dev/null 2>&1; then \
+		ldd "$$EXE"; \
+	else \
+		echo "warning: ntldd/ldd not found; runtime DLLs not bundled"; \
+	fi | awk '/\/mingw(32|64)\// { for (i = 1; i <= NF; ++i) if ($$i ~ /^\/mingw(32|64)\//) print $$i }' | \
+	sort -u | while IFS= read -r dll; do \
+		[ -f "$$dll" ] && cp -u "$$dll" "$(DESKTOP_DIR)/"; \
+	done
+endif
 	@# Configs/, Data/, Library/ live next to the binary at runtime; the
 	@# binary CWDs into its own directory and resolves Xbox C:/Q:/E:
 	@# paths through them. Prefer rsync for fast incrementals; fall back
