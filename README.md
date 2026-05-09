@@ -6,7 +6,7 @@
 
 Six years of reverse engineering the original Xbox dashboard. This repo is the result.
 
-Theseus boots on modded Xbox hardware as a drop in replacement for the stock dashboard. The same engine compiles natively on macOS, Linux, and Windows, where it doubles as **UIX Desktop**: a 3D launcher and media center.
+Theseus boots on modded Xbox hardware as a drop-in replacement for the stock dashboard. The same engine compiles natively on macOS, Linux, and Windows, where it doubles as **UIX Desktop**: a 3D launcher and media center.
 
 The split is intentional. The Xbox build stays faithful to what you'd expect from the Xbox dashboard (or UIX Lite, if you've used a custom dashboard before). Everything that doesn't belong on an Xbox (Steam libraries, modern video playback, emulator-hosted ISOs, playlists, skin authoring tools) lives on the desktop side instead. Two projects, one engine.
 
@@ -26,7 +26,7 @@ A drop-in replacement for the stock Xbox dashboard on modded consoles. Same look
 What works:
 - Every original scene, animation, and skin slot
 - UIX Lite skins drop in unchanged. Skin authors don't have to do anything
-- Hot swap skins from settings, no reboot
+- Hot-swap skins from settings, no reboot
 - ISO / CCI launching from the harddrive menu, plus the original XBE flow
 - Hundreds of titles scan in milliseconds
 - Title icons auto populate from each game's XBE certificate
@@ -83,7 +83,7 @@ If you'd rather build from source, jump down to [Building](#building).
 
 ## Customization
 
-**Skins.** Drop them into `Data/Skins/` (Xbox: `uixdata\Skins\`) and pick from settings. UIX Lite community skins work as is, no conversion needed. Hot swap, no reboot.
+**Skins.** Drop them into `Data/Skins/` (Xbox: `uixdata\Skins\`) and pick from settings. UIX Lite community skins work as-is, no conversion needed. Hot-swap, no reboot.
 
 **Scene authoring** (for the people building dashboards from scratch). Scenes are XAP scripts packed into `.xip` archives. The desktop build has a live XAP editor (F2), scene inspector (F1), and asset reload so you can tweak and see results immediately. The XAP node interface is the contract; the C++ behind it can change but the node API is treated as sacred. Full reference in [`docs/xap-contract.md`](docs/xap-contract.md).
 
@@ -185,7 +185,7 @@ Cross-compiling for Windows from macOS / Linux, ARM64 Linux, or any of the more 
 
 ## How it works
 
-The engine is approximately 50 source files reconstructed from the retail and patched XBE's spanning 4920 to 5960, organized the same way the original dashboard was: script VM, scene graph, rendering, asset loading, UI framework, system integration, and launcher. Per-subsystem reverse engineering notes are in [`docs/decomp/`](docs/decomp/).
+The engine is approximately 50 source files reconstructed from the retail and patched XBEs spanning 4920 to 5960, organized the same way the original dashboard was: script VM, scene graph, rendering, asset loading, UI framework, system integration, and launcher. Per-subsystem reverse engineering notes are in [`docs/decomp/`](docs/decomp/).
 
 The XAP scripting layer is a custom JS-like bytecode VM. The scene graph is VRML97-inspired with runtime reflection via FND/PRD property tables. D3D8 calls are translated to OpenGL 3.2 on the desktop side; everything else compiles for both targets from the same shared source.
 

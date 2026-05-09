@@ -109,7 +109,7 @@ Library/         (Xbox E:\)
   Emulators/
 ```
 
-`F:\`, `G:\`, `R:\` (extra HDD partitions on real Xbox) silently fail to resolve on desktop -- there's only one library partition. XAP scripts that walk multiple drives just see empty results for the missing ones, so no duplicates.
+`F:\`, `G:\`, `R:\` (extra HDD partitions on real Xbox) silently fail to resolve on desktop, since there's only one library partition. XAP scripts that walk multiple drives just see empty results for the missing ones, so no duplicates.
 
 `xboxfs.h` provides:
 
