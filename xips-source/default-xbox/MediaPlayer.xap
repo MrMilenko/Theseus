@@ -1,0 +1,838 @@
+// MediaPlayer.xap -- Theseus media player wrapper.
+//
+// theMediaCollection node is bound to the C++ CMediaCollection that scans
+// the user-configured Movies/TV roots (set in Settings -> Media Library,
+// stored in desktop.ini) and caches results to xboxfs/E/MediaDB.cache.
+//
+//
+// Lives in default.xip. Activated via GoToMedia() (from default.xap, which
+// is dispatched by config.ini Button3Action). Loads mediaplayer.xip for
+// the actual scene contents.
+//
+// Mirrors the structure of music2.xap exactly:
+//   - top-level vars + initialize() (auto-called on load: variables only)
+//   - StartMediaLevel() touches the loaded scene; called from inner Inline
+//     onLoad once mediaplayer/default.xap has finished loading
+//   - FillMediaList() / UpdateMediaHighlight() reach into the scene via
+//     theMediaMenu.children[0].children[0]
+//   - DEF theMediaMenu Level with archive + anonymous Inline + shell
+//     cellwall + path Viewpoint + control Joystick
+
+
+var nCurMediaItem;
+var nMediaItemCount;
+var bInCategoryView;
+var nCurCategory;          // 0 = Movies, 1 = TV Shows, 2 = Playlists
+var rgCategoryName;
+var nMediaListScroll;      // scroll offset into the (huge) movie/show list
+var nMediaListVisible;     // visible row count (8)
+var gSelectedTitle;        // pushed across to Scene 2 on drill-in
+var gSelectedPlot;
+var gSelectedMeta;
+var gSelectedKind;         // 0 = movie, 1 = tv show
+var gSelectedIndex;        // absolute index into MediaCollection movies or shows
+
+// Playlists drill: when nCurCategory==2 and bInCategoryView==0, the list
+// shows playlist NAMES. Picking one flips bInPlaylistItemView=1 and the
+// list switches to playlist items. Picking an item plays from that index.
+var bInPlaylistItemView;
+var nPlaylistCursorBackup; // restore the cursor when backing out of items
+
+
+function initialize()
+{
+	nCurMediaItem      = 0;
+	bInCategoryView    = 1;
+	nCurCategory       = 0;
+	nMediaListScroll   = 0;
+	nMediaListVisible  = 8;
+
+	rgCategoryName = new Array;
+	rgCategoryName[0] = "Movies";
+	rgCategoryName[1] = "TV Shows";
+	rgCategoryName[2] = "Playlists";
+
+	bInPlaylistItemView   = 0;
+	nPlaylistCursorBackup = 0;
+
+	gSelectedTitle = "";
+	gSelectedPlot  = "";
+	gSelectedMeta  = "";
+	gSelectedKind  = 0;
+	gSelectedIndex = 0;
+
+	BindActiveList();
+}
+
+
+function BindActiveList()
+{
+	if (bInCategoryView)
+	{
+		nMediaItemCount = 3;
+	}
+	else if (nCurCategory == 0)
+	{
+		nMediaItemCount = theMediaCollection.GetMovieCount();
+	}
+	else if (nCurCategory == 1)
+	{
+		nMediaItemCount = theMediaCollection.GetShowCount();
+	}
+	else if (bInPlaylistItemView)
+	{
+		nMediaItemCount = thePlaylistCollection.GetItemCount();
+	}
+	else
+	{
+		nMediaItemCount = thePlaylistCollection.GetCount();
+	}
+}
+
+
+function GetActiveTitle(absIdx)
+{
+	if (bInCategoryView)
+		return rgCategoryName[absIdx];
+	if (nCurCategory == 0)
+		return theMediaCollection.GetMovieTitle(absIdx);
+	if (nCurCategory == 1)
+		return theMediaCollection.GetShowTitle(absIdx);
+	if (bInPlaylistItemView)
+		return thePlaylistCollection.GetItemTitle(absIdx);
+	return thePlaylistCollection.GetName(absIdx);
+}
+
+
+function StartMediaLevel()
+{
+	UpdateMediaList();
+}
+
+
+function UpdateMediaList()
+{
+	var c = theMediaMenu.children[0].children[0];
+
+	// Keep cursor inside the visible window: if it falls below scroll, raise
+	// scroll; if it exceeds the bottom, drop scroll.
+	if (nCurMediaItem < nMediaListScroll)
+		nMediaListScroll = nCurMediaItem;
+	else if (nCurMediaItem >= nMediaListScroll + nMediaListVisible)
+		nMediaListScroll = nCurMediaItem - (nMediaListVisible - 1);
+
+	for (var i = 0; i < nMediaListVisible; i = i + 1)
+	{
+		var absIdx = nMediaListScroll + i;
+		if (absIdx < nMediaItemCount)
+		{
+			c.MenuButtons.children[i].children[1].children[0].geometry.text = GetActiveTitle(absIdx);
+			c.MenuButtons.children[i].visible = true;
+			c.MenuButtons.children[i].children[0].children[0].appearance.material.name = "GameHilite";
+
+			if (absIdx == nCurMediaItem)
+			{
+				c.MenuButtons.children[i].children[0].children[0].appearance.texture.url = "GameHilite_01.bmp";
+				c.MenuButtons.children[i].children[1].children[0].appearance.name = "HilightedType";
+				// Selected row scrolls horizontally if text overflows.
+				c.MenuButtons.children[i].children[1].children[0].geometry.scrollRate  = 0.1;
+				c.MenuButtons.children[i].children[1].children[0].geometry.scrollDelay = 1;
+			}
+			else
+			{
+				c.MenuButtons.children[i].children[0].children[0].appearance.texture.url = "outline.tga";
+				c.MenuButtons.children[i].children[1].children[0].appearance.name = "NavType";
+				c.MenuButtons.children[i].children[1].children[0].geometry.scrollRate  = 0;
+				c.MenuButtons.children[i].children[1].children[0].geometry.scrollDelay = 0;
+			}
+		}
+		else
+		{
+			c.MenuButtons.children[i].visible = false;
+		}
+	}
+
+	if (bInCategoryView)
+	{
+		c.MediaHeaderText.text = "MEDIA";
+		c.MusicCountText.text  = nMediaItemCount + " CATEGORIES";
+	}
+	else if (nCurCategory == 0)
+	{
+		c.MediaHeaderText.text = "MEDIA / MOVIES";
+		c.MusicCountText.text  = nMediaItemCount + " MOVIES";
+	}
+	else if (nCurCategory == 1)
+	{
+		c.MediaHeaderText.text = "MEDIA / TV SHOWS";
+		c.MusicCountText.text  = nMediaItemCount + " SHOWS";
+	}
+	else if (bInPlaylistItemView)
+	{
+		c.MediaHeaderText.text = "MEDIA / PLAYLISTS";
+		c.MusicCountText.text  = nMediaItemCount + " ITEMS";
+	}
+	else
+	{
+		c.MediaHeaderText.text = "MEDIA / PLAYLISTS";
+		c.MusicCountText.text  = nMediaItemCount + " PLAYLISTS";
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+
+
+DEF theMediaMenu Level
+{
+	archive "mediaplayer.xip"
+	children
+	[
+		Inline
+		{
+			url "mediaplayer/default.xap"
+
+			function onLoad()
+			{
+				StartMediaLevel();
+			}
+		}
+	]
+
+	// Cellwall + Waver backdrop. Same pattern as theMemoryMenu /
+	// theMusicMenu / theAccountSelectionLevel.
+	shell Transform
+	{
+		scale 21.504 21.504 21.504
+		translation -44.599998 54.270000 -186.500000
+		children
+		[
+			DEF theMediaMenuWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_01" }
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh { url "Inner_cell-FACES.xm" }
+					}
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_02" }
+						}
+						geometry Sphere { radius 1 }
+					}
+				]
+			}
+		]
+	}
+
+	path DEF theMediaViewpoint Viewpoint
+	{
+		fieldOfView 1.287000
+		orientation 0.015660 0.999900 0.001474 -0.187700
+		position -47.840000 53.889999 -172.199997
+		jump false
+	}
+
+	control Joystick
+	{
+		function OnADown()
+		{
+			PlaySoundA();
+			if (bInCategoryView)
+			{
+				// Drill into the selected category's item list.
+				nCurCategory     = nCurMediaItem;
+				bInCategoryView  = 0;
+				nCurMediaItem    = 0;
+				nMediaListScroll = 0;
+				BindActiveList();
+				UpdateMediaList();
+			}
+			else if ((nCurCategory == 2) & (bInPlaylistItemView == 0))
+			{
+				// Playlist names -> playlist items.
+				thePlaylistCollection.SetCurrent(nCurMediaItem);
+				nPlaylistCursorBackup = nCurMediaItem;
+				bInPlaylistItemView = 1;
+				nCurMediaItem    = 0;
+				nMediaListScroll = 0;
+				BindActiveList();
+				UpdateMediaList();
+			}
+			else if ((nCurCategory == 2) & (bInPlaylistItemView == 1))
+			{
+				// Picked an item in a playlist -> queue from this index and play.
+				thePlaylistCollection.PlayFromIndex(nCurMediaItem);
+			}
+			else
+			{
+				// Movie/TV item list -> action menu (Scene 2). Push the selection
+				// across via globals so StartMediaActionLevel can read it.
+				if (nCurCategory == 0)
+					theMediaCollection.SetSelectedMovie(nCurMediaItem);
+				else
+					theMediaCollection.SetSelectedShow(nCurMediaItem);
+				theMediaActionMenu.GoTo();
+			}
+		}
+
+		function OnBDown()
+		{
+			PlaySoundB();
+			if (bInPlaylistItemView)
+			{
+				// Playlist items -> playlist names.
+				bInPlaylistItemView = 0;
+				nCurMediaItem    = nPlaylistCursorBackup;
+				nMediaListScroll = 0;
+				BindActiveList();
+				UpdateMediaList();
+			}
+			else if (bInCategoryView == 0)
+			{
+				// Item list -> back to category view.
+				bInCategoryView  = 1;
+				nCurMediaItem    = nCurCategory;
+				nMediaListScroll = 0;
+				BindActiveList();
+				UpdateMediaList();
+			}
+			else
+			{
+				// Category view -> exit to main menu.
+				theMainMenu.GoBackTo();
+			}
+		}
+
+		function OnMoveUp()
+		{
+			if (nCurMediaItem <= 0)
+				return;
+
+			PlaySoundMenuChange();
+			nCurMediaItem = nCurMediaItem - 1;
+			UpdateMediaList();
+		}
+
+		function OnMoveDown()
+		{
+			if (nCurMediaItem >= nMediaItemCount - 1)
+				return;
+
+			PlaySoundMenuChange();
+			nCurMediaItem = nCurMediaItem + 1;
+			UpdateMediaList();
+		}
+	}
+
+	function OnArrival()
+	{
+		EnableInput(true);
+	}
+
+	function OnActivate()
+	{
+		CurrentViewpoint = theMediaViewpoint;
+		EnableInput(true);
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+// Scene 2: Item action menu (PLAY / INFO / RENAME / DELETE)
+// Cloned from music_playedit2 / theMusicPlayMenu Level structure.
+////////////////////////////////////////////////////////////////////////////
+
+
+var nCurActionItem;
+var nActionItemCount;
+
+// State machine for the playedit-style scene:
+//   0 = action menu (PLAY/INFO/FAVORITE/RENAME/DELETE)
+//   1 = seasons list  (TV-only)
+//   2 = episodes list (TV-only)
+var nMediaActionState;
+var nCurMediaSeason;
+var rgMediaListItems;
+var nMediaListCount;
+var nPlayCursor;
+var nPlayScroll;
+var nPlayVisible;
+var nPreviousPlayCursor;
+
+
+function GetSeasonsForShow(showIdx)
+{
+	theMediaCollection.SetCurrentShow(showIdx);
+	var n = theMediaCollection.GetSeasonCount();
+	var a = new Array;
+	for (var i = 0; i < n; i = i + 1)
+		a[i] = theMediaCollection.GetSeasonName(i);
+	return a;
+}
+
+
+function GetEpisodesForShowSeason(showIdx, seasonIdx)
+{
+	theMediaCollection.SetCurrentShow(showIdx);
+	theMediaCollection.SetCurrentSeason(seasonIdx);
+	var n = theMediaCollection.GetEpisodeCount();
+	var a = new Array;
+	for (var i = 0; i < n; i = i + 1)
+		a[i] = theMediaCollection.GetEpisodeTitle(i);
+	return a;
+}
+
+
+function UpdateMediaTrackList()
+{
+	var c = theMediaActionMenu.children[0].children[0];
+
+	// Music's scroll math, kept verbatim (& not && per VM).
+	if (nPlayCursor < 0)
+		nPlayScroll = 0;
+	else if ((nPlayCursor >= (nPlayVisible - 1)) & (nPreviousPlayCursor < nPlayCursor) & (nPlayCursor > (nPlayScroll + (nPlayVisible - 1))))
+		nPlayScroll = nPlayCursor - (nPlayVisible - 1);
+	else if (nPlayCursor < nPlayScroll)
+		nPlayScroll = nPlayCursor;
+
+	nPreviousPlayCursor = nPlayCursor;
+
+	if (nPlayScroll > 0)
+		c.MU_morearrow_up.visible = true;
+	else
+		c.MU_morearrow_up.visible = false;
+
+	if ((nPlayScroll + nPlayVisible) < nMediaListCount)
+		c.MU_morearrow_down.visible = true;
+	else
+		c.MU_morearrow_down.visible = false;
+
+	var nHiliteItem = nPlayCursor;
+	if (nHiliteItem == -1)
+		nHiliteItem = 0;
+
+	for (var i = 0; i < nPlayVisible; i = i + 1)
+	{
+		var n = nPlayScroll + i;
+		if (n >= nMediaListCount)
+		{
+			c.TrackNames.children[i].children[0].geometry.text   = "";
+			c.TrackNumbers.children[i].children[0].geometry.text = "";
+		}
+		else
+		{
+			var strName = (n + 1) + ". " + rgMediaListItems[n];
+			c.TrackNames.children[i].children[0].geometry.text   = strName;
+			c.TrackNumbers.children[i].children[0].geometry.text = "";
+
+			if (n == nHiliteItem)
+			{
+				c.TrackNames.children[i].children[0].appearance.name   = "CellEgg/Partsz";
+				c.TrackNumbers.children[i].children[0].appearance.name = "CellEgg/Partsz";
+				c.TrackNames.children[i].children[0].geometry.scrollRate  = 0.1;
+				c.TrackNames.children[i].children[0].geometry.scrollDelay = 1;
+			}
+			else
+			{
+				c.TrackNames.children[i].children[0].appearance.name   = "Material #1335";
+				c.TrackNumbers.children[i].children[0].appearance.name = "Material #1335";
+				c.TrackNames.children[i].children[0].geometry.scrollRate  = 0;
+				c.TrackNames.children[i].children[0].geometry.scrollDelay = 0;
+			}
+		}
+	}
+}
+
+
+function ShowMediaActionPanel(bShow)
+{
+	var c = theMediaActionMenu.children[0].children[0];
+	c.GM_L2_menubutton_01.visible    = bShow;
+	c.GM_L2_menubutton_02.visible    = bShow;
+	c.GM_L2_menubutton_03.visible    = bShow;
+	c.GM_L2_menubutton_04.visible    = bShow;
+	c.GM_L2_menubutton_05.visible    = bShow;
+	c.soundtrack_text05.visible      = bShow;
+	c.soundtrack_text06.visible      = bShow;
+	c.New_panel_meta.visible         = bShow;
+	c.GM_L2_panel_support_01.visible = bShow;
+}
+
+
+function ShowMusicTransportUI(bShow)
+{
+	// Keep the audiocontrols panel mesh visible (it's part of the frame).
+	// Only hide the music-specific contents: 00:00 timer, repeat/shuffle/etc.
+	var c = theMediaActionMenu.children[0].children[0];
+	c.MU_L3_text_time.visible = bShow;
+	c.Status_Icons.visible    = bShow;
+}
+
+
+function ShowMediaActionMenu()
+{
+	nMediaActionState = 0;
+
+	var c = theMediaActionMenu.children[0].children[0];
+
+	// Action overlay = music's "menu visible" pose.
+	c.MU_L3_text_tracklist01.visible = false;
+	c.CD_STACK.SetAlpha(1);
+
+	c.theMenuArm.SetRotation(0, 1, 0, 0);
+
+	c.audio_panel.SetRotation(-1, 0, 0, -3.246000);
+	c.audio_panel.SetTranslation(-45.549999, 57.18, -203.800003);
+
+	c.back1.SetTranslation(-48.990000, 52.450001, -205.000000);
+	c.back1.SetRotation(0.000000, 1.000000, 0.000000, -0.130900);
+	c.select1.SetTranslation(-45.280000, 52.339999, -204.000000);
+	c.select1.SetRotation(0.000000, 1.000000, 0.000000, -0.497400);
+
+	c.play_buttons.visible  = false;
+	c.buttons_copy.visible  = false;
+	c.buttons_edit.visible  = false;
+
+	ShowMediaActionPanel(true);
+	ShowMusicTransportUI(false);
+	theMediaActionViewpoint.isBound = true;
+
+	// Pull selection state from C++ (set in OnADown of the browser). XAP
+	// top-level vars sometimes lose writes across scene transitions, so the
+	// authoritative source for "what did the user pick" lives in
+	// CMediaCollection's m_curSelKind / m_curSelIdx.
+	gSelectedKind  = theMediaCollection.GetSelectedKind();
+	gSelectedTitle = theMediaCollection.GetSelectedTitle();
+	gSelectedMeta  = theMediaCollection.GetSelectedMeta();
+	gSelectedPlot  = theMediaCollection.GetSelectedPlot();
+	gSelectedIndex = theMediaCollection.GetSelectedIndex();
+
+	c.TitleText.text  = gSelectedTitle.toUpperCase();
+	c.TitleText1.text = gSelectedTitle.toUpperCase();
+	if (gSelectedKind == 1)
+		c.TrackCountText.text = "EPISODES";
+	else
+		c.TrackCountText.text = "1 SCENE";
+	c.MenuMetaText.text = gSelectedMeta + "\n\n" + gSelectedPlot;
+
+	UpdateMediaActionHighlight();
+}
+
+
+function StartMediaSeasons()
+{
+	nMediaActionState   = 1;
+	rgMediaListItems    = GetSeasonsForShow(nCurMediaItem);
+	nMediaListCount     = rgMediaListItems.length;
+	nPlayCursor         = 0;
+	nPlayScroll         = 0;
+	nPreviousPlayCursor = 0;
+
+	var c = theMediaActionMenu.children[0].children[0];
+
+	// Track list = music's "player visible" pose.
+	c.MU_L3_text_tracklist01.visible = true;
+	c.CD_STACK.SetAlpha(0);
+
+	c.theMenuArm.SetRotation(0, 1, 0, 2);
+	c.audio_panel.SetRotation(1, 0, 0, -0.02618);
+	c.audio_panel.SetTranslation(-45.549999, 55.07, -204.5);
+
+	c.back1.SetTranslation(-47.340000, 52.809999, -204.300003);
+	c.back1.SetRotation(0.000000, -1.000000, 0.000000, -0.340300);
+	c.select1.SetTranslation(-43.539999, 52.740002, -204.800003);
+	c.select1.SetRotation(-0.014820, 0.970100, -0.242300, -0.143900);
+
+	c.play_buttons.visible  = false;
+	c.buttons_copy.visible  = false;
+	c.buttons_edit.visible  = false;
+
+	ShowMediaActionPanel(false);
+	ShowMusicTransportUI(false);
+	theMediaTrackListViewpoint.isBound = true;
+
+	c.TitleText.text = gSelectedTitle.toUpperCase() + " / SEASONS";
+	if (nMediaListCount == 1)
+		c.TrackCountText.text = "1 SEASON";
+	else
+		c.TrackCountText.text = nMediaListCount + " SEASONS";
+
+	UpdateMediaTrackList();
+}
+
+
+function StartMediaEpisodes()
+{
+	nMediaActionState   = 2;
+	nCurMediaSeason     = nPlayCursor;
+	rgMediaListItems    = GetEpisodesForShowSeason(nCurMediaItem, nCurMediaSeason);
+	nMediaListCount     = rgMediaListItems.length;
+	nPlayCursor         = 0;
+	nPlayScroll         = 0;
+	nPreviousPlayCursor = 0;
+
+	var c = theMediaActionMenu.children[0].children[0];
+	c.TitleText.text = gSelectedTitle.toUpperCase() + " / S" + (nCurMediaSeason + 1);
+	if (nMediaListCount == 1)
+		c.TrackCountText.text = "1 EPISODE";
+	else
+		c.TrackCountText.text = nMediaListCount + " EPISODES";
+
+	UpdateMediaTrackList();
+}
+
+
+function StartMediaActionLevel()
+{
+	nCurActionItem    = 0;
+	nActionItemCount  = 5;
+	nPlayVisible      = 9;
+
+	// All title/plot/meta wiring happens in ShowMediaActionMenu now,
+	// pulling fresh from CMediaCollection's stored selection.
+	ShowMediaActionMenu();
+}
+
+
+function HighlightMediaActionButton(btn, bSelected)
+{
+	btn.children[0].appearance.material.name = "GameHilite";
+	if (bSelected)
+	{
+		btn.children[0].appearance.texture.url   = "GameHilite_01.bmp";
+		btn.children[1].children[0].appearance.name = "Material #133";
+	}
+	else
+	{
+		btn.children[0].appearance.texture.url   = "outline.tga";
+		btn.children[1].children[0].appearance.name = "NavType";
+	}
+}
+
+
+function UpdateMediaActionHighlight()
+{
+	var c = theMediaActionMenu.children[0].children[0];
+	HighlightMediaActionButton(c.GM_L2_menubutton_01, nCurActionItem == 0);
+	HighlightMediaActionButton(c.GM_L2_menubutton_02, nCurActionItem == 1);
+	HighlightMediaActionButton(c.GM_L2_menubutton_03, nCurActionItem == 2);
+	HighlightMediaActionButton(c.GM_L2_menubutton_04, nCurActionItem == 3);
+	HighlightMediaActionButton(c.GM_L2_menubutton_05, nCurActionItem == 4);
+}
+
+
+DEF theMediaActionMenu Level
+{
+	archive "mediaplayer_action.xip"
+	children
+	[
+		Inline
+		{
+			url "mediaplayer_action/default.xap"
+
+			function onLoad()
+			{
+				StartMediaActionLevel();
+			}
+		}
+	]
+
+	shell Transform
+	{
+		scale 21.504 21.504 21.504
+		translation -44.599998 54.270000 -186.500000
+		children
+		[
+			Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_01" }
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh { url "Inner_cell-FACES.xm" }
+					}
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_02" }
+						}
+						geometry Sphere { radius 1 }
+					}
+				]
+			}
+		]
+	}
+
+	path DEF theMediaActionViewpoint Viewpoint
+	{
+		fieldOfView 1.287000
+		orientation 0.200900 0.979000 0.034330 -0.345700
+		position -47.889999 54.630001 -202.399994
+		jump false
+	}
+
+	path DEF theMediaTrackListViewpoint Viewpoint
+	{
+		fieldOfView 1.316000
+		orientation -0.017440 -0.999800 0.000769 -0.088190
+		position -45.230000 54.810001 -202.399994
+		jump false
+	}
+
+	control Joystick
+	{
+		function OnADown()
+		{
+			// Drain any "playback just exited" pulse from C++ and reset the
+			// action menu pose. Don't swallow the press -- continue into the
+			// normal handler so the user's first input lands.
+			if (theMediaCollection.ConsumePlaybackExited() == 1)
+				ShowMediaActionMenu();
+			PlaySoundA();
+			if (nMediaActionState == 0)
+			{
+				if (nCurActionItem == 0)
+				{
+					if (theMediaCollection.GetSelectedKind() == 1)
+						StartMediaSeasons();
+					else
+						theMediaCollection.PlaySelected();
+				}
+				// INFO / FAVORITE / RENAME / DELETE not yet wired.
+			}
+			else if (nMediaActionState == 1)
+			{
+				StartMediaEpisodes();
+			}
+			else if (nMediaActionState == 2)
+			{
+				theMediaCollection.PlayEpisode(nPlayCursor);
+			}
+		}
+
+		function OnBDown()
+		{
+			if (theMediaCollection.ConsumePlaybackExited() == 1)
+				ShowMediaActionMenu();
+			PlaySoundB();
+			if (nMediaActionState == 2)
+			{
+				StartMediaSeasons();
+			}
+			else if (nMediaActionState == 1)
+			{
+				ShowMediaActionMenu();
+			}
+			else
+			{
+				theMediaMenu.GoBackTo();
+			}
+		}
+
+		function OnMoveUp()
+		{
+			if (theMediaCollection.ConsumePlaybackExited() == 1)
+				ShowMediaActionMenu();
+			if (nMediaActionState == 0)
+			{
+				if (nCurActionItem <= 0)
+					return;
+				PlaySoundMenuChange();
+				nCurActionItem = nCurActionItem - 1;
+				UpdateMediaActionHighlight();
+			}
+			else
+			{
+				if (nPlayCursor <= 0)
+					return;
+				PlaySoundMenuChange();
+				nPlayCursor = nPlayCursor - 1;
+				UpdateMediaTrackList();
+			}
+		}
+
+		function OnMoveDown()
+		{
+			if (theMediaCollection.ConsumePlaybackExited() == 1)
+			{
+				ShowMediaActionMenu();
+				return;
+			}
+			if (nMediaActionState == 0)
+			{
+				if (nCurActionItem >= nActionItemCount - 1)
+					return;
+				PlaySoundMenuChange();
+				nCurActionItem = nCurActionItem + 1;
+				UpdateMediaActionHighlight();
+			}
+			else
+			{
+				if (nPlayCursor >= nMediaListCount - 1)
+					return;
+				PlaySoundMenuChange();
+				nPlayCursor = nPlayCursor + 1;
+				UpdateMediaTrackList();
+			}
+		}
+	}
+
+	function OnArrival()
+	{
+		// Reset to action-menu pose every time we land on this Level
+		// (otherwise state from a Scene 3 visit — arm rotation, audio
+		// panel position, hidden action buttons — sticks around).
+		ShowMediaActionMenu();
+		EnableInput(true);
+	}
+
+	function OnActivate()
+	{
+		CurrentViewpoint = theMediaActionViewpoint;
+		EnableInput(true);
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+// Backing native node: scans the user-configured Movies/TV roots, caches
+// to xboxfs/E/MediaDB.cache, exposes movie/show/season/episode queries to
+// this wrapper.
+////////////////////////////////////////////////////////////////////////////
+
+
+DEF theMediaCollection MediaCollection
+{
+}
+
+
+// User-authored playlist collection (CPlaylistCollection in
+// theseus/desktop/desktop_nodes.cpp). Storage: Configs/playlists.ini.
+DEF thePlaylistCollection PlaylistCollection
+{
+}

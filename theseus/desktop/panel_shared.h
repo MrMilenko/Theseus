@@ -45,6 +45,9 @@ extern int  g_vsyncMode;         // 0=adaptive, 1=on, 2=off
 extern bool g_vsyncChangeRequested;
 extern int  g_fpsCap;            // 0=unlimited; manual frame pacing target
 extern bool g_hwdec;             // mpv hwdec; takes effect on next media open
+extern int  g_windowResolution;  // 720 / 1080 / 1440 / 2160; 0 = native
+extern int  g_windowMode;        // 0=windowed, 1=borderless, 2=exclusive
+extern bool g_displayChangeRequested;
 extern bool g_scrollToSelected;
 
 // ============================================================================

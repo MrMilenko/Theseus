@@ -68,6 +68,7 @@ NODE_FUN_VI(SetAutoOff)
 NODE_FUN_IV(GetVideoMode)
 NODE_FUN_VI(SetVideoMode)
 NODE_FUN_VV(ApplySkin)
+NODE_FUN_VV(FlushMeshCache)
 NODE_FUN_IV(GetAudioMode)
 NODE_FUN_VI(SetAudioMode)
 NODE_FUN_IV(GetDolbyDigitalSupport)
@@ -167,10 +168,16 @@ void CConfig::SetVideoMode(int nVideoMode)
 }
 
 extern void ReloadSkin();
+extern void FlushMeshCache();
 
 void CConfig::ApplySkin()
 {
 	ReloadSkin();
+}
+
+void CConfig::FlushMeshCache()
+{
+	::FlushMeshCache();
 }
 
 int CConfig::Get480Support()

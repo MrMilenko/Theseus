@@ -3487,6 +3487,8 @@ function StartSettingsMenu()
 	}
 	sSettingsMenu[index] = Translate("Skins");
 	index = index + 1;
+	sSettingsMenu[index] = Translate("Orbs");
+	index = index + 1;
 	sSettingsMenu[index] = Translate("Clock");
 	index = index + 1;
 	sSettingsMenu[index] = Translate("Language");
@@ -3627,6 +3629,10 @@ function MenuIcon()
 	{
 		ShowIcon(c.ConsoleIcon);
 	}
+	else if (sSettingsElements[nCurSettingsMenuItem] == Translate("Orbs"))
+	{
+		ShowIcon(c.ConsoleIcon);
+	}
 	else if (sSettingsElements[nCurSettingsMenuItem] == Translate("Clock"))
 	{
 		UpdateClockHands();
@@ -3703,9 +3709,13 @@ function UpdateRootMeta()
 	{ 
 		metaString = Translate("Configure UIX Settings"); 
 	}
-	if(sSettingsElements[nCurSettingsMenuItem] == Translate("Skins")) 
-	{ 
-		metaString = Translate("Skins"); 
+	if(sSettingsElements[nCurSettingsMenuItem] == Translate("Skins"))
+	{
+		metaString = Translate("Skins");
+	}
+	else if(sSettingsElements[nCurSettingsMenuItem] == Translate("Orbs"))
+	{
+		metaString = Translate("Orbs");
 	}
 	else if(sSettingsElements[nCurSettingsMenuItem] == Translate("Clock"))
 	{
@@ -4007,6 +4017,12 @@ DEF theSettingsMenu Level
 				strCurMenu      = "SKINS";
 				bBackToSettings = true;
 				GoToSkins();
+			}
+			else if (sSettingsElements[nCurSettingsMenuItem] == Translate("Orbs"))
+			{
+				strCurMenu      = "ORBS";
+				bBackToSettings = true;
+				GoToOrbs();
 			}
 			else if (sSettingsElements[nCurSettingsMenuItem] == Translate("Clock"))
 			{

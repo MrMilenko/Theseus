@@ -34,6 +34,7 @@ public:
     int GetPAL60Support();
     void SetPAL60Support(int bEnable);
     void ApplySkin();
+    void FlushMeshCache();
 
     // Audio
     int GetAudioMode();

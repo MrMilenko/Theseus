@@ -1,0 +1,351 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+////////////////////////////////////////////////////////////////////////////
+
+var nCurrentAccountSelectionMenu;
+var nTopVisibleAccount, nTotalAccounts;
+var AccountList;
+
+////////////////////////////////////////////////////////////////////////////
+
+function initialize()
+{
+	AccountList = new Array;
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+function UpdateAccountList()
+{
+	var i;
+	nTotalAccounts = theLiveAccounts.GetNumberOfAccounts();
+
+	AccountList = new Array;
+
+	for (i = 0; i < nTotalAccounts; i = i + 1)
+		AccountList[i] = theLiveAccounts.GetAccountName(i);
+
+	AccountList[i] = theTranslator.Translate("NEW ACCOUNT");
+	AccountList[i + 1] = theTranslator.Translate("ACCOUNT RECOVERY");
+
+	// Update button visibility
+	var c = theAccountSelectionLevel.children[0].children[0];
+	c.menubutton_03.children[0].visible = true;
+	c.menubutton_04.children[0].visible = true;
+
+	if (i <= 1)
+		c.menubutton_04.children[0].visible = false;
+	if (i == 0)
+		c.menubutton_03.children[0].visible = false;
+}
+
+function UpdateAccountSelectionMenuHilite()
+{
+	var c = theAccountSelectionLevel.children[0].children[0];
+
+	// Update menu text
+	c.text01.geometry.text = AccountList[nTopVisibleAccount];
+	c.text02.geometry.text = AccountList[nTopVisibleAccount + 1];
+	if (nTotalAccounts > 0)
+		c.text03.geometry.text = AccountList[nTopVisibleAccount + 2];
+	else
+		c.text03.geometry.text = "";
+
+	if (nTotalAccounts > 1)
+		c.text04.geometry.text = AccountList[nTopVisibleAccount + 3];
+	else
+		c.text04.geometry.text = "";
+
+	// Attach Tyler's texture to the buttons
+	c.menubutton_01.children[0].appearance.texture.url = "outline.tga";
+	c.menubutton_02.children[0].appearance.texture.url = "outline.tga";
+	c.menubutton_03.children[0].appearance.texture.url = "outline.tga";
+	c.menubutton_04.children[0].appearance.texture.url = "outline.tga";
+
+	// Change text color to light green
+	c.text01.appearance.name = "NavType";
+	c.text02.appearance.name = "NavType";
+	c.text03.appearance.name = "NavType";
+	c.text04.appearance.name = "NavType";
+
+	// Update current menu hilite and change text color to dark gray
+	if (nCurrentAccountSelectionMenu == 0)
+	{
+		c.menubutton_01.children[0].appearance.texture.url = "GameHilite_01.bmp";
+		c.text01.appearance.name = "HilightedType";
+	}
+	else if (nCurrentAccountSelectionMenu == 1)
+	{
+		c.menubutton_02.children[0].appearance.texture.url = "GameHilite_01.bmp";
+		c.text02.appearance.name = "HilightedType";
+	}
+	else if (nCurrentAccountSelectionMenu == 2)
+	{
+		c.menubutton_03.children[0].appearance.texture.url = "GameHilite_01.bmp";
+		c.text03.appearance.name = "HilightedType";
+	}
+	else
+	{
+		c.menubutton_04.children[0].appearance.texture.url = "GameHilite_01.bmp";
+		c.text04.appearance.name = "HilightedType";
+	}
+
+	// Update array visibility
+	c.arrow_up.visible = (nTopVisibleAccount > 0);
+	c.arrow_down.visible = ((AccountList.length - nTopVisibleAccount) > 4);
+
+	if (c.arrow_up.visible)
+	{
+		if (nCurrentAccountSelectionMenu == 0)
+			c.arrow_up.children[0].appearance.material.name = "HilightedType";
+		else
+			c.arrow_up.children[0].appearance.material.name = "XBoxGreen";
+	}
+
+	if (c.arrow_down.visible)
+	{
+		if (nCurrentAccountSelectionMenu == 3)
+			c.arrow_down.children[0].appearance.material.name = "HilightedType";
+		else
+			c.arrow_down.children[0].appearance.material.name = "XBoxGreen";
+	}
+}
+
+function UpdatePreselectedAccountSelection(nAccountToBeSelected)
+{
+	if (AccountList.length <= 4)
+	{
+		nTopVisibleAccount = 0;
+		nCurrentAccountSelectionMenu = nAccountToBeSelected;
+	}
+	else if (nAccountToBeSelected >= (AccountList.length - 4))
+	{
+		nTopVisibleAccount = AccountList.length - 4;
+		nCurrentAccountSelectionMenu = 4 - (AccountList.length - nAccountToBeSelected);
+	}
+	else
+	{
+		nCurrentAccountSelectionMenu = 0;
+		nTopVisibleAccount = nAccountToBeSelected;
+	}
+
+	UpdateAccountSelectionMenuHilite();
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theAccountSelectionLevel Level
+{
+	archive "AccountSelection.xip"
+	children
+	[
+		Inline
+		{
+			url "AccountSelection/default.xap"
+
+			function onLoad()
+			{
+				// Use "Body" font for Japanese
+				if (theConfig.GetLanguage() == 2)
+					children[0].texttitle.font = "Body";
+				else
+					children[0].texttitle.font = "Heading";
+
+				// Force account re-enumeration
+				theLiveAccounts.Refresh();
+
+				nCurrentAccountSelectionMenu = 0;
+				nTopVisibleAccount = 0;
+				UpdateAccountList();
+				EnableInput(true);
+				theAccountSelectionViewpoint.jump = false;
+				g_bLiveTodayFadeIn = false;
+
+				UpdatePreselectedAccountSelection(g_nCurrentAccountSelected);
+				theLiveAccounts.ClearLastLogonUser();
+			}
+		}
+	]
+
+	path DEF theAccountSelectionViewpoint Viewpoint
+	{
+		fieldOfView 1.287000
+		orientation 0.130300 -0.991400 -0.007829 -0.121100
+		position 123.300003 -0.918000 -152.600006
+		jump false
+	}
+	
+	shell Transform
+	{
+		scale 75 75 75
+		translation 123.599998 1.041000 -190.199997
+		children
+		[
+			DEF theAccountSelectionWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial
+							{
+								name "InnerWall_01"
+							}
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh
+						{
+							url "Inner_cell-FACES.xm"
+						}
+					}
+					Shape
+					{
+						appearance MaxMaterial
+						{
+							name "InnerWall_02"
+						}
+						geometry Sphere
+						{
+							radius 1
+						}
+					}
+				]
+			}
+		]
+	}
+
+	control DEF theAccountSelectionJoystick Joystick
+	{
+		function OnADown()
+		{
+			var c = theAccountSelectionLevel.children[0].children[0];
+			c.MU_select_pod_HL.children[0].appearance.material.param = 1;
+
+			theMemoryMonitor.enumerationOn = false;
+
+			PlaySoundA();
+
+			var Selection = nTopVisibleAccount + nCurrentAccountSelectionMenu;
+
+			if (Selection == nTotalAccounts)
+			{
+				ShowAlert("Account creation is not available in Theseus.\n\nPlease create accounts from a stock dashboard or UIX Lite.");
+			}
+			else if (Selection > nTotalAccounts)
+			{
+				ShowAlert("Account recovery is not available in Theseus.\n\nPlease recover accounts from a stock dashboard or UIX Lite.");
+			}
+			else
+			{
+				theGamesMenuIn.Play();
+				g_nCurrentAccountSelected = Selection;
+				GoToLiveToday();
+			}
+		}
+
+		function OnBDown()
+		{
+			var c = theAccountSelectionLevel.children[0].children[0];
+			c.MU_back_pod_HL.children[0].appearance.material.param = 1;
+
+			PlaySoundB();
+			if(bBackToSettings)
+			{
+				bBackToSettings = false;
+				theSettingsSubMenuOut.Play();
+				GoToSettings();
+			}
+			else
+			{
+				nCurMainMenuItem = nXOLineButton;
+				theGamesMenuOut.Play();
+				theMainMenu.GoBackTo();
+			}
+		}
+
+		function OnMoveUp()
+		{
+			if (nCurrentAccountSelectionMenu == 0)
+			{
+				if (nTopVisibleAccount > 0)
+					nTopVisibleAccount = nTopVisibleAccount - 1;
+				else
+					return;
+			}
+			else
+			{
+				nCurrentAccountSelectionMenu = nCurrentAccountSelectionMenu - 1;
+			}
+
+			PlaySoundMenuChange();
+			UpdateAccountSelectionMenuHilite();
+		}
+
+		function OnMoveDown()
+		{
+			var nMaxButtons;
+
+			if (AccountList.length < 4)
+				nMaxButtons = AccountList.length;
+			else
+				nMaxButtons = 4;
+
+			if (nCurrentAccountSelectionMenu == (nMaxButtons - 1))
+			{
+				if ((AccountList.length - nTopVisibleAccount) > nMaxButtons)
+					nTopVisibleAccount = nTopVisibleAccount + 1;
+				else
+					return;
+			}
+			else
+			{
+				nCurrentAccountSelectionMenu = nCurrentAccountSelectionMenu + 1;
+			}
+
+			PlaySoundMenuChange();
+			UpdateAccountSelectionMenuHilite();
+		}
+	}
+
+	function OnActivate()
+	{
+		CurrentViewpoint = theAccountSelectionViewpoint;
+		if (children[0].children.length() > 0)
+		{
+			// Use "Body" font for Japanese
+			if (theConfig.GetLanguage() == 2)
+				children[0].children[0].texttitle.font = "Body";
+			else
+				children[0].children[0].texttitle.font = "Heading";
+
+			// Force account re-enumeration
+			theLiveAccounts.Refresh();
+
+			nCurrentAccountSelectionMenu = 0;
+			nTopVisibleAccount = 0;
+			UpdateAccountList();
+			UpdateAccountSelectionMenuHilite();
+		}
+	}
+
+	function OnDeactivate()
+	{
+		theMemoryMonitor.enumerationOn = false;
+	}
+
+	function OnArrival()
+	{
+		theMemoryMonitor.blockInsertion = false;
+		theMemoryMonitor.enumerationOn = true;
+		EnableInput(true);
+	}
+}
+

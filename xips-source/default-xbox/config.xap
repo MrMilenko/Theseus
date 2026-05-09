@@ -1,0 +1,1295 @@
+var configList;
+var configValues;
+var configSelect;
+var LV1Item;
+var LV1Hold;
+var inLV1;
+var LV2Item;
+var LV2Hold;
+var inLV2;
+var settChanged;
+var AddKeyboardTitle; 
+var inQuickLaunchMenu;
+var inChangeTitleMenu;
+var MaxCharacters;
+var bAdvancedMode;
+var nMaxMenuItems;
+
+function initialize()
+{
+	inLV1 = true;
+	LV1Item = 0;
+	LV1Hold = 0;
+	LV2Item = 0;
+	LV2Hold = 0;
+	inLV2 = false;
+	settChanged = false;
+	MaxCharacters = 28;
+	inQuickLaunchMenu = false;
+	inChangeTitleMenu = false;
+	AddKeyboardTitle = false;
+	bAdvancedMode =  GetSavedBooleanValue("MainMenu","AdvancedMode");
+}
+
+function buildconfigList() //written this way so u can easily rearrange and add, so dont change it!
+{
+	var i = 0;
+	configList = new Array;
+	configList[i] = "General Settings";
+	i = i + 1;
+	configList[i] = "Main Menu";
+	i = i + 1;
+	configList[i] = "Launcher Menu";
+	i = i + 1;
+	configList[i] = "Show in Settings";
+	i = i + 1;
+	configList[i] = "Quick Launch";
+	i = i + 1;
+	if(bPresence){
+		configList[i] = "Discord Presence";
+		i = i + 1;
+	}
+	configList[i] = "Change Displayed Name of Titles";
+	
+	clearText();
+	updateText();
+}
+
+function buildGSList() //just copy this function for more subsections
+{
+	var i = 0;
+	configList = new Array;
+	configValues = new Array;
+	configSelect = new Array;
+	
+	configList[i] = "Main Orb Style:";
+	configValues[i] = "default-MainOrbStyle"; //section-value
+	configSelect[i] = "toggleMOS()";
+	i = i + 1;
+	configList[i] = "Use Custom Orb:";
+	configValues[i] = "Dashboard Settings-Use Custom Orb";
+	configSelect[i] = "toggleCustomOrb()";
+	i = i + 1;
+	configList[i] = "Show Insignia:";
+	configValues[i] = "default-ShowInsignia";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "Animate Main Menu:";
+	configValues[i] = "default-UseMainMenuAttract";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "Auto-Launch Media:";
+	configValues[i] = "default-AutoLaunchMedia";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "Use tHc ScreenSaver:";
+	configValues[i] = "default-UsetHcScreenSaver";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "UIX Settings Icon:";
+	configValues[i] = "default-ConfigPanelIcon";
+	configSelect[i] = "toggleIcon()";
+	i = i + 1;
+	configList[i] = "Launcher Orb Icon:";
+	configValues[i] = "default-LauncherOrbIcon";
+	configSelect[i] = "toggleLOI()";
+	i = i + 1;
+	configList[i] = "Use List Underlay:";
+	configValues[i] = "default-UseListUnderlay";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "Toggle Noisy Camera";
+	configValues[i] = "-blank-";
+	configSelect[i] = "ToggleNoisyCam()";
+	i = i + 1;
+	configList[i] = "Rescan Partitions";
+	configValues[i] = "-blank-";
+	configSelect[i] = "RescanPartitions()";
+	
+	clearText();
+	updateText();
+}
+
+function buildMMList() 
+{
+	var i = 0;
+	configList = new Array;
+	configValues = new Array;
+	configSelect = new Array;
+	
+	configList[i] = "Main Menu Items:";
+	configValues[i] = "MainMenu-MainMenuItems";
+	configSelect[i] = "toggle345()";
+	i = i + 1;
+	
+	configList[i] = "Item 1 Title:";
+	configValues[i] = "MainMenu-Button1Text";
+	configSelect[i] = "toggleMMB()";
+	i = i + 1;
+	
+	configList[i] = "Item 1 Action:";
+	configValues[i] = "MainMenu-Button1Action";
+	configSelect[i] = "toggleMMF()";
+	i = i + 1;
+	
+	configList[i] = "Item 2 Title:";
+	configValues[i] = "MainMenu-Button2Text";
+	configSelect[i] = "toggleMMB()";
+	i = i + 1;
+	
+	configList[i] = "Item 2 Action:";
+	configValues[i] = "MainMenu-Button2Action";
+	configSelect[i] = "toggleMMF()";
+	i = i + 1;
+	
+	configList[i] = "Item 3 Title:";
+	configValues[i] = "MainMenu-Button3Text";
+	configSelect[i] = "toggleMMB()";
+	i = i + 1;
+	
+	configList[i] = "Item 3 Action:";
+	configValues[i] = "MainMenu-Button3Action";
+	configSelect[i] = "toggleMMF()";
+	i = i + 1;
+	
+	configList[i] = "Item 4 Title:";
+	configValues[i] = "MainMenu-Button4Text";
+	configSelect[i] = "toggleMMB()";
+	i = i + 1;
+
+	configList[i] = "Item 4 Action:";
+	configValues[i] = "MainMenu-Button4Action";
+	configSelect[i] = "toggleMMF()";
+	i = i + 1;
+
+	configList[i] = "YX Button Action:";
+	configValues[i] = "MainMenu-ButtonYXAction";
+	configSelect[i] = "toggleYX()";
+	i = i + 1;
+
+	configList[i] = "Advanced Mode:";
+	configValues[i] = "MainMenu-AdvancedMode";
+	configSelect[i] = "toggleAM()";    
+	
+	clearText();
+	updateText();
+}
+
+function buildHDList()
+{
+	configList = new Array;
+	configValues = new Array;
+	configSelect = new Array;
+	var nMaxLauncherMenuItems = StringToNumber(GetSavedValue("LauncherMenu","MaxLauncherMenuItems"));
+	if(nMaxLauncherMenuItems == 0){ nMaxLauncherMenuItems = 8;SetSavedValue("LauncherMenu","MaxLauncherMenuItems",nMaxLauncherMenuItems);}
+	configList[0] = "Max Launcher Menu Items:";
+	configValues[0] = "LauncherMenu-MaxLauncherMenuItems";
+	configSelect[0] = "configKeyb()";
+	
+	for(var i = 0; i < nMaxLauncherMenuItems; i = i + 1)
+	{
+		configList[configList.length] = "Item "+ (i + 1) + " Title:";
+		configValues[configValues.length] = "LauncherMenu-Title" + i;
+		configSelect[configSelect.length] = "configKeyb()";
+		configList[configList.length] = "Item "+ (i + 1) + " Path:";
+		configValues[configValues.length] = "LauncherMenu-Path" + i;
+		configSelect[configSelect.length] = "configKeyb()";
+	}
+	
+	clearText();
+	updateText();
+}
+
+function BuildSSList()
+{
+	var i = 0;
+	configList = new Array;
+	configValues = new Array;
+	configSelect = new Array;
+	
+	configList[i] = "Memory:";
+	configValues[i] = "ShowInSettings-Memory";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "Music:";
+	configValues[i] = "ShowInSettings-Music";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "XONLINE:";
+	configValues[i] = "ShowInSettings-XOnline";
+	configSelect[i] = "toggleTF()";
+	i = i +1;
+	configList[i] = "Launcher:";
+	configValues[i] = "ShowInSettings-Launcher";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "Configuration:";
+	configValues[i] = "ShowInSettings-Configuration";
+	configSelect[i] = "toggleTF()";
+	i = i + 1;
+	configList[i] = "Start UIX Toolbox:";
+	configValues[i] = "ShowInSettings-StartFTP";
+	configSelect[i] = "toggleTF()";
+	i = i +1;
+	configList[i] = "Reboot:";
+	configValues[i] = "ShowInSettings-Reboot";
+	configSelect[i] = "toggleTF()";
+	i = i +1;
+	configList[i] = "Shutdown:";
+	configValues[i] = "ShowInSettings-Shutdown";
+	configSelect[i] = "toggleTF()";
+	
+	clearText();
+	updateText();
+}
+
+function BuildQLList()
+{
+	var i = 0;
+	configList = new Array;
+	configValues = new Array;
+	configSelect = new Array;
+	
+	configList[i] = "A:";
+	configValues[i] = "QuickLaunch-QuickLaunchA";
+	configSelect[i] = "configKeyb()";
+	i = i + 1;
+	configList[i] = "B:";
+	configValues[i] = "QuickLaunch-QuickLaunchB";
+	configSelect[i] = "configKeyb()";
+	i = i + 1;
+	configList[i] = "X:";
+	configValues[i] = "QuickLaunch-QuickLaunchX";
+	configSelect[i] = "configKeyb()";
+	i = i + 1;
+	configList[i] = "Y:";
+	configValues[i] = "QuickLaunch-QuickLaunchY";
+	configSelect[i] = "configKeyb()";
+	
+	clearText();
+	updateText();
+}
+
+function BuildDPList()
+{
+	var i = 0;
+	configList = new Array;
+	configValues = new Array;
+	configSelect = new Array;
+	
+	configList[i] = "Enable Discord Presence:";
+	configValues[i] = "DiscordPresence-PresenceEnabled";
+	configSelect[i] = "toggleDP()";
+	i = i + 1;
+	configList[i] = "xbdStats IPAddress:";
+	configValues[i] = "Shortcut-RelayIP";
+	configSelect[i] = "configKeyb()";
+	i = i + 1;
+	configList[i] = "xbdStats Port:";
+	configValues[i] = "Shortcut-RelayPort";
+	configSelect[i] = "togglePorts()";
+	
+	clearText();
+	updateText();
+}
+
+function BuildRTList()
+{
+	configList = new Array;
+	configValues = new Array;
+	configSelect = new Array;
+	
+	configList = GetAllTitles();
+	var x = 0;
+	for(var i = 0; i < configList.length; i = i + 1)
+	{
+		var cTitle = Split(configList[x],";");
+		configList[x] = cTitle[0];
+		configValues[x] = "";
+		configSelect[x] = "configKeyb()";
+		x = x + 1;
+	}
+
+	clearText();
+	updateText();
+	tabSlot(LV2Hold);
+}
+
+function toggleTF()
+{
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b.toLowerCase() == "true") { refreshMenu("false"); } else { refreshMenu("true"); }
+}
+
+function toggle34()
+{
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b.toLowerCase() == "3") { refreshMenu("4"); }
+	else { refreshMenu("3"); }
+}
+
+function toggle345()
+{
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b.toLowerCase() == "3") { refreshMenu("4"); }
+	else if(b.toLowerCase() == "4") { refreshMenu("5"); }
+	else { refreshMenu("3"); }
+}
+
+function toggleMOS()
+{
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b.toLowerCase() == "thc") { refreshMenu("Stock"); } else { refreshMenu("tHc"); }
+	ReloadOrb();
+}
+
+function toggleCustomOrb()
+{
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b.toLowerCase() == "true") { refreshMenu("false"); } else { refreshMenu("true"); }
+	ReloadOrb();
+}
+
+function toggleYX()
+{
+	if(bAdvancedMode) { configKeyb(); return; }
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b == "ToggleNoisyCam()") { refreshMenu("GoToMemory()"); }
+	else if(b == "GoToMemory()") { refreshMenu("GoToMusic()"); }
+	else if(b == "GoToMusic()") { refreshMenu("GoToXOnline()"); }
+	else if(b == "GoToXOnline()") { refreshMenu("GoToLauncher()"); }
+	else if(b == "GoToLauncher()") { refreshMenu("GoToUIXConfig()"); }
+	else if(b == "GoToUIXConfig()") { refreshMenu("Nothing"); }
+	else { refreshMenu("ToggleNoisyCam()"); }
+}
+
+function toggleMMF()
+{
+	if(bAdvancedMode) { configKeyb(); return; }
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b == "GoToMemory()") { refreshMenu("GoToMusic()"); }
+	else if(b == "GoToMusic()") { refreshMenu("GoToXOnline()"); }
+	else if(b == "GoToXOnline()") { refreshMenu("GoToLauncher()"); }
+	else { refreshMenu("GoToMemory()"); }
+}
+
+function toggleMMB()
+{
+	if(bAdvancedMode) { configKeyb(); return; }
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b.toLowerCase() == "memory") { refreshMenu("MUSIC"); }
+	else if(b.toLowerCase() == "music") { refreshMenu("XONLINE"); }
+	else if(b.toLowerCase() == "xonline") { refreshMenu("LAUNCHER"); }
+	else { refreshMenu("MEMORY"); }
+}
+
+function toggleIcon()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	var cValue;
+	if(b.toLowerCase() == "console")
+	{
+		c.GlobeIcon.visible = true;
+		c.ConsoleIcon.visible = false;
+		cValue = "Globe";
+	}
+	else
+	{
+		c.GlobeIcon.visible = false;
+		c.ConsoleIcon.visible = true;
+		cValue = "Console";
+	}
+	c.theRightSlots.children[LV2Hold].children[0].geometry.text = Translate(cValue);
+	setConfigMenuValue(configValues[LV2Item],cValue);
+}
+
+function toggleLOI()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	var cValue;
+	if(b == "None") { cValue = "Xbox"; } 
+	else if(b == "Xbox") { cValue = "UIX"; }
+	else { cValue = "None"; }
+	c.theRightSlots.children[LV2Hold].children[0].geometry.text = Translate(cValue);
+	setConfigMenuValue(configValues[LV2Item],cValue);
+}
+
+function toggleAM()
+{
+	var cValue;
+	if(bAdvancedMode) { bAdvancedMode = false; cValue = "false"; } else { bAdvancedMode = true; cValue = "true"; }
+	SetSavedBooleanValue("MainMenu","AdvancedMode",bAdvancedMode);
+	var c = theConfigPanel.children[0].children[0];
+	c.theRightSlots.children[LV2Hold].children[0].geometry.text = Translate(cValue);
+}
+
+function toggleDP()
+{
+	var cValue;
+	if(bPresenceEnabled) { bPresenceEnabled = false; cValue = "false";} else { bPresenceEnabled = true; cValue = "true";}
+	SetSavedBooleanValue("DiscordPresence","PresenceEnabled",bPresenceEnabled);
+	var c = theConfigPanel.children[0].children[0];
+	c.theRightSlots.children[LV2Hold].children[0].geometry.text = Translate(cValue);
+	settChanged = true;
+}
+
+function togglePorts()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	var cValue;
+	if(b == "1101") { cValue = "1102"; } 
+	else if(b == "1102") { cValue = "1103"; }
+	else { cValue = "1101"; }
+	c.theRightSlots.children[LV2Hold].children[0].geometry.text = cValue;
+	setConfigMenuValue(configValues[LV2Item],cValue);
+	settChanged = true;
+}
+
+function PathEllipsis(x)
+{
+	var sPath, arrPath, center, a, b, c; 
+	sPath = x;
+	c = sPath.length();
+	while(c > MaxCharacters)
+	{
+		arrPath = Split(sPath,"\\");
+		center = Math.ceil(arrPath.length / 2);
+		a = arrPath.slice(0,center - 1);
+		b = arrPath.slice(center,arrPath.length);
+		sPath = a.join("\\") + "\\" + b.join("\\");
+		c = sPath.length();
+	}
+	return a.join("\\") + "\\...\\" + b.join("\\");
+}
+
+function configKeyb()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var a = c.theLeftSlots.children[LV2Hold].children[0].geometry.text; //title
+	var b = getConfigMenuValue(configValues[LV2Item]); 
+	if(b.length() > 30)
+	{
+		if(inQuickLaunchMenu)
+		{
+			var Cut;
+			if(b.length() > 43 ) Cut = 15; else Cut = 10;
+			var x = b.substr(Cut);
+			var y = x.indexOf("\\");
+			y = y + Cut + 1;
+			a = b.substr(0,y);
+			AddKeyboardTitle = true;
+			b = b.substr(y);
+		}
+		else
+		{
+			a = b.substr(0,25);
+			b = b.substr(25);
+			AddKeyboardTitle = true;
+		}
+	}
+	else if(inChangeTitleMenu)
+	{
+		a = "";
+		b = GetTitleName(configList[LV2Item]);
+		if(b == "") { b = configList[LV2Item]; }
+		if(b.length() > 30) 
+		{
+			var Cut;
+			if(b.length() > 43 ) Cut = 15; else Cut = 10;
+			var x = b.substr(Cut);
+			var y = x.indexOf(" ");
+			y = y + Cut + 1;
+			a = b.substr(0,y);
+			AddKeyboardTitle = true;
+			b = b.substr(y);
+		}
+	} 
+	ShowKeyboard(a, b, "theUIXConfigInline.children[0].refreshMenu(strKeyboardEdit)", "theUIXConfigInline.children[0].configKeybCancel()");
+}
+
+function configKeybCancel()
+{
+	PlaySoundB();
+	AddKeyboardTitle= false;
+}    
+
+function refreshMenu(x)
+{
+	var c = theConfigPanel.children[0].children[0];
+	var cValue = x; 
+	if(AddKeyboardTitle) { cValue = strKeyboardTitle + cValue; AddKeyboardTitle = false; }
+	if((inChangeTitleMenu | inQuickLaunchMenu) == false) { settChanged = true; }
+	if(x.toLowerCase() == "x") 
+	{   //Delete the key and return if the user enters only an "x" on the keyboard.
+		setConfigMenuValue(configValues[LV2Item],"");
+		if(inChangeTitleMenu) 
+		{ 
+			c.theLeftSlots.children[LV2Hold].children[0].geometry.text = configList[LV2Item];
+		}
+		else 
+		{
+			c.theRightSlots.children[LV2Hold].children[0].geometry.text = ""; 
+		}
+		return; 
+	} 
+	else if(inQuickLaunchMenu) 
+	{ 
+		if(cValue.length() > MaxCharacters) 
+		{   //Add ellipsis to long paths and return
+			c.theRightSlots.children[LV2Hold].children[0].geometry.text = PathEllipsis(cValue);
+		}
+		else
+		{
+			c.theRightSlots.children[LV2Hold].children[0].geometry.text = cValue;
+		}
+		setConfigMenuValue(configValues[LV2Item],cValue);
+		return;
+	}
+	
+	if(inChangeTitleMenu)
+	{
+		var tValue = cValue;
+		if(tValue.length() > 36) { tValue = tValue.substr(0, 36) + "..."; }
+		c.theLeftSlots.children[LV2Hold].children[0].geometry.text = tValue;
+		SetTitleName(configList[LV2Item],cValue);
+	}
+	else
+	{
+		if(cValue.length() > 20) { c.theRightSlots.children[LV2Hold].children[0].geometry.text = cValue.substr(0, 20) + "..."; }
+		else { c.theRightSlots.children[LV2Hold].children[0].geometry.text = Translate(cValue); }
+		setConfigMenuValue(configValues[LV2Item],cValue);
+	}
+
+	if(configValues[LV2Item] == "LauncherMenu-MaxLauncherMenuItems")
+	{
+		buildHDList();
+		tabSlot(LV2Hold);
+	}
+}
+
+function tabSlot(x)
+{
+	var c = theConfigPanel.children[0].children[0];
+	//var indentItemTrans = c.theLeftSlots.children[x].translation;
+	c.theLeftSlots.children[x].children[0].appearance.name = "GameHilite";
+	//c.theLeftSlots.children[x].SetTranslation(2.35, parseTrans(indentItemTrans,"Y"), parseTrans(indentItemTrans,"Z"));
+}
+
+function unTabSlot(x)
+{
+	var c = theConfigPanel.children[0].children[0];
+	//var indentItemTrans = c.theLeftSlots.children[x].translation;
+	c.theLeftSlots.children[x].children[0].appearance.name = "Material #1335";        
+	//c.theLeftSlots.children[x].SetTranslation(2, parseTrans(indentItemTrans,"Y"), parseTrans(indentItemTrans,"Z"));
+}
+
+function clearText()
+{
+	var c = theConfigPanel.children[0].children[0];
+	for(var i = 0; i < nMaxMenuItems; i = i + 1)
+	{
+		c.theLeftSlots.children[i].children[0].geometry.text = "";
+		c.theLeftSlots.children[i].children[0].appearance.name = "Material #1335";
+		c.theLeftSlots.children[i].children[0].geometry.font = "Body";
+		
+		c.theRightSlots.children[i].children[0].geometry.text = "";
+		c.theRightSlots.children[i].children[0].appearance.name = "GameHilite";
+		c.theRightSlots.children[i].children[0].geometry.font = "Body";
+	}
+}
+
+function updateText()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var loopLength = configList.length;
+	if(loopLength > nMaxMenuItems - 1) loopLength = nMaxMenuItems;
+	for(var i = 0; i < loopLength; i = i + 1)
+	{
+		//left slots
+		if(inChangeTitleMenu)
+		{
+			var tValue = GetTitleName(configList[i]);
+			if(tValue == "") { tValue = configList[i]; }
+			if(tValue.length() > 36) { tValue = tValue.substr(0, 36) + "..."; }
+			c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+		}
+		else
+		{
+			var tValue = configList[i];
+			if(tValue.charAt(tValue.length() - 1) == ":") tValue = Translate(tValue.substr(0,tValue.length() - 1)) + ":";
+			else tValue = Translate(tValue);
+			c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+			if(configList[i].substr(0, 2) == "  ")
+			{
+				c.theLeftSlots.children[i].children[0].appearance.name = "RedType";
+				c.theLeftSlots.children[i].children[0].geometry.font = "Heading";
+			}
+			//right slots
+			if(inLV2 == true) 
+			{
+				var cValue = getConfigMenuValue(configValues[i]);
+				if(cValue == "") //Set default values
+				{
+					if(configSelect[i] == "toggleTF()")
+					{
+						cValue = "false";
+						setConfigMenuValue(configValues[i],cValue);
+					}
+					else if(configSelect[i] == "toggle34()" | configSelect[i] == "toggle345()")
+					{
+						cValue = "3";
+						setConfigMenuValue(configValues[i],cValue);
+					}
+				}
+				c.theRightSlots.children[i].children[0].appearance.name = "GameHilite";
+				if(inQuickLaunchMenu)
+				{
+					if(cValue.length() > MaxCharacters)
+					{
+						c.theRightSlots.children[i].children[0].geometry.text = PathEllipsis(cValue);
+					}
+					else
+					{
+						c.theRightSlots.children[i].children[0].geometry.text = cValue;
+					}
+				}
+				else
+				{
+					if(cValue.length() > 20 & inQuickLaunchMenu == false) { c.theRightSlots.children[i].children[0].geometry.text = cValue.substr(0, 20) + "..."; }
+					else { c.theRightSlots.children[i].children[0].geometry.text =  Translate(cValue); }
+				}
+			}
+		}
+	}
+	if(configList.length > nMaxMenuItems) { c.theDownArrow.visible = true; }
+}
+
+function getConfigMenuValue(x)
+{
+	var dud = "";
+	var b;
+	if(x == "-blank-")
+	return dud;
+	var vSection = x.substr(0,x.indexOf("-"));
+	var vValue = x.substr(x.indexOf("-") + 1, x.length());
+	if (bPresence & vValue.substr(0,5) == "Relay"){
+		b = Discord.GetValue(vValue);
+	} else {
+		b = GetSavedValue(vSection,vValue);
+	}
+	return b;
+}
+
+function setConfigMenuValue(x,y)
+{
+	var vSection = x.substr(0,x.indexOf("-"));
+	var vValue = x.substr(x.indexOf("-") + 1, x.length());
+	if (bPresence & vValue.substr(0,5) == "Relay"){
+		Discord.SetValue(vValue,y);
+	} else {
+		SetSavedValue(vSection,vValue,y);
+	}
+}
+
+DEF theConfigPanel Level
+{
+	archive "uix_settings.xip"
+	children
+	[
+		Inline
+		{
+			url "uix_settings/default.xap"        
+			function onLoad()
+			{   
+				var c = theConfigPanel.children[0].children[0];
+				c.theLeftSlots.children[0].children[0].appearance.name = "GameHilite";
+				c.theBuildInfo.children[0].geometry.text = "Build: " + sBuildDate;
+				c.theConfigHeader.children[0].geometry.text = "UIX Lite";
+				c.MU_L3_panel_tracklist_overlay.visible = bUseUnderlay;
+				var YStart;
+				var YStep;
+				var Y = 0;
+				if(bUseUnderlay)
+				{
+					nMaxMenuItems = 9;
+					YStart = -25.55;
+					YStep = 1.18;
+				}
+				else
+				{
+					nMaxMenuItems = 12;
+					YStart = -26.00;
+					YStep = .804;
+				}
+				for(var i = 0; i < 12; i = i + 1)
+				{
+					var TransLS = c.theLeftSlots.children[i].translation;
+					var TransRS = c.theRightSlots.children[i].translation;
+					if(i < nMaxMenuItems)
+					{
+						Y = YStart - (i * YStep);
+						c.theLeftSlots.children[i].SetTranslation(parseTrans(TransLS,"X"), Y, parseTrans(TransLS,"Z"));
+						c.theLeftSlots.children[i].visible = true;
+						c.theRightSlots.children[i].SetTranslation(parseTrans(TransRS,"X"), Y, parseTrans(TransRS,"Z"));
+						c.theRightSlots.children[i].visible = true;
+					}
+					else
+					{
+						c.theLeftSlots.children[i].visible = false;
+						c.theLeftSlots.children[i].SetTranslation(parseTrans(TransLS,"X"), Y, parseTrans(TransLS,"Z"));
+						c.theRightSlots.children[i].visible = false;
+						c.theRightSlots.children[i].SetTranslation(parseTrans(TransRS,"X"), Y, parseTrans(TransRS,"Z"));
+					}
+				}
+				if(bPresence)
+				{
+					if(Discord.GetValue("RelayIP") == "") Discord.SetValue("RelayIP","0.0.0.0");
+					if(Discord.GetValue("RelayPort") == "") Discord.SetValue("RelayPort","1101");
+				}
+				var cValue = getConfigMenuValue("default-ConfigPanelIcon");
+				if(cValue.toLowerCase() == "globe") { c.GlobeIcon.visible = true; } else { c.ConsoleIcon.visible = true; }
+				buildconfigList();
+				tabSlot(0);
+			}
+		}
+	]
+	
+	shell Transform
+	{
+		scale 12 12 12 //150
+		translation 109.8 1.622000 -223.050006
+		children
+		[
+			DEF theConfigWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial 
+							{ 
+								name "InnerWall_01" 
+							}
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh { url "Inner_cell-FACES.xm" }
+					}
+					Shape
+					{
+						appearance Appearance 
+						{ 
+							material MaxMaterial 
+							{ 
+								name "InnerWall_02" 
+							} 
+						}
+						geometry Sphere 
+						{ 
+							radius 1.0
+						}
+					}
+				]
+			}
+		]
+	}
+	
+	path DEF theConfigMenuViewpoint Viewpoint
+	{
+		position 107.8 1.422000 -219.050006
+		orientation 0.03682 0.9993 0.00299 -0.1622
+		fieldOfView 1.287
+		jump false
+	}
+	
+	control DEF theConfigMenuJoystick Joystick
+	{
+		function OnADown()
+		{
+			var c = theConfigPanel.children[0].children[0];
+			c.MU_select_pod_HL.children[0].appearance.material.param = 1;
+			PlaySoundA();
+			if(inLV1 == true)
+			{
+				unTabSlot(LV1Hold);
+				inLV1 = false;
+				inLV2 = true;
+				LV2Item = 0;
+				LV2Hold = 0;
+				
+				if(configList[LV1Item] == "General Settings") ///add new subs here
+				{
+					buildGSList();
+					tabSlot(LV2Hold);
+					c.theConfigHeader.children[0].geometry.text = Translate("General Settings");
+				}
+				else if(configList[LV1Item] == "Main Menu")
+				{
+					buildMMList();
+					tabSlot(LV2Hold);
+					c.theConfigHeader.children[0].geometry.text = Translate("Main Menu");
+				}
+				else if(configList[LV1Item] == "Launcher Menu")
+				{
+					buildHDList();
+					tabSlot(LV2Hold);
+					c.theConfigHeader.children[0].geometry.text = Translate("Launcher Menu");
+				}
+				else if(configList[LV1Item] == "Show in Settings")
+				{
+					BuildSSList();
+					tabSlot(LV2Hold);
+					c.theConfigHeader.children[0].geometry.text = Translate("Show in Settings");
+				}
+				else if(configList[LV1Item] == "Quick Launch")
+				{
+					inQuickLaunchMenu = true;
+					BuildQLList();
+					tabSlot(LV2Hold);
+					c.theConfigHeader.children[0].geometry.text = Translate("Quick Launch");
+				}
+				else if(configList[LV1Item] == "Discord Presence")
+				{
+					BuildDPList();
+					tabSlot(LV2Hold);
+					c.theConfigHeader.children[0].geometry.text = Translate("Discord Presence");
+				}
+				else if(configList[LV1Item] == "Change Displayed Name of Titles")
+				{
+					inChangeTitleMenu = true;
+					BuildRTList();
+					c.theConfigHeader.children[0].geometry.text = Translate("Change Title Names");
+				}                
+			}
+			else if(inLV2 == true)
+			{
+				eval(configSelect[LV2Item]);
+			}
+		}
+		function OnRightDown() { OnMoveRight(); }
+		function OnMoveRight()
+		{
+			scrollConfigDown();
+		}
+		function OnLeftDown() { OnMoveLeft(); }
+		function OnMoveLeft()
+		{
+			scrollConfigUp();
+		}
+		
+		function OnMoveDown()
+		{
+			selectConfigDown();
+		}
+		
+		function OnMoveUp()
+		{
+			selectConfigUp();
+		}
+		
+		function OnBDown()
+		{
+			var c = theConfigPanel.children[0].children[0];
+			c.MU_back_pod_HL.children[0].appearance.material.param = 1;
+			PlaySoundB();
+			if(inLV1 == false)
+			{
+				inQuickLaunchMenu = false;
+				inChangeTitleMenu = false;
+				inLV2 = false;
+				inLV1 = true;
+				buildconfigList();
+				unTabSlot(LV2Hold);
+				tabSlot(LV1Hold);
+				c.theDownArrow.visible = false;
+				c.theUpArrow.visible = false;
+				c.theLeftSlots.children[LV1Hold].children[0].appearance.name = "GameHilite";
+				c.theConfigHeader.children[0].geometry.text = "UIX Lite";
+			}
+			else
+			{
+				if(settChanged == true)
+				{
+					AskQuestion(Translate("SETTINGS_CHANGED"), "Reload()", "theUIXConfigInline.children[0].leaveConfig()", 1);
+				}
+				else if(settChanged == false)
+				{
+					leaveConfig();
+				}
+			}
+		}
+		
+		function OnWhiteDown()
+		{
+			//theConfig.DebugOutput(configList[LV1Item] );
+		}
+	}
+	
+	function OnActivate()
+	{
+		CurrentViewpoint = theConfigMenuViewpoint;
+		buildconfigList();
+		LV1Item = 0;
+		LV1Hold = 0;
+		tabSlot(LV1Hold);
+	}
+}
+
+function leaveConfig()
+{
+	unTabSlot(LV1Hold);
+	if(bBackToSettings)
+	{ 
+		bBackToSettings = false;
+		theSettingsSubMenuOut.Play();
+		GoToSettings();
+	} 
+	else 
+	{ 
+		theGamesMenuOut.Play();
+		theMainMenu.GoBackTo();
+	}
+}
+
+function selectConfigDown()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var curItem;
+	var curHold;    
+	if(inLV1 == true)
+	{
+		curItem = LV1Item;
+		curHold = LV1Hold;
+	}
+	else
+	{
+		curItem = LV2Item;
+		curHold = LV2Hold;
+	}
+	
+	if(curItem + 1 == configList.length) { return; } //end of list
+	
+	PlaySoundMenuChange();
+	if(curHold == nMaxMenuItems - 1) //SCROLL MENU DOWN
+	{
+		c.theUpArrow.visible = true;        
+		if(configList.length > curItem + 1)
+		{
+			curItem = curItem + 1;
+			for(var i = 0; i < nMaxMenuItems; i = i + 1)
+			{
+				if(inChangeTitleMenu)
+				{
+					var tValue = GetTitleName(configList[curItem + (i - (nMaxMenuItems - 1))]);
+					if(tValue == "") { tValue = configList[curItem + (i - (nMaxMenuItems - 1))]; }
+					if(tValue.length() > 36) { tValue = tValue.substr(0, 36) + "..."; }
+					c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+				}
+				else
+				{
+					var tValue = configList[curItem + (i - (nMaxMenuItems - 1))];
+					if(tValue.charAt(tValue.length() - 1) == ":") tValue = Translate(tValue.substr(0,tValue.length() - 1)) + ":";
+					else tValue = Translate(tValue);
+					c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+					if(inLV2 == true)
+					{
+						c.theRightSlots.children[i].children[0].appearance.name = "GameHilite";
+						var cValue = Translate(getConfigMenuValue(configValues[curItem + (i - (nMaxMenuItems - 1))]));
+						if(cValue.length() > 20) { 
+							if(inQuickLaunchMenu) { cValue = PathEllipsis(cValue); }
+							else { cValue = cValue.substr(0, 20) + "..."; }
+						}
+						c.theRightSlots.children[i].children[0].geometry.text = cValue;
+					}
+				}
+			}
+		}
+	}   
+	else if(curHold < nMaxMenuItems - 1)
+	{
+		unTabSlot(curHold);
+		curItem = curItem + 1;
+		curHold = curHold + 1;
+		tabSlot(curHold);
+	}
+	
+	if(inLV1 == true)
+	{
+		LV1Item = curItem;
+		LV1Hold = curHold;
+	}
+	else
+	{
+		LV2Item = curItem;
+		LV2Hold = curHold;
+	}
+	if(curItem == configList.length - 1) {c.theDownArrow.visible = false;}
+}
+
+function selectConfigUp()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var curItem;
+	var curHold; 
+	var loop;   
+	if(inLV1 == true)
+	{
+		curItem = LV1Item;
+		curHold = LV1Hold;
+	}
+	else
+	{
+		curItem = LV2Item;
+		curHold = LV2Hold;
+	}
+	
+	if(curItem == 0) { return; }
+	
+	PlaySoundMenuChange();
+	if(curItem > 0)
+	{
+		if(curHold == 0)
+		{
+			if(configList.length - curItem > nMaxMenuItems - 1) c.theDownArrow.visible = true;
+			if(curItem != 0)
+			{
+				curItem = curItem - 1;
+				if(configList.length - curItem < nMaxMenuItems) loop = configList.length - curItem; else loop = nMaxMenuItems;
+				for(var i = 0; i < loop; i = i + 1)
+				{
+					if(inChangeTitleMenu)
+					{
+						var tValue = GetTitleName(configList[curItem + i]);
+						if(tValue == "") { tValue = configList[curItem + i]; }
+						if(tValue.length() > 36) { tValue = tValue.substr(0, 36) + "..."; }
+						c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+					}
+					else
+					{
+						var tValue = configList[curItem + i];
+						if(tValue.charAt(tValue.length() - 1) == ":") tValue = Translate(tValue.substr(0,tValue.length() - 1)) + ":";
+						else tValue = Translate(tValue);
+						c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+						if(inLV2 == true)
+						{
+							c.theRightSlots.children[i].children[0].appearance.name = "GameHilite";
+							var cValue = Translate(getConfigMenuValue(configValues[curItem + i]));
+							if(cValue.length() > 20) { 
+								if(inQuickLaunchMenu) { cValue = PathEllipsis(cValue); }
+								else { cValue = cValue.substr(0, 20) + "..."; }
+							}
+							c.theRightSlots.children[i].children[0].geometry.text = cValue;
+						}
+					}
+				}
+			}
+		}
+		else
+		{
+			unTabSlot(curHold);
+			curItem = curItem - 1;
+			curHold = curHold - 1;
+			tabSlot(curHold);
+		}
+	}   
+	
+	if(inLV1 == true)
+	{
+		LV1Item = curItem;
+		LV1Hold = curHold;
+	}
+	else
+	{
+		LV2Item = curItem;
+		LV2Hold = curHold;
+	}
+	if(curItem == 0) {c.theUpArrow.visible = false;}
+}
+
+function scrollConfigDown()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var curItem;
+	var curHold;
+	var loop;
+	
+	if(inLV1 == true)
+	{
+		curItem = LV1Item;
+		curHold = LV1Hold;
+	}
+	else if(inLV2 == true)
+	{
+		curItem = LV2Item;
+		curHold = LV2Hold;
+	}
+	
+	if(curItem + nMaxMenuItems <= configList.length - 1)
+	{
+		curItem = curItem + nMaxMenuItems;
+		if(curItem - curHold + nMaxMenuItems < configList.length) 
+		{ 
+			loop = nMaxMenuItems;
+		}
+		else
+		{
+			loop = configList.length - (curItem - curHold);
+			c.theDownArrow.visible = false;
+		}
+	}
+	else if(curItem == configList.length - 1)
+	{
+		c.theDownArrow.visible = false;
+		return;
+	}
+	else if(curItem + nMaxMenuItems > configList.length - 1)
+	{
+		unTabSlot(curHold);
+		loop = Modulo(configList.length,nMaxMenuItems);
+		if(loop == 0) loop = nMaxMenuItems;
+		curItem = configList.length - 1;
+		curHold = loop - 1;
+		c.theDownArrow.visible = false;
+	}
+	
+	if (curItem - curHold > nMaxMenuItems - 1) c.theUpArrow.visible = true;
+	PlaySoundMenuChange();
+	clearText();    
+	for(var i = 0; i < loop; i = i + 1)
+	{
+		if(inChangeTitleMenu)
+		{
+		var tValue = GetTitleName(configList[(curItem - curHold) + i]);
+			if(tValue == "") { tValue = configList[(curItem - curHold) + i]; }
+			if(tValue.length() > 36) { tValue = tValue.substr(0, 36) + "..."; }
+			c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+		}
+		else
+		{
+			var tValue = configList[(curItem - curHold) + i];
+			if(tValue.charAt(tValue.length() - 1) == ":") tValue = Translate(tValue.substr(0,tValue.length() - 1)) + ":";
+			else tValue = Translate(tValue);
+			c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+			if(inLV2 == true)
+			{
+				c.theRightSlots.children[i].children[0].appearance.name = "GameHilite";
+				var cValue = Translate(getConfigMenuValue(configValues[(curItem - curHold) + i]));
+				if(cValue.length() > 20) { 
+					if(inQuickLaunchMenu) { cValue = PathEllipsis(cValue); }
+					else { cValue = cValue.substr(0, 20) + "..."; }
+				}
+				c.theRightSlots.children[i].children[0].geometry.text = cValue;
+
+			}
+		}
+	}
+	
+	tabSlot(curHold);
+	if(inLV1 == true)
+	{
+		LV1Item = curItem;
+		LV1Hold = curHold;
+	}
+	else if(inLV2 == true)
+	{
+		LV2Item = curItem;
+		LV2Hold = curHold;
+	}
+	if(curItem == configList.length - 1) {c.theDownArrow.visible = false;}
+}
+
+function scrollConfigUp()
+{
+	var c = theConfigPanel.children[0].children[0];
+	var curItem;
+	var curHold;
+	var loop;
+	
+	if(inLV1 == true)
+	{
+		curItem = LV1Item;
+		curHold = LV1Hold;
+	}
+	else if(inLV2 == true)
+	{
+		curItem = LV2Item;
+		curHold = LV2Hold;
+	}
+	
+	if(configList.length < nMaxMenuItems) { loop = configList.length;} else { loop = nMaxMenuItems; }
+	
+	if(curItem - nMaxMenuItems >= 0)
+	{
+		curItem = curItem - nMaxMenuItems;
+		if(curItem < nMaxMenuItems) 
+		{ 
+			unTabSlot(curHold); 
+			curHold = curItem;
+			c.theUpArrow.visible = false;
+		}
+		c.theDownArrow.visible = true;
+	}
+	else if(curItem == 0)
+	{
+		return;
+	}
+	else if(curItem - nMaxMenuItems < 0)
+	{
+		c.theUpArrow.visible = false;
+		curItem = 0;
+		unTabSlot(curHold);
+		curHold = curItem;
+	}
+
+	PlaySoundMenuChange();
+	clearText();
+	for(var i = 0; i < loop; i = i + 1)
+	{
+		if(inChangeTitleMenu)
+		{
+			var tValue = GetTitleName(configList[(curItem - curHold) + i]);
+			if(tValue == "") { tValue = configList[(curItem - curHold) + i]; }
+			if(tValue.length() > 36) { tValue = tValue.substr(0, 36) + "..."; }
+			c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+		}
+		else
+		{
+			var tValue = configList[(curItem - curHold) + i];
+			if(tValue.charAt(tValue.length() - 1) == ":") tValue = Translate(tValue.substr(0,tValue.length() - 1)) + ":";
+			else tValue = Translate(tValue);
+			c.theLeftSlots.children[i].children[0].geometry.text = tValue;
+			if(inLV2 == true)
+			{
+				c.theRightSlots.children[i].children[0].appearance.name = "GameHilite";
+				var cValue = Translate(getConfigMenuValue(configValues[(curItem - curHold) + i]));
+				if(cValue.length() > 20) { 
+					if(inQuickLaunchMenu) { cValue = PathEllipsis(cValue); }
+					else { cValue = cValue.substr(0, 20) + "..."; }
+				}
+				c.theRightSlots.children[i].children[0].geometry.text = cValue;
+			}
+		}
+	}
+	
+	tabSlot(curHold);
+	if(inLV1 == true)
+	{
+		LV1Item = curItem;
+		LV1Hold = curHold;
+	}
+	else if(inLV2 == true)
+	{
+		LV2Item = curItem;
+		LV2Hold = curHold;
+	}
+	if(curItem == 0) {c.theUpArrow.visible = false;}
+}

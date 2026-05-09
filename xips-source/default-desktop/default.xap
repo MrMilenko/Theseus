@@ -1,0 +1,3765 @@
+DEF theScreen Screen
+{
+	width 640
+	height 480
+}
+
+DEF theAmbientSounds Group
+{
+	// 0 = main menu
+	// 1 = memory area
+	// 2 = music area
+	// 3 = settings area
+
+	children
+	[
+		DEF theAmbientSound0 AudioClip { url "Audio/AmbientAudio/AMB_12_HYDROTHUNDER_LR.wav" loop true volume 0 fade 2 pause_on_moving true }
+		DEF theAmbientSound1 AudioClip { url "Audio/AmbientAudio/AMB_06_COMMUNICATION_LR.wav" loop true volume 0 fade 2 pause_on_moving true }
+		DEF theAmbientSound2 AudioClip { url "Audio/AmbientAudio/AMB_05_ENGINEROOM_LR.wav" loop true volume 0 fade 2 pause_on_moving true }
+	]
+}
+
+DEF thePeriodicSounds Group
+{
+	children
+	[
+		PeriodicAudioGroup
+		{
+			period 60 // how many seconds between sounds (minimum)
+			periodNoise 20 // maximum random seconds to add to period
+			children
+			[
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Steam1.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Steam2.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Steam3.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Steam4.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Steam5.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Steam6.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Steam7.wav" volume 0.80 }
+			]
+		}
+
+		PeriodicAudioGroup
+		{
+			period 120 // how many seconds between sounds (minimum)
+			periodNoise 30 // maximum random seconds to add to period
+			children
+			[
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices1.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices2.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices3.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices4.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices5.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices6.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices7.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices8.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices9.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices10.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices11.wav" volume 0.80 }
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Voices12.wav" volume 0.80 }
+			]
+		}
+
+		PeriodicAudioGroup
+		{
+			period 45 // how many seconds between sounds (minimum)
+			periodNoise 15 // maximum random seconds to add to period
+			children
+			[
+				AudioClip { url "Audio/AmbientAudio/comm voice 1.wav"  fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm voice 2.wav"  fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm static 1.wav" fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm voice 3.wav"  fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm voice 4.wav"  fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm static 2.wav" fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm voice 5.wav"  fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm voice 6.wav"  fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm static 3.wav" fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm voice 7.wav"  fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm voice 8.wav"  fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm static 4.wav" fade 2 volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/comm voice 9.wav"  fade 2 volume 0.85 }
+			]
+		}
+
+		PeriodicAudioGroup
+		{
+			period 300
+			periodNoise 60
+			children
+			[
+				AudioClip { url "Audio/AmbientAudio/AMB_EC_Pinger1.wav" volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/Control Room Loop.wav" volume 0.85 }
+				AudioClip { url "Audio/AmbientAudio/Control Room Loop ver2.wav" volume 0.85 }
+			]
+		}
+	]
+}
+
+function EnableAmbientAudio()
+{
+	var n = Math.round(Math.random() * (theAmbientSounds.children.length() - 1));
+
+	for (var i = 0; i < theAmbientSounds.children.length(); i = i + 1)
+		theAmbientSounds.children[i].isActive = false;
+
+	theAmbientSounds.children[n].volume = 0.95;
+	theAmbientSounds.children[n].isActive = true;
+
+	for (i = 0; i < thePeriodicSounds.children.length(); i = i + 1)
+		thePeriodicSounds.children[i].isActive = true;
+}
+
+function DisableAmbientAudio()
+{
+	for (var i = 0; i < theAmbientSounds.children.length(); i = i + 1)
+		theAmbientSounds.children[i].isActive = false;
+
+	for (i = 0; i < thePeriodicSounds.children.length(); i = i + 1)
+		thePeriodicSounds.children[i].isActive = false;
+}
+
+// Transition sounds
+DEF theGamesMenuIn AudioClip { url "Audio/TransitionAudio/Games Main Menu In_LR.wav" volume 0.92 }
+DEF theGamesMenuOut AudioClip { url "Audio/TransitionAudio/Games Main Menu Out_LR.wav" volume 0.92 }
+DEF theGamesSubMenuIn AudioClip {url "Audio/TransitionAudio/Games Sub Menu In_LR.wav" volume 0.92 }
+DEF theGamesSubMenuOut AudioClip {url "Audio/TransitionAudio/Games Sub Menu Out_LR.wav" volume 0.92 }
+
+DEF theMusicMenuIn AudioClip { url "Audio/TransitionAudio/Music Main Menu In_LR.wav" volume 0.92 }
+DEF theMusicMenuOut AudioClip { url "Audio/TransitionAudio/Music Main Menu Out_LR.wav" volume 0.92 }
+DEF theMusicSubMenuIn AudioClip { url "Audio/TransitionAudio/Music Select Track In_LR.wav" volume 0.92 }
+DEF theMusicSubMenuOut AudioClip { url "Audio/TransitionAudio/Music Select Track Out_LR.wav" volume 0.92 }
+
+DEF theSettingsMenuIn AudioClip { url "Audio/TransitionAudio/Settings Main Menu In_LR.wav" volume 0.92 }
+DEF theSettingsMenuOut AudioClip { url "Audio/TransitionAudio/Settings Main Menu Out_LR.wav" volume 0.92 }
+DEF theSettingsSubMenuIn AudioClip { url "Audio/TransitionAudio/Settings Sub Menu In_LR.wav" volume 0.92 }
+DEF theSettingsSubMenuOut AudioClip { url "Audio/TransitionAudio/Settings Sub Menu Out_LR.wav" volume 0.92 }
+
+// Music Area sounds
+DEF theCDExpand AudioClip { url "Audio/MusicAudio/Music CD Select.wav" volume 0.85 }
+DEF thePlayerPanelIn AudioClip { url "Audio/MusicAudio/Games Info Screen In MSurr.wav" volume 0.92 }
+DEF thePlayerPanelOut AudioClip { url "Audio/MusicAudio/Games Info Screen Out MSurr.wav" volume 0.92 }
+
+// Main Menu Area sounds
+DEF theMainMenuForward AudioClip { url "Audio/MainAudio/Global Main MenuFwd3ver2.wav" volume 0.90 }
+DEF theMainMenuBackward AudioClip { url "Audio/MainAudio/Global Main MenuBack3ver2.wav" volume 0.90 }
+DEF theASound AudioClip { url "Audio/MainAudio/Global A Button Select.wav" pan 75 volume 0.92 }
+DEF theBSound AudioClip { url "Audio/MainAudio/Global B Button Back.wav" pan -75 volume 0.92 }
+DEF theMenuChangeSound AudioClip { url "Audio/MainAudio/Global Scroll Beep.wav" volume 0.85 }
+DEF theErrorSound AudioClip { url "Audio/MainAudio/Global Error Message B.wav" volume 0.85 }
+DEF theDeleteSound AudioClip { url "Audio/MainAudio/Global Delete_Destroy.wav" volume 0.85 }
+DEF theProgressSound AudioClip { url "Audio/MainAudio/Global Progress Bar.wav" loop true volume 0.85 }
+DEF theCompleteSound AudioClip { url "Audio/MainAudio/Global Completion Beep.wav" volume 0.85 }
+
+// Memory Menu Area sounds
+DEF theMemoryControllerSelectSound AudioClip { url "Audio/MemoryAudio/Memory Controller Select.wav" volume 0.90 }
+DEF theMemoryTitleSelectSound AudioClip { url "Audio/MemoryAudio/Memory Games Select.wav" volume 0.90 }
+DEF theMemorySaveSelectSound AudioClip { url "Audio/MemoryAudio/Memory Memory Slot Select.wav" volume 0.90 }
+
+// Settings Menu Area sounds
+DEF theSettingsLangSound AudioClip { url "Audio/SettingsAudio/Settings Lang SubMenu Sel.wav" volume 0.90 }
+DEF theSettingsParentSound AudioClip { url "Audio/SettingsAudio/Settings Parent SubMenu Sel.wav" volume 0.90 }
+
+// Live Now Menu Area sounds
+DEF theLiveNowMenuIn AudioClip { url "Audio/TransitionAudio/Settings Sub Menu In_LR.wav" volume 0.92 }
+DEF theLiveNowMenuOut AudioClip { url "Audio/TransitionAudio/Settings Sub Menu Out_LR.wav" volume 0.92 }
+DEF theLiveNowSoundInvite AudioClip { url "xodash/Audio/LiveNowAudio/Game Invite.wav" volume 1.0 }
+DEF theLiveNowSoundRequest AudioClip { url "xodash/Audio/LiveNowAudio/Friend Request.wav" volume 1.0 }
+DEF theLiveNowSoundFriendOnline AudioClip { url "xodash/Audio/LiveNowAudio/Friend Online.wav" volume 1.0 }
+DEF theLiveNowSoundFriendOffline AudioClip { url "xodash/Audio/LiveNowAudio/Friend Offline.wav" volume 1.0 }
+
+function PlaySoundError()
+{
+	theErrorSound.Play();
+}
+
+function PlaySoundDelete()
+{
+	theDeleteSound.Play();
+}
+
+function PlaySoundA()
+{
+	theASound.Play();
+}
+
+function PlaySoundB()
+{
+	theBSound.Play();
+}
+
+function PlaySoundMenuChange()
+{
+	theMenuChangeSound.Play();
+}
+
+DEF theScreenSaver ScreenSaver
+{
+	function OnStart()
+	{
+		theScreen.brightness = 0.1;
+		if(thcorb | btHcScreenSaver)
+		{
+			StartScreenSaverView();
+		}
+	}
+	
+	function OnEnd()
+	{
+		theScreen.brightness = 1;
+		if(thcorb | btHcScreenSaver)
+		{
+			StopScreenSaverView();
+		}
+	}
+	function OnDelay2() {StartScreenSaverView();}
+	function OnDelay3() {StartScreenSaverView();}
+}
+
+NavigationInfo
+{
+	type "sample"
+	headlight false
+	//  speed 10
+}
+
+DEF theBackground Background
+{
+	skyColor 0 0 0
+}
+
+DEF theSkinBackground Background
+{
+	backdrop ImageTexture { url "background.xbx" }
+	skyColor 0 0 0
+}
+
+DEF theConfig Config
+
+// Desktop window resolution + mode (CDisplay in desktop_nodes.cpp). Reads
+// and writes the same g_windowResolution / g_windowMode that ImGui's
+// Settings -> Display drives, so changes from either UI stay in sync.
+DEF theDisplay Display
+
+function GetLanguage()
+{
+	return theConfig.GetLanguage();
+}
+
+function SetLanguage(nLanguage)
+{
+	return theConfig.SetLanguage(nLanguage);
+}
+
+function ClosePopup()
+{
+	if (g_bKeyboardDisplayed)
+	{
+		CloseKeyboard();
+	}
+
+	if (g_bPanelDisplayed)
+	{
+		CloseMessage();
+	}
+}
+
+DEF theDVDPlayerInline Inline
+{
+	visible false
+	url "dvd.xap"
+
+	function onLoad()
+	{
+		theDVDPlayerInline.children[0].theDVDLevel.GoTo();
+	}
+}
+
+DEF theDiscDrive DiscDrive
+{
+	function OnDiscRemoved()
+	{
+		if (theDVDPlayerInline.visible)
+		{
+			bShowDVDStopBackground = false;
+			theDVDPlayerInline.children[0].theDVDPlayer.stop();
+			theDVDPlayerInline.children[0].ClearOnScreenInfo();
+
+			if (g_bPanelDisplayed)
+			{
+				CloseMessage();
+			}
+
+			theLauncherLevel.GoTo();
+			return;
+		}
+		else if (theMusicInline.visible)
+		{
+			var c = theMusicInline.children[0];
+			
+			ClosePopup();
+			
+			if (c.musicSelect != 0) // Not Audio CD
+			{
+				return;
+			}
+			
+			if (c.theMusicPlayMenu.visible)
+			{
+				// Update track in the player
+				c.DoMusicStop();
+				c.InitPlaylist();
+				c.UpdateTrackList();
+			}
+			else if (c.theMusicCopyMenu.visible)
+			{
+				c.theMusicCollection.error = 3; // Disc ejected
+				c.OnMusicCopyComplete();
+			}
+			else if (c.theMusicMenu.visible)
+			{
+				// Update numbers of tracks and total time
+				c.UpdateMusicMetaData();
+			}
+		}
+		else
+		{
+			var strYesFunction = strMessageYesFunction;
+			if (strYesFunction != "")
+				eval(strYesFunction);
+
+			CloseMessage();
+		}
+	}
+	
+	function OnDiscInserted()
+	{
+		var a = GetSavedBooleanValue("default","AutoLaunchMedia");
+		if(a == true)
+		{
+			AutoLaunch();
+		}
+		else
+		{
+			var stra;
+			if(theDiscDrive.discType == "Audio")
+			{
+				stra = Translate("AUTOLAUNCH_AUDIO_ASK");
+			}
+			else if(theDiscDrive.discType == "Video")
+			{
+				stra = Translate("AUTOLAUNCH_VIDEO_ASK");
+			}
+			else if(theDiscDrive.discType == "Title")
+			{
+				stra = Translate("AUTOLAUNCH_TITLE_ASK");
+			}
+			else if(theDiscDrive.discType == "unknown")
+			{
+				stra = Translate("AUTOLAUNCH_UNKN_ASK");
+			}
+			AskQuestion(stra,"theDiscDrive.AutoLaunch()","",1);
+		}
+	}
+	
+	function AutoLaunch()
+	{
+		if (discType == "Audio")
+		{
+			LogOff();   // PS Bug #33608 You are still seen as Online when playing an Audio CD
+						// PS Bug #33611 You can hear Live Now notification sounds while playing Audio CD
+
+			if (theMusicInline.visible == false)
+			{
+				ClosePopup();
+				nCurMainMenuItem = nMusicButton;   // select music when backing up
+				StartCDPlayer();
+				return;
+			}
+
+			var c = theMusicInline.children[0];
+
+			if (c.theMusicPlayMenu.visible) // We are in the music play menu
+			{
+				if (c.musicSelect == 0) // Already in audio CD player
+				{
+					if (c.bMusicMenuVisible)
+					{
+						c.theMusicPlayMenu.GoTo();
+						c.StartMusicPlayer();
+						c.DoMusicPlayPause();
+					}
+					else
+					{
+						c.DoMusicStop();
+						c.InitPlaylist();
+						c.UpdateTrackList();
+						if (c.visualizerViewpoint.isBound)
+							c.DoMusicPlayPause();
+					}
+				}
+				else if (c.theMusicPlayer.transportMode != 1) // Let's play the disc if no soundtrack is playing
+				{
+					bGoToCDPlayer = true;
+					EnableInput(false);
+					c.theMusicMenu.GoBackTo();
+				}
+			}
+			else if (c.theMusicMenu.visible == true)
+			{
+				ClosePopup();
+				bGoToCDPlayer = true;
+				EnableInput(false);
+				c.StartMusicLevel();
+			}
+			else
+			{
+				ClosePopup();
+				bGoToCDPlayer = true;
+				EnableInput(false);
+				c.theMusicMenu.GoTo();
+			}
+		}
+		else if (discType == "Video")
+		{
+			theLauncherLevel.GoTo();
+		}
+		else if (discType == "Title")
+		{
+			theLauncherLevel.GoTo();
+		}
+		else if (discType == "unknown")
+		{
+			BlockUser("ERROR MESSAGE 1");
+		}
+	}
+}
+
+function StartDVDPlayer()
+{
+	log("Starting the DVD player!");
+	theDVDPlayerInline.visible = true;
+}
+
+function StartCDPlayer()
+{
+	log("Should start the CD player now!");
+	bGoToCDPlayer = true;
+	EnableInput(false); // music.xap will re-enable it again if bGoToCDPlay is true
+	GoToMusic();
+}
+
+DEF theTranslator Translator
+DEF theOverlayAlert OverlayAlert
+
+function ShowAlert(msg)
+{
+	theOverlayAlert.Show(msg);
+}
+
+function Translate(text)
+{
+	var MatchWord = text.toUpperCase();
+	if(theConfig.NtFileExists("\\Device\\Harddisk0\\Partition2\\UIX Configs\\xlate.ini"))
+	{
+		var Languages = new Array( "ENGLISH","JAPANESE","DEUTSCH","FRANCAIS","ESPANOL","ITALIANO","KOREAN","CHINESE","PORTUGUAS");
+		var index = Math.max(0,theConfig.GetLanguage() - 1);
+		XlateFile.section = Languages[index];
+		var xlate = XlateFile.GetValue(MatchWord);
+		if(xlate == "") xlate = XlateFile.GetValue(text);
+		if(xlate != "") return ParseEscapedChars(xlate);
+	}
+	else
+	{
+		if(MatchWord == "MEMORY") { return "Memory"; }
+		else if(MatchWord == "MUSIC") { return "Music"; }
+		else if(MatchWord == "LAUNCHER") { return "Launcher"; }
+		else if(MatchWord == "INSIGNIA") { return "Insignia"; }
+		else if(MatchWord == "CONFIGURATION") { return "UIX Settings"; }
+		else if(MatchWord == "SKINS") { return "Skins"; }
+		else if(MatchWord == "CLOCK") { return "Clock"; }
+		else if(MatchWord == "LANGUAGE") { return "Language"; }
+		else if(MatchWord == "AUDIO") { return "Audio"; }
+		else if(MatchWord == "VIDEO") { return "Video"; }
+		else if(MatchWord == "NETWORK") { return "Network"; }
+		else if(MatchWord == "LIVE TODAY") { return "Live Today"; }
+		else if(MatchWord == "PARENTAL CONTROL") { return "Parental Control"; }
+		else if(MatchWord == "AUTO OFF") { return "Auto Off"; }
+		else if(MatchWord == "SYSTEM INFO") { return "System Info"; }
+		else if(MatchWord == "AUTOLAUNCH_AUDIO_ASK") { return "\nAn Audio CD has been inserted.\n\nDo you wish to play it?"; }
+		else if(MatchWord == "AUTOLAUNCH_VIDEO_ASK") { return "\nA DVD movie has been inserted.\n\nDo you wish to watch it?"; }
+		else if(MatchWord == "AUTOLAUNCH_TITLE_ASK") { return "\nAn Xbox title has been inserted.\n\nDo you wish to launch it?"; }
+		else if(MatchWord == "AUTOLAUNCH_UNKN_ASK") { return "\nAn Unknown disk type has been inserted.\n\nDo you wish to try to launch it and see what happens??"; }
+		else if(MatchWord == "ASSIGNED_QUICKLAUNCH") { return "Selected item assigned to QuickLaunch"; }
+		else if(MatchWord == "INDEXING_PARTITION") { return "Indexing the harddisk's extended partitions. This could take several seconds.\n\nPlease Wait..."; }
+		else if(MatchWord == "SETTINGS_CHANGED") { return "You will need to reload before the new settings will take effect.\n\nWould you like to reload now?"; }
+		else if(MatchWord == "POWER_OFF") { return "This will power off the Xbox.\n\nDo you wish to continue?"; }
+	}
+	return theTranslator.Translate(text);
+}
+
+var unicode;
+function ParseEscapedChars(sText)
+{
+	var Chars = new Array("\\n","\\t","\\u");
+	for(var x = 0; x < Chars.length; x = x + 1)
+	{
+		if(sText.indexOf(Chars[x]) >= 0)
+		{
+			var arrTemp = Split(sText,Chars[x]);
+			var sRet;
+			if(arrTemp.length > 0)
+			{
+				sRet = arrTemp[0];
+				for(var i = 1; i < arrTemp.length; i = i + 1)
+				{
+					if(x == 0) { sRet = sRet + "\n" + arrTemp[i];}
+					else if(x == 1) { sRet = sRet + "\t" + arrTemp[i]; }
+					else if(x == 2) 
+					{
+						var tmp = "\\u" + arrTemp[i].substr(0,4);
+						eval("unicode = \"" + tmp + "\"");
+						sRet = sRet + unicode + arrTemp[i].substr(4);
+					}
+				}
+				return sRet;
+			}
+		}
+	}
+	return sText;
+}
+
+///////////////////////////////////////////////////////////////////
+DEF theSkinInline Inline
+{
+	visible false
+	url "skin.xap"
+
+	function onLoad()
+	{
+	  theSkinInline.children[0].theSkin.GoTo();
+	}
+}
+
+function GoToSkin()
+{
+	if (theSkinInline.visible)
+	  theSkinInline.children[0].theSkin.GoTo();
+	else
+	  theSkinInline.visible = true;
+}
+DEF theSkinsInline Inline
+{
+	visible false
+	url "skins.xap"
+	function onLoad() { theSkinsInline.children[0].theSkinsMenu.GoTo(); }
+}
+
+function GoToSkins()
+{
+	theSettingsMenuIn.Play();
+	if( theSkinsInline.visible ) { theSkinsInline.children[0].theSkinsMenu.GoTo(); }
+	else { theSkinsInline.visible = true; }
+}
+
+DEF theOrbsInline Inline
+{
+	visible false
+	url "orbs.xap"
+	function onLoad() { theOrbsInline.children[0].theOrbsMenu.GoTo(); }
+}
+
+function GoToOrbs()
+{
+	theSettingsMenuIn.Play();
+	if( theOrbsInline.visible ) { theOrbsInline.children[0].theOrbsMenu.GoTo(); }
+	else { theOrbsInline.visible = true; }
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theLauncherInline Inline
+{
+	visible false
+	url "harddrive.xap"
+
+	function onLoad()
+	{
+		theLauncherInline.children[0].theLauncher.GoTo();
+	}
+}
+
+function GoToLauncher()
+{
+	if (theLauncherInline.visible)
+		theLauncherInline.children[0].theLauncher.GoTo();
+	else
+		theLauncherInline.visible = true;
+}
+	
+////////////////////////////////////////////////////////////////////////////
+
+DEF theMusicInline Inline
+{
+	visible false
+	url "Music2.xap"
+
+	function onLoad()
+	{
+		theMusicInline.children[0].theMusicMenu.GoTo();
+	}
+}
+
+function GoToMusic()
+{
+	
+	if (theMusicInline.visible)
+		theMusicInline.children[0].theMusicMenu.GoTo();
+	else
+	{
+		BlockMemoryUnitInsert();
+		theMusicInline.visible = true;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theMediaInline Inline
+{
+	visible false
+	url "MediaPlayer.xap"
+
+	function onLoad()
+	{
+		theMediaInline.children[0].theMediaMenu.GoTo();
+	}
+}
+
+function GoToMedia()
+{
+	if (theMediaInline.visible)
+		theMediaInline.children[0].theMediaMenu.GoTo();
+	else
+	{
+		BlockMemoryUnitInsert();
+		theMediaInline.visible = true;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theMemoryInline Inline
+{
+	visible false
+	url "Memory3.xap"
+	
+	function onLoad()
+	{
+		theMemoryInline.children[0].theMemoryMenu.GoTo();
+	}
+}
+
+function GoToMemory()
+{
+	if (theMemoryInline.visible)
+		theMemoryInline.children[0].theMemoryMenu.GoTo();
+	else
+		theMemoryInline.visible = true;
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theSettingsInline Inline
+{
+	visible false
+	url "Settings3.xap"
+
+	function onLoad()
+	{
+		if (g_bLiveTodayFadeIn)
+			theSettingsInline.children[0].theSettingsViewpoint.jump = true;
+		theSettingsInline.children[0].theSettingsMenu.GoTo();
+	}
+}
+
+function GoToSettings()
+{
+	bBackToDVDPlayer = false;
+	
+	if (theSettingsInline.visible)
+		theSettingsInline.children[0].theSettingsMenu.GoTo();
+	else
+		theSettingsInline.visible = true;
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theUIXConfigInline Inline
+{
+	visible false
+	url "config.xap"
+
+	function onLoad()
+	{
+		theUIXConfigInline.children[0].theConfigPanel.GoTo();
+	}
+}
+
+function GoToUIXConfig()
+{
+	if (theUIXConfigInline.visible)
+		theUIXConfigInline.children[0].theConfigPanel.GoTo();
+	else
+		theUIXConfigInline.visible = true;
+}
+	
+////////////////////////////////////////////////////////////////////////////
+
+function ClearInvalidMU()
+{
+	theMemoryMonitor.invalidDevUnit = -1;
+}
+
+DEF theMemoryMonitor MemoryMonitor
+{
+	function OnDeviceChange()
+	{
+		var c;
+		
+		if (theMemoryInline.visible)
+		{
+			c = theMemoryInline.children[0];
+			if (c.theMemoryMenu.children[0].children.length() > 0)
+				c.UpdateDevices();
+		}
+		
+		if (theAccountSelectionInline.visible)
+		{
+			c = theAccountSelectionInline.children[0];
+			if (c.theAccountSelectionLevel.children[0].children.length() > 0)
+			{
+				var nLastNumberOfAccounts = theLiveAccounts.GetNumberOfAccounts();
+				theLiveAccounts.Refresh();
+
+				// Reset current position and top visible item
+				if (nLastNumberOfAccounts != theLiveAccounts.GetNumberOfAccounts())
+				{
+					c.nCurrentAccountSelectionMenu = 0;
+					c.nTopVisibleAccount = 0;
+				}
+
+				c.UpdateAccountList();
+
+				if (theLiveAccounts.newAccountFromMU > 0)
+				{
+					c.UpdatePreselectedAccountSelection(theLiveAccounts.newAccountFromMU);
+					theLiveAccounts.newAccountFromMU = -1;
+				}
+				else
+					c.UpdateAccountSelectionMenuHilite();
+			}
+		}
+	}
+	
+	function OnCurDevUnitChange()
+	{
+		if (theMemoryInline.visible)
+		{
+			var c = theMemoryInline.children[0];
+			if (c.theMemoryMenu.children[0].children.length() > 0)
+			{
+				c.UpdateDeviceHighlight();
+				c.UpdateDeviceMetaData();
+				c.UpdateDevices();
+			}
+		}
+	}
+	
+	function OnTotalFreeChanged()
+	{
+		if (theMemoryInline.visible)
+		{
+			var c = theMemoryInline.children[0];
+			if (c.theMemoryMenu.children[0].children.length() > 0)
+			{
+				c.UpdateDeviceMetaData();
+				c.UpdateDevices();
+			}
+		}
+	}
+	
+	function OnInvalidMU(devUnit, fixed)
+	{
+		var nGamePad = Math.floor(devUnit / 2);
+		var strUnit = "A";
+		if (nGamePad != devUnit / 2)
+			strUnit = "B";
+		
+		var strName = theTranslator.Translate("memory unit") + " " + (nGamePad + 1) + strUnit + "\r";
+		
+		if (fixed == 0)
+		{
+			strName = strName + theTranslator.Translate("AUTO FORMAT MU ERROR");
+		}
+		else
+		{
+			strName = strName + theTranslator.Translate("AUTO FORMAT MU");
+		}
+		
+		TellUser(strName, "ClearInvalidMU()");
+	}
+	
+	function OnInvalidMURemoved()
+	{
+		CloseMessage();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+var strEntryPointInternalDestination;
+var g_nActiveControllerPort;
+var g_bClearPasscode;
+var g_nLastActivePort;
+
+function GoToXoDashEntryPoint(ActiveControllerPort, bClearPasscode, EntryPoint)
+{
+	g_nActiveControllerPort = ActiveControllerPort;
+	g_bClearPasscode = bClearPasscode;
+	strEntryPointInternalDestination = EntryPoint;
+	theXOnlineLevel.GoTo();
+}
+
+function LaunchAutoUpdate()
+{
+	g_nActiveControllerPort = 0;
+	g_bClearPasscode = false;
+	strEntryPointInternalDestination = "DASH_UPDATE";
+	theXOnlineLevel.GoTo();
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+var g_nCurrentAccountSelected;
+var g_fLiveTodayKeyboardBound;
+var g_fLiveTodayNotification;
+var g_bLiveTodayFadeIn;
+var g_bFirstSignIn;
+
+function ProcessServerRequired()
+{
+	theDiscDrive.locked = false;
+	
+	if (theLiveTodayInline.visible)
+	{
+		// Set the current menu to -2 so that the passcode screen knows where to go back
+		theLiveTodayInline.children[0].nCurrentLiveTodayMenu = -2;
+		
+		if (theLiveAccounts.IsPasswordEnabled(g_nCurrentAccountSelected))
+			theLiveTodayInline.children[0].theAccountPasscodeVerifier.GoTo();
+		else
+			GoToXoDashEntryPoint(0, false, "MESSAGE VIEWER");
+	}
+}
+
+function UnlockDiscDrive()
+{
+	theDiscDrive.locked = false;
+}
+
+function UnlockDiscDriveAndGoToAccountSelectionWithDefaultUser()
+{
+	theDiscDrive.locked = false;
+	GoToAccountSelectionWithDefaultUser();
+}
+
+function UnlockDiscDriveAndGoToMainMenu()
+{
+	theDiscDrive.locked = false;
+	theMainMenu.GoBackTo();
+}
+
+function DisplayWaitingMessage()
+{
+	if( false == g_theMessageLayerLoaded )
+	{
+		//
+		// The message will be displayed when the Message Layer is loaded so we don't
+		// have to deal with it yet  (onLoad of the message layer will call this again)
+		//
+		
+		return;
+	}
+	
+	if( bShowLegalInfo )
+	{
+		bShowLegalInfo = false;
+		TellUser("LEGAL MESSAGE 1", "UserAcceptedLegalInfoFromMainMenu()");
+	}
+	else if( bShowErrorPanel )
+	{
+		var e = theConfig.GetLaunchParameter1();
+		bShowErrorPanel = false;
+		if( e == 1 | e == 2 )
+		{
+			TellUser("ERROR MESSAGE " + e, "theMainMenu.GoTo()");
+		}
+		else
+		{
+			BlockUser("ERROR MESSAGE " + e);
+		}
+	}
+	else if( bShowInvalidDisc )
+	{
+		bShowInvalidDisc = false;
+		if( theDiscDrive.discType == "unknown" )
+		{
+			BlockUser("ERROR MESSAGE 1");
+		}
+	}
+	else if( bShowInvalidDiscWithNav )
+	{
+		bShowInvalidDiscWithNav = false;
+		if( theDiscDrive.discType == "unknown" )
+		{
+			BlockUserWithFunction("ERROR MESSAGE 1", "GoToFinalDestination()");
+		}
+	}
+	else if( bShowNoDongleMessage )
+	{
+		bShowNoDongleMessage = false;
+		BlockUser("NoDongle");
+	}
+}
+
+function UserAcceptedLegalInfo()
+{
+	theConfig.SetAcceptedLegalInfo(true);
+	bAcceptedLegalInfo = true;
+	bShowLegalInfo = false;
+}
+
+function UserAcceptedLegalInfoFromMainMenu()
+{
+	UserAcceptedLegalInfo();
+	
+	//
+	// If we are in our Out of box flow Entry Point, we are done.
+	// BUGBUG: It would be a bit better if we Actually took the user to the final (correct)
+	//         destination, such as 'LiveNow' if their auto signin bit was set
+	//
+	
+	if( false == bOutOfBoxFlow )
+	{
+		//
+		// By calling this function, we will process any launch data that we received
+		// We will also evaluate the disc drive, and determine if we need to reboot
+		//    
+		
+		MainInitPart3();
+	}
+	
+	bOutOfBoxFlow = false;
+}
+
+function DisplayLiveTodayNotification()
+{
+	g_fLiveTodayNotification = true;
+	
+	// TellUser doesn't work very well if there is no keyboard bound
+	if (g_fLiveTodayKeyboardBound)
+	{
+		ClosePopup();
+		HideWaitCursor();
+		theLiveAccounts.ClearLastLogonUser();
+		
+		var IgnoreError = false;
+		var bLogOff = true;
+		var str = theLiveAccounts.GetResult();
+		
+		if (g_bFirstSignIn)
+		{
+			g_bFirstSignIn = false;
+			
+			if (theConfig.GetLiveToday())
+			{
+				IgnoreError = true;
+				
+				if (str == "UPDATE_REQUIRED")
+					IgnoreError = false;
+				else if (str == "USER_ACCOUNT_REQUIRES_MANAGEMENT")
+					IgnoreError = false;
+				else if (str == "USER_HAS_MESSAGE")
+					IgnoreError = false;
+			}
+		}
+		
+		if (IgnoreError)
+			TellUser(theTranslator.Translate("ERR NOT CONNECTED"), "UnlockDiscDriveAndGoToMainMenu()");
+		else if (str == "CANNOT_ACCESS_SERVICE")
+		{
+			theLiveAccounts.PersistUser(g_nCurrentAccountSelected);
+			AskQuestion(theTranslator.Translate("ERR NO SERVER"), "GoToXoDashEntryPoint(0, false, \"TROUBLE SHOOTER\")", "UnlockDiscDriveAndGoToAccountSelectionWithDefaultUser()", 0);
+		}
+		else if (str == "INVALID_USER")
+			TellUser(theTranslator.Translate("ERR USER ACCOUNT NOT PRESENT"), "UnlockDiscDriveAndGoToAccountSelectionWithDefaultUser()");
+		else if (str == "UPDATE_REQUIRED")
+			TellUser(theTranslator.Translate("UPDATE REQUIRED REBOOT"), "LaunchAutoUpdate()");
+		else if (str == "NO_NETWORK_CONNECTION")
+		{
+			theLiveAccounts.PersistUser(g_nCurrentAccountSelected);
+			AskQuestion(theTranslator.Translate("ERR NO SERVER"), "GoToXoDashEntryPoint(0, false, \"TROUBLE SHOOTER\")", "UnlockDiscDriveAndGoToAccountSelectionWithDefaultUser()", 0);
+		}
+		else if (str == "USER_ACCOUNT_REQUIRES_MANAGEMENT")
+		{
+			theLiveAccounts.PersistUser(g_nCurrentAccountSelected);
+			TellUser(theTranslator.Translate("MSG SVR REQUIRED PROMPT"), "ProcessServerRequired()");
+		}
+		else if (str == "USER_HAS_MESSAGE")
+		{
+			bLogOff = false;
+			theLiveAccounts.PersistUser(g_nCurrentAccountSelected);
+			AskQuestion(theTranslator.Translate("MSG SVR RECOMMENDED PROMPT"), "GoToXoDashEntryPoint(0, false, \"MESSAGE VIEWER\")", "UnlockDiscDrive()", 0);
+			
+		}
+		else if (str == "KICKED_BY_DUPLICATE_LOGON")
+			TellUser(theTranslator.Translate("ERR KICKED BY DUP LOGON"), "UnlockDiscDriveAndGoToAccountSelectionWithDefaultUser()");
+		else if (str == "CONNECTION_LOST")
+			TellUser(theTranslator.Translate("ERR NOT CONNECTED"), "UnlockDiscDriveAndGoToAccountSelectionWithDefaultUser()");
+		else if (str == "SERVERS_TOO_BUSY")
+			TellUser(theTranslator.Translate("ERR NOT CONNECTED"), "UnlockDiscDriveAndGoToAccountSelectionWithDefaultUser()");
+		else
+			TellUser(theTranslator.Translate("ERR SPS TRY AGAIN"), "UnlockDiscDriveAndGoToAccountSelectionWithDefaultUser()");
+		
+		if (theLiveTodayInline.visible)
+		{
+			if (bLogOff)
+			{
+				LogOff();
+			}
+		}
+		
+		g_fLiveTodayNotification = false;
+	}
+}
+
+DEF theLiveAccounts LiveAccounts
+{
+	function OnFailure()
+	{
+		theLiveAccounts.ClearMOTDCache();
+		DisplayLiveTodayNotification();
+	}
+	
+	function OnConnectionEstablished()
+	{
+		if (theLiveTodayInline.visible)
+		{
+			g_bFirstSignIn = false;
+			theDiscDrive.locked = false;
+			HideWaitCursor();
+			
+			theLiveTodayInline.children[0].fLogOnInProgress = false;
+			theLiveTodayInline.children[0].fLogOnSuccess = true;
+			
+			var c = theLiveTodayInline.children[0].theLiveTodayLevel.children[0].children[0];
+			c.text_gamertag.children[0].children[0].geometry.text = theLiveAccounts.GetAccountName(g_nCurrentAccountSelected);
+			theLiveTodayInline.children[0].UpdateFriendPanel();
+		}
+	}
+	
+	function OnHasMessage()
+	{
+		DisplayLiveTodayNotification();
+	}
+	
+	function OnInvalidPassword()
+	{
+		DisplayLiveTodayNotification();
+	}
+	
+	function OnFriendsListChanges()
+	{
+		if (theLiveTodayInline.visible)
+			theLiveTodayInline.children[0].UpdateFriendPanel();
+	}
+	
+	function OnDisplayMOTD()
+	{
+		if (theLiveTodayInline.visible)
+		{
+			var str;
+			var nGamePCLevel = theConfig.GetGamePCFlags();
+			var c = theLiveTodayInline.children[0].theLiveTodayLevel.children[0].children[0];
+			var bShowIcon = true;
+			if (nGamePCLevel < 4)
+			{
+				str = theTranslator.Translate("MOTD PC ENABLED TEXT");
+				bShowIcon = false;
+			}
+			else
+			{
+				str = theLiveAccounts.GetMessageOfTheDayText();
+			}
+			c.message_Text_01.children[0].children[0].geometry.text = str;
+			theLiveAccounts.ShowIcon(bShowIcon);
+			theLiveAccounts.ClearLastLogonUser();
+		}
+	}
+	
+	function OnGameInvite()
+	{
+		theLiveNowSoundInvite.Play();
+	}
+	
+	function OnFriendRequest()
+	{
+		theLiveNowSoundRequest.Play();
+	}
+	
+	function OnFriendOnline()
+	{
+		theLiveNowSoundFriendOnline.Play();
+	}
+	
+	function OnFriendOffline()
+	{
+		theLiveNowSoundFriendOffline.Play();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theLiveTodayInline Inline
+{
+	visible false
+	url "LiveToday.xap"
+	
+	function onLoad()
+	{
+		if (g_bLiveTodayFadeIn)
+			theLiveTodayInline.children[0].theLiveTodayViewpoint.jump = true;
+		theLiveTodayInline.children[0].theLiveTodayLevel.GoTo();
+	}
+}
+
+function LogOff()
+{
+	theLiveAccounts.Logoff();
+	theLiveAccounts.ClearMOTDCache();
+	if(theLiveTodayInline.visible)
+	{
+		theLiveTodayInline.children[0].fLogOnInProgress = false;
+		theLiveTodayInline.children[0].fLogOnSuccess = false;
+		theLiveTodayInline.children[0].nPassCodeVerified = false;
+		theLiveTodayInline.children[0].nCurrentLiveTodayMenu = -1;
+	}
+}
+
+DEF theAccountSelectionInline Inline
+{
+	visible false
+	url "AccountSelection.xap"
+	
+	function onLoad()
+	{
+		if (g_bLiveTodayFadeIn)
+			theAccountSelectionInline.children[0].theAccountSelectionViewpoint.jump = true;
+		theAccountSelectionInline.children[0].theAccountSelectionLevel.GoTo();
+	}
+}
+
+function GoToLiveToday()
+{
+	ShowAlert("Live Today is not available in Theseus.\n\nThis feature is still being worked on.");
+	EnableInput(true);
+}
+
+function GoToAccountSelection()
+{
+	g_nCurrentAccountSelected = 0;
+	
+	if (theAccountSelectionInline.visible)
+		theAccountSelectionInline.children[0].theAccountSelectionLevel.GoTo();
+	else
+		theAccountSelectionInline.visible = true;
+}
+
+function GoToAccountSelectionWithDefaultUser()
+{
+	if (theLiveAccounts.IsBackFromEntryPoint())
+		g_nCurrentAccountSelected = theLiveAccounts.GetLastLogonUser();
+	
+	if (g_nCurrentAccountSelected < 0)
+		g_nCurrentAccountSelected = 0;
+	
+	if (theAccountSelectionInline.visible)
+		theAccountSelectionInline.children[0].theAccountSelectionLevel.GoTo();
+	else
+		theAccountSelectionInline.visible = true;
+}
+
+function GoBackToAccountSelection()
+{
+	if (theAccountSelectionInline.visible)
+		theAccountSelectionInline.children[0].theAccountSelectionLevel.GoBackTo();
+	else
+		theAccountSelectionInline.visible = true;
+}
+
+function EnterLiveToday(fSkipAccountSelecion)
+{
+	// Set current selection to "Xbox Live"
+	EnableInput(false);
+	
+	if (fSkipAccountSelecion)
+	{
+		g_bLiveTodayFadeIn = true;
+		
+		if (theLiveAccounts.IsBackFromEntryPoint())
+		{
+			g_nCurrentAccountSelected = theLiveAccounts.GetLastLogonUser();
+			
+			if (g_nCurrentAccountSelected < 0)
+			{
+				// Go to account selection if not found
+				g_nCurrentAccountSelected = 0;
+				GoToAccountSelection();
+				return;
+			}
+		}
+		
+		GoToLiveToday();
+	}
+	else
+	{
+		GoToAccountSelection();
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+var nCurMainMenuItem;
+
+function UpdateMainMenu()
+{
+	// Adjust for a 3, 4, or 5 button menu
+	if( g_TotalMenuItems == "5" )
+	{
+		// Update our 5 button menu
+		Update5ButtonMainMenu();
+	}
+	else if( g_TotalMenuItems == "4" )
+	{
+		// Update our 4 button menu
+		Update4ButtonMainMenu();
+	}
+	else
+	{
+		// Update our 3 button menu
+		Update3ButtonMainMenu();
+	}
+}
+
+function Update5ButtonMainMenu()
+{
+	var c = theMainMenu.children[0].children[0];
+	c.game_select_pod_inner02.visible = false;      // Memory Flashing Orb
+	c.game_select_pod_inner.visible = false;        // Music Flashing Orb
+	c.game_select_pod_inner04.visible = false;      // Xbox Live Flashing Orb
+	c.game_select_pod_inner03.visible = false;      // Launcher Flashing Orb
+	c.game_select_pod_inner05.visible = false;      // Settings Flashing Orb
+
+	if (nCurMainMenuItem == 0)  // Memory Button
+	{
+		c.game_select_pod_inner02.visible = true;
+
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, -0.25); }
+		c.theMenuItems.SetRotation(0, 0, 1, -0.25);
+
+		c.theMemoryItem.SetRotation(0, 1, 0, -0.25);
+		c.theMusicItem.SetRotation(0, 1, 0, -0.25);
+		c.theOnlineItem.SetRotation(0, 1, 0, -0.25);
+		c.theLauncherItem.SetRotation(0, 1, 0, -0.25);
+		c.theSettingsItem.SetRotation(0, 1, 0, -0.25);
+
+		c.MemoryPanelMaterial.name = "GameHilite";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.OnlinePanelMaterial.name = "FlatSurfaces2sided";
+		c.LauncherPanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+
+		c.MemoryTextMaterial.name = "HilightedType";
+		c.MusicTextMaterial.name = "NavType";
+		c.OnlineTextMaterial.name = "NavType";
+		c.LauncherTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "NavType";
+
+	}
+	else if (nCurMainMenuItem == 1)  // Music Button (Default position)
+	{
+		c.game_select_pod_inner.visible = true;
+
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.0); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.0);
+
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.0);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.0);
+		c.theOnlineItem.SetRotation(0, 1, 0, 0.0);
+		c.theLauncherItem.SetRotation(0, 1, 0, 0.0);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.0);
+
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "GameHilite";
+		c.OnlinePanelMaterial.name = "FlatSurfaces2sided";
+		c.LauncherPanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "HilightedType";
+		c.OnlineTextMaterial.name = "NavType";
+		c.LauncherTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "NavType";
+	}
+	else if (nCurMainMenuItem == 2) // Xbox Live Button
+	{
+		c.game_select_pod_inner04.visible = true;
+
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.25); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.25);
+
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.25);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.25);
+		c.theOnlineItem.SetRotation(0, 1, 0, 0.25);
+		c.theLauncherItem.SetRotation(0, 1, 0, 0.25);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.25);
+
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.OnlinePanelMaterial.name = "GameHilite";
+		c.LauncherPanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "NavType";
+		c.OnlineTextMaterial.name = "HilightedType";
+		c.LauncherTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "NavType";
+	}
+	else if (nCurMainMenuItem == 3) // Launcher Button
+	{
+		c.game_select_pod_inner03.visible = true;
+
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.50); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.50);
+
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.50);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.50);
+		c.theOnlineItem.SetRotation(0, 1, 0, 0.50);
+		c.theLauncherItem.SetRotation(0, 1, 0, 0.50);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.50);
+
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.OnlinePanelMaterial.name = "FlatSurfaces2sided";
+		c.LauncherPanelMaterial.name = "GameHilite";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+		
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "NavType";
+		c.OnlineTextMaterial.name = "NavType";
+		c.LauncherTextMaterial.name = "HilightedType";
+		c.SettingsTextMaterial.name = "NavType";
+	}
+	else if (nCurMainMenuItem == 4) // Settings Button
+	{
+		c.game_select_pod_inner05.visible = true;
+
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.75); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.75);
+
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.75);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.75);
+		c.theOnlineItem.SetRotation(0, 1, 0, 0.75);
+		c.theLauncherItem.SetRotation(0, 1, 0, 0.75);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.75);
+
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.OnlinePanelMaterial.name = "FlatSurfaces2sided";
+		c.LauncherPanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "GameHilite";
+
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "NavType";
+		c.OnlineTextMaterial.name = "NavType";
+		c.LauncherTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "HilightedType";
+	}
+}
+
+function Update4ButtonMainMenu()
+{
+	var c = theMainMenu.children[0].children[0];
+	c.game_select_pod_inner02.visible = false;      // Memory Flashing Orb
+	c.game_select_pod_inner.visible = false;        // Music Flashing Orb
+	c.game_select_pod_inner04.visible = false;      // Xbox Live Flashing Orb
+	c.game_select_pod_inner05.visible = false;      // Settings Flashing Orb
+	
+	if (nCurMainMenuItem == 0)  // Memory Button
+	{
+		c.game_select_pod_inner02.visible = true;
+		
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, -0.25); }
+		c.theMenuItems.SetRotation(0, 0, 1, -0.25);
+		
+		c.theMemoryItem.SetRotation(0, 1, 0, -0.25);
+		c.theMusicItem.SetRotation(0, 1, 0, -0.25);
+		c.theOnlineItem.SetRotation(0, 1, 0, -0.25);
+		c.theSettingsItem.SetRotation(0, 1, 0, -0.25);
+		
+		c.MemoryPanelMaterial.name = "GameHilite";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.OnlinePanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+		
+		c.MemoryTextMaterial.name = "HilightedType";
+		c.MusicTextMaterial.name = "NavType";
+		c.OnlineTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "NavType";
+		
+	}
+	else if (nCurMainMenuItem == 1)  // Music Button (Default position)
+	{
+		c.game_select_pod_inner.visible = true;
+		
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.0); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.0);
+		
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.0);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.0);
+		c.theOnlineItem.SetRotation(0, 1, 0, 0.0);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.0);
+		
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "GameHilite";
+		c.OnlinePanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+		
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "HilightedType";
+		c.OnlineTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "NavType";
+	}
+	else if (nCurMainMenuItem == 2) // Xbox Live Button
+	{
+		c.game_select_pod_inner04.visible = true;
+		
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.25); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.25);
+		
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.25);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.25);
+		c.theOnlineItem.SetRotation(0, 1, 0, 0.25);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.25);
+		
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.OnlinePanelMaterial.name = "GameHilite";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+		
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "NavType";
+		c.OnlineTextMaterial.name = "HilightedType";
+		c.SettingsTextMaterial.name = "NavType";
+	}
+	else if (nCurMainMenuItem == 3) // Launcher Button
+	{
+		// This should never happen in a 4 button menu config
+		// This code is purly defensive.  If there is a bug, this could help prevent bad behavior
+		
+		// NOTE: This is still bad though, as it would most likely prevent the user from reaching
+		// the settings area
+		
+		nCurMainMenuItem = 2;
+		UpdateMainMenu();        
+	}
+	else if (nCurMainMenuItem == 4) // Settings Button
+	{
+		c.game_select_pod_inner05.visible = true;
+		
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.50); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.50);
+		
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.50);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.50);
+		c.theOnlineItem.SetRotation(0, 1, 0, 0.50);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.50);
+		
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.OnlinePanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "GameHilite";
+		
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "NavType";
+		c.OnlineTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "HilightedType";
+	}
+}
+
+function Update3ButtonMainMenu()
+{
+	var c = theMainMenu.children[0].children[0];
+	
+	c.game_select_pod_inner02.visible = false;      // Memory Flashing Orb
+	c.game_select_pod_inner.visible = false;        // Music Flashing Orb
+	c.game_select_pod_inner05.visible = false;      // Settings Flashing Orb
+	
+	if (nCurMainMenuItem == 0)  // Memory Button
+	{
+		c.game_select_pod_inner02.visible = true;
+		
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, -0.45); }
+		c.theMenuItems.SetRotation(0, 0, 1, -0.45);
+		
+		c.theMemoryItem.SetRotation(0, 1, 0, -0.45);
+		c.theMusicItem.SetRotation(0, 1, 0, -0.45);
+		c.theSettingsItem.SetRotation(0, 1, 0, -0.45);
+		
+		c.MemoryPanelMaterial.name = "GameHilite";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+		
+		c.MemoryTextMaterial.name = "HilightedType";
+		c.MusicTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "NavType";
+		
+	}
+	else if (nCurMainMenuItem == 1)  // Music Button (Default position)
+	{
+		c.game_select_pod_inner.visible = true;
+		
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.0); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.0);
+		
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.0);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.0);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.0);
+		
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "GameHilite";
+		c.SettingsPanelMaterial.name = "FlatSurfaces2sided";
+		
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "HilightedType";
+		c.SettingsTextMaterial.name = "NavType";
+	}
+	else if (nCurMainMenuItem == 2 | nCurMainMenuItem == 3 ) // Xbox Live Button or Launcher Button
+	{
+		// This should never happen in a 3 button menu config
+		// This code is purly defensive.  If there is a bug, this could help prevent bad behavior
+		
+		// NOTE: This is still bad though, as it would most likely prevent the user from reaching
+		// the settings area
+		
+		nCurMainMenuItem = 1;
+		UpdateMainMenu();
+	}
+	else if (nCurMainMenuItem == 4) // Settings Button
+	{
+		c.game_select_pod_inner05.visible = true;
+		
+		if( thcorb == false ) { c.Rotating_Large_X.SetRotation(0, 0, 1, 0.45); }
+		c.theMenuItems.SetRotation(0, 0, 1, 0.45);
+		
+		c.theMemoryItem.SetRotation(0, 1, 0, 0.45);
+		c.theMusicItem.SetRotation(0, 1, 0, 0.45);
+		c.theSettingsItem.SetRotation(0, 1, 0, 0.45);
+		
+		c.MemoryPanelMaterial.name = "FlatSurfaces2sided";
+		c.MusicPanelMaterial.name = "FlatSurfaces2sided";
+		c.SettingsPanelMaterial.name = "GameHilite";
+		
+		c.MemoryTextMaterial.name = "NavType";
+		c.MusicTextMaterial.name = "NavType";
+		c.SettingsTextMaterial.name = "HilightedType";
+	}
+}
+
+function GetMainMenuButtons()
+{
+	Button1Text = Translate(GetSavedValue("MainMenu","Button1Text"));
+	if(Button1Text == Translate("XONLINE")) { nXOLineButton = 0; if(ShowInsignia) Button1Text = Translate("INSIGNIA"); }
+	if(Button1Text == Translate("MUSIC")) { nMusicButton = 0; }
+	Button2Text = Translate(GetSavedValue("MainMenu","Button2Text"));
+	if(Button2Text == Translate("XONLINE")) { nXOLineButton = 1; if(ShowInsignia) Button2Text = Translate("INSIGNIA"); }
+	if(Button2Text == Translate("MUSIC")) { nMusicButton = 1; }
+	Button3Text = Translate(GetSavedValue("MainMenu","Button3Text"));
+	if(Button3Text == Translate("XONLINE")) { nXOLineButton = 2; if(ShowInsignia) Button3Text = Translate("INSIGNIA"); }
+	if(Button3Text == Translate("MUSIC")) { nMusicButton = 2; }
+	Button4Text = Translate(GetSavedValue("MainMenu","Button4Text"));
+	if(Button4Text == Translate("XONLINE")) { nXOLineButton = 3; if(ShowInsignia) Button4Text = Translate("INSIGNIA"); }
+	if(Button4Text == Translate("MUSIC")) { nMusicButton = 3; }
+}
+
+function SetButtonText()
+{
+	var c = theMainMenu.children[0].children[0];
+	c.MainMenuButton1_Text.text = Button1Text;
+	c.MainMenuButton2_Text.text = Button2Text;
+	c.MainMenuButton3_Text.text = Button3Text;
+	c.MainMenuButton4_Text.text = Button4Text;
+	c.MainMenuButton5_Text.text = theTranslator.Translate("SETTINGS");
+}
+
+function GetOrbName()
+{
+	var n = GetSavedValue("Dashboard Settings","Current Orb");
+	if(n == "") { return ""; }
+	return "Q:\\Orbs\\" + n + "\\" + n;
+}
+
+function GetOrb()
+{
+	var a = GetSavedValue("Dashboard Settings","Use Custom Orb");
+	if(a.toLowerCase() == "true") { customorb = true; }
+	else { customorb = false; }
+}
+
+function ChangeTheOrb(e)
+{
+	var c = theMainMenu.children[0].children[0];
+	c.Main_pod_backing01.visible = false;
+	c.Main_pod_backing02.visible = false;
+	c.gasorb.visible = false;
+	c.gasorb.children[0].children[0].geometry.url = e;
+	c.gasorb.visible = true;
+}
+
+function ApplyOrb()
+{
+	var c = theMainMenu.children[0].children[0];
+
+	thcorb = (GetSavedValue("default","MainOrbStyle") == "tHc");
+	if(thcorb == true)
+	{
+		c.Main_pod_backing01.visible = false;
+		c.Main_pod_backing02.visible = true;
+	}
+	else
+	{
+		c.Main_pod_backing01.visible = true;
+		c.Main_pod_backing02.visible = false;
+	}
+	c.gasorb.visible = false;
+
+	GetOrb();
+	if(customorb == true)
+	{
+		var OrbName = GetOrbName();
+		if(OrbName == "") { return; }
+
+		var info = new Settings;
+		info.file = OrbName + ".xbx";
+		info.section = "Orb";
+		var scalex = info.GetValue("Scalex");
+		var scaley = info.GetValue("Scaley");
+		var scalez = info.GetValue("Scalez");
+		if((scalex != "") & (scaley != "") & (scalez != ""))
+		{
+			c.gasorb.SetScale(scalex, scaley, scalez);
+		}
+		c.Rotating_Large_X.fade = 0.43;
+		theConfig.FlushMeshCache();
+		ChangeTheOrb(OrbName + ".xm");
+	}
+	else
+	{
+		c.Rotating_Large_X.fade = 0.25;
+	}
+}
+
+function ReloadOrb()
+{
+	if(g_theMainMenuLoaded != true) { return; }
+	ApplyOrb();
+}
+
+function nada()
+{
+}
+
+function MainMenuAttract()
+{
+	var a = 0;
+	var c = theMainMenu.children[0].children[0];
+	EnableInput(false);
+	c.theMainMenuLevel.fade = a;
+	c.Rotating_Large_X.fade = a;
+	c.ring.fade = a; 
+	c.main_pod.fade = a; 
+	c.select.visible = false;
+	
+	c.theMainMenuLevel.SetRotation(-1,-5.1,0,3.141593);
+	c.theMainMenuLevel.SetTranslation(0,0,-400);
+	c.Rotating_Large_X.SetTranslation(-900,500,20);
+	c.ring.SetTranslation(400,0,-180);
+	c.main_pod.SetTranslation(-400,13.4,-300);
+	
+	a = 2;
+	c.theMainMenuLevel.fade = a;
+	c.Rotating_Large_X.fade = a;
+	c.ring.fade = a; 
+	c.main_pod.fade = a; 
+	c.Main_pod_backing01.fade = a; 
+	c.Main_pod_backing02.fade = a; 
+	
+	c.theMainMenuLevel.SetRotation(0,0,0,0);
+	c.theMainMenuLevel.SetTranslation(0,0,0);
+	c.Rotating_Large_X.SetTranslation(0,0,0);
+	c.ring.SetTranslation(-57.980000,-13.690000,-84.760002);
+	c.main_pod.SetTranslation(-61.689999,-13.400000,0.337400);
+	bMainMenuAttractFinish = true;
+}
+
+DEF theMainMenu Level
+{
+	archive "MainMenu5.xip"
+	unloadable false
+	
+	children
+	[
+		Inline
+		{
+			url "MainMenu5/default.xap"
+			
+			function onLoad()
+			{
+				joy.secretKey = "YX";
+				
+				// Adjust our transforms if necessary
+				var c = theMainMenu.children[0].children[0];
+				if( g_TotalMenuItems == "5" )
+				{
+					// Setup for a 5 button menu with the online button
+					c.Main_memory_ringpin_2.SetTranslation(56.830002, 33.300000, 102.000000);   // Memory
+					c.Main_memory_ringpin_3.SetTranslation(62.779999, 13.300000, 102.000000);   // Music
+					c.Main_Online_ringpin.SetTranslation(63.779999, -5.700000, 102.000000);     // Online
+					c.Main_memory_ringpin_4.SetTranslation(58.430000, -23.700000, 102.000000);  // Launcher
+					c.Main_memory_ringpin_5.SetTranslation(45.910098, -38.380612, 102.000000);  // Settings
+				}
+
+				else if( g_TotalMenuItems == "4" )
+				{
+					c.Main_memory_ringpin_4.visible = false;
+					// Setup for a 4 button menu with the online button
+					c.Main_memory_ringpin_2.SetTranslation(56.830002, 33.290001, 102.000000);   // Memory
+					c.Main_memory_ringpin_3.SetTranslation(62.779999, 13.892000, 102.000000);   // Music
+					c.Main_Online_ringpin.SetTranslation(62.779999, -6.092000, 102.000000);     // Online
+					c.Main_memory_ringpin_5.SetTranslation(57.430000, -24.379999, 102.000000);  // Settings
+				}
+				else
+				{
+					// Turn off the Online Menu Button's Visible Propery
+					c.Main_Online_ringpin.visible   = false;
+					c.Main_memory_ringpin_4.visible = false;
+					
+					// Setup for a 3 button menu without the online button
+					c.Main_memory_ringpin_2.SetTranslation(56.830002, 32.000000, 102.000000);   // Memory
+					c.Main_memory_ringpin_3.SetTranslation(62.779999, 4.500000, 102.000000);    // Music
+					c.Main_memory_ringpin_5.SetTranslation(57.430000, -23.50000, 102.000000);   // Settings
+				}
+				// Setup Main Menu Buttons
+				SetButtonText();
+				Button1Action = GetSavedValue("MainMenu","Button1Action");
+				Button2Action = GetSavedValue("MainMenu","Button2Action");
+				Button3Action = GetSavedValue("MainMenu","Button3Action");
+				Button4Action = GetSavedValue("MainMenu","Button4Action");
+				ButtonYXAction = GetSavedValue("MainMenu","ButtonYXAction");
+				
+				UpdateMainMenu(); 
+				c.game_arm01.visible = false;
+				c.game_arm02.visible = false;
+				c.game_arm03.visible = false;
+				c.game_arm04.visible = false;
+				c.game_arm05.visible = false;
+				
+				if(thcorb == true)
+				{
+					c.podsupport_1a.visible = true;
+					c.podsupport_2a.visible = true;
+					c.podsupport_3a.visible = true;
+					c.podsupport_4a.visible = true;
+					c.Main_memory_pod03.visible = false;
+					c.Main_pod_backing01.visible = false;
+					c.Main_pod_backing02.visible = true;
+					c.Main_pod_backing02.fade = 2; 
+					c.podsupport_ring.visible = false;
+					c.podsupportMaterial.name = "PanelBacking_01";
+					c.Large_X_Spinner.rpm = 1;
+					c.Pod_1_Spinner.rpm = 1.3;
+					c.Pod_2_Spinner.rpm = 1.3;
+					c.Pod_3_Spinner.rpm = 1.3;
+					c.Pod_4_Spinner.rpm = 1.3;
+					c.Pod_5_Spinner.rpm = 1.3;
+					c.MainPod_1_Spinner.rpm = 1.3;      // Main Podshell 09
+					c.MainPod_2_Spinner.rpm = -2.3;     // Main Podshell 10
+					c.MainPod_3_Spinner.rpm = -1.0;     // Main Podshell 11
+					//c.MainPod_4_Spinner.rpm = -1.0;     // Main Podarm 1-4 
+				}
+				else
+				{
+					c.Main_pod_backing01.visible = true;
+					c.Main_pod_backing02.visible = false;
+				}
+				ApplyOrb();
+				if(bUseMainMenuAttract){ MainMenuAttract(); }
+				g_theMainMenuLoaded = true;
+			}
+		}
+	]
+	
+	shell Transform
+	{
+		scale 150 150 150
+		translation 0 -20 80
+		children
+		[
+			DEF theMainMenuWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial
+							{
+								name "InnerWall_01"
+							}
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh { url "cellwall.xm" }
+					}
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial
+							{
+								name "InnerWall_02"
+							}
+						}
+						geometry Sphere
+						{
+							radius 1.0
+						}
+					}
+				]
+			}
+		]
+	}
+	
+	
+	path DEF theMainMenuViewpoint Viewpoint
+	{
+		fieldOfView 1.300000
+		orientation -0.177400 -0.983500 -0.036250 -0.045440
+		position 11.180000 -32.299999 174.300003
+		jump false
+	}
+	
+	control DEF joy Joystick
+	{
+		function OnADown()
+		{
+			theMainMenu.children[0].children[0].select_pod_HL.children[0].appearance.material.param = 1;
+			
+			PlaySoundA();
+			if ((RightTrigger == true) & (LeftTrigger == true)) { QuickLaunch("A"); return;}
+			if (nCurMainMenuItem == 0)  // Memory Button
+			{
+				theGamesMenuIn.Play();
+				eval(Button1Action);
+			}
+			else if (nCurMainMenuItem == 1) // Music Button
+			{
+				theMusicMenuIn.Play();
+				eval(Button2Action);
+			}
+			else if (nCurMainMenuItem == 2) // Xbox Live Button
+			{
+				theGamesMenuIn.Play();      // TODO: Get final sound
+				eval(Button3Action);        // Enter LiveToday
+			}
+			else if (nCurMainMenuItem == 3) // Launcher Button
+			{
+				theGamesMenuIn.Play();
+				eval(Button4Action);
+			}
+
+			else if (nCurMainMenuItem == 4) // Settings Button
+			{
+				theSettingsMenuIn.Play();
+				GoToSettings();
+			}
+		}
+		function OnBDown()
+		{
+			if ((RightTrigger == true) & (LeftTrigger == true)) { QuickLaunch("B"); return;}
+		}
+		function OnXDown()
+		{    
+			if ((RightTrigger == true) & (LeftTrigger == true)) { QuickLaunch("X"); return;}
+		}
+		function OnYDown()
+		{        
+			if ((RightTrigger == true) & (LeftTrigger == true)) { QuickLaunch("Y"); return;}
+		}
+		function OnRightDown() { RightTrigger = true; }
+		function OnRightUp() { RightTrigger = false; }
+		function OnLeftDown() { LeftTrigger = true; }
+		function OnLeftUp() { LeftTrigger = false; }
+		function OnMoveUp()
+		{
+			if (nCurMainMenuItem > 0)
+			{
+				nCurMainMenuItem = nCurMainMenuItem - 1;
+				
+				// Determine if we should skip the online button
+				if( g_TotalMenuItems == "3" )
+				{
+					// If we would be on the Xbox Live Button, let's skip over it
+					if( nCurMainMenuItem == 3) nCurMainMenuItem = nCurMainMenuItem - 2;
+				}
+				if( g_TotalMenuItems == "4"  )
+				{
+					// If we would be on the Launcher Button, let's skip over it
+					if( nCurMainMenuItem == 3 ) nCurMainMenuItem = nCurMainMenuItem - 1;
+				}                  
+				theMainMenuBackward.Play();
+				UpdateMainMenu();
+			}
+		}
+		
+		function OnMoveDown()
+		{
+			if (nCurMainMenuItem < 4)
+			{
+				nCurMainMenuItem = nCurMainMenuItem + 1;
+				
+				// Determine if we should skip the online button
+				if( g_TotalMenuItems == "3" )
+				{
+					// If we would be on the Xbox Live Button, let's skip over it
+					if( nCurMainMenuItem == 2 ) nCurMainMenuItem = nCurMainMenuItem + 2;
+				}
+				if( g_TotalMenuItems == "4"  )
+				{
+					// If we would be on the Launcher Button, let's skip over it
+					if( nCurMainMenuItem == 3 ) nCurMainMenuItem = nCurMainMenuItem + 1;
+				}                
+				theMainMenuForward.Play();
+				UpdateMainMenu();
+			}
+		}
+
+		function OnKeyVerified()
+		{
+			//theConfig.ToggleNoisyCamera();
+			if(ButtonYXAction != "Nothing")
+			{
+				PlaySoundA();
+				if(ButtonYXAction == "GoToMusic()")
+				{
+					theMusicMenuIn.Play();
+				}
+				else if(ButtonYXAction != "ToggleNoisyCam()")
+				{ 
+					theGamesMenuIn.Play(); 
+				}
+				eval(ButtonYXAction);
+			}
+		}
+	}
+	
+	behavior
+	{
+		sleep nTime;
+		nTime = 0.1;
+		
+		if(bHDDInitialize)
+		{
+			if(bLaunchItem | bExecuteFile)
+			{
+				if(bExecuteFile) 
+				{ 
+					theMainMenu.children[0].children[0].theMainMenuLevel.visible = false; 
+					theMainMenu.shell.alpha = 0;
+				}
+				else 
+				{ 
+					theLauncherInline.children[0].theLauncher.children[0].children[0].theWholeThing.visible = false;
+					theLauncherInline.children[0].theLauncher.shell.alpha = 0;
+				}
+				// Bind the proper background image
+				if( theConfig.GetVideoMode() == 2 )
+				{ theXboxLogo16x9Background.isBound = true; }
+				else { theXboxLogo4x3Background.isBound = true; }
+				nTime = 1.6;
+			}
+			else
+			{
+				BlockUser(Translate("INDEXING_PARTITION"));
+				nTime = 1.1;
+			}
+			bHDDInitialize = false;
+			bHDDInitializing = true;
+		}
+		else if(bHDDInitializing)
+		{
+			if(bPartitionScanCompleted == false)
+			{
+				ScanPartitions();
+			}
+			else if(bRefreshCache)
+			{
+				bRefreshCache = false;
+				theLauncherInline.children[0].RefreshTitleList();
+			}
+			else if(bExecuteFile)
+			{
+				if (theConfig.NtFileExists(launchPath + "\\" + launchXbe)) 
+				{
+					theMainMenu.children[0].children[0].theMainMenuLevel.alpha = 0;
+					theLaunchGameLevel.GoTo();
+				}
+				else {Reload();}
+				bExecuteFile = false;
+			}
+			else if(bLaunchItem)
+			{
+				bHDDInitialized = true;
+				theLauncherInline.children[0].LaunchItem(sLocation,sFolder);
+				bLaunchItem = false;
+			}
+			else if(bLoadDir)
+			{
+				bHDDInitialized = true;
+				theLauncherInline.children[0].LoadDir();
+				bLoadDir = false;
+			}
+			bHDDInitializing = false;
+			bHDDInitialized = true;
+			CloseMessage();
+		}
+		else if(bPartitionScanCompleted == false)
+		{
+			bHDDInitialize = true;
+		}
+		else if(bMainMenuAttractFinish & theMainMenu.children[0].children[0].theMainMenuLevel.moving == false)
+		{
+			EnableInput(true);
+			bMainMenuAttractFinish = false;
+			theMainMenu.children[0].children[0].select.visible = true;
+			theMainMenu.children[0].children[0].Rotating_Large_X.fade = 0.25;
+		}
+	}
+	
+	function OnActivate()
+	{
+		CurrentViewpoint = theMainMenuViewpoint;
+		CurrentAltViewpoint = theMainMenuAlternateViewpoint;
+		EnableAmbientAudio();
+		if( g_theMainMenuLoaded )
+		{
+			UpdateMainMenu();
+		}
+	}
+	
+	function OnArrival()
+	{
+		theSkinBackground.isBound = true;
+		if( false == bAcceptedLegalInfo )
+		{
+			//
+			// We need to pop up the dialog displaying the legal information to the user
+			//
+			
+			bShowLegalInfo = true;
+			DisplayWaitingMessage();
+		}
+		if (g_bPanelDisplayed == true)
+		{
+			theMessageJoystick.isBound = true;
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+var bBackToDVDPlayer;
+var bGoToCDPlayer;
+var bBackToLauncher;
+var bShowErrorPanel;
+var bShowInvalidDisc;
+var bShowInvalidDiscWithNav;
+var bShowNoDongleMessage;
+var bShowLegalInfo;
+var bAcceptedLegalInfo;
+var bForceSetLanguage;
+var bForceSetTimeZone;
+var bForceSetClock;
+var bOutOfBoxFlow;
+var g_bKeyboardDisplayed;
+var g_bPanelDisplayed;
+var g_bAboutToReboot;
+var g_bAboutToRebootToOnline;
+var g_bAboutToLaunchGame;
+var bShowDVDStopBackground;
+var bCleanupSpecifiedDrive;
+var nSettingArea;
+var g_nRec;
+var g_TotalMenuItems;
+var g_theMainMenuLoaded;
+var g_theMessageLayerLoaded;
+var g_bResetDiscDeferredNotification;
+var g_bLeaveDriveLocked;
+var g_bLeaveMemoryUnitsBlocked;
+// All new var's below here...
+
+var LeftTrigger;
+var RightTrigger;
+var RightThumb;
+var LeftThumb;
+
+var CurrentViewpoint;
+var CurrentAltViewpoint;
+
+var theInLine;
+var currentControlType;
+var previousControlType;
+var version;
+var ConfigFile;
+var CacheFile;
+var XlateFile;
+var IconFile;
+var TitleNamesFile;
+var thcorb;
+var customorb;
+var ShowInsignia;
+var btHcScreenSaver;
+var bMusicPlayerReady;
+var currentMusicPlayerMode;
+
+var Button1Text;
+var Button2Text;
+var Button3Text;
+var Button4Text;
+var Button1Action;
+var Button2Action;
+var Button3Action;
+var Button4Action;
+var ButtonYXAction;
+var bBackToSettings;
+var nXOLineButton;
+var nMusicButton;
+var nTime;
+var launchPath;
+var launchXbe;
+var sLocation;
+var sFolder;
+var bLoadDir;
+var bLaunchItem;
+var bUseUnderlay;
+var bExecuteFile;
+var bHDDInitialize;
+var bHDDInitializing;
+var bHDDInitialized;
+var nPartitions;
+var bPartitionScanCompleted;
+var bRefreshCache;
+var bHasExtendedPartition;
+var bUseMainMenuAttract;
+var bMainMenuAttractFinish;
+var DriveLocations;
+var PartitionLocations;
+var sBuildDate;
+var bSkinExists;
+
+// Discord Presence
+var Discord;
+var bPresence;
+var bPresenceEnabled;
+
+//Settings Options
+var ShowMemoryInSettings;
+var ShowMusicInSettings;
+var ShowXOnlineInSettings;
+var ShowLauncherInSettings;
+var ShowConfigInSettings;
+var ShowStartFTPInSettings;
+var ShowRebootInSettings;
+var ShowShutdownInSettings;
+
+var CurrentGameBoardAltViewpoint;
+
+function initialize()
+{
+	sBuildDate = "250605"; //Date of commit YYMMDD
+	bLaunchItem = false;
+	bExecuteFile = false;
+	bHDDInitialize = false;
+	bHDDInitializing = false;
+	bHDDInitialized = false;
+	RightThumb = false;
+	LeftThumb = false;
+	LeftTrigger = false;
+	RightTrigger = false;
+	bBackToSettings = false;
+	bBackToDVDPlayer = false;
+	bGoToCDPlayer = false;
+	bBackToLauncher = false;
+	bShowErrorPanel = false;
+	bShowLegalInfo = false;
+	bShowInvalidDisc = false;
+	//bShowInvalidDiscWithNav = false;
+	bShowNoDongleMessage = false;
+	bOutOfBoxFlow = false;
+	bMainMenuAttractFinish = false;
+	nMusicButton = 1;
+	nXOLineButton = 2;
+	nCurMainMenuItem = 1; // start with music selected
+	g_bKeyboardDisplayed = false;
+	g_bPanelDisplayed = false;
+	g_bAboutToReboot = false;
+	//g_bAboutToRebootToOnline = false;
+	//g_bAboutToLaunchGame = false;
+	bShowDVDStopBackground = true;
+	bCleanupSpecifiedDrive = false;
+	nSettingArea = 0;
+	nTime = 1.4;
+	g_nRec = 0;
+	strMessageYesFunction = "";
+	strMessageNoFunction = "";
+	strKeyboardDoneFunction = "";
+	strKeyboardCancelFunction = "";
+	g_theMainMenuLoaded = false;
+	g_theMessageLayerLoaded = false;
+	g_nCurrentAccountSelected = 0;
+	strEntryPointInternalDestination = "";
+	g_bLiveTodayFadeIn = false;
+	g_nLastActivePort = 0;
+	g_bFirstSignIn = false;
+	g_bResetDiscDeferredNotification = false;
+	g_bLeaveDriveLocked = false;
+	g_bLeaveMemoryUnitsBlocked = false;
+	version = new Settings;
+	ConfigFile = new Settings;
+	CacheFile = new Settings;
+	XlateFile = new Settings;
+	IconFile = new Settings;
+	TitleNamesFile = new Settings;
+	version.file = "C:\\version";
+	version.SetValue("version","0.5." + sBuildDate);
+	ConfigFile.file = "C:\\UIX Configs\\config.ini";
+	CacheFile.file = "C:\\UIX Configs\\cache.ini";
+	XlateFile.file = "C:\\UIX Configs\\xlate.ini";
+	IconFile.file = "C:\\UIX Configs\\icons.ini";
+	TitleNamesFile.file = "C:\\UIX Configs\\TitleNames.ini";
+
+	thcorb = (GetSavedValue("default","MainOrbStyle") == "tHc");
+	ShowInsignia = GetSavedBooleanValue("default","ShowInsignia");
+	btHcScreenSaver = GetSavedBooleanValue("default","UsetHcScreenSaver");
+	bUseMainMenuAttract = GetSavedBooleanValue("default","UseMainMenuAttract");
+	bUseUnderlay = GetSavedBooleanValue("default","UseListUnderlay");
+	bSkinExists = theConfig.NtFileExists("\\Device\\Harddisk0\\Partition2\\xboxdashdata.185ead00\\Skin.xip");
+	bPresence = theConfig.NtFileExists("\\Device\\Harddisk0\\Partition2\\Discord Presence\\Discord.xbe");
+	bPresenceEnabled = GetSavedBooleanValue("DiscordPresence","PresenceEnabled");
+	if(bPresence){
+		if(GetSavedValue("DiscordPresence","PresenceEnabled") == "") SetSavedBooleanValue("DiscordPresence","PresenceEnabled",false);
+		Discord = new Settings;
+		Discord.file = "C:\\Discord Presence\\shortcut.ini";
+		Discord.section = "Shortcut";
+		var currentPath = Discord.GetValue("Path");
+		var sDashboard = "c:\\xboxdash.xbe";
+		if (theConfig.NtFileExists("\\Device\\Harddisk0\\Partition2\\xb0xdash.xbe")) sDashboard = "c:\\xb0xdash.xbe";
+		if(bPresenceEnabled & currentPath.toLowerCase() != sDashboard) 
+		{
+			Discord.SetValue("Path",sDashboard); 
+			launch("Discord.xbe","\\Device\\Harddisk0\\Partition2\\Discord Presence"); 
+		}
+	}
+	if(GetSavedValue("ShowInSettings","Configuration") == "") SetSavedBooleanValue("ShowInSettings","Configuration",true);
+	if(GetSavedValue("ShowInSettings","StartFTP") == "") SetSavedBooleanValue("ShowInSettings","StartFTP",false);
+	if(GetSavedValue("ShowInSettings","Reboot") == "") SetSavedBooleanValue("ShowInSettings","Reboot",true);
+	if(GetSavedValue("ShowInSettings","Shutdown") == "") SetSavedBooleanValue("ShowInSettings","Shutdown",true);
+	ShowMemoryInSettings = GetSavedBooleanValue("ShowInSettings","Memory");
+	ShowMusicInSettings = GetSavedBooleanValue("ShowInSettings","Music");
+	ShowXOnlineInSettings = GetSavedBooleanValue("ShowInSettings","XOnline");
+	ShowLauncherInSettings = GetSavedBooleanValue("ShowInSettings","Launcher");
+	ShowConfigInSettings = GetSavedBooleanValue("ShowInSettings","Configuration");
+	ShowStartFTPInSettings = GetSavedBooleanValue("ShowInSettings","StartFTP");
+	ShowRebootInSettings = GetSavedBooleanValue("ShowInSettings","Reboot");
+	ShowShutdownInSettings = GetSavedBooleanValue("ShowInSettings","Shutdown");
+	
+	DriveLocations = new Array("C:\\","E:\\");
+	PartitionLocations = new Array("\\Device\\Harddisk0\\Partition2\\","\\Device\\Harddisk0\\Partition1\\");
+	bPartitionScanCompleted = GetSavedBooleanValue("ExtendedPartitions","PartitionScanCompleted");
+	if(bPartitionScanCompleted)
+	{
+		bPartitionScanCompleted = theConfig.NtFileExists("C:\\UIX Configs\\cache.ini");
+		if(bPartitionScanCompleted)
+		{
+			nPartitions = StringToNumber(GetSavedValue("ExtendedPartitions","Partitions"));
+			bHasExtendedPartition = nPartitions > 0;
+			if(nPartitions & 1) { PartitionLocations[PartitionLocations.length] = "\\Device\\Harddisk0\\Partition6\\"; DriveLocations[DriveLocations.length] = "F:\\"; }
+			if(nPartitions & 2) { PartitionLocations[PartitionLocations.length] = "\\Device\\Harddisk0\\Partition7\\"; DriveLocations[DriveLocations.length] = "G:\\"; }
+			if(nPartitions & 4) { PartitionLocations[PartitionLocations.length] = "\\Device\\Harddisk1\\Partition6\\"; DriveLocations[DriveLocations.length] = "H:\\"; }
+			if(nPartitions & 8) { PartitionLocations[PartitionLocations.length] = "\\Device\\Harddisk1\\Partition7\\"; DriveLocations[DriveLocations.length] = "I:\\"; }
+			if(nPartitions & 16) { PartitionLocations[PartitionLocations.length] = "\\Device\\Harddisk1\\Partition1\\"; DriveLocations[DriveLocations.length] = "R:\\"; }
+		}
+	}
+
+	theAmbientSound0.Play();
+	theAmbientSound1.Play();
+	theAmbientSound2.Play();
+	
+	var nLanguage = theConfig.GetLanguage();
+	if (nLanguage != 0) nLanguage = nLanguage - 1;
+	theTranslator.SetLanguage(nLanguage);
+	
+	if(bSkinExists)
+	{
+		theTranslator.SetLanguage(0); //Bootloop if language is not English when loading skin.
+		GoToSkin();
+	}
+	else
+	{
+		MainInitPart2();
+	} 
+}
+
+function MainInitPart2()
+{
+	var nLanguage = theConfig.GetLanguage();
+	if (nLanguage != 0) nLanguage = nLanguage - 1;
+	theTranslator.SetLanguage(nLanguage);
+	
+	// Figure out if we need to display 3, 4, or 5 items on the main menu
+	g_TotalMenuItems = GetSavedValue("MainMenu","MainMenuItems");
+	GetMainMenuButtons();
+	
+	//bAcceptedLegalInfo = theConfig.GetAcceptedLegalInfo();
+	bForceSetLanguage = theConfig.ForceSetLanguage();
+	bForceSetTimeZone = theConfig.ForceSetTimeZone();
+	bForceSetClock = theConfig.ForceSetClock();
+	
+
+	
+	MainInitPart3();
+}
+
+function MainInitPart3()
+{
+	var reason = theConfig.GetLaunchReason();
+	if(reason.length() > 0) bUseMainMenuAttract = false;
+	if (reason == "Error")
+	{
+		EnableInput(true);
+		theMainMenu.GoTo();
+		EnableAmbientAudio();
+		bShowErrorPanel = true;
+	}
+	else if (reason == "Memory")
+	{
+		if (theConfig.CanDriveBeCleanup(theConfig.GetLaunchParameter1()))
+		{
+			bCleanupSpecifiedDrive = true;
+		}
+
+		bBackToLauncher = true;
+		EnableInput(true);
+		EnableAmbientAudio();
+		GoToMemory();
+	}
+	else if (reason == "Settings")
+	{
+		bBackToLauncher = true;
+		nSettingArea = theConfig.GetLaunchParameter1();
+		EnableInput(true);
+		EnableAmbientAudio();
+		GoToSettings();
+	}
+	else if (reason == "Music")
+	{
+		bBackToLauncher = true;
+		EnableInput(true);
+		EnableAmbientAudio();
+		GoToMusic();
+	}
+	else if (theDiscDrive.discType == "Video")
+	{
+		EnableInput(true);
+		StartDVDPlayer();
+	}
+	else if (theDiscDrive.discType == "Audio")
+	{
+		nCurMainMenuItem = 1; // select music when backing up
+		StartCDPlayer();
+	}
+	else
+	{
+		EnableInput(true);
+
+		if (theDiscDrive.discType == "unknown")
+			bShowInvalidDisc = true;
+		theMainMenu.GoTo();
+		EnableAmbientAudio();
+	}
+}
+
+function StartScreenSaverView()
+{
+	if(CurrentViewpoint == theMainMenuViewpoint)
+	{
+		if (theMainMenu.children.length() == 0) return;
+		var c = theMainMenu.children[0].children[0];
+		c.theMenuItems.SetAlpha(0);
+		c.select.SetAlpha(0);
+		c.theMainMenuLevel.fade = 100;
+		var x = GetRandomInteger(3);
+		if(x == 0)
+		{
+			c.theMainMenuLevel.SetTranslation( 30, -104, 4 );
+		}
+		else if(x == 1)
+		{
+			c.theMainMenuLevel.SetTranslation( 74, -46, -14 );
+			c.theMainMenuLevel.SetRotation( -0.0006, 0, 0.00005, 0.314159 );
+		}
+		else
+		{
+			c.theMainMenuLevel.SetTranslation( -24, -36, -262 );
+			c.theMainMenuLevel.SetRotation( -0.001, 0.0003, 0.0003, 0.314159 );
+		}
+		theMainMenuWaver.rpm = 2.25;
+		theScreen.brightness = 0.8;
+		EnableCurrentAlternateViewpoint();
+	}
+	// Inline children[] is empty until the user navigates into the launcher
+	// scene, so guard the deref. & is bitwise (no short-circuit) in this VM,
+	// so the length check has to be a separate if.
+	else if (theLauncherInline.children.length() > 0)
+	{
+		if(CurrentViewpoint == theLauncherInline.children[0].LauncherViewpoint | CurrentViewpoint == theLauncherInline.children[0].theTitleListViewpoint)
+		{
+			var c = theLauncherInline.children[0].theLauncher.children[0].children[0];
+			c.back1.SetAlpha(0);
+			c.select1.SetAlpha(0);
+			c.refresh.SetAlpha(0);
+			c.recent.SetAlpha(0);
+			theScreen.brightness = 0.8;
+			theLauncherInline.children[0].theLauncherWaver.rpm = 2.25;
+			EnableCurrentAlternateViewpoint();
+		}
+	}
+}
+
+function StopScreenSaverView()
+{
+	if(CurrentViewpoint == theMainMenuViewpoint)
+	{
+		if (theMainMenu.children.length() == 0) return;
+		var c = theMainMenu.children[0].children[0];
+		c.theMainMenuLevel.fade = 0.25;
+		c.theMainMenuLevel.SetRotation(0,0,0,0);
+		c.theMainMenuLevel.SetTranslation(0,0,0);
+		c.theMenuItems.SetAlpha(1);
+		c.select.SetAlpha(1);
+		theMainMenuWaver.rpm = 0.75;
+		DisableCurrentAlternateViewpoint();
+	}
+	else if (theLauncherInline.children.length() > 0)
+	{
+		if(CurrentViewpoint == theLauncherInline.children[0].LauncherViewpoint | CurrentViewpoint == theLauncherInline.children[0].theTitleListViewpoint)
+		{
+			var c = theLauncherInline.children[0].theLauncher.children[0].children[0];
+			c.back1.SetAlpha(1);
+			c.select1.SetAlpha(1);
+			c.refresh.SetAlpha(1);
+			c.recent.SetAlpha(1);
+			c.GM_L2_Arm01_03.SetAlpha(1);
+			c.audio_panel.SetAlpha(1);
+			DisableCurrentAlternateViewpoint();
+			theLauncherInline.children[0].theLauncherWaver.rpm = 0.75;
+		}
+	}
+}
+// Japanese Keyboard////////////////////////////////////////////////////////
+
+DEF theJapaneseKeyboardLayer Layer
+{
+	visible false
+	transparency 1
+	fade 0.25
+	
+	viewpoint Viewpoint
+	{
+		fieldOfView 1.2
+		position 10 9 145
+	}
+	
+	children
+	[
+		DEF theJapaneseKeyboardTransform Transform
+		{
+			fade 0.25
+			//          fade 1
+			scale 0 0 0
+			children
+			[
+				Inline
+				{
+					preload true
+					url "JKeyboard/default.xap"
+				}
+			]
+		}
+	]
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+var strKeyboardTitle, strKeyboardEdit;
+var strKeyboardDoneFunction, strKeyboardCancelFunction;
+
+DEF theKeyboardLayer Layer
+{
+	visible false
+	transparency 1
+	fade 0.25
+	
+	viewpoint Viewpoint
+	{
+		fieldOfView 1.2
+		position 10 6 150
+	}
+	
+	children
+	[
+		DEF theKeyboardTransform Transform
+		{
+			fade 0.25
+			//          fade 1
+			scale 0 0 0
+			children
+			[
+				Inline
+				{
+					preload true
+					url "Keyboard/default.xap"
+				}
+			]
+		}
+	]
+}
+
+function KeyboardDone()
+{
+	var strDoneFunction = strKeyboardDoneFunction;
+	
+	CloseKeyboard();
+	
+	if (strDoneFunction != "")
+		eval(strDoneFunction);
+}
+
+function KeyboardCancel()
+{
+	var strCancelFunction = strKeyboardCancelFunction;
+	
+	CloseKeyboard();
+	
+	if (strCancelFunction != "")
+		eval(strCancelFunction);
+}
+
+function CloseKeyboard()
+{
+	if (g_bKeyboardDisplayed == false)
+	{
+		return;
+	}
+	
+	var nKeyboardLanguage = theConfig.GetLanguage();
+	if (nKeyboardLanguage == 2)  // Japanese Language
+	{
+		var c = theJapaneseKeyboardTransform.children[0].children[0];
+		
+		// Re-Enable asterisk formatting for our text panels
+		c.theJKeyboard.SetAsteriskFormattingState( g_PrevAsteriskFormattingState );
+		
+		strKeyboardEdit = c.theJKeyboard.string;
+		c.theJKeyboardJoystick.isBound = false;
+		
+		theJapaneseKeyboardTransform.SetScale(0, 0, 0);
+		theJapaneseKeyboardTransform.SetAlpha(0);
+		theJapaneseKeyboardLayer.transparency = 1;
+	}
+	else
+	{
+		var c = theKeyboardTransform.children[0].children[0];
+		
+		// Re-Enable asterisk formatting for our text panels
+		c.theKeyboard.SetAsteriskFormattingState( g_PrevAsteriskFormattingState );
+		
+		strKeyboardEdit = c.theKeyboard.string;
+		c.theKeyboardJoystick.isBound = false;
+		
+		theKeyboardTransform.SetScale(0, 0, 0);
+		theKeyboardTransform.SetAlpha(0);
+		theKeyboardLayer.transparency = 1;
+	}
+	
+	//strKeyboardTitle = "";
+	strKeyboardDoneFunction = "";
+	strKeyboardCancelFunction = "";
+	
+	if (theDiscDrive.locked)
+	{
+		theDiscDrive.locked = false;
+	}
+	UnblockMemoryUnitInsert();
+	
+	g_bKeyboardDisplayed = false;
+}
+
+var g_PrevAsteriskFormattingState;
+function ShowKeyboard(strTitle, strEdit, strDoneFunction, strCancelFunction)
+{
+	theDiscDrive.locked = true;
+	BlockMemoryUnitInsert();
+	
+	strKeyboardTitle = strTitle;
+	strKeyboardEdit = strEdit;
+	strKeyboardDoneFunction = strDoneFunction;
+	strKeyboardCancelFunction = strCancelFunction;
+	
+	var nKeyboardLanguage = theConfig.GetLanguage();
+	if (nKeyboardLanguage == 2)  // Japanese Language
+	{
+		var c = theJapaneseKeyboardTransform.children[0].children[0];
+		
+		// Disable asterisk formatting for our keyboard display
+		g_PrevAsteriskFormattingState = c.theJKeyboard.GetAsteriskFormattingState();
+		c.theJKeyboard.SetAsteriskFormattingState( false );
+		
+		c.theJKeyboard.selectKey( 8, 10 );        // Default the key selection to the DONE key
+		c.theJKeyboard.string = "";
+		c.theJKeyboard.string = strKeyboardEdit;
+		c.theJKeyboard.shift = 0;
+		c.theJKeyboard.caps = 0;
+		c.theJKeyboard.jmode = 0;
+		
+		c.theKeyboardTitle.text = strKeyboardTitle;
+		if (g_bKeyboardDisplayed == false)
+		{
+			c.theJKeyboardJoystick.isBound = true;
+		}
+		
+		theJapaneseKeyboardLayer.visible = true;
+		theJapaneseKeyboardLayer.transparency = 0.25;
+		theJapaneseKeyboardTransform.SetScale(1, 1, 1);
+		theJapaneseKeyboardTransform.SetAlpha(1);
+	}
+	else
+	{
+		var c = theKeyboardTransform.children[0].children[0];
+		
+		// Disable asterisk formatting for our keyboard display
+		g_PrevAsteriskFormattingState = c.theKeyboard.GetAsteriskFormattingState();
+		c.theKeyboard.SetAsteriskFormattingState( false );
+		
+		c.theKeyboard.selectKey( 0, 0 );        // Default the key selection to the DONE key
+		c.theKeyboard.string = "";
+		c.theKeyboard.string = strKeyboardEdit;
+		c.theKeyboard.shift = 0;
+		c.theKeyboard.caps = 0;
+		c.theKeyboard.mode = 0;
+		
+		c.theKeyboardTitle.text = strKeyboardTitle;
+		if (g_bKeyboardDisplayed == false)
+		{
+			c.theKeyboardJoystick.isBound = true;
+		}
+		
+		theKeyboardLayer.visible = true;
+		theKeyboardLayer.transparency = 0.25;
+		theKeyboardTransform.SetScale(1, 1, 1);
+		theKeyboardTransform.SetAlpha(1);
+	}
+	
+	g_bKeyboardDisplayed = true;
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theMessageLayer Layer
+{
+	fade 0.25
+	transparency 1
+	
+	viewpoint Viewpoint
+	{
+		fieldOfView 0.602400
+		orientation 0.000000 -1.000000 0.000000 -0.003534
+		position 0.424700 0.000000 6.052000
+	}
+	
+	children
+	[
+		Transform
+		{
+			children
+			[
+				DEF theMessageInline Inline
+				{
+					preload true
+					url "Message/default.xap"
+					
+					function onLoad()
+					{
+						var c = children[0];
+						c.button_yes.visible = false;
+						c.button_no.visible = false;
+						c.button_center.visible = false;
+						c.slider_slot.visible = false;
+						c.slider.visible = false;
+						
+						g_theMessageLayerLoaded = true;
+						
+						DisplayWaitingMessage();
+					}
+				}
+			]
+		}
+	]
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+DEF theWaitCursorLayer Layer
+{
+	fade 0.1
+	transparency 1
+	
+	viewpoint Viewpoint
+	{
+		fieldOfView 0.602400
+		orientation 0.000000 -1.000000 0.000000 -0.003534
+		position 0.424700 0.000000 6.052000
+	}
+	
+	children
+	[
+		Transform
+		{
+			children
+			[
+				DEF theWaitCursorInline Inline
+				{
+					preload true
+					url "WaitCursor/default.xap"
+				}
+			]
+		}
+	]
+}
+
+function ShowWaitCursor()
+{
+	theWaitCursorLayer.transparency = 0.25;
+}
+
+function HideWaitCursor()
+{
+	theWaitCursorLayer.transparency = 1.0;
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+var strMessageText;
+var strMessageYesFunction;
+var strMessageNoFunction;
+var nCurMessageButton;
+var nMessageButtonCount;
+
+function UpdateMessageButtonHighlight()
+{
+	var c = theMessageInline.children[0];
+	
+	if (nCurMessageButton == 0)
+	{
+		c.button_yes.children[0].appearance.material.name = "GameHilite";
+		c.text_yes.children[0].appearance.material.name = "Material #133";
+		
+		c.button_no.children[0].appearance.material.name = "FlatSurfaces";
+		c.text_no.children[0].appearance.material.name = "NavType";
+	}
+	else
+	{
+		c.button_yes.children[0].appearance.material.name = "FlatSurfaces";
+		c.text_yes.children[0].appearance.material.name = "NavType";
+		
+		c.button_no.children[0].appearance.material.name = "GameHilite";
+		c.text_no.children[0].appearance.material.name = "Material #133";
+	}
+}
+
+DEF theMessageJoystick Joystick
+{
+	function OnADown()
+	{
+		if (nCurMessageButton != -1)
+		{
+			PlaySoundA();
+			if (nCurMessageButton == 0)
+				OnQuestionYes();
+			else
+				OnQuestionNo();
+		}
+	}
+	
+	function OnBDown()
+	{
+		if (nMessageButtonCount == 1)
+		{
+			// Just an OK button; B is the same as A
+			OnADown();
+			return;
+		}
+		
+		if (nCurMessageButton != -1)
+		{
+			PlaySoundB();
+			nCurMessageButton = 1;
+			UpdateMessageButtonHighlight();
+			OnQuestionNo();
+		}
+	}
+	
+	function OnRightDown() { RightTrigger = true; }
+	function OnRightUp() { RightTrigger = false; }
+	function OnLeftDown() { LeftTrigger = true; }
+	function OnLeftUp() { LeftTrigger = false; }
+
+	function OnMoveLeft()
+	{
+		if (nMessageButtonCount < 2)
+			return;
+		
+		if (nCurMessageButton == 1)
+		{
+			PlaySoundMenuChange();
+			nCurMessageButton = 0;
+			UpdateMessageButtonHighlight();
+		}
+	}
+	
+	function OnMoveRight()
+	{
+		if (nMessageButtonCount < 2)
+			return;
+		
+		if (nCurMessageButton == 0)
+		{
+			PlaySoundMenuChange();
+			nCurMessageButton = 1;
+			UpdateMessageButtonHighlight();
+		}
+	}
+}
+
+function AskQuestion(strQuestion, strYesFunction, strNoFunction, nDefaultButton)
+{
+	// Defer disc insertion/removal notification
+	theDiscDrive.locked = true;
+	BlockMemoryUnitInsert();
+	
+	var c = theMessageInline.children[0];
+	
+	c.MessagePanel.SetRotation(0, 0, 1, 0);
+	c.MessagePanel.SetAlpha(1);
+	
+	strMessageText = strQuestion;
+	strMessageYesFunction = strYesFunction;
+	strMessageNoFunction = strNoFunction;
+	
+	c.button_yes.visible = true;
+	c.button_no.visible = true;
+	c.button_center.visible = false;
+	c.slider_slot.visible = false;
+	c.slider.visible = false;
+	
+	c.MessageText.text = strQuestion;
+	
+	nCurMessageButton = nDefaultButton;
+	nMessageButtonCount = 2;
+	UpdateMessageButtonHighlight();
+	
+	if (g_bPanelDisplayed == false)
+	{
+		theMessageJoystick.isBound = true;
+	}
+	
+	theMessageLayer.transparency = 0.25;
+	
+	g_bPanelDisplayed = true;
+}
+
+function TellUser(strMessage, strDoneFunction)
+{
+	// Defer disc insertion/removal notification
+	theDiscDrive.locked = true;
+	BlockMemoryUnitInsert();
+	
+	var c = theMessageInline.children[0];
+	
+	c.MessagePanel.SetRotation(0, 0, 1, 0);
+	c.MessagePanel.SetAlpha(1);
+	
+	strMessageText = strMessage;
+	strMessageYesFunction = strDoneFunction;
+	strMessageNoFunction = strDoneFunction;
+	
+	c.button_yes.visible = false;
+	c.button_no.visible = false;
+	c.button_center.visible = true;
+	c.slider_slot.visible = false;
+	c.slider.visible = false;
+	
+	c.MessageText.text = strMessage;
+	
+	nCurMessageButton = 0;
+	nMessageButtonCount = 1;
+	UpdateMessageButtonHighlight();
+	
+	if (g_bPanelDisplayed == false)
+	{
+		theMessageJoystick.isBound = true;
+	}
+	
+	theMessageLayer.transparency = 0.25;
+	
+	g_bPanelDisplayed = true;
+}
+
+// This function will display a message panel without OK button
+// and execute a function when complete
+function BlockUserWithFunction(strMessage, strFunction)
+{
+	//
+	// NOTE: We don't defer disc insertion/removal notification here.
+	// For example, if user is trying to play DVD without dongle. We
+	// will display message panel without okay button and wait for
+	// user to remove the disc
+	//
+	
+	BlockMemoryUnitInsert();
+	
+	var c = theMessageInline.children[0];
+	
+	c.MessagePanel.SetRotation(0, 0, 1, 0);
+	c.MessagePanel.SetAlpha(1);
+	
+	strMessageText = strMessage;
+	strMessageYesFunction = strFunction;
+	strMessageNoFunction = "";
+	
+	c.button_yes.visible = false;
+	c.button_no.visible = false;
+	c.button_center.visible = false;
+	c.slider_slot.visible = false;
+	c.slider.visible = false;
+	
+	c.MessageText.text = strMessage;
+	
+	nCurMessageButton = -1;
+	nMessageButtonCount = 0;
+	UpdateMessageButtonHighlight();
+	
+	if (g_bPanelDisplayed == false)
+	{
+		theMessageJoystick.isBound = true;
+	}
+	
+	theMessageLayer.transparency = 0.25;
+	
+	g_bPanelDisplayed = true;
+}
+
+// This function will display message panel without OK button
+function BlockUser(strMessage)
+{
+	BlockUserWithFunction(strMessage, "");
+}
+
+function ShowProgress(strMessage)
+{
+	// Defer disc insertion/removal notification
+	theDiscDrive.locked = true;
+	BlockMemoryUnitInsert();
+	
+	var c = theMessageInline.children[0];
+	
+	c.MessagePanel.SetRotation(0, 0, 1, 0);
+	c.MessagePanel.SetAlpha(1);
+	
+	c.button_yes.visible = false;
+	c.button_no.visible = false;
+	c.button_center.visible = false;
+	c.slider_slot.visible = true;
+	c.slider.visible = true;
+	c.MessageText.text = strMessage;
+	
+	SetProgress(0);
+	nCurMessageButton = -1;
+	nMessageButtonCount = 0;
+	
+	theMessageJoystick.isBound = true;
+	theMessageLayer.transparency = 0.25;
+	
+	// REVIEW: the progress "noise" is now disabled
+	// theProgressSound.Play();
+	
+	g_bPanelDisplayed = true;
+}
+
+function UpdateProgressText(strMessage)
+{
+	var c = theMessageInline.children[0];
+	c.MessageText.text = strMessage;
+}
+
+function SetProgress(nProgress)
+{
+	var nTempProgress = (nProgress * 1.665) - 0.165;
+	var c = theMessageInline.children[0];
+	c.slider.children[0].appearance.material.param = nTempProgress;
+}
+
+function CloseMessage()
+{
+	if (g_bPanelDisplayed == false)
+	{
+		return;
+	}
+	
+	var c = theMessageInline.children[0];
+	
+	c.MessagePanel.SetRotation(0, 0, 1, 1.5);
+	c.MessagePanel.SetAlpha(0.0);
+	
+	theMessageJoystick.isBound = false;
+	theMessageLayer.transparency = 1;
+	
+	strMessageText = "";
+	strMessageYesFunction = "";
+	strMessageNoFunction = "";
+	
+	if (theProgressSound.transportMode != 0)
+		theProgressSound.Stop();
+	theCompleteSound.Play();
+	
+	if( true == g_bResetDiscDeferredNotification )
+	{
+		g_bResetDiscDeferredNotification = false;
+		
+		
+		//
+		// This code was added for the disclaimer dialog
+		// If we are dealing with either "Audio" media or "unknown" media we do not want any deferred
+		// messages popping up because we are going to handle media after the dialog
+		// We do, however, want 'Title' and 'Video' media to be processed as normal
+		//
+		
+		if( ( ( "Audio" == theDiscDrive.discType ) + ( "unknown" == theDiscDrive.discType ) ) == true )
+		{
+			theDiscDrive.bDeferNotification = false;
+		}
+	}
+	
+	
+	//
+	// When we present the disclaimer dialog during the out-of-box flow,
+	// we do NOT want to unlock the drive after the dialog is cleared.  We
+	// want to finish the OOB flow, and then unlock the drive to deal
+	// with media
+	//
+	
+	if( g_bLeaveDriveLocked )
+	{
+		g_bLeaveDriveLocked = false;
+	}
+	else
+	{
+		theDiscDrive.locked = false;
+	}
+	
+	
+	//
+	// When we present the disclaimer dialog during the out-of-box flow,
+	// we do NOT want to unlock memory unit insertion after the dialog is cleared.  We
+	// want to finish the OOB flow, and then unblock the memory unit insertions
+	//
+	
+	if( g_bLeaveMemoryUnitsBlocked )
+	{
+		g_bLeaveMemoryUnitsBlocked = false;
+	}
+	else
+	{
+		UnblockMemoryUnitInsert();
+	}
+	
+	g_bPanelDisplayed = false;
+}
+
+function OnQuestionYes()
+{
+	var strYesFunction = strMessageYesFunction;
+	
+	CloseMessage();
+	
+	if (strYesFunction != "")
+		eval(strYesFunction);
+}
+
+function OnQuestionNo()
+{
+	var strNoFunction = strMessageNoFunction;
+	
+	CloseMessage();
+	
+	if (strNoFunction != "")
+		eval(strNoFunction);
+}
+
+DEF theXboxLogo4x3Background Background
+{
+	skyColor 0 0 0
+	backdrop ImageTexture { url "xboxlogo.bmp" }
+}
+
+DEF theXboxLogo16x9Background Background
+{
+	skyColor 0 0 0
+	backdrop ImageTexture { url "xboxlogow.bmp" }
+}
+
+DEF theXOnlineLevel Level
+{
+	path DEF theXOnlineLevelViewpoint Viewpoint
+	{
+		fieldOfView 1.438000
+		orientation -0.999500 -0.031970 0.000318 -0.019900
+		position 41.650002 28.885000 -300.300003
+		jump false
+	}
+	
+	function OnArrival()
+	{
+		DisableAmbientAudio();
+		BlockMemoryUnitEnumeration();
+		ClosePopup();
+		ShowWaitCursor();
+		
+		// Set flag so that "behavior" polling will reboot the system
+		g_bAboutToRebootToOnline = true;
+	}
+	
+	behavior
+	{
+		sleep 1.1;
+		
+		if (g_bAboutToRebootToOnline)
+		{
+			// Don't reboot until the Live Now zoom in transition sound has finished
+			if (theLiveNowMenuIn.isActive)
+			{
+				alert("LiveNowMenuIn sound still active...");
+			}
+			else
+			{
+				if (strEntryPointInternalDestination == "DASH_UPDATE")
+					theLiveAccounts.LaunchDashUpdate();
+				else if (strEntryPointInternalDestination != "")
+					theLiveAccounts.LaunchEntryPoint(g_nActiveControllerPort, g_bClearPasscode, strEntryPointInternalDestination);
+				else
+					theConfig.GoToXOnlineDash();    // Launch the Online Dash
+			}
+		}
+	}
+	
+	function OnActivate()
+	{
+		CurrentViewpoint = theXOnlineLevelViewpoint;
+		DisableAmbientAudio();
+		BlockMemoryUnitEnumeration();
+		ClosePopup();
+		EnableInput(false);
+	}
+}
+
+DEF theLauncherLevel Level
+{
+	function OnArrival()
+	{
+		DisableAmbientAudio();
+		BlockMemoryUnitEnumeration();
+		ClosePopup();
+		
+		// Set flag to so that "behavior" polling will reboot the system
+		g_bAboutToReboot = true;
+		
+		// Bind the proper background image
+		if( theConfig.GetVideoMode() == 2 )
+			theXboxLogo16x9Background.isBound = true;
+		else
+			theXboxLogo4x3Background.isBound = true;
+	}
+	
+	behavior
+	{
+		sleep 1.1;
+		
+		if (g_bAboutToReboot)
+		{
+			if (g_nRec == 1)
+				theConfig.BackToLauncher2();
+			else if (g_nRec == 3 )
+				theConfig.GoToXOnlineDash();    // Launch the Online Dash
+			else if (bBackToLauncher)
+				theConfig.BackToLauncher();     // This will boot to the dash or to title with context
+			else
+				theDiscDrive.LaunchDisc();      // This will boot to title/dashboard or DVD player
+		}
+	}
+	
+	function OnActivate()
+	{
+		DisableAmbientAudio();
+		BlockMemoryUnitEnumeration();
+		ClosePopup();
+		EnableInput(false);
+		
+		// Bind the proper background image
+		if( theConfig.GetVideoMode() == 2 )
+			theXboxLogo16x9Background.isBound = true;
+		else
+			theXboxLogo4x3Background.isBound = true;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+function BlockMemoryUnitInsert()
+{
+	theMemoryMonitor.blockInsertion = true;
+}
+
+function UnblockMemoryUnitInsert()
+{
+	theMemoryMonitor.blockInsertion = false;
+}
+
+function BlockMemoryUnitEnumeration()
+{
+	theMemoryMonitor.enumerationOn = false;
+}
+
+function UnblockMemoryUnitEnumeration()
+{
+	theMemoryMonitor.enumerationOn = false;
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+////// Added Functions for HDD Menu
+////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+function FillMenuList(x) // search Y:\, C:\, N:\ and O:\ for a relative path's contents to use to fill a menu
+{
+	var RelativePath = Split(x,";");
+	var TitleList = new Array(0);
+	for(var i = 0; i < DriveLocations.length; i = i + 1)
+	{
+		for(var ix = 0; ix < RelativePath.length; ix = ix + 1)
+		{
+			var c = new Folder; //def a new folder
+			c.path = DriveLocations[i] + RelativePath[ix]; //def it's path
+			var cSize = c.subFolders.length(); //find the number of subfolders in it
+			if(cSize > 0)
+			{
+				for(var cLoop = 0; cLoop < cSize; cLoop = cLoop + 1)
+				{
+					launchPath = PartitionLocations[i] + RelativePath[ix] + "\\" + c.subFolders[cLoop].name;
+					launchXbe = "default.xbe";
+					if(theConfig.NtFileExists(launchPath + "\\" + launchXbe))
+					{
+						TitleList[TitleList.length] = c.subFolders[cLoop].name + ";" + i + ";" + ix;
+					}                
+				}
+			}
+		}  
+	}
+	TitleList = TitleList.sort();
+	return TitleList; //return the array
+}
+
+function GetAllTitles()
+{
+	var TitleList = new Array;
+	var cTitles = new Array;
+	for(var i = 0; i < 8; i = i + 1)
+	{
+		var cValue = GetSavedValue("LauncherMenu","Title" + i);
+		if(cValue != "")
+		{
+			var x = 1;
+			CacheFile.section = "Cache";
+			cTitles = Split(CacheFile.GetValue(cValue),"|");
+			while(cTitles.length == 25)
+			{
+				TitleList = TitleList.concat(cTitles);
+				cTitles = Split(CacheFile.GetValue(cValue + "-" + x),"|");
+				x = x + 1;
+			}
+			TitleList = TitleList.concat(cTitles);
+		}    
+	}
+	TitleList = TitleList.sort();
+	return TitleList;
+}
+
+DEF theLaunchGameLevel Level
+{
+	function OnArrival()
+	{
+		DisableAmbientAudio();
+		BlockMemoryUnitEnumeration();
+		ClosePopup();
+
+		g_bAboutToLaunchGame = true;
+		// Bind the proper background image
+		if( theConfig.GetVideoMode() == 2 )
+			theXboxLogo16x9Background.isBound = true;
+		else
+			theXboxLogo4x3Background.isBound = true;
+	}
+	behavior
+	{
+		sleep 1.1;
+
+		if(g_bAboutToLaunchGame)
+		{
+			if(bPresence & bPresenceEnabled)
+			{
+				var PathArray = new Array;
+				var Slice = new Array;
+				PathArray = Split(launchPath,"\\");
+				Slice = PathArray.slice(4,PathArray.length);
+				Discord.SetValue("Path",GetDrivePath(PathArray[2],PathArray[3]) + Slice.join("\\") + "\\" + launchXbe);
+				launch("Discord.xbe", "\\Device\\Harddisk0\\Partition2\\Discord Presence");
+			}
+			else
+			{
+				launch(launchXbe, launchPath);
+			}
+
+			// Xbox reboots inside launch() so the next line never runs.
+			// On desktop, launch() returns and the behavior block would
+			// re-evaluate this if branch every cycle, repeatedly firing
+			// the launcher. Clear the flag so we only launch once.
+			g_bAboutToLaunchGame = false;
+		}
+	}
+
+	function OnActivate()
+	{
+		DisableAmbientAudio();
+		BlockMemoryUnitEnumeration();
+		ClosePopup();
+		//EnableInput(false);
+
+		//theScreenSaver.enabled = true;
+		if( theConfig.GetVideoMode() == 2 )
+			theXboxLogo16x9Background.isBound = true;
+		else
+			theXboxLogo4x3Background.isBound = true;
+	}
+}
+
+function QuickLaunch(x)
+{
+	LeftTrigger  = false;
+	RightTrigger = false;
+	
+	var button = x;
+	var a = GetSavedValue("QuickLaunch","QuickLaunch" + button);
+	if (a == "") 
+	{
+		return;
+	}
+	else
+	{
+		ExecuteFile(a);
+	}
+}
+
+function ExecuteFile(sPath)
+{
+	var a = sPath;
+	var b = a.substr(0,a.indexOf(":"));
+	var c = a.indexOf("\\");
+	var d = a.lastIndexOf("\\");
+	var e = a.substr(c , d - c);
+	var ExtendedPartition = false;
+	
+	launchXbe = a.substr(d + 1);
+	
+	if(b.toUpperCase() == "C") { launchPath = "\\Device\\Harddisk0\\Partition2" + e; }
+	else if(b.toUpperCase() == "E") { launchPath = "\\Device\\Harddisk0\\Partition1" + e; }
+	else if(b.toUpperCase() == "F") { launchPath = "\\Device\\Harddisk0\\Partition6" + e; ExtendedPartition = true; }
+	else if(b.toUpperCase() == "G") { launchPath = "\\Device\\Harddisk0\\Partition7" + e; ExtendedPartition = true; }
+	else if(b.toUpperCase() == "R") { launchPath = "\\Device\\Harddisk1\\Partition1" + e; }
+	else if(b.toUpperCase() == "H") { launchPath = "\\Device\\Harddisk1\\Partition6" + e; ExtendedPartition = true; }
+	else if(b.toUpperCase() == "I") { launchPath = "\\Device\\Harddisk1\\Partition7" + e; ExtendedPartition = true; }
+	else return;
+	
+	if(ExtendedPartition & bHDDInitialized == false)
+	{
+		bExecuteFile = true;
+		bHDDInitialize = true;
+	}
+	else if(theConfig.NtFileExists(launchPath + "\\" + launchXbe)) 
+	{
+		theMainMenu.children[0].children[0].theMainMenuLevel.visible = false;
+		theLaunchGameLevel.GoTo();
+	}
+}
+
+function RescanPartitions()
+{
+	DriveLocations = new Array("C:\\","E:\\");
+	PartitionLocations = new Array("\\Device\\Harddisk0\\Partition2\\","\\Device\\Harddisk0\\Partition1\\");
+	bPartitionScanCompleted = false;
+	bHDDInitialized = false;
+	bHDDInitialize = true;
+}
+
+function ScanPartitions()
+{
+	var Drives = new Array("F:\\","G:\\","H:\\","I:\\","R:\\");
+	var Locations = new Array("\\Device\\Harddisk0\\Partition6\\","\\Device\\Harddisk0\\Partition7\\","\\Device\\Harddisk1\\Partition6\\","\\Device\\Harddisk1\\Partition7\\","\\Device\\Harddisk1\\Partition1\\");
+	nPartitions = 0;
+	for(var i = 0; i < Drives.length; i = i + 1)
+	{
+		var Test = new Folder;
+		var TestFile = new Settings;
+		var nFolders;
+		var nFiles;
+		var nTotal;
+		var sDrive = Drives[i];
+		var Flag = 1 << i;
+		
+		Test.path = sDrive.indexOf("\\");
+		nFolders = Test.subFolders.length();
+		nFiles = Test.files.length();
+		nTotal = nFolders + nFiles;
+		if(nTotal > 0)
+		{
+			nPartitions = nPartitions | Flag;
+			DriveLocations[DriveLocations.length] = Drives[i];
+			PartitionLocations[PartitionLocations.length] = Locations[i];
+		}
+		else
+		{
+			TestFile.file = Drives[i] + "-DeleteMe-";
+			TestFile.SetValue("Dummy","true");
+			if(theConfig.NtFileExists(Locations[i] + "-DeleteMe-"))
+			{
+				nPartitions = nPartitions | Flag;
+				DriveLocations[DriveLocations.length] = Drives[i];
+				PartitionLocations[PartitionLocations.length] = Locations[i];
+			}
+		}
+	}
+	
+	bPartitionScanCompleted = true;
+	bHasExtendedPartition = nPartitions > 0;
+	SetSavedValue("ExtendedPartitions","Partitions",nPartitions);
+	SetSavedBooleanValue("ExtendedPartitions","PartitionScanCompleted",bPartitionScanCompleted);
+	RefreshCache();
+}
+
+function RefreshCache()
+{
+	var arrMenuNames = new Array;
+	var arrMenuPaths = new Array;
+	var cTitles = new Array;
+	for (var i = 0; i < 8; i = i + 1)
+	{
+		var v = GetSavedValue("LauncherMenu", "Title" + i);
+		if(v != "") 
+		{
+			arrMenuNames[arrMenuNames.length] = v;
+			arrMenuPaths[arrMenuPaths.length] = GetSavedValue("LauncherMenu", "Path" + i);
+		}
+	}
+	for (var x = 0; x < arrMenuNames.length; x = x + 1)
+	{
+		CacheFile.section = "Cache";
+		// Clear previous segments if they exist.
+		var idx = 1;
+		while(CacheFile.GetValue(arrMenuNames[x] + "-" + idx) != "") 
+		{
+			CacheFile.SetValue(arrMenuNames[x] + "-" + idx, "");
+			idx = idx + 1;
+		}
+		var cache;
+		cTitles = FillMenuList(arrMenuPaths[x]);
+		// Segment Titles more than 25
+		if(cTitles.length > 25)
+		{
+			var indx = 1;
+			for(var ptr = 0; ptr < cTitles.length; ptr = ptr + 25)
+			{
+				var cnt = 25;
+				var Segment = new Array;
+				if(ptr + cnt > cTitles.length) cnt = cTitles.length - ptr;
+				Segment = cTitles.slice(ptr,ptr + cnt);
+				cache = Segment.join("|");
+				if(ptr == 0){ CacheFile.SetValue(arrMenuNames[x], cache); }
+				else { CacheFile.SetValue(arrMenuNames[x] + "-" + indx, cache); indx = indx + 1; }    
+			}
+		}
+		else
+		{
+			cache = cTitles.join("|");
+			CacheFile.SetValue(arrMenuNames[x], cache);
+		}
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+DEF theReboot Recovery
+function Reboot()//scripted reboot - last stage of a recovery is to reboot - let's make the box think we just did a recovery and now it's time to reboot :)
+{
+	theReboot.FinishRecovery();
+}
+
+function Reload()
+{
+	if(theConfig.NtFileExists("\\Device\\Harddisk0\\Partition2\\xb0xdash.xbe"))
+	{
+		launch("xb0xdash.xbe","\\Device\\Harddisk0\\Partition2" );
+	}
+	else
+	{
+		launch("xboxdash.xbe","\\Device\\Harddisk0\\Partition2" );
+	}
+}
+
+function PowerOff()
+{
+	AskQuestion(Translate("POWER_OFF"), "ShutDown()", "", 1);
+}
+
+function ShutDown()
+{
+	if(theConfig.NtFileExists("\\Device\\Harddisk0\\Partition2\\xboxdashdata.185ead00\\shutdown.xip"))
+	{
+		launch("shutdown.xip","\\Device\\Harddisk0\\Partition2\\xboxdashdata.185ead00" );
+	}
+}
+
+function ToggleNoisyCam()
+{
+	theConfig.ToggleNoisyCamera();
+}
+
+function GoToXOnline()
+{
+	EnterLiveToday(false);
+}
+
+function parseTrans(translation,parameter) //A function to return the requested parameter from translation values.
+{
+	var TransParameter = Split(NumberToString(translation)," "); //convert the Translation numbers to an array of strings.
+	if(parameter.toUpperCase() == "X") 
+	{
+		return StringToNumber(TransParameter[0]); //convert back to number before returning the value
+	} 
+	else if(parameter.toUpperCase() == "Y") 
+	{
+		return StringToNumber(TransParameter[1]); 
+	} 
+	else if(parameter.toUpperCase() == "Z") 
+	{
+		return StringToNumber(TransParameter[2]); 
+	}
+}
+
+function StringToNumber( thestring )
+{
+	var tempstring = thestring;
+	var theNumber = Math.abs(tempstring);
+	if(tempstring.charCodeAt(0) == 45) theNumber = theNumber * -1;
+	return theNumber;
+}
+
+function NumberToString(x)
+{
+	theNumberToString.children[0].geometry.text = x;
+	var b = theNumberToString.children[0].geometry.text;
+	return b;
+}
+
+DEF theNumberToString Transform
+{
+	visible false
+	children
+	[
+		Shape
+		{
+			appearance MaxMaterial { name "ItemsType" }
+			geometry Text { font "Body" width -15 translate false text ""}
+		}
+	]
+}
+
+function GetRandomInteger(max) 
+{
+	return Math.floor(Math.random() * max);
+}
+
+function Modulo(x,y)
+{
+	var a = Math.floor(x / y);
+	return (x - (a * y));
+}
+
+function Split(str,Delimiter)
+{
+	var arrReturn = new Array;
+	if(str.length() == 0) return arrReturn;
+	var x = str;
+	var i = 0;
+	while( x.indexOf(Delimiter) >= 0 )
+	{
+		arrReturn[i] = x.substr(0,x.indexOf(Delimiter));
+		x = x.substr(x.indexOf(Delimiter) + Delimiter.length());
+		i = i + 1;
+	}
+	arrReturn[i] = x;
+	return arrReturn;
+}
+
+function EnableCurrentAlternateViewpoint()
+{
+	CurrentAltViewpoint.isBound = true;
+}
+
+function DisableCurrentAlternateViewpoint()
+{
+	CurrentViewpoint.isBound = true;
+}
+
+DEF theMainMenuAlternateViewpoint Viewpoint
+{
+	fieldOfView 1.755000
+	orientation -0.177400 -1.983500 -0.036250 -0.045440
+	position -15.180000 -112.299999 174.300003
+	jump false
+}
+
+function GetTitleName(x)
+{
+	var a = x;
+	TitleNamesFile.section = "default";
+	return TitleNamesFile.GetValue(a);
+}
+
+function SetTitleName(x,y)
+{
+	var a = x;
+	var b = y;
+	TitleNamesFile.section = "default";
+	return TitleNamesFile.SetValue(a,b);
+}
+
+function GetSavedValue(x,y) 
+{
+	var a = x;
+	var b = y;
+	ConfigFile.section = a;
+	var c = ConfigFile.GetValue(b);
+	return c;
+}
+
+function SetSavedValue(x,y,z) 
+{
+	var a = x;
+	var b = y;
+	var c = z;
+	ConfigFile.section = a;
+	ConfigFile.SetValue(b,c);
+}
+
+function GetSavedBooleanValue(x,y) 
+{
+	var a = x;
+	var b = y;
+	ConfigFile.section = a;
+	var c = ConfigFile.GetValue(b);
+	if(c.toLowerCase() == "true")
+	{
+		return true;
+	}
+	else
+	{
+		return false;
+	}
+}
+
+function SetSavedBooleanValue(x,y,z) 
+{
+	var a = x;
+	var b = y;
+	var c = z;
+	ConfigFile.section = a;
+	if(c)
+	{
+		ConfigFile.SetValue(b,"true");
+	}
+	else
+	{
+		ConfigFile.SetValue(b,"false");
+	}
+}
+function GetDrivePath(x,y)
+{
+	if(x == "Harddisk0" & y == "Partition2") return "C:\\";
+	if(x == "Harddisk0" & y == "Partition1") return "E:\\";
+	if(x == "Harddisk0" & y == "Partition6") return "F:\\";
+	if(x == "Harddisk0" & y == "Partition7") return "G:\\";
+	if(x == "Harddisk1" & y == "Partition1") return "R:\\";
+	if(x == "Harddisk1" & y == "Partition6") return "H:\\";
+	if(x == "Harddisk1" & y == "Partition7") return "I:\\";
+}

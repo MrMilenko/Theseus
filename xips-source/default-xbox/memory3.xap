@@ -1,0 +1,1709 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+var bSavedGameGridActivatePending;
+
+// File Details Area ////////////////////////////////////////////////////////////////
+var nCurFileMenuItem;
+var nFileMenuItemCount;
+
+function ShowFileDetailView()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	if (c.theSavedGameGrid.CanDetachIcon())
+	{
+		c.theSavedGameGrid.detachIcon = true;
+
+		ResetDetailScreen();
+		c.theSavedGameGrid.setSelImage();
+		UpdateFileMetaPanel();
+
+		bDetailView = true;
+		fileDetailView.isBound = true;
+		c.Saved_Game_Parent.SetAlpha(0);
+		c.Copy_Dest_Parent.SetAlpha(1);
+		c.mainPodPanel.SetAlpha(0);
+		c.mainPodPanel2.SetAlpha(0);
+		c.svIconPanel.SetAlpha(0);
+		c.stIconPanel.SetAlpha(0);
+		c.theSavedGameGrid.renderIcons = false;
+
+		nCurFileMenuItem = 0;
+		InitMemoryMenuItems();
+		UpdateFileMenu();
+		return true;
+	}
+
+	return false;
+}
+
+function UpdateFileMenu()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	for (var i = 0; i < 2; i = i + 1)
+	{
+		if (i < nFileMenuItemCount)
+		{
+			c.theMenuButtons.children[i].visible = true;
+			c.ButtonText.children[i].visible = true;
+
+			if (i == nCurFileMenuItem)
+			{
+				c.theMenuButtons.children[i].children[0].appearance.material.name = "GameHilite";
+				c.ButtonText.children[i].children[0].children[0].appearance.material.name = "Material #133";
+			}
+			else
+			{
+				c.theMenuButtons.children[i].children[0].appearance.material.name = "FlatSurfaces";
+				c.ButtonText.children[i].children[0].children[0].appearance.material.name = "NavType";
+			}
+		}
+		else
+		{
+			c.theMenuButtons.children[i].visible = false;
+			c.ButtonText.children[i].visible = false;
+		}
+	}
+}
+
+function InitMemoryMenuItems()
+{
+	var c = theFilesMenu.children[0].children[0];
+	var nTitle = c.theSavedGameGrid.curTitle;
+	var nSavedGame = c.theSavedGameGrid.curGridItem;
+
+	if (nTitle < 0)
+	{
+		// we have the device menu
+		if (theMemoryMonitor.curDevUnit == 8)
+		{
+			// TODO: Hard drive menu
+			nFileMenuItemCount = 0;
+		}
+		else
+		{
+			c.MenuItemText1.text = theTranslator.Translate("PERSONALIZE");
+			c.MenuItemText2.text = theTranslator.Translate("FORMAT");
+			nFileMenuItemCount = 2;
+		}
+	}
+	else if (nSavedGame < 0)
+	{
+		//
+		// We are on the Title / Soundtrack / Live Accounts menu
+		// We will default to only 1 item on the menu, and update it necessary
+		//
+		
+		c.MenuItemText1.text = theTranslator.Translate("DELETE");
+		nFileMenuItemCount = 1;
+		
+		
+		if (8 == theMemoryMonitor.curDevUnit)
+		{
+			//
+			// We are on the hard disk
+			//
+
+			if (c.theSavedGameGrid.IsGameTitleSelected())
+			{
+				if (c.theSavedGameGrid.DoesUserContentExist())
+				{
+					//
+					// If the $k drive exists, we should add the second option
+					//
+					
+					c.MenuItemText1.text = theTranslator.Translate("DELETE");
+					c.MenuItemText2.text = theTranslator.Translate("USER CONTENT BUTTON");
+					nFileMenuItemCount = 2;
+				}
+			}
+		}
+	}
+	else
+	{
+		// we have the saved-game/song menu
+		if (c.theSavedGameGrid.CanCopy())
+		{
+			c.MenuItemText1.text = theTranslator.Translate("COPY");
+			c.MenuItemText2.text = theTranslator.Translate("DELETE");
+			nFileMenuItemCount = 2;
+		}
+		else
+		{
+			c.MenuItemText1.text = theTranslator.Translate("DELETE");
+			nFileMenuItemCount = 1;
+		}
+	}
+}
+
+function UpdateCopyToInfo()
+{
+
+	var c = theFilesMenu.children[0].children[0];
+	var devUnit = c.theCopyDestination.curDevUnit;
+
+	if (devUnit == -1)
+	{
+		c.CopyDestNameText.text = theTranslator.Translate("insert a memory unit");
+		c.CopyDestSizeText.text = "";
+		return;
+	}
+
+	c.CopyDestNameText.text = GetDeviceName(devUnit);
+
+	if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+	{
+		// We are dealing with an Xbox Live Account
+		var str = theMemoryMonitor.FormatFreeSlots(devUnit);
+		if (str == "1")
+			c.CopyDestSizeText.text = str + " " + theTranslator.Translate("free slot");
+		else
+			c.CopyDestSizeText.text = str + " " + theTranslator.Translate("free slots");
+
+		// Will the game fit on the new destination
+		if(theMemoryMonitor.GetTotalFreeSlots(devUnit) >= c.theSavedGameGrid.gameBlocks)
+			c.MEM_text_free_blocks.children[0].children[0].children[0].appearance.material.name = "NavType";
+		else
+			c.MEM_text_free_blocks.children[0].children[0].children[0].appearance.material.name = "RedType";
+	}
+	else
+	{
+		// We are dealing with a Saved Game
+		var str = theMemoryMonitor.FormatFreeBlocks(devUnit);
+		if (str == "1")
+			c.CopyDestSizeText.text = str + " " + theTranslator.Translate("free block");
+		else
+			c.CopyDestSizeText.text = str + " " + theTranslator.Translate("free blocks");
+
+		// Will the game fit on the new destination
+		if(theMemoryMonitor.GetTotalFreeBlocks(devUnit) > c.theSavedGameGrid.gameBlocks)
+			c.MEM_text_free_blocks.children[0].children[0].children[0].appearance.material.name = "NavType";
+		else
+			c.MEM_text_free_blocks.children[0].children[0].children[0].appearance.material.name = "RedType";
+	}
+}
+
+function UpdateSavedGameInfo()
+{
+	var c = theFilesMenu.children[0].children[0];
+	var nSavedGame = c.theSavedGameGrid.curGridItem;
+	var strName = c.theSavedGameGrid.FormatGridItemName();
+	if (strName == "")
+		strName = theTranslator.Translate("save") + " " + (nSavedGame + 1);
+	c.SaveGameTitle.text = strName;
+
+	var strBlocks = c.theSavedGameGrid.FormatGridItemSize();
+
+	if (strBlocks == "-1")
+	{
+		c.SaveGameSize.text = "";
+	}
+	else if (strBlocks == "1")
+	{
+		if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+			c.SaveGameSize.text = strBlocks + " " + theTranslator.Translate("slot");
+		else
+			c.SaveGameSize.text = strBlocks + " " + theTranslator.Translate("block");
+	}
+	else
+	{
+		if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+			c.SaveGameSize.text = strBlocks + " " + theTranslator.Translate("slots");
+		else
+			c.SaveGameSize.text = strBlocks + " " + theTranslator.Translate("blocks");
+	}
+}
+
+function CopyNow()
+{
+	var c = theFilesMenu.children[0].children[0];
+	var destDevUnit = c.theCopyDestination.curDevUnit;
+	theMemoryMonitor.enumerationOn = false;
+	bDoingCopy = true;
+	ShowProgress(theTranslator.Translate("Copying"));
+
+	if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+		c.theSavedGameGrid.StartXboxLiveAccountCopy(destDevUnit);
+	else
+		c.theSavedGameGrid.StartSavedGameCopy(destDevUnit);
+}
+
+function PerformCopy()
+{
+	var c = theFilesMenu.children[0].children[0];
+	var destDevUnit = c.theCopyDestination.curDevUnit;
+
+	if (destDevUnit < 0)
+	{
+		log("No destination for copy");
+		return;
+	}
+
+	if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+	{
+		// We are dealing with an Xbox Live Account
+		if (c.theSavedGameGrid.DoesXboxLiveAccountExists(destDevUnit))
+		{
+			bConfirmingOverwrite = true;
+			AskQuestion(theTranslator.Translate("Confirm xboxlive overwrite"), "theMemoryInline.children[0].CopyNow()", "", 1);
+		}
+		else
+		{
+			// Check to see if we've reached the max users on the hard disk
+			if( 8 == destDevUnit ) // Hard Disk
+			{
+				// We are dealing with the hard disk
+				if( 8 == c.theSavedGameGrid.GetXboxLiveAccountsCount(destDevUnit) )
+				{
+					// Message the user that they must delete an account before copying one to the hard drive
+					TellUser(theTranslator.Translate("Xbox Hard Disk Max Live Accounts"), "");
+					return;
+				}
+			}
+			else
+			{
+				// We are dealing with a memory unit
+				if( 1 == c.theSavedGameGrid.GetXboxLiveAccountsCount(destDevUnit) )
+				{
+					bConfirmingOverwrite = true;
+					AskQuestion(theTranslator.Translate("Confirm xboxlive overwrite"), "theMemoryInline.children[0].CopyNow()", "", 1);
+					return;
+				}
+			}
+
+			CopyNow();
+		}
+	}
+	else
+	{
+		// We are dealing with a Saved Game
+		if (c.theSavedGameGrid.DoesSavedGameExists(destDevUnit))
+		{
+			bConfirmingOverwrite = true;
+			AskQuestion(theTranslator.Translate("Confirm overwrite"), "theMemoryInline.children[0].CopyNow()", "", 1);
+		}
+		else
+		{
+			CopyNow();
+		}
+	}
+}
+
+function OnDestinationUnitRemoved()
+{
+	if(bConfirmingOverwrite == true)
+	{
+		CloseMessage();
+		bConfirmingOverwrite = false;
+	}
+}
+function EndCopyFailed()
+{
+	bDoingCopy = false;
+	theMemoryMonitor.enumerationOn = true;
+}
+
+function EndCopyError()
+{
+	CloseMessage();
+	TellUser(theTranslator.Translate("The copy failed"), "theMemoryInline.children[0].EndCopyFailed()");
+}
+
+
+function UpdateCopyProgress()
+{
+	var c = theFilesMenu.children[0].children[0];
+	log("progress " + Math.floor(c.theSavedGameGrid.copyProgress * 100) + "%");
+	SetProgress(c.theSavedGameGrid.copyProgress);
+	UpdateProgressText(c.theSavedGameGrid.GetUpdateString());
+}
+
+function OnCurDevUnitChange()
+{
+	PlaySoundMenuChange();
+	UpdateCopyToInfo();
+}
+
+function UpdateMemUnitText()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	// update text of current device
+	var devUnit = c.theCopyDestination.selDevUnit;
+	var selUnit = c.theCopyDestination.curDevUnit;
+
+	c.MemUnit1.text = GetDeviceName(devUnit);
+	c.MemUnit2.text = GetDeviceName(devUnit);
+
+	if((devUnit == 8) & (devUnit == selUnit))  // selected hard drive
+		c.consoleMat.children[0].appearance.material.name = "EggGlowPulse";
+	else if(devUnit == 8)  // hard drive
+		c.consoleMat.children[0].appearance.material.name = "GamePod";
+	else  // memory units
+	{
+		if(devUnit == selUnit)
+		{
+			c.controller1_MU_1_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+			c.mem_unit_outer10.children[0].appearance.material.name = "EggGlowPulse";
+		}
+		else
+		{
+			c.controller1_MU_1_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+			c.mem_unit_outer10.children[0].appearance.material.name = "GamePod";
+		}
+
+		c.controller1_MU_1_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(devUnit);
+	}
+}
+
+DEF fileDetailView Viewpoint
+{
+	fieldOfView 1.287000
+	orientation -0.002557 1.000000 0.000040 -0.119700
+	position 34.389999 15.300000 -212.899994
+	jump false
+}
+
+DEF fileCopyView Viewpoint
+{
+	fieldOfView 1.287000
+	orientation -0.005135 -1.000000 0.000675 -0.221000
+	position 35.630001 15.200000 -212.899994
+	jump false
+}
+
+function ResetMetaPanels()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	c.MetaLine1.text = "";
+	c.MetaLine2.text = "";
+	c.MetaLine3.text = "";
+	c.MetaLine4.text = "";
+	c.MetaLine1a.text = "";
+	c.MetaLine2a.text = "";
+	c.MetaLine3a.text = "";
+	c.MetaLine4a.text = "";
+}
+
+function ResetDetailScreen()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+//  c.theCopyDestination.curDevUnit = 0;
+//  c.theCopyDestination.selDevUnit = 0;
+
+	// Rotate the menu out of the way
+	c.ModePanel.SetRotation(0.000019, 1.000000, 0.000000, -0.008727);
+	c.ModePanel.SetTranslation(-0.063380, 0.076040, 0.060840);
+	c.ModePanel.SetAlpha(1);
+	c.copy_arm_0.SetRotation(0.0, -1.0, 0.0, -2.016000);
+	c.copy_arm_0.SetTranslation(0.109400, 0.067290, 0.229400);
+	c.copy_arm_0.SetAlpha(0);
+
+	// Move the A/B Buttons into view
+	c.Group06.SetTranslation(-10.370000, 3.481000, 71.800003);
+	c.Group06.SetRotation(0.000000, -1.000000, 0.000000, -0.034910);
+	c.Group07.SetTranslation(-8.513000, 3.522000, 72.169998);
+	c.Group07.SetRotation(0.000000, 1.000000, 0.000000, -0.279300);
+}
+
+function ResetCopyScreen()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	// Rotate the menu out of the way
+	c.ModePanel.SetRotation(0.0, -1.0, 0.0, -3.246000);
+	c.ModePanel.SetTranslation(0.174100, 0.076040, -0.735600);
+	c.ModePanel.SetAlpha(0);
+	c.copy_arm_0.SetRotation(0.000000, 1.000000, 0.000000, -0.034910);
+	c.copy_arm_0.SetTranslation(-0.008480, 0.067290, 0.790500);
+	c.copy_arm_0.SetAlpha(1);
+
+	// Move the A/B Buttons into view
+	c.Group06.SetTranslation(-9.572000, 3.376000, 72.230003);
+	c.Group06.SetRotation(0.000000, -1.000000, 0.000000, -0.314200);
+	c.Group07.SetTranslation(-8.542000, 3.420000, 72.209999);
+	c.Group07.SetRotation(0.000000, 1.000000, 0.000000, -0.008727);
+}
+
+function StartCopy()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	c.theCopyDestination.isActive = true;
+	c.theCopyDestination.sourceDevUnit = theMemoryMonitor.curDevUnit;
+
+
+	fileCopyView.isBound = true;
+
+	ResetCopyScreen();
+	UpdateSavedGameInfo();
+	UpdateCopyToInfo();
+	bInCopy = true;
+}
+
+function EndCopy()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	CloseMessage();
+	bInCopy = false;
+	bDoingCopy = false;
+	theMemoryMonitor.enumerationOn = true;
+
+	ResetDetailScreen();
+
+	c.theCopyDestination.isActive = false;
+
+	ShowFileDetailView();
+}
+
+function DoMemoryItemMenuCommand()
+{
+	var c = theFilesMenu.children[0].children[0];
+	var nTitle = c.theSavedGameGrid.curTitle;
+	var nSavedGame = c.theSavedGameGrid.curGridItem;
+
+	if (nTitle < 0)
+	{
+		// we have the device menu
+		if (theMemoryMonitor.curDevUnit == 8)
+		{
+			// TODO: Hard drive menu
+		}
+		else
+		{
+			if (nCurFileMenuItem == 0)
+				ShowKeyboard(theTranslator.Translate("PERSONALIZE"), theMemoryMonitor.FormatDeviceName(theMemoryMonitor.curDevUnit), "theMemoryInline.children[0].FinishPersonalize()", "");
+			else if (nCurFileMenuItem == 1)
+				AskQuestion(theTranslator.Translate("Really format"), "theMemoryInline.children[0].FinishFormat()", "", 1);
+		}
+	}
+	else if (nSavedGame < 0)
+	{
+		// we have the title/soundtrack collection menu
+		if (0 == nCurFileMenuItem)
+		{
+			//
+			// This is the item to delete the entire title
+			//
+			
+			StartDelete();
+		}
+		else if (1 == nCurFileMenuItem)
+		{
+			//
+			// This is the item to delete the User Shared Content
+			//
+			
+			c.theSavedGameGrid.deleteUserContent = true;
+			StartDelete();
+		}
+	}
+	else
+	{
+		// we have the saved-game/soundtrack menu
+		if (c.theSavedGameGrid.CanCopy())
+		{
+			if (nCurFileMenuItem == 0)
+				StartCopy();
+			else if (nCurFileMenuItem == 1)
+				StartDelete();
+		}
+		else
+		{
+			StartDelete();
+		}
+	}
+}
+
+function StartDelete()
+{
+	var msg;
+	var c = theFilesMenu.children[0].children[0];
+
+	if (c.theSavedGameGrid.IsSoundtrackSelected())
+	{
+		if (c.theSavedGameGrid.curGridItem < 0)
+		{
+			msg = "ConfirmDeleteSoundtracks";
+		}
+		else
+		{
+			msg = "ConfirmDeleteSoundtrack";
+		}
+	}
+	else if (c.theSavedGameGrid.IsXboxLiveAccountSelected())
+	{
+		if (c.theSavedGameGrid.curGridItem < 0)
+		{
+			msg = "ConfirmDeleteXboxLiveAccounts";
+		}
+		else
+		{
+			msg = "ConfirmDeleteXboxLiveAccount";
+		}
+	}
+	else
+	{
+		if (c.theSavedGameGrid.curGridItem < 0)
+		{
+			if (false == c.theSavedGameGrid.deleteUserContent)
+			{
+				//
+				// The user wants to delete the entire title and all of it's associate files
+				//
+				
+				msg = "ConfirmDeleteTitle";
+			}
+			else
+			{
+				//
+				// The user wants to delete the User Shared Content associated with this title
+				//
+				
+				msg = "ConfirmDeleteUserContent";
+			}
+		}
+		else
+		{
+			if (theFilesMenu.children[0].children[0].theSavedGameGrid.IsDLContentSelected())
+			{
+				msg = "ConfirmDeleteDLContent";
+			}
+			else
+			{
+				msg = "ConfirmDeleteSave";
+			}
+		}
+	}
+
+	AskQuestion(msg, "theMemoryInline.children[0].DoDelete()", "theMemoryInline.children[0].AbortDelete()", 1);
+}
+
+function OnSavedGameDeleteEnd()
+{
+	// Update our scene title bar with the update memory area name (if necessary)
+	var c = theFilesMenu.children[0].children[0];
+	c.TitleText2.text = GetDeviceName(theMemoryMonitor.curDevUnit);
+
+	CloseMessage();
+	ShowFileListView();
+}
+
+function DoDelete()
+{
+	var c = theFilesMenu.children[0].children[0];
+	PlaySoundDelete();
+	BlockUser("DeletingTitle");
+	c.theSavedGameGrid.StartDelete();
+}
+
+function AbortDelete()
+{
+	var c = theFilesMenu.children[0].children[0];
+	c.theSavedGameGrid.deleteUserContent = false;
+}
+
+function FinishPersonalize()
+{
+	var c = theFilesMenu.children[0].children[0];
+	theMemoryMonitor.SetMUName(theMemoryMonitor.curDevUnit, strKeyboardEdit);
+	UpdateFileMetaPanel();
+	c.TitleText2.text = GetDeviceName(theMemoryMonitor.curDevUnit);
+}
+
+function FinishFormat()
+{
+	var c = theFilesMenu.children[0].children[0];
+	theMemoryMonitor.FormatMemoryUnit(theMemoryMonitor.curDevUnit);
+	UpdateFileMetaPanel();
+	c.TitleText2.text = GetDeviceName(theMemoryMonitor.curDevUnit);
+}
+
+
+// Device Collection ////////////////////////////////////////////////////////////////
+function initialize()
+{
+	bDoingCopy = false;
+	bSavedGameGridActivatePending = false;
+	bConfirmingOverwrite = false;
+}
+
+function GetDeviceName(devUnit)
+{
+	if (devUnit == 8)
+		return theTranslator.Translate("Xbox Hard Disk");
+
+	var strName = theMemoryMonitor.FormatDeviceName(devUnit);
+	if (strName != "")
+		return strName;
+
+	// Generate a name based on location of slot...
+	var nGamePad = Math.floor(devUnit / 2);
+	var strUnit = "A";
+	if (nGamePad != devUnit / 2)
+		strUnit = "B";
+
+	strName = theTranslator.Translate("memory unit") + " " + (nGamePad + 1) + strUnit;
+
+	return strName;
+}
+
+
+var bDetailView;
+var bInCopy;
+var bDoingCopy;
+var bConfirmingOverwrite;
+
+function EnterMemoryFiles()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	bInCopy = false;
+	bDoingCopy = false;
+	theMemoryMonitor.enumerationOn = true;
+
+	c.theCopyDestination.isActive = false;
+
+	c.theSavedGameGrid.curDevUnit = theMemoryMonitor.curDevUnit;
+	log("Entering memory files area with unit " + theMemoryMonitor.curDevUnit);
+
+	c.TitleText2.text = GetDeviceName(theMemoryMonitor.curDevUnit);
+
+	if (c.theSavedGameGrid.IsDevUnitReady(theMemoryMonitor.curDevUnit) == false)
+		return;
+
+	ShowFileListView();
+	UpdateFileMetaPanel();
+
+	nCurFileMenuItem = 0;
+	InitMemoryMenuItems();
+}
+
+function OnSavedGameDeviceRemoved()
+{
+	if (theFilesMenu.visible)
+	{
+		if (bDoingCopy == false)
+		{
+			log("OnDeviceRemoved!");
+
+			// Close the Keyboard if it is visible
+			if( g_bKeyboardDisplayed )
+			{
+				CloseKeyboard();
+			}
+
+			// Close the Message panel if it is visible
+			if( g_bPanelDisplayed )
+			{
+				CloseMessage();
+			}
+			// Turn enumeration off before changing levels.
+			theMemoryMonitor.enumerationOn = false;
+			theMemoryMenu.GoBackTo();
+			theGamesSubMenuOut.Play();
+		}
+	}
+}
+
+function OnEnumeratingTitlesBegin()
+{
+	BlockUser("ENUMERATING SAVED GAMES:");
+}
+
+function OnEnumeratingTitlesEnd()
+{
+	var c = theFilesMenu.children[0].children[0];
+	CloseMessage();
+	EnterMemoryFiles();
+}
+
+function ShowFileListView()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	c.theSavedGameGrid.detachIcon = false;
+
+	bDetailView = false;
+	fileListView.isBound = true;
+	c.Saved_Game_Parent.SetAlpha(1);
+	c.Copy_Dest_Parent.SetAlpha(0);
+	c.mainPodPanel.SetAlpha(1);
+	c.mainPodPanel2.SetAlpha(1);
+	c.svIconPanel.SetAlpha(1);
+	c.stIconPanel.SetAlpha(1);
+	c.theSavedGameGrid.renderIcons = true;
+//  c.theSavedGameGrid.isActive = true;
+
+}
+
+function UpdateFileMetaPanel()
+{
+	var c = theFilesMenu.children[0].children[0];
+
+	var nTitle = c.theSavedGameGrid.curTitle;
+	var strTitleName;
+	if(nTitle < 0)
+		strTitleName = GetDeviceName(theMemoryMonitor.curDevUnit);
+	else
+		strTitleName = c.theSavedGameGrid.GetTitleName(nTitle);
+
+	// Reset our Game Title / MU Title highlight
+	var strHighlightName = "MemoryHeaderHilite";
+	c.theSavedGameGrid.MUhiliteHeader.children[0].appearance.material.name = "MemoryHeader";
+	c.theSavedGameGrid.hiliteHeader.appearance.material.name = "MemoryHeader";
+
+	c.MetaLine1.text = "";
+	c.MetaLine2.text = "";
+	c.MetaLine3.text = "";
+	c.MetaLine4.text = "";
+	c.MetaLine1a.text = "";
+	c.MetaLine2a.text = "";
+	c.MetaLine3a.text = "";
+	c.MetaLine4a.text = "";
+
+	c.MetaLine1.text = strTitleName;
+	c.MetaLine1a.text = strTitleName;
+
+	// Make sure our text defaults to the proper color
+	c.metaTextLine2.children[0].appearance.material.name = "NavType";
+	c.MetaPanelText2.children[0].children[0].appearance.material.name = "NavType";
+
+	if ((nTitle == -1) & (c.theSavedGameGrid.curGridItem == -1))  // is it a memory unit?
+	{
+		// Highlight our top panel
+		c.theSavedGameGrid.MUhiliteHeader.children[0].appearance.material.name = strHighlightName;
+		c.theSavedGameGrid.hiliteHeader.appearance.material.name = strHighlightName;
+
+		var strMUTitle = "";
+		if(c.theSavedGameGrid.curDevUnit == 0)
+			strMUTitle = theTranslator.Translate("MU 1A");
+		else if(c.theSavedGameGrid.curDevUnit == 1)
+			strMUTitle = theTranslator.Translate("MU 1B");
+		else if(c.theSavedGameGrid.curDevUnit == 2)
+			strMUTitle = theTranslator.Translate("MU 2A");
+		else if(c.theSavedGameGrid.curDevUnit == 3)
+			strMUTitle = theTranslator.Translate("MU 2B");
+		else if(c.theSavedGameGrid.curDevUnit == 4)
+			strMUTitle = theTranslator.Translate("MU 3A");
+		else if(c.theSavedGameGrid.curDevUnit == 5)
+			strMUTitle = theTranslator.Translate("MU 3B");
+		else if(c.theSavedGameGrid.curDevUnit == 6)
+			strMUTitle = theTranslator.Translate("MU 4A");
+		else if(c.theSavedGameGrid.curDevUnit == 7)
+			strMUTitle = theTranslator.Translate("MU 4B");
+
+		c.MetaLine1a.text = strMUTitle;
+		c.MetaLine1.text = strTitleName;
+
+		c.MetaLine2.text = theTranslator.Translate("TOTAL:") + " " + c.theSavedGameGrid.FormatTotalBlocks();
+		c.MetaLine2a.text = theTranslator.Translate("TOTAL:") + " " + c.theSavedGameGrid.FormatTotalBlocks();
+		c.MetaLine3.text = theTranslator.Translate("FREE:") + " " + c.theSavedGameGrid.FormatFreeBlocks();
+		c.MetaLine3a.text = theTranslator.Translate("FREE:") + " " + c.theSavedGameGrid.FormatFreeBlocks();
+	}
+	else if (nTitle >= 0)   // if it's a game title
+	{
+		var nGridItem = c.theSavedGameGrid.curGridItem;
+		if( nGridItem < 0 )
+		{
+			// Highlight our top panel
+			c.theSavedGameGrid.MUhiliteHeader.children[0].appearance.material.name = strHighlightName;
+			c.theSavedGameGrid.hiliteHeader.appearance.material.name = strHighlightName;
+		}
+
+		if (nGridItem >= 0)
+		{
+			var strName = c.theSavedGameGrid.FormatGridItemName();
+			if (strName == "")
+			{
+				if( c.theSavedGameGrid.IsSavedGameSelected() == true )
+				{
+					// Dealing with a Saved Game
+					strName = theTranslator.Translate("save") + " " + (nGridItem + 1);
+				}
+				else
+				{
+					if( c.theSavedGameGrid.IsDLContentSelected() == true )
+					{
+						var nContentIndex = nGridItem - c.theSavedGameGrid.GetSavedGameCount(nTitle);
+
+						// Dealing with downloaded content
+						strName = theTranslator.Translate("dlcontitem") + " " + (nContentIndex + 1);
+					}
+					else
+					{
+						// TODO: Add support for Xbox Live Accounts Here
+						// Dealing with unknown item item!!  BUG
+						strName = "Unknown Item Type";
+					}
+				}
+			}
+
+			c.MetaLine2.text = strName;
+			c.MetaLine2a.text = strName;
+
+			if (c.theSavedGameGrid.IsSoundtrackSelected() == false)
+			{
+				c.MetaLine3.text = c.theSavedGameGrid.FormatGridItemTime();
+				c.MetaLine3a.text = c.theSavedGameGrid.FormatGridItemTime();
+			}
+
+			var strBlocks = c.theSavedGameGrid.FormatGridItemSize();
+
+			if (strBlocks == "-1")
+			{
+				c.MetaLine4.text = "";
+				c.MetaLine4a.text = "";
+			}
+			else if (strBlocks == "1")
+			{
+				var strType = "";
+				if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+				{
+					strType = "slot";
+				}
+				else
+				{
+					strType = "block";
+				}
+
+				c.MetaLine4.text = strBlocks + " " + theTranslator.Translate(strType);
+				c.MetaLine4a.text = strBlocks + " " + theTranslator.Translate(strType);
+			}
+			else
+			{
+				c.MetaLine4.text = strBlocks + " " + theTranslator.Translate("blocks");
+				c.MetaLine4a.text = strBlocks + " " + theTranslator.Translate("blocks");
+			}
+		}
+		else  // it's a soundtrack, title, or Xbox Live Account
+		{
+			var nCount;
+			var strType;
+
+			if (c.theSavedGameGrid.IsSoundtrackSelected())
+			{
+				nCount = c.theSavedGameGrid.GetGridItemCount(nTitle);
+
+				if (nCount == 1)
+					strType = "soundtrackl";
+				else
+					strType = "soundtracksl";
+
+				c.MetaLine2.text = nCount + " " + theTranslator.Translate(strType);
+				c.MetaLine2a.text = nCount + " " + theTranslator.Translate(strType);
+			}
+			else
+			{
+				if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+				{
+					// Get the number of accounts on this area
+					nCount = c.theSavedGameGrid.GetGridItemCount(nTitle);
+					if (nCount == 1)
+						strType = "xboxliveaccount";
+					else
+						strType = "xboxliveaccounts";
+
+					c.MetaLine2.text = nCount + " " + theTranslator.Translate(strType);
+					c.MetaLine2a.text = nCount + " " + theTranslator.Translate(strType);
+
+					// Calculate the number of available slots depending upon the device
+					var freeSlots = theMemoryMonitor.FormatFreeSlots(c.theSavedGameGrid.curDevUnit);
+					if (freeSlots == "1")
+						strType = "free slot";
+					else
+						strType = "free slots";
+
+					c.MetaLine3.text = freeSlots + " " + theTranslator.Translate(strType);
+					c.MetaLine3a.text = freeSlots + " " + theTranslator.Translate(strType);
+				}
+				else
+				{
+					// Process Saved Games First
+					nCount = c.theSavedGameGrid.GetSavedGameCount(nTitle);
+
+					if (nCount == 1)
+						strType = "save";
+					else
+						strType = "saves";
+
+					c.MetaLine2.text = nCount + " " + theTranslator.Translate(strType);
+					c.MetaLine2a.text = nCount + " " + theTranslator.Translate(strType);
+
+					// Only process DL Content Items if we are on the Hard Drive
+					if(c.theSavedGameGrid.curDevUnit == 8)  //hard drive
+					{
+						// Process DL Content Items second
+						nCount = c.theSavedGameGrid.GetDLContentCount(nTitle);
+
+						if (nCount == 1)
+							strType = "dlcontitem";
+						else
+							strType = "dlcontitems";
+
+						c.MetaLine3.text = nCount + " " + theTranslator.Translate(strType);
+						c.MetaLine3a.text = nCount + " " + theTranslator.Translate(strType);
+					}
+				}
+			}
+
+			var strBlocks = c.theSavedGameGrid.FormatTitleSize();
+
+			if (strBlocks == "-1")
+			{
+				c.MetaLine4.text = "";
+				c.MetaLine4a.text = "";
+			}
+			else if (strBlocks == "1")
+			{
+				var strType = "";
+				if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+				{
+					strType = "slot";
+				}
+				else
+				{
+					strType = "block";
+				}
+
+				c.MetaLine4.text = strBlocks + " " + theTranslator.Translate(strType);
+				c.MetaLine4a.text = strBlocks + " " + theTranslator.Translate(strType);
+			}
+			else
+			{
+				if( c.theSavedGameGrid.IsXboxLiveAccountSelected() )
+				{
+					strType = "slots";
+				}
+				else
+				{
+					strType = "blocks";
+				}
+
+				c.MetaLine4.text = strBlocks + " " + theTranslator.Translate(strType);
+				c.MetaLine4a.text = strBlocks + " " + theTranslator.Translate(strType);
+			}
+		}
+	}
+}
+
+function ResetMemoryFocus()
+{
+	var c = theFilesMenu.children[0].children[0];
+	// Reset focus on entry
+	if(c.theSavedGameGrid.curDevUnit == 8)  //hard drive
+		c.theSavedGameGrid.curTitle = 0;
+	else
+		c.theSavedGameGrid.curTitle = -1;
+
+	c.theSavedGameGrid.curGridItem = -1;
+
+	c.theSavedGameGrid.iconRowScroll = 0;
+	c.theSavedGameGrid.scroll = 0;
+	c.theSavedGameGrid.nPrefColumn = -1;
+}
+
+DEF theFilesMenu Level
+{
+	archive "Memory_Files2.xip"
+	children
+	[
+		Inline
+		{
+			url "Memory_Files2/default.xap"
+
+			function onLoad()
+			{
+				bInCopy = false;
+				ResetDetailScreen();
+				ResetMetaPanels();
+				var c = theFilesMenu.children[0].children[0];
+				c.Saved_Game_Parent.SetAlpha(1);
+				c.Copy_Dest_Parent.SetAlpha(0);
+
+				EnterMemoryFiles();
+				if (bSavedGameGridActivatePending)
+				{
+					children[0].theSavedGameGrid.isActive = true;
+				}
+			}
+
+			function OnTotalFreeChanged()
+			{
+				var str = "";
+
+				if (theConfig.GetLaunchReason() == "Memory")
+				{
+					var total = children[0].theSavedGameGrid.GetTotalBlocks();
+					var need = theConfig.GetLaunchParameter2();
+					var free = children[0].theSavedGameGrid.freeBlocks;
+
+					if (need <= total)
+					{
+						if (need > free)
+						{
+							str = theTranslator.Translate("Please free") + " " + theTranslator.FormatNumber(need - free) + " " + theTranslator.Translate("blocks");
+						}
+					}
+				}
+
+				if (str == "")
+				{
+					// TODO: Should make TOTAL: and FREE: yellow and the numbers white...
+					str = theTranslator.Translate("TOTAL:") + " " + children[0].theSavedGameGrid.FormatTotalBlocks() + "  " + theTranslator.Translate("FREE:") + " " + children[0].theSavedGameGrid.FormatFreeBlocks();
+				}
+
+				children[0].TotalFreeText.text = str;
+
+			}
+		}
+	]
+
+	shell Transform
+	{
+		scale 2.4672 2.4672 2.4672
+		translation 34.559999 15.220000 -214.199997
+		children
+		[
+			DEF theMemoryMenuWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial
+							{
+								name "InnerWall_01"
+							}
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh { url "Inner_cell-FACES.xm" }
+					}
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial
+							{
+								name "InnerWall_02"
+							}
+						}
+						geometry Sphere
+						{
+							radius 1
+						}
+					}
+				]
+			}
+		]
+	}
+
+	path DEF fileListView Viewpoint
+	{
+		fieldOfView 1.287000
+		orientation -0.239300 0.970900 -0.003803 -0.032740
+		position 34.529999 15.290000 -212.300003
+		jump false
+	}
+
+	control Joystick
+	{
+		function OnADown()
+		{
+			var c = theFilesMenu.children[0].children[0];
+			if (c.Dummy01.moving)
+				return;
+
+			if (bInCopy)
+			{
+				c.MU_select_pod_HL2.children[0].appearance.material.param = 1;
+				PerformCopy();
+				PlaySoundA();
+			}
+			else if (bDetailView)
+			{
+				c.MU_select_pod_HL2.children[0].appearance.material.param = 1;
+				DoMemoryItemMenuCommand();
+				PlaySoundA();
+			}
+			else
+			{
+				c.MU_select_pod_HL.children[0].appearance.material.param = 1;
+				PlaySoundA();
+				if(c.theSavedGameGrid.curDevUnit != 8) //MUs
+					ShowFileDetailView();
+				else if(c.theSavedGameGrid.GetTitleCount() > 0)
+					ShowFileDetailView();
+
+			}
+		}
+
+		function OnBDown()
+		{
+			var c = theFilesMenu.children[0].children[0];
+			if (c.Dummy01.moving)
+				return;
+
+			if (bInCopy)
+			{
+				PlaySoundB();
+				c.MU_back_pod_HL2.children[0].appearance.material.param = 1;
+				EndCopy();
+			}
+			else if (bDetailView)
+			{
+				PlaySoundB();
+				ShowFileListView();
+				c.MU_back_pod_HL2.children[0].appearance.material.param = 1;
+			}
+			else
+			{
+				PlaySoundB();
+				c.MU_back_pod_HL.children[0].appearance.material.param = 1;
+				// Turn enumeration off before changing levels.
+				theMemoryMonitor.enumerationOn = false;
+				if (bCleanupSpecifiedDrive)
+					theLauncherLevel.GoTo();
+				else
+					theMemoryMenu.GoBackTo();
+
+				theGamesSubMenuOut.Play();
+			}
+		}
+
+		function OnMoveUp()
+		{
+			var c = theFilesMenu.children[0].children[0];
+			if (c.Dummy01.moving)
+				return;
+
+			if (bInCopy)
+			{
+				c.theCopyDestination.selectUp();
+			}
+			else if (bDetailView)
+			{
+				if (nCurFileMenuItem > 0)
+				{
+					PlaySoundMenuChange();
+					nCurFileMenuItem = nCurFileMenuItem - 1;
+					UpdateFileMenu();
+				}
+			}
+			else
+			{
+				var oldCurTitle = c.theSavedGameGrid.curTitle;
+				var oldCurSave = c.theSavedGameGrid.curGridItem;
+
+				c.theSavedGameGrid.selectUp();
+
+				if (oldCurTitle != c.theSavedGameGrid.curTitle)
+					theMemoryTitleSelectSound.Play();
+				else if (oldCurSave != c.theSavedGameGrid.curGridItem)
+					theMemorySaveSelectSound.Play();
+			}
+		}
+
+		function OnMoveDown()
+		{
+			var c = theFilesMenu.children[0].children[0];
+			if (c.Dummy01.moving)
+				return;
+
+			if (bInCopy)
+			{
+				c.theCopyDestination.selectDown();
+			}
+			else if (bDetailView)
+			{
+				if (nCurFileMenuItem < nFileMenuItemCount - 1)
+				{
+					PlaySoundMenuChange();
+					nCurFileMenuItem = nCurFileMenuItem + 1;
+					UpdateFileMenu();
+				}
+			}
+			else
+			{
+				var oldCurTitle = c.theSavedGameGrid.curTitle;
+				var oldCurSave = c.theSavedGameGrid.curGridItem;
+
+				c.theSavedGameGrid.selectDown();
+
+				if (oldCurTitle != c.theSavedGameGrid.curTitle)
+					theMemoryTitleSelectSound.Play();
+				else if (oldCurSave != c.theSavedGameGrid.curGridItem)
+					theMemorySaveSelectSound.Play();
+			}
+		}
+
+		function OnMoveRight()
+		{
+			var c = theFilesMenu.children[0].children[0];
+			if (c.Dummy01.moving)
+				return;
+
+			if (bInCopy)
+			{
+			}
+			else if (bDetailView)
+			{
+			}
+			else
+			{
+				var oldCurTitle = c.theSavedGameGrid.curTitle;
+				var oldCurSave = c.theSavedGameGrid.curGridItem;
+
+				c.theSavedGameGrid.selectRight();
+
+				if (oldCurTitle != c.theSavedGameGrid.curTitle)
+					theMemoryTitleSelectSound.Play();
+				else if (oldCurSave != c.theSavedGameGrid.curGridItem)
+					theMemorySaveSelectSound.Play();
+			}
+		}
+
+		function OnMoveLeft()
+		{
+			var c = theFilesMenu.children[0].children[0];
+			if (c.Dummy01.moving)
+				return;
+
+			if (bInCopy)
+			{
+			}
+			else if (bDetailView)
+			{
+			}
+			else
+			{
+				var oldCurTitle = c.theSavedGameGrid.curTitle;
+				var oldCurSave = c.theSavedGameGrid.curGridItem;
+
+				c.theSavedGameGrid.selectLeft();
+
+				if (oldCurTitle != c.theSavedGameGrid.curTitle)
+					theMemoryTitleSelectSound.Play();
+				else if (oldCurSave != c.theSavedGameGrid.curGridItem)
+					theMemorySaveSelectSound.Play();
+			}
+		}
+	}
+
+	function OnActivate()
+	{
+		EnableAmbientAudio();
+		if (children[0].children.length() > 0)
+		{
+			var c = theFilesMenu.children[0].children[0];
+			EnterMemoryFiles();
+			ResetDetailScreen();
+			UpdateFileMetaPanel();
+			c.Saved_Game_Parent.SetAlpha(1);
+			c.Copy_Dest_Parent.SetAlpha(0);
+
+			ResetMemoryFocus();
+		}
+	}
+
+	function OnDeactivate()
+	{
+		theMemoryMonitor.enumerationOn = false;
+		var c = theFilesMenu.children[0].children[0];
+		c.theSavedGameGrid.isActive = false;
+		bSavedGameGridActivatePending = false;
+	}
+
+	function OnArrival()
+	{
+		if (children[0].children.length() > 0)
+		{
+			var c = theFilesMenu.children[0].children[0];
+			c.theSavedGameGrid.isActive = true;
+		}
+		else
+		{
+			bSavedGameGridActivatePending = true;
+		}
+		theMemoryMonitor.blockInsertion = false;
+		theMemoryMonitor.enumerationOn = true;
+	}
+
+}
+
+////////////////////////////////////////////////////////////////////////////
+
+function UpdateDeviceMetaData()
+{
+	var c = theMemoryMenu.children[0].children[0];
+
+	if (theMemoryMonitor.curDevUnit == 8) // hard drive
+	{
+		c.UnitTypeText.text = theTranslator.Translate("Xbox Console");
+		c.UnitNameText.text = theTranslator.Translate("Xbox Hard Disk");
+	}
+	else
+	{
+		c.UnitTypeText.text = theTranslator.Translate("memory unit");
+		c.UnitNameText.text = GetDeviceName(theMemoryMonitor.curDevUnit);
+	}
+
+
+	var strBlocks = " " + theTranslator.Translate("blocks");
+	var strBlock = " " + theTranslator.Translate("block");
+
+	c.TotalMemoryText.text = theMemoryMonitor.FormatTotalBlocks() + strBlocks;
+
+	var s = theMemoryMonitor.FormatFreeBlocks(-1);
+	if (s == "1")
+		c.AvailableMemoryText.text = s + strBlock;
+	else
+		c.AvailableMemoryText.text = s + strBlocks;
+}
+
+function UpdateDeviceHighlight()
+{
+	var c = theMemoryMenu.children[0].children[0];
+
+	c.mem_unit_outer10.children[0].appearance.material.name = "GamePod";
+	c.mem_unit_outer11.children[0].appearance.material.name = "GamePod";
+	c.mem_unit_outer12.children[0].appearance.material.name = "GamePod";
+	c.mem_unit_outer13.children[0].appearance.material.name = "GamePod";
+	c.mem_unit_outer14.children[0].appearance.material.name = "GamePod";
+	c.mem_unit_outer15.children[0].appearance.material.name = "GamePod";
+	c.mem_unit_outer16.children[0].appearance.material.name = "GamePod";
+	c.mem_unit_outer17.children[0].appearance.material.name = "GamePod";
+
+	c.controller1_MU_1_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+	c.controller1_MU_2_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+	c.controller2_MU_1_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+	c.controller2_MU_2_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+	c.controller3_MU_1_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+	c.controller3_MU_2_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+	c.controller4_MU_1_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+	c.controller4_MU_2_HL.children[0].appearance.texture.url = "MU_gauge1.tga";
+
+	c.MEM_L1_controller1_panel.children[0].appearance.material.name = "GamePod";
+	c.MEM_L1_controller2_panel.children[0].appearance.material.name = "GamePod";  //orig
+	c.MEM_L1_controller3_panel.children[0].appearance.material.name = "GamePod";
+	c.MEM_L1_controller4_panel.children[0].appearance.material.name = "GamePod";
+	c.controllerText1Mat.name = "NavType";
+	c.controllerText2Mat.name = "NavType";
+	c.controllerText3Mat.name = "NavType";
+	c.controllerText4Mat.name = "NavType";
+
+	c.consoleMat.name = "GamePod";
+
+	if (theMemoryMonitor.curDevUnit == 0)
+	{
+		c.mem_unit_outer10.children[0].appearance.material.name = "EggGlowPulse";
+		c.controller1_MU_1_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+		c.MEM_L1_controller1_panel.children[0].appearance.material.name = "GameHilite";
+		c.controllerText1Mat.name = "HilightedType";
+	}
+	else if (theMemoryMonitor.curDevUnit == 1)
+	{
+		c.mem_unit_outer11.children[0].appearance.material.name = "EggGlowPulse";
+		c.controller1_MU_2_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+		c.MEM_L1_controller1_panel.children[0].appearance.material.name = "GameHilite";
+		c.controllerText1Mat.name = "HilightedType";
+	}
+	else if (theMemoryMonitor.curDevUnit == 2)
+	{
+		c.mem_unit_outer12.children[0].appearance.material.name = "EggGlowPulse";
+		c.controller2_MU_1_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+		c.MEM_L1_controller2_panel.children[0].appearance.material.name = "GameHilite";
+		c.controllerText2Mat.name = "HilightedType";
+	}
+	else if (theMemoryMonitor.curDevUnit == 3)
+	{
+		c.mem_unit_outer13.children[0].appearance.material.name = "EggGlowPulse";
+		c.controller2_MU_2_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+		c.MEM_L1_controller2_panel.children[0].appearance.material.name = "GameHilite";
+		c.controllerText2Mat.name = "HilightedType";
+	}
+	else if (theMemoryMonitor.curDevUnit == 4)
+	{
+		c.mem_unit_outer14.children[0].appearance.material.name = "EggGlowPulse";
+		c.controller3_MU_1_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+		c.MEM_L1_controller3_panel.children[0].appearance.material.name = "GameHilite";
+		c.controllerText3Mat.name = "HilightedType";
+	}
+	else if (theMemoryMonitor.curDevUnit == 5)
+	{
+		c.mem_unit_outer15.children[0].appearance.material.name = "EggGlowPulse";
+		c.controller3_MU_2_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+		c.MEM_L1_controller3_panel.children[0].appearance.material.name = "GameHilite";
+		c.controllerText3Mat.name = "HilightedType";
+	}
+	else if (theMemoryMonitor.curDevUnit == 6)
+	{
+		c.mem_unit_outer16.children[0].appearance.material.name = "EggGlowPulse";
+		c.controller4_MU_1_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+		c.MEM_L1_controller4_panel.children[0].appearance.material.name = "GameHilite";
+		c.controllerText4Mat.name = "HilightedType";
+	}
+	else if (theMemoryMonitor.curDevUnit == 7)
+	{
+		c.mem_unit_outer17.children[0].appearance.material.name = "EggGlowPulse";
+		c.controller4_MU_2_HL.children[0].appearance.texture.url = "MU_gaugeHL.tga";
+		c.MEM_L1_controller4_panel.children[0].appearance.material.name = "GameHilite";
+		c.controllerText4Mat.name = "HilightedType";
+	}
+	else
+		c.consoleMat.name = "EggGlowPulse";
+}
+
+function UpdateDevices()
+{
+	var c = theMemoryMenu.children[0].children[0];
+
+	c.Controller1.SetAlpha(theMemoryMonitor.HaveDeviceTop(0) + theMemoryMonitor.HaveDeviceBottom(0) != 0);
+	c.Controller1Unit1.SetAlpha(theMemoryMonitor.HaveDeviceTop(0));
+	c.Controller1Unit2.SetAlpha(theMemoryMonitor.HaveDeviceBottom(0));
+	if (theMemoryMonitor.HaveDeviceTop(0))
+	{
+		c.controller1_MU_1_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(0);
+	}
+	else
+	{
+		c.controller1_MU_1_HL.children[0].appearance.material.param = 100;
+	}
+	if (theMemoryMonitor.HaveDeviceBottom(0))
+	{
+		c.controller1_MU_2_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(1);
+	}
+	else
+	{
+		c.controller1_MU_2_HL.children[0].appearance.material.param = 100;
+	}
+
+
+	c.Controller2.SetAlpha(theMemoryMonitor.HaveDeviceTop(1) + theMemoryMonitor.HaveDeviceBottom(1) != 0);
+	c.Controller2Unit1.SetAlpha(theMemoryMonitor.HaveDeviceTop(1));
+	c.Controller2Unit2.SetAlpha(theMemoryMonitor.HaveDeviceBottom(1));
+	if (theMemoryMonitor.HaveDeviceTop(1))
+	{
+		c.controller2_MU_1_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(2);
+	}
+	else
+	{
+		c.controller2_MU_1_HL.children[0].appearance.material.param = 100;
+	}
+	if (theMemoryMonitor.HaveDeviceBottom(1))
+	{
+		c.controller2_MU_2_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(3);
+	}
+	else
+	{
+		c.controller2_MU_2_HL.children[0].appearance.material.param = 100;
+	}
+
+	c.Controller3.SetAlpha(theMemoryMonitor.HaveDeviceTop(2) + theMemoryMonitor.HaveDeviceBottom(2) != 0);
+	c.Controller3Unit1.SetAlpha(theMemoryMonitor.HaveDeviceTop(2));
+	c.Controller3Unit2.SetAlpha(theMemoryMonitor.HaveDeviceBottom(2));
+	if (theMemoryMonitor.HaveDeviceTop(2))
+	{
+		c.controller3_MU_1_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(4);
+	}
+	else
+	{
+		c.controller3_MU_1_HL.children[0].appearance.material.param = 100;
+	}
+	if (theMemoryMonitor.HaveDeviceBottom(2))
+	{
+		c.controller3_MU_2_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(5);
+	}
+	else
+	{
+		c.controller3_MU_2_HL.children[0].appearance.material.param = 100;
+	}
+
+	c.Controller4.SetAlpha(theMemoryMonitor.HaveDeviceTop(3) + theMemoryMonitor.HaveDeviceBottom(3) != 0);
+	c.Controller4Unit1.SetAlpha(theMemoryMonitor.HaveDeviceTop(3));
+	c.Controller4Unit2.SetAlpha(theMemoryMonitor.HaveDeviceBottom(3));
+	if (theMemoryMonitor.HaveDeviceTop(3))
+	{
+		c.controller4_MU_1_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(6);
+	}
+	else
+	{
+		c.controller4_MU_1_HL.children[0].appearance.material.param = 100;
+	}
+	if (theMemoryMonitor.HaveDeviceBottom(3))
+	{
+		c.controller4_MU_2_HL.children[0].appearance.material.param = theMemoryMonitor.GetFreeTotalRatio(7);
+	}
+	else
+	{
+		c.controller4_MU_2_HL.children[0].appearance.material.param = 100;
+	}
+}
+
+function StartMemoryLevel()
+{
+	UpdateDeviceMetaData();
+	UpdateDevices();
+	UpdateDeviceHighlight();    // This will ensure that when the user enters this level, the proper item has the focus
+
+	if (bCleanupSpecifiedDrive)
+	{
+		if (theMemoryMonitor.selectDevUnit(theConfig.GetLaunchParameter1()))
+			theFilesMenu.GoTo();
+		else
+			bCleanupSpecifiedDrive = false;
+	}
+}
+
+DEF theMemoryMenu Level
+{
+	archive "Memory2.xip"
+	children
+	[
+		Inline
+		{
+			url "Memory2/default.xap"
+
+			function onLoad()
+			{
+				StartMemoryLevel();
+				UpdateDeviceHighlight();
+			}
+		}
+	]
+
+	shell Transform
+	{
+		scale 12.336 12.336 12.336
+		translation 41.549999 10.190000 -201.399994
+		children
+		[
+			USE theMemoryMenuWaver Waver
+		]
+	}
+
+
+	tunnel Transform
+	{
+		children
+		[
+			Shape
+			{
+				appearance Appearance { material MaxMaterial { name "Tubes" } }
+				geometry DEF Tunnel_01-FACES Mesh { url "Memory/Tunnel_01-FACES.xm" }
+			}
+		]
+		rotation 0.356300 0.923500 -0.142100 -0.815600
+		translation 41.110001 7.940000 -140.899994
+	}
+
+	path DEF theMemoryMenuViewpoint Viewpoint
+	{
+		fieldOfView 1.438000
+		orientation -0.999500 -0.031970 0.000318 -0.019900
+		position 41.650002 8.885000 -194.300003
+		jump false
+	}
+
+	control Joystick
+	{
+		function OnMoveUp()
+		{
+			var oldCurDevUnit = theMemoryMonitor.curDevUnit;
+			theMemoryMonitor.selectUp();
+			if (oldCurDevUnit != theMemoryMonitor.curDevUnit)
+				theMemoryControllerSelectSound.Play();
+		}
+
+		function OnMoveDown()
+		{
+			var oldCurDevUnit = theMemoryMonitor.curDevUnit;
+			theMemoryMonitor.selectDown();
+			if (oldCurDevUnit != theMemoryMonitor.curDevUnit)
+				theMemoryControllerSelectSound.Play();
+		}
+
+		function OnMoveRight()
+		{
+			var oldCurDevUnit = theMemoryMonitor.curDevUnit;
+			theMemoryMonitor.selectRight();
+			if (oldCurDevUnit != theMemoryMonitor.curDevUnit)
+				theMemoryControllerSelectSound.Play();
+		}
+
+		function OnMoveLeft()
+		{
+			var oldCurDevUnit = theMemoryMonitor.curDevUnit;
+			theMemoryMonitor.selectLeft();
+			if (oldCurDevUnit != theMemoryMonitor.curDevUnit)
+				theMemoryControllerSelectSound.Play();
+		}
+
+		function OnADown()
+		{
+			PlaySoundA();
+			theMemoryMenu.children[0].children[0].MU_select_pod_HL.children[0].appearance.material.param = 1;
+			theFilesMenu.GoTo();
+			theGamesSubMenuIn.Play();
+		}
+
+		function OnBDown()
+		{
+			PlaySoundB();
+			theMemoryMenu.children[0].children[0].MU_back_pod_HL.children[0].appearance.material.param = 1;
+			theMemoryMonitor.curDevUnit = 8; // select the hard drive
+			// Turn enumeration off before changing levels
+			theMemoryMonitor.enumerationOn = false;
+			if (bBackToLauncher)
+			{
+				theLauncherLevel.GoTo();
+			} 
+			else 
+			{
+				if(bBackToSettings)
+				{
+					bBackToSettings = false;
+					theSettingsSubMenuOut.Play();
+					GoToSettings();
+				}
+				else
+				{
+					theGamesMenuOut.Play();
+					theMainMenu.GoBackTo();
+				}
+			}
+		}
+	}
+
+	function OnActivate()
+	{
+		EnableAmbientAudio();
+		CurrentViewpoint = theMemoryMenuViewpoint;
+		if (children[0].children.length() > 0)
+			StartMemoryLevel();
+	}
+
+	function OnArrival()
+	{
+		theMemoryMonitor.blockInsertion = false;
+		theMemoryMonitor.enumerationOn = true;
+	}
+
+	function OnDeactivate()
+	{
+		theMemoryMonitor.enumerationOn = false;
+	}
+}

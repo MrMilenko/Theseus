@@ -557,6 +557,20 @@ function GoToSkins()
 	else { theSkinsInline.visible = true; }
 }
 
+DEF theOrbsInline Inline
+{
+	visible false
+	url "orbs.xap"
+	function onLoad() { theOrbsInline.children[0].theOrbsMenu.GoTo(); }
+}
+
+function GoToOrbs()
+{
+	theSettingsMenuIn.Play();
+	if( theOrbsInline.visible ) { theOrbsInline.children[0].theOrbsMenu.GoTo(); }
+	else { theOrbsInline.visible = true; }
+}
+
 ////////////////////////////////////////////////////////////////////////////
 
 DEF theLauncherInline Inline
@@ -1594,6 +1608,83 @@ function SetButtonText()
 	c.MainMenuButton5_Text.text = theTranslator.Translate("SETTINGS");
 }
 
+function GetOrbName()
+{
+	var n = GetSavedValue("Dashboard Settings","Current Orb");
+	if(n == "") { return ""; }
+	return "Q:\\Orbs\\" + n + "\\" + n;
+}
+
+function GetOrb()
+{
+	var a = GetSavedValue("Dashboard Settings","Use Custom Orb");
+	if(a.toLowerCase() == "true") { customorb = true; }
+	else { customorb = false; }
+}
+
+function ChangeTheOrb(e)
+{
+	var c = theMainMenu.children[0].children[0];
+	c.Main_pod_backing01.visible = false;
+	c.Main_pod_backing02.visible = false;
+	c.gasorb.visible = false;
+	c.gasorb.children[0].children[0].geometry.url = e;
+	c.gasorb.visible = true;
+}
+
+function ApplyOrb()
+{
+	var c = theMainMenu.children[0].children[0];
+
+	thcorb = (GetSavedValue("default","MainOrbStyle") == "tHc");
+	if(thcorb == true)
+	{
+		c.Main_pod_backing01.visible = false;
+		c.Main_pod_backing02.visible = true;
+	}
+	else
+	{
+		c.Main_pod_backing01.visible = true;
+		c.Main_pod_backing02.visible = false;
+	}
+	c.gasorb.visible = false;
+
+	GetOrb();
+	if(customorb == true)
+	{
+		var OrbName = GetOrbName();
+		if(OrbName == "") { return; }
+
+		var info = new Settings;
+		info.file = OrbName + ".xbx";
+		info.section = "Orb";
+		var scalex = info.GetValue("Scalex");
+		var scaley = info.GetValue("Scaley");
+		var scalez = info.GetValue("Scalez");
+		if((scalex != "") & (scaley != "") & (scalez != ""))
+		{
+			c.gasorb.SetScale(scalex, scaley, scalez);
+		}
+		c.Rotating_Large_X.fade = 0.43;
+		theConfig.FlushMeshCache();
+		ChangeTheOrb(OrbName + ".xm");
+	}
+	else
+	{
+		c.Rotating_Large_X.fade = 0.25;
+	}
+}
+
+function ReloadOrb()
+{
+	if(g_theMainMenuLoaded != true) { return; }
+	ApplyOrb();
+}
+
+function nada()
+{
+}
+
 function MainMenuAttract()
 {
 	var a = 0;
@@ -1717,6 +1808,7 @@ DEF theMainMenu Level
 					c.Main_pod_backing01.visible = true;
 					c.Main_pod_backing02.visible = false;
 				}
+				ApplyOrb();
 				if(bUseMainMenuAttract){ MainMenuAttract(); }
 				g_theMainMenuLoaded = true;
 			}
@@ -2055,6 +2147,7 @@ var XlateFile;
 var IconFile;
 var TitleNamesFile;
 var thcorb;
+var customorb;
 var ShowInsignia;
 var btHcScreenSaver;
 var bMusicPlayerReady;

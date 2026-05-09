@@ -1,0 +1,18 @@
+[OrbInfo]
+Author=NeoNitiPheus
+DateCreated=6/04/05
+Version=1.0
+MadeUsing=3dsmax6 & Deepexplorer & Xmconvert(uix)
+Credits=NeoNitiPheus
+
+[Orb]
+Material=MenuCell
+Scalex=42
+Scaley=42
+Scalez=42
+
+[HD Orbs]
+Material=MenuCell
+Scalex=3
+Scaley=3
+Scalez=3

@@ -1,0 +1,16 @@
+DEF theSkin Level
+{
+	archive "Skin.xip"
+	unloadable false
+	children
+	[
+		DEF theIconsPath Inline
+		{
+			url "Skin/default.xap"
+		}
+	]
+	function OnArrival()
+	{
+		MainInitPart2();
+	}
+}

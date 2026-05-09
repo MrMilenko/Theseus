@@ -90,6 +90,17 @@ static const int   s_msaaCount = 4;
 
 static const char* s_vsyncLabels[] = { "Adaptive", "On", "Off" };
 
+static const char* s_resLabels[] = { "Native", "720p", "1080p", "1440p (2K)", "2160p (4K)" };
+static const int   s_resValues[] = {  0,        720,    1080,    1440,         2160 };
+static const int   s_resCount    = 5;
+static int GetResIndex() {
+    for (int i = 0; i < s_resCount; i++)
+        if (s_resValues[i] == g_windowResolution) return i;
+    return 0;
+}
+
+static const char* s_displayModeLabels[] = { "Windowed", "Borderless", "Fullscreen" };
+
 static const char* s_fpsLabels[] = { "Unlimited", "30", "60", "90", "120", "144", "240" };
 static const int   s_fpsValues[] = { 0,           30,   60,   90,   120,   144,   240 };
 static const int   s_fpsCount    = 7;
@@ -372,6 +383,22 @@ void RenderSettingsWindow() {
             int fpsIdx = GetFpsIndex();
             if (ImGui::Combo("##fpscap", &fpsIdx, s_fpsLabels, s_fpsCount)) {
                 g_fpsCap = s_fpsValues[fpsIdx];
+                SaveDesktopSettings();
+            }
+
+            ImGui::AlignTextToFramePadding(); ImGui::Text("Resolution:");
+            ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
+            int resIdx = GetResIndex();
+            if (ImGui::Combo("##res", &resIdx, s_resLabels, s_resCount)) {
+                g_windowResolution = s_resValues[resIdx];
+                g_displayChangeRequested = true;
+                SaveDesktopSettings();
+            }
+
+            ImGui::AlignTextToFramePadding(); ImGui::Text("Display Mode:");
+            ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
+            if (ImGui::Combo("##dispmode", &g_windowMode, s_displayModeLabels, 3)) {
+                g_displayChangeRequested = true;
                 SaveDesktopSettings();
             }
 

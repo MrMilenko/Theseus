@@ -66,6 +66,10 @@ function buildGSList() //just copy this function for more subsections
 	configValues[i] = "default-MainOrbStyle"; //section-value
 	configSelect[i] = "toggleMOS()";
 	i = i + 1;
+	configList[i] = "Use Custom Orb:";
+	configValues[i] = "Dashboard Settings-Use Custom Orb";
+	configSelect[i] = "toggleCustomOrb()";
+	i = i + 1;
 	configList[i] = "Show Insignia:";
 	configValues[i] = "default-ShowInsignia";
 	configSelect[i] = "toggleTF()";
@@ -336,6 +340,14 @@ function toggleMOS()
 {
 	var b = getConfigMenuValue(configValues[LV2Item]);
 	if(b.toLowerCase() == "thc") { refreshMenu("Stock"); } else { refreshMenu("tHc"); }
+	ReloadOrb();
+}
+
+function toggleCustomOrb()
+{
+	var b = getConfigMenuValue(configValues[LV2Item]);
+	if(b.toLowerCase() == "true") { refreshMenu("false"); } else { refreshMenu("true"); }
+	ReloadOrb();
 }
 
 function toggleYX()

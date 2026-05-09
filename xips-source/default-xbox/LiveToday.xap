@@ -1,0 +1,528 @@
+//
+// Copyright (c) Microsoft Corporation.  All rights reserved.
+//
+
+var nCurrentLiveTodayMenu;
+var nPassCodeVerified;
+var fLogOnInProgress;
+var fLogOnSuccess;
+
+function initialize()
+{
+	fLogOnInProgress = false;
+	fLogOnSuccess = false;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+function LogOn()
+{
+	if (theLiveAccounts.GetNumberOfAccounts() > 0)
+	{
+		theDiscDrive.locked = true;
+		theLiveAccounts.Logon(g_nCurrentAccountSelected, "");
+		fLogOnInProgress = true;
+
+		var str = "";
+		theLiveTodayLevel.children[0].children[0].text_gamertag.children[0].children[0].geometry.text = str;
+	}
+}
+
+function UpdateLiveTodayMenuHilite()
+{
+	var c = theLiveTodayLevel.children[0].children[0];
+
+	c.Highlight_06.children[0].appearance.texture.url = "button.tga";
+	c.Highlight_05.children[0].appearance.texture.url = "button.tga";
+	c.Highlight_07.children[0].appearance.texture.url = "button.tga";
+	c.Highlight_08.children[0].appearance.texture.url = "button.tga";
+
+	c.text_menu_01.children[0].children[0].appearance.material.name = "OrangeNavType";
+	c.text_menu_02.children[0].children[0].appearance.material.name = "OrangeNavType";
+	c.text_menu_03.children[0].children[0].appearance.material.name = "OrangeNavType";
+	c.text_menu_04.children[0].children[0].appearance.material.name = "OrangeNavType";
+
+	if (nCurrentLiveTodayMenu == 0)
+	{
+		c.Highlight_06.children[0].appearance.texture.url = "highlight.tga";
+		c.text_menu_01.children[0].children[0].appearance.material.name = "HilightedType";
+	}
+	else if (nCurrentLiveTodayMenu == 1)
+	{
+		c.Highlight_05.children[0].appearance.texture.url = "highlight.tga";
+		c.text_menu_02.children[0].children[0].appearance.material.name = "HilightedType";
+	}
+	else if (nCurrentLiveTodayMenu == 2)
+	{
+		c.Highlight_07.children[0].appearance.texture.url = "highlight.tga";
+		c.text_menu_03.children[0].children[0].appearance.material.name = "HilightedType";
+	}
+	else
+	{
+		c.Highlight_08.children[0].appearance.texture.url = "highlight.tga";
+		c.text_menu_04.children[0].children[0].appearance.material.name = "HilightedType";
+	}
+}
+
+function UpdateFriendPanel()
+{
+	var c = theLiveTodayLevel.children[0].children[0];
+	c.Text_FRIENDS_01.children[0].children[0].geometry.text = theLiveAccounts.GetGameInvites();
+	c.Text_FRIENDS_03.children[0].children[0].geometry.text = theLiveAccounts.GetFriendInvites();
+	c.Text_FRIENDS_02.children[0].children[0].geometry.text = theLiveAccounts.GetNumberOfFriendsOnline();
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+var strAccountPassword;
+
+function StartAccountPasscodeVerifier()
+{
+	var c = theAccountPasscodeVerifier.children[0].children[0];
+
+	c.StereoIcon.visible = false;
+	c.ConsoleIcon.visible = false;
+	c.AutoOffIcon.visible = false;
+	c.Icon_live.visible = false;
+	c.GlobeIcon.visible = false;
+	c.MonoIcon.visible = false;
+	c.S_Vid__tv_widescreen_large.visible = false;
+	c.S_Vid__tv_letterbox_large.visible = false;
+	c.S_Vid__tv_normal_large.visible = false;
+
+	c.PanelHeading.text = theTranslator.Translate("ENTER PASSWORD");
+	c.QuestionText.text = theTranslator.Translate("EnterPassword");
+	c.ButtonGroup.visible = false;
+	c.asterisks.visible = true;
+	c.LockIcon.visible = true;
+	c.Group07.visible = false;
+
+	strAccountPassword = "";
+	c.PasswordText.text = "";
+
+	nPassCodeVerified = false;
+}
+
+function ClearPassCode(nPort)
+{
+	if (nCurrentLiveTodayMenu <= -1)
+		GoToXoDashEntryPoint(0, true, "MESSAGE VIEWER");
+	else if (nCurrentLiveTodayMenu == 0)
+		GoToXoDashEntryPoint(g_nLastActivePort, true, "FRIENDS");
+	else
+		GoToXoDashEntryPoint(g_nLastActivePort, true, "VOICE CHAT");
+}
+
+function CollectAccountPassword(ch)
+{
+	var c = theAccountPasscodeVerifier.children[0].children[0];
+
+	strAccountPassword = strAccountPassword + ch;
+	var n = strAccountPassword.length();
+	var s = "****";
+
+	c.PasswordText.text = s.substr(0, n);
+
+	if (n >= 4)
+	{
+		if (theLiveAccounts.VerifyPassword(g_nCurrentAccountSelected, strAccountPassword))
+		{
+			theLiveNowMenuIn.Play();
+			nPassCodeVerified = true;
+
+			if (nCurrentLiveTodayMenu <= -1)
+				GoToXoDashEntryPoint(0, false, "MESSAGE VIEWER");
+			else if (nCurrentLiveTodayMenu == 0)
+				GoToXoDashEntryPoint(g_nLastActivePort, false, "FRIENDS");
+			else
+				GoToXoDashEntryPoint(g_nLastActivePort, false, "VOICE CHAT");
+		}
+		else
+		{
+			AskQuestion(theTranslator.Translate("ACT PASSCODE VERIFY ERROR"), "theLiveTodayInline.children[0].ClearPassCode()", "", 1);
+		}
+
+		strAccountPassword = "";
+		c.PasswordText.text = "";
+	}
+}
+
+DEF theAccountPasscodeVerifier Level
+{
+	archive "PasscodeVerify.xip"
+	children
+	[
+		Inline
+		{
+			url "PasscodeVerify/default.xap"
+
+			function onLoad()
+			{
+				StartAccountPasscodeVerifier();
+			}
+		}
+	]
+
+	path Viewpoint
+	{
+		fieldOfView 1.287000
+		orientation 0.103700 0.994600 0.006310 -0.122200
+		position 96.940002 4.728000 -248.600006
+		jump false
+	}
+
+	shell Transform
+	{
+		scale 6.15 6.15 6.15
+		translation 97.67 4.819000 -251.870003
+		children
+		[
+			DEF theLiveTodayWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_01" }
+							texture ImageTexture { alpha true url "cellwall.bmp" }
+						}
+						geometry Mesh { url "Inner_cell-FACES.xm" }
+					}
+					Shape
+					{
+						appearance MaxMaterial { name "InnerWall_02" }
+						geometry Sphere
+					}
+				]
+			}
+		]
+	}
+
+	control DEF thePanelJoystick Joystick
+	{
+		function OnBDown()
+		{
+			PlaySoundB();
+			theLiveNowMenuOut.Play();
+			if (nCurrentLiveTodayMenu <= -2)
+				GoBackToAccountSelection();
+			else if (nCurrentLiveTodayMenu == -1)
+				theMainMenu.GoBackTo();
+			else
+				theLiveTodayLevel.GoBackTo();
+		}
+
+		function OnMoveUp()
+		{
+			PlaySoundA();
+			CollectAccountPassword("u");
+		}
+
+		function OnMoveDown()
+		{
+			PlaySoundA();
+			CollectAccountPassword("d");
+		}
+
+		function OnMoveLeft()
+		{
+			PlaySoundA();
+			CollectAccountPassword("l");
+		}
+
+		function OnMoveRight()
+		{
+			PlaySoundA();
+			CollectAccountPassword("r");
+		}
+
+		function OnXDown()
+		{
+			PlaySoundA();
+			CollectAccountPassword("x");
+		}
+
+		function OnYDown()
+		{
+			PlaySoundA();
+			CollectAccountPassword("y");
+		}
+
+		function OnLeftDown()
+		{
+			PlaySoundA();
+			CollectAccountPassword("L");
+		}
+
+		function OnRightDown()
+		{
+			PlaySoundA();
+			CollectAccountPassword("R");
+		}
+	}
+
+	function OnActivate()
+	{
+		if (children[0].children.length() > 0)
+			StartAccountPasscodeVerifier();
+	}
+
+	function OnDeactivate()
+	{
+	}
+
+	function OnArrival()
+	{
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+DEF theLiveTodayLevel Level
+{
+	archive "LiveToday.xip"
+	children
+	[
+		Inline
+		{
+			url "LiveToday/default.xap"
+
+			function onLoad()
+			{
+				nCurrentLiveTodayMenu = 0;
+				g_fLiveTodayKeyboardBound = false;
+				g_fLiveTodayNotification = false;
+				LogOn();
+				UpdateFriendPanel();
+				theLiveTodayJoystick.secretKey = "YX";
+
+				if (theLiveAccounts.IsBackFromEntryPoint())
+				{
+					nPassCodeVerified = theLiveAccounts.IsPasswordVerified();
+				}
+
+				var reason = theConfig.GetLaunchReason();
+
+				if (reason == "VoiceChatInternal")
+				{
+					nCurrentLiveTodayMenu = 1;
+				}
+				else if (reason == "AccountManagementInternal")
+				{
+					nCurrentLiveTodayMenu = 2;
+				}
+
+				UpdateLiveTodayMenuHilite();
+				EnableInput(true);
+
+				theLiveTodayViewpoint.jump = false;
+				g_bLiveTodayFadeIn = false;
+
+				var c = theLiveTodayLevel.children[0].children[0];
+				var str = theTranslator.Translate("DEFAULT MOTD TEXT");
+				c.message_Text_01.children[0].children[0].geometry.text = str;
+				if(ShowInsignia) c.header.children[0].appearance.texture.url = "Insignia_header.tga";
+				else c.header.children[0].appearance.texture.url = "Live_header.tga";
+				theLiveAccounts.ShowIcon(false);
+			}
+		}
+	]
+
+	path DEF theLiveTodayViewpoint Viewpoint
+	{
+		fieldOfView 0.622000
+		orientation -0.019710 -0.999800 0.001194 -0.121100
+		position 102.500000 3.965000 -215.800003
+		jump false
+	}
+
+	shell Transform
+	{
+		scale 12.181100 12.181100 12.181100
+		translation 100.599998 5.085000 -223.100006
+		children
+		[
+			USE theLiveTodayWaver Waver
+		]
+	}
+
+	control DEF theLiveTodayJoystick Joystick
+	{
+		function OnADown()
+		{
+			if (fLogOnInProgress)
+				return;
+
+			var c = theLiveTodayLevel.children[0].children[0];
+			c.S_Lang_select_pod_outer01.children[0].appearance.material.name = "EggGlow";
+			c.S_Lang_select_pod_outer01.children[0].appearance.material.param = 1;
+
+			PlaySoundA();
+
+			g_nLastActivePort = theLiveTodayJoystick.LastActivePort;
+
+			if (nCurrentLiveTodayMenu == 0)
+			{
+				theLiveNowMenuIn.Play();
+				if (theLiveAccounts.bLogon)
+					theLiveAccounts.PersistUser(g_nCurrentAccountSelected);
+
+				if (nPassCodeVerified)
+					GoToXoDashEntryPoint(g_nLastActivePort, false, "FRIENDS");
+				else if (theLiveAccounts.IsPasswordEnabled(g_nCurrentAccountSelected))
+					theAccountPasscodeVerifier.GoTo();
+				else if (theLiveAccounts.bLogon)
+					GoToXoDashEntryPoint(g_nLastActivePort, false, "FRIENDS");
+			}
+			else if (nCurrentLiveTodayMenu == 1)
+			{
+				if (false == theLiveAccounts.IsVoiceAllowed())
+				{
+					TellUser("MSG VOICE BANNED", "");
+					return;
+				}
+				
+				theLiveNowMenuIn.Play();
+				
+				if (theLiveAccounts.bLogon)
+					theLiveAccounts.PersistUser(g_nCurrentAccountSelected);
+
+				if (nPassCodeVerified)
+					GoToXoDashEntryPoint(g_nLastActivePort, false, "VOICE CHAT");
+				else if (theLiveAccounts.IsPasswordEnabled(g_nCurrentAccountSelected))
+					theAccountPasscodeVerifier.GoTo();
+				else if (theLiveAccounts.bLogon)
+					GoToXoDashEntryPoint(g_nLastActivePort, false, "VOICE CHAT");
+			}
+			else if (nCurrentLiveTodayMenu == 2)
+			{
+				theLiveNowMenuIn.Play();
+				if (theLiveAccounts.bLogon)
+				{
+					theLiveAccounts.PersistUser(g_nCurrentAccountSelected);
+					GoToXoDashEntryPoint(g_nLastActivePort, nPassCodeVerified != true, "ACCOUNT MANAGEMENT");
+				}
+			}
+			else if (nCurrentLiveTodayMenu == 3)
+			{
+				theLiveNowMenuIn.Play();
+				LogOff();
+				theGamesMenuOut.Play();
+				theMainMenu.GoBackTo();
+				theLiveAccounts.ClearMOTDCache();
+				nCurrentLiveTodayMenu = -1;
+			}
+		}
+
+		function OnBDown()
+		{
+			PlaySoundB();
+			LogOff();
+			theGamesMenuOut.Play();
+			GoBackToAccountSelection();
+			theLiveAccounts.ClearMOTDCache();
+			nCurrentLiveTodayMenu = -1;
+		}
+
+		function OnMoveUp()
+		{
+			if (fLogOnInProgress)
+				return;
+
+			if (nCurrentLiveTodayMenu > 0)
+			{
+				PlaySoundMenuChange();
+				nCurrentLiveTodayMenu = nCurrentLiveTodayMenu - 1;
+			}
+
+			UpdateLiveTodayMenuHilite();
+		}
+
+		function OnMoveDown()
+		{
+			if (fLogOnInProgress)
+				return;
+
+			if (nCurrentLiveTodayMenu < 3)
+			{
+				PlaySoundMenuChange();
+				nCurrentLiveTodayMenu = nCurrentLiveTodayMenu + 1;
+			}
+
+			UpdateLiveTodayMenuHilite();
+		}
+
+		function OnKeyVerified()
+		{
+			theConfig.ToggleNoisyCamera();
+		}
+	}
+
+	function OnActivate()
+	{
+		CurrentViewpoint = theLiveTodayViewpoint;
+		if (children[0].children.length() > 0)
+		{
+			if (nCurrentLiveTodayMenu <= -1)
+				nCurrentLiveTodayMenu = 0;
+			g_fLiveTodayNotification = false;
+			UpdateLiveTodayMenuHilite();
+
+			var nGamePCLevel = theConfig.GetGamePCFlags();
+			var str;
+			var c = theLiveTodayLevel.children[0].children[0];
+
+			if (nGamePCLevel < 4)
+			{
+				str = theTranslator.Translate("MOTD PC ENABLED TEXT");
+				c.message_Text_01.children[0].children[0].geometry.text = str;
+				theLiveAccounts.ShowIcon(false);
+			}
+			else if ((fLogOnInProgress + fLogOnSuccess) == 0)
+			{
+				str = theTranslator.Translate("DEFAULT MOTD TEXT");
+				c.message_Text_01.children[0].children[0].geometry.text = str;
+				theLiveAccounts.ShowIcon(false);
+			}
+			else
+			{
+				str = theLiveAccounts.GetMessageOfTheDayText();
+				c.message_Text_01.children[0].children[0].geometry.text = str;
+				theLiveAccounts.ShowIcon(true);
+			}
+			
+			if ((fLogOnInProgress + fLogOnSuccess) == 0 )
+			{
+				LogOn();
+			}
+
+			UpdateFriendPanel();
+		}
+	}
+
+	function OnDeactivate()
+	{
+		g_fLiveTodayKeyboardBound = false;
+		HideWaitCursor();
+	}
+
+	function OnArrival()
+	{
+		if (fLogOnInProgress)
+			ShowWaitCursor();
+
+		g_fLiveTodayKeyboardBound = true;
+
+		// Display pending error during level transition
+		if (g_fLiveTodayNotification)
+		{
+			DisplayLiveTodayNotification();
+		}
+
+		EnableInput(true);
+	}
+}
+

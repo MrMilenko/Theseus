@@ -50,6 +50,7 @@ public:
     int GetVideoMode();
     void SetVideoMode(int nVideoMode);
     void ApplySkin();
+    void FlushMeshCache();
     int Get480Support();
     void Set480Support(int b480Support);
     int Get720Support();

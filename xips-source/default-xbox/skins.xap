@@ -1,0 +1,302 @@
+var nCurPlayerMenuItem;
+var skinCount;
+var SkinMenuList;
+var skinScroll;
+var skinButton;
+var skinSelect;
+var currentSkin;
+
+
+function initialize()
+{
+	skinSelect = 0;
+	skinScroll = 0;
+	skinButton = 0;
+	nCurPlayerMenuItem = 1;
+}
+
+function GetSkins()
+{
+	var b = new Folder;
+	b.path = "Q:\\skins";
+	skinCount = b.subFolders.length();
+	var skinsArray = new Array();
+	var a;
+
+	currentSkin = GetSavedValue("Dashboard Settings","Current Skin");
+
+	for(var i = 0; i < skinCount; i = i + 1)
+	{
+		a = b.subFolders[i].name;
+		skinsArray[i] = a.charAt(0).toUpperCase() + a.substr(1,a.length());
+	}
+	SkinMenuList = skinsArray.sort();
+}
+
+function UpdateSkinMenu()
+{
+		var c = theSkinsMenu.children[0].children[0];
+		
+	for(var i = 0; i < 9; i = i + 1)
+	{
+			var n = skinScroll + i;
+			
+		if(n >= skinCount)
+		{
+				c.SkinNames.children[i].visible = false;
+		}
+		else
+		{
+				var str;
+				str = SkinMenuList[n];
+						c.SkinNames.children[i].visible = true;
+						c.SkinNames.children[i].visible = true;
+						c.SkinNames.children[i].children[0].appearance.material.name = "CellEgg/Partsz";
+						c.SkinNames.children[i].children[0].geometry.text = str;
+					
+						if(i == skinButton)
+						{
+								c.SkinNames.children[i].children[0].appearance.material.name = "NavType";
+						}
+				}
+		}
+		c.MU_L3_button_no.children[0].appearance.material.name = "FlatSurfaces";
+		c.MU_L3_button_yes.children[0].appearance.material.name = "FlatSurfaces";
+
+		c.S_Home_text_no.children[0].appearance.material.name = "NavType";
+		c.S_Home_text_yes.children[0].appearance.material.name = "NavType";
+
+	if (nCurPlayerMenuItem == 0)
+	{
+				c.MU_L3_button_yes.children[0].appearance.material.name = "GameHilite";
+				c.S_Home_text_yes.children[0].appearance.material.name = "Material #133";
+	}
+	if (nCurPlayerMenuItem == 1)
+	{
+				c.MU_L3_button_no.children[0].appearance.material.name = "GameHilite";
+				c.S_Home_text_no.children[0].appearance.material.name = "Material #133";
+		}
+}
+
+function StartSkinMenu()
+{
+	var c = theSkinsMenu.children[0].children[0];
+	nCurPlayerMenuItem = 1;
+}
+
+function ShowSkinInfo()
+{
+	var info = new Settings;
+	info.file = "Q:\\skins\\" + SkinMenuList[skinSelect] + "\\" + SkinMenuList[skinSelect] + ".xbx";
+	info.section = "SkinInfo";
+	var author = info.GetValue("Author");
+	var date = info.GetValue("DateCreated");
+	var version = info.GetValue("Version");
+	var madeusing = info.GetValue("MadeUsing");
+	var credits = info.GetValue("Credits");
+	TellUser(theTranslator.Translate("Author: " + author + "\nDate: " + date + "\nVersion: " + version + "\nMade with: " + madeusing + "\nCredits: " + credits),"nada()");
+}
+
+function DoReset()
+{
+	GoToXoDashEntryPoint(0, 0, "SKIN SWAP");
+}
+
+function DoAction()
+{
+	var c = theSkinsMenu.children[0].children[0];
+	var info = new Settings;
+	info.file = "Q:\\system\\config.ini";
+	info.section = "Dashboard Settings";
+	if (nCurPlayerMenuItem == 1) { ShowSkinInfo(); }
+	else if (nCurPlayerMenuItem == 0)
+	{
+		info.SetValue("Current Skin",SkinMenuList[skinSelect]);
+		theConfig.ApplySkin();
+	}
+}
+var restarting;
+DEF theRestartLevel Level
+{
+	function OnArrival()
+	{
+		DisableAmbientAudio();
+		ClosePopup();
+		restarting = true;
+		if(theConfig.GetVideoMode() == 2) { theXboxLogo16x9Background.isBound = true; }
+		else { theXboxLogo4x3Background.isBound = true; }
+	}
+
+	behavior
+	{
+		sleep 1.1;
+		if(restarting) { theConfig.BackToLauncher(); }
+	}
+
+	function OnActivate()
+	{
+		DisableAmbientAudio();
+		ClosePopup();
+		if(theConfig.GetVideoMode() == 2) { theXboxLogo16x9Background.isBound = true; }
+		else { theXboxLogo4x3Background.isBound = true; }
+	}
+}
+
+DEF theSkinsMenu Level
+{
+	archive "Settings_Panel.xip"
+
+	children
+	[
+		Inline
+		{
+			url "Settings_Panel/default3.xap"
+
+			function onLoad()
+			{
+				StartSkinMenu();
+				GetSkins();
+				UpdateSkinMenu();
+			}
+		}
+	]
+
+	path Viewpoint
+	{
+		fieldOfView 1.287000
+		orientation 0.103700 0.994600 0.006310 -0.122200
+		position 96.940002 4.728000 -248.600006
+		jump false
+	}
+
+	shell Transform
+	{
+		scale 6.15 6.15 6.15
+		translation 97.67 4.819000 -251.870003
+		children
+		[
+			DEF theSettingsMenuShellSpinner Spinner
+			{
+				rpm 0
+				axis 0 0 0
+				children
+				[
+					DEF theSettingsMenuShellWaver Waver
+					{
+						rpm 2.25//rpm 0.75
+						children
+						[
+							Shape
+							{
+								appearance Appearance
+								{
+									material MaxMaterial { name "InnerWall_01" }
+									texture ImageTexture { alpha true url "cellwall.xbx" }
+								}
+								geometry Mesh { url "Inner_cell-FACES.xm" }
+							}
+							Shape
+							{
+								appearance MaxMaterial { name "InnerWall_02" }
+								geometry Sphere
+							}
+						]
+					}
+				]
+			}
+		]
+	}
+
+	control DEF theMusicPlayJoystick Joystick
+	{
+		function OnADown()
+		{
+						theSkinsMenu.children[0].children[0].MU_select_pod_HL.children[0].appearance.material.param = 1;
+						DoAction();
+		}
+
+		function OnBDown()
+		{
+				PlaySoundB();
+		theSkinsMenu.children[0].children[0].MU_back_pod_HL.children[0].appearance.material.param = 1;
+		GoToSettings();
+		theMusicSubMenuOut.Play();
+		}
+
+		function OnLeftThumbMoveLeft()
+		{
+			if (nCurPlayerMenuItem == 0) { return; }
+			else { nCurPlayerMenuItem = 0; }
+			UpdateSkinMenu();
+		}
+
+		function OnLeftThumbMoveRight()
+		{
+			if (nCurPlayerMenuItem == 1) { return; }
+			else { nCurPlayerMenuItem = 1; }
+			UpdateSkinMenu();
+		}
+
+		function OnLeftThumbMoveUp()
+		{
+						if (skinSelect <= 0) { return; }
+						PlaySoundMenuChange();
+						skinSelect = skinSelect - 1;
+						if (skinButton == 0) { skinScroll = skinScroll - 1; }
+						else { skinButton = skinButton - 1; }
+						//theConfig.ChangeSkin( SkinMenuList[skinSelect] );
+						UpdateSkinMenu();
+		}
+
+		function OnLeftThumbMoveDown()
+		{
+				if (skinSelect >= skinCount - 1) {  return; }
+						PlaySoundMenuChange();
+						skinSelect = skinSelect + 1;
+						if (skinButton == 8) { skinScroll = skinScroll + 1; }
+						else { skinButton = skinButton + 1; }
+						//theConfig.ChangeSkin( SkinMenuList[skinSelect] );
+						UpdateSkinMenu();                        
+		}
+ function OnMoveLeft()
+		{
+			if (nCurPlayerMenuItem == 0) { return; }
+			else { nCurPlayerMenuItem = 0; }
+			UpdateSkinMenu();
+		}
+
+		function OnMoveRight()
+		{
+			if (nCurPlayerMenuItem == 1) { return; }
+			else { nCurPlayerMenuItem = 1; }
+			UpdateSkinMenu();
+		}
+
+		function OnMoveUp()
+		{
+						if (skinSelect <= 0) { return; }
+						PlaySoundMenuChange();
+						skinSelect = skinSelect - 1;
+						if (skinButton == 0) { skinScroll = skinScroll - 1; }
+						else { skinButton = skinButton - 1; }
+						//theConfig.ChangeSkin( SkinMenuList[skinSelect] );
+						UpdateSkinMenu();
+		}
+
+		function OnMoveDown()
+		{
+				if (skinSelect >= skinCount - 1) {  return; }
+						PlaySoundMenuChange();
+						skinSelect = skinSelect + 1;
+						if (skinButton == 8) { skinScroll = skinScroll + 1; }
+						else { skinButton = skinButton + 1; }
+						//theConfig.ChangeSkin( SkinMenuList[skinSelect] );
+						UpdateSkinMenu();                        
+		}
+	}
+
+	function OnActivate()
+	{
+		EnableAudio();
+	}
+}

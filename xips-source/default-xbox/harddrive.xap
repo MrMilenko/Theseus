@@ -1,0 +1,1097 @@
+var bLauncherVisible0;
+var bInRecentTitles;
+var bRecentToggled;
+var nPlayCursor0;
+var nPlayCursor1;
+var nPreviousPlayCursor0;
+var nPlayScroll0;
+var nPlayScroll1;
+var nPlayVisible0;
+var nCurLauncherItem0;
+var nCurLauncherScroll0;
+var nCurLauncherVisible0;
+var nMaxLauncherMenuItems;
+var subTitle0;
+var subTitle1;
+var CurrentSection;
+var TempTitleList;
+var CurFillDir;
+var MaxRecentTitles;
+var arrRecentNames;
+var arrRecentPaths;
+var arrMenuNames;
+var arrMenuPaths;
+var TotalSections;
+var LastTitleLaunched;
+var DefaultIcon;
+var TitleCount;
+
+function initialize()
+{
+	bLauncherVisible0 = true;
+	bInRecentTitles = false;
+	bRecentToggled = false;
+	nCurLauncherItem0 = 0;
+	nCurLauncherScroll0 = 0;
+	nPlayCursor0 = 0;
+	nPreviousPlayCursor0 = 0;
+	nPlayScroll0 = 0;
+	nPlayVisible0 = 9;
+}
+
+function UpdateTrackList()
+{
+	var c = theLauncher.children[0].children[0];
+	var nTracks0 = TempTitleList.length;
+	c.LowerPanelText.text = subTitle0;
+	
+	if (nPlayCursor0 < 0 | nPlayScroll0 < 0)
+	{
+		nPlayScroll0 = 0;
+		nPlayCursor0 = 0;
+	}
+	else if ( (nPlayCursor0 >= (nPlayVisible0 - 1)) & (nPreviousPlayCursor0 < nPlayCursor0) & (nPlayCursor0 > (nPlayScroll0 + (nPlayVisible0 - 1)) ))
+	{    
+		nPlayScroll0 = nPlayCursor0 - (nPlayVisible0 - 1);
+	}
+	else if (nPlayCursor0 < nPlayScroll0)
+	{
+		nPlayScroll0 = nPlayCursor0;
+	}
+
+	nPreviousPlayCursor0 = nPlayCursor0;
+	
+	if (nPlayScroll0 > 0)
+	{
+		c.MU_morearrow_up.visible = true;
+	}
+	else
+	{
+		c.MU_morearrow_up.visible = false;
+	}
+	
+	if ((nPlayScroll0 + nPlayVisible0) < nTracks0)
+	{
+		c.MU_morearrow_down.visible = true;
+	}
+	else
+	{    
+		c.MU_morearrow_down.visible = false;
+	}
+	
+	for (var i = 0; i < nPlayVisible0; i = i + 1)
+	{
+		c.TrackNames.children[i].children[1].visible = false; //Browser Icon
+		var n = nPlayScroll0 + i;
+		if (n >= nTracks0)
+		{
+			c.TrackNames.children[i].children[0].geometry.text = "";
+		}
+		else
+		{
+			var strCacheItem = Split(TempTitleList[n],";");
+			var strName0 = strCacheItem[0];
+			var Trans = c.TrackNames.children[i].translation;
+			if(bInBrowser == false | bRecentToggled)
+			{
+				if(parseTrans(Trans,"X") != -0.41) c.TrackNames.children[i].SetTranslation(-0.42, parseTrans(Trans,"Y"), parseTrans(Trans,"Z"));
+				var strAltName = GetTitleName(strName0);
+				if (strAltName != "") strName0 = strAltName;
+				if(strName0.length() > 42) strName0 = strName0.substr(0,40) + "...";
+			}
+			else
+			{
+				c.TrackNames.children[i].SetTranslation(-0.34, parseTrans(Trans,"Y"), parseTrans(Trans,"Z"));
+				c.TrackNames.children[i].children[1].visible = true;
+				if(sFileType[n] == "folder" | bInRoot)
+				{ 
+					c.TrackNames.children[i].children[1].children[0].appearance.texture.url = "folder.xbx";
+				}
+				else
+				{
+					c.TrackNames.children[i].children[1].children[0].appearance.texture.url = "file.xbx";
+				}
+			}
+			c.TrackNames.children[i].children[0].geometry.text = strName0;
+
+			if (n == nPlayCursor0)
+			{
+				c.TrackNames.children[i].SetScale(0.12, 0.12, 0.12);
+				c.TrackNames.children[i].children[0].appearance.name = "GameHilite";
+				c.theIcons.children[0].children[0].appearance.material.name = "MainMenuOrb";
+				var Icon = IconFile.GetValue(strCacheItem[0]).toLowerCase();
+				if(Icon == "Unknown" | Icon == "" | (bInBrowser & (bRecentToggled == false))) 
+				{
+					c.theIcons.children[0].children[0].appearance.texture.url = DefaultIcon; 
+				}
+				else
+				{
+					for(var x = 0; x < TitleCount; x = x + 1)
+					{
+						if(c.theIconSelector.GetTitleID(x).toLowerCase() == Icon) 
+						{
+							c.theIcons.children[0].children[0].appearance.material.name = "SelectedIcon";
+							c.theIconSelector.curTitle = x;
+							c.theIconSelector.setSelImage();
+							break;
+						}
+
+					}
+				}
+			}
+			else
+			{               
+				c.TrackNames.children[i].SetScale(0.12, 0.12, 0.12);
+				c.TrackNames.children[i].children[0].appearance.name = "Material #1335";
+			}
+		}
+	}
+
+	if(bInBrowser & (bRecentToggled == false))
+	{
+		var sPath = arrMenuPaths[nCurLauncherItem0];
+		if(sPath.length() > 20)
+		{
+			if(sPath.length() > 27) sPath = PathEllipsis(sPath,27);
+			c.SubMenuHeader.SetScale(0.110000, 0.100000,0.100000);
+			c.SubMenuHeaderText.width = -22;
+		}
+		else
+		{
+			c.SubMenuHeader.SetScale(0.144000, 0.134000,0.134000);
+			c.SubMenuHeaderText.width = -15;
+		}
+		c.SubMenuHeaderText.text = sPath;
+	}
+	else
+	{
+		c.SubMenuHeader.SetScale(0.144000, 0.134000,0.134000);
+		c.SubMenuHeaderText.width = -15;    
+		if (nTracks0 == 1)
+		{    
+			c.SubMenuHeaderText.text = nTracks0 + " " + Translate("Title");
+		}
+		else
+		{
+			c.SubMenuHeaderText.text = nTracks0 + " " + Translate("Titles");
+		}
+	}
+}
+
+DEF theLauncherAlternateViewpoint Viewpoint
+{
+	fieldOfView 1.387000
+	orientation 1.177400 -0.983500 -0.236250 -0.345440
+	position -47.889999 54.662001 -199.299994
+	jump false
+}
+
+DEF LauncherViewpoint Viewpoint
+{
+	fieldOfView 1.287000
+	orientation 0.200900 0.979000 0.034330 -0.345700
+	position -47.889999 54.662001 -202.299994
+	jump false
+}
+
+DEF theTitleListViewpoint Viewpoint
+{
+	fieldOfView 1.316000
+	orientation -0.017440 -0.999800 0.000769 -0.088190
+	position -45.230000 54.810001 -202.299994
+	jump false
+}
+
+function ShowLauncherMenu()
+{
+	var c = theLauncher.children[0].children[0];
+	c.MU_L3_text_tracklist01.visible = false;
+	c.theMenuArm.SetRotation(0, 1, 0, 0);
+	c.audio_panel.SetRotation(-1, 0, 0, -3.246000);
+	c.audio_panel.SetTranslation(-45.549999, 57.18, -203.800003);
+	c.back1.SetTranslation(-48.990000, 52.450000, -205.000000); 
+	c.back1.SetRotation(0.000000, 1.000000, 0.000000, -0.130900);
+	c.refresh.SetTranslation(-49.490000, 51.650000, -205.800000);   
+	c.refresh.SetRotation(0.000000, 1.000000, 0.000000, -0.130900);
+	c.select1.SetTranslation(-45.280000, 52.339999, -204.000000);   
+	c.select1.SetRotation(0.000000, 1.000000, 0.000000, -0.497400);
+	c.recent.SetTranslation(-44.480000, 51.579999, -204.300000); 
+	c.recent.SetRotation(0.000000, 1.000000, 0.000000, -0.497400);
+	UpdateLauncherMenu();
+	LauncherViewpoint.isBound = true;
+	bLauncherVisible0 = true;
+	bInRecentTitles = false;
+	bRecentToggled = false;
+	bInBrowser = false;
+	c.theIcons.children[0].children[0].appearance.material.name = "MainMenuOrb";
+	if(c.theIcons.visible) c.theIcons.children[0].children[0].appearance.texture.url = DefaultIcon;
+}
+
+function StartTitleList()
+{
+	var c = theLauncher.children[0].children[0];
+	c.MU_L3_text_tracklist01.visible = false;
+	c.back1.SetTranslation(-47.340000, 52.810000, -204.300003); 
+	c.back1.SetRotation(0.000000, -1.000000, 0.000000, -0.340300);
+	c.refresh.SetTranslation(-47.690000, 52.380000, -204.300003); 
+	c.refresh.SetRotation(0.000000, -1.000000, 0.000000, -0.340300);
+	c.select1.SetTranslation(-43.539999, 52.740002, -204.800003);   
+	c.select1.SetRotation(-0.014820, 0.970100, -0.242300, -0.143900);
+	c.recent.SetTranslation(-43.250000, 52.340002, -204.800003);   
+	c.recent.SetRotation(-0.014820, 0.970100, -0.242300, -0.143900);
+	c.theMenuArm.SetRotation(0, 1, 0, 2);
+	c.audio_panel.SetRotation(1, 0, 0, -0.02618);
+	c.audio_panel.SetTranslation(-45.549999, 55.07, -204.5);
+	nPlayScroll0 = 0;
+	nPlayCursor0 = 0;
+	UpdateTrackList();
+	theTitleListViewpoint.isBound = true;
+	CurrentViewpoint = theTitleListViewpoint;
+	bLauncherVisible0 = false;
+}
+
+function EnterLauncherMenu()
+{
+	var c = theLauncher.children[0].children[0];
+	c.theIcons.visible = true;
+	theMemoryMonitor.curDevUnit = 8;
+	c.theIconSelector.curDevUnit = theMemoryMonitor.curDevUnit;
+	c.theIconSelector.isActive = true;
+	if (c.theIconSelector.IsDevUnitReady(theMemoryMonitor.curDevUnit) == false)
+		return;
+	TitleCount = c.theIconSelector.GetTitleCount();
+	var Icon = GetSavedValue("default","LauncherOrbIcon");
+	if (Icon == "Xbox") { DefaultIcon = "xboxicon.bmp"; }
+	else if (Icon == "UIX") { DefaultIcon =  "uixlogo.xbx"; }
+	else { DefaultIcon =  ""; c.theIcons.visible = false; }
+	nPlayScroll0 = 0;
+	nCurLauncherScroll0 = 0;
+	nCurLauncherItem0 = 0;
+	c.TitleText1.text = theTranslator.Translate("Xbox Hard Disk");      //menu title
+	c.MU_Text_refresh.children[0].geometry.text = Translate("REFRESH");
+	c.MU_text_recent.children[0].geometry.text = Translate("RECENT");
+	LoadMenuItems();
+	ShowLauncherMenu();
+	CurrentViewpoint = LauncherViewpoint;
+	CurrentAltViewpoint = theLauncherAlternateViewpoint;
+	LoadRecentTitles();
+	LoadRootContents();
+}
+
+function LoadMenuItems()
+{
+	var c = theLauncher.children[0].children[0];
+	if(nMaxLauncherMenuItems == 0){ nMaxLauncherMenuItems = 8;SetSavedValue("LauncherMenu","MaxLauncherMenuItems",nMaxLauncherMenuItems);}
+	TotalSections = 0;
+	arrMenuNames = new Array;
+	arrMenuPaths = new Array;
+	for (var x = 0; x < 5; x = x + 1)
+	{
+		c.theMenuButtons.children[x].visible = false;
+	}
+	for (var i = 0; i < nMaxLauncherMenuItems; i = i + 1)
+	{
+		var v = Translate(GetSavedValue("LauncherMenu", "Title" + i));
+		if(v != "") 
+		{
+			arrMenuNames[TotalSections] = v;
+			arrMenuPaths[TotalSections] = GetSavedValue("LauncherMenu", "Path" + i);
+			TotalSections = TotalSections + 1;
+		}
+	}
+	arrMenuNames[TotalSections] = Translate("File Browser");
+	arrMenuPaths[TotalSections] = Translate("Xbox Root");
+	TotalSections = TotalSections + 1;
+	if(GetSavedBooleanValue("ShowInSettings","StartFTP") != true)
+	{
+		arrMenuNames[TotalSections] = Translate("Start UIX Toolbox");
+		arrMenuPaths[TotalSections] = Translate("");
+		TotalSections = TotalSections + 1;
+	}
+	if(TotalSections >= 3) { nCurLauncherVisible0 = Math.min(5, TotalSections); } else { nCurLauncherVisible0 = 2; }
+}
+
+function LoadRecentTitles()
+{
+	arrRecentNames = new Array;
+	arrRecentPaths = new Array;
+	MaxRecentTitles = 9;
+	var AllTitles = GetAllTitles();
+	var sAllTitles = AllTitles.join("\n");
+
+	for (var i = 0; i < MaxRecentTitles; i = i + 1)
+	{
+		var v = GetSavedValue("RecentTitles", "Title" + i);
+		if(v != "") 
+		{
+			var arrTemp = Split(v,"|");
+			if(sAllTitles.indexOf(arrTemp[1]) >= 0)
+			{  //If this title is in the cache then add it to the Recent Titles list.
+				arrRecentPaths[arrRecentPaths.length] = arrTemp[0];
+				arrRecentNames[arrRecentNames.length] = arrTemp[1];
+			} 
+		}
+	}
+}
+
+function UpdateRecentTitles(x,y)
+{
+	SetSavedValue("RecentTitles", "Title0", x + "|" + y );
+	var index = 1;
+	for(var i = 0; i < arrRecentNames.length; i = i + 1)
+	{ 
+		if(arrRecentNames[i] != y)
+		{
+			SetSavedValue("RecentTitles", "Title" + index, arrRecentPaths[i] + "|" + arrRecentNames[i] );
+			index = index + 1;
+			if(index == MaxRecentTitles) return;
+		}
+	}
+	while(index < MaxRecentTitles)
+	{   //Ensure the rest of the list is clear
+		SetSavedValue("RecentTitles", "Title" + index, "");
+		index = index + 1;
+	}
+}
+
+//sets up the root menu text etc.
+function UpdateLauncherMenu()
+{
+	var c = theLauncher.children[0].children[0];
+	
+	if (nCurLauncherScroll0 > 0)
+	{
+		c.morearrow_up.visible = true;
+		c.morearrow_up.children[0].appearance.material.name = "NavType";
+	}
+	else
+	{
+		c.morearrow_up.visible = false;
+	}
+	
+	if ((nCurLauncherScroll0 + nCurLauncherVisible0) < TotalSections)
+	{
+		c.morearrow_down.visible = true;
+		c.morearrow_down.children[0].appearance.material.name = "NavType";
+	}
+	else
+	{    
+		c.morearrow_down.visible = false;
+	}
+	
+	for (var i = 0; i < nCurLauncherVisible0; i = i + 1)
+	{
+		var n = nCurLauncherScroll0 + i;
+		var v = arrMenuNames[n];
+		c.theMenuButtons.children[i].visible = true;
+		c.theMenuButtons.children[i].children[1].children[0].geometry.text = v;
+		
+		if (n == nCurLauncherItem0)
+		{
+			c.theMenuButtons.children[i].children[0].appearance.material.name = "GameHilite";
+			c.theMenuButtons.children[i].children[0].appearance.texture.url = "GameHilite_01.bmp";
+			c.theMenuButtons.children[i].children[1].children[0].appearance.name = "HilightedType";
+			c.MenuMetaText.text = v;
+			if(i == 0) c.morearrow_up.children[0].appearance.material.name = "HilightedType";
+			else if(i == 4) c.morearrow_down.children[0].appearance.material.name = "HilightedType";
+		}
+		else
+		{
+			c.theMenuButtons.children[i].children[0].appearance.material.name = "GameHilite";
+			c.theMenuButtons.children[i].children[0].appearance.texture.url = "outline.tga";
+			c.theMenuButtons.children[i].children[1].children[0].appearance.name = "NavType";
+		}
+	}
+	c._button_surround.visible = (TotalSections >= 3);
+	c.New_Line11.visible = (TotalSections >= 3);
+	c._button_surround_0.visible = (TotalSections < 3);
+}
+
+function LaunchItem(x,y)
+{
+	var RelativePath = Split(x,";");
+	var TitleLocation = Split(y,";");
+	var FolderName = TitleLocation[0];
+	var sDrive = DriveLocations[StringToNumber(TitleLocation[1])];
+	if((sDrive != "C:\\" & sDrive != "E:\\" & sDrive != "R:\\") & bHDDInitialized == false) 
+	{  //The title is not on C or E so set the background before continuing.
+		sLocation = x;
+		sFolder = y;
+		bLaunchItem = true;
+		bHDDInitialize = true;
+		return;
+	}
+	
+	launchPath = PartitionLocations[StringToNumber(TitleLocation[1])] + RelativePath[StringToNumber(TitleLocation[2])] + "\\" + FolderName;
+	launchXbe = "default.xbe";
+	
+	if(theConfig.NtFileExists(launchPath + "\\" + launchXbe))
+	{  //We,ve found the title so update the RecentTitles and launch directly.
+		//Bypassing theLaunchGameLevel: on Xbox launch() reboots so the
+		//transition is invisible anyway, on desktop launch() returns and
+		//the engine doesn't tolerate navigating back out of the launch
+		//level (CLevel::Advance crash). Skipping the level keeps the
+		//launcher scene intact for when focus returns.
+		UpdateRecentTitles(x,y);
+		launch(launchXbe, launchPath);
+		return;
+	}
+	
+	//If we've made it here the title was not found. 
+	//This could be due to a stale cache. So, let's refresh the cache and then reload the list.
+	if(theLauncher.children[0].children[0].theWholeThing.visible == false)
+	{
+		theBackground.isBound = true;
+		theLauncher.children[0].children[0].theWholeThing.visible = true;
+		theLauncher.shell.alpha = 1;
+	}
+	RefreshTitleList();
+}
+
+function RefreshTitleList()
+{
+	RefreshCache();
+	LoadRecentTitles();
+	if (bLauncherVisible0 == false & bInBrowser == false)
+	{
+	   if(bInRecentTitles)
+	   {
+		   TempTitleList = arrRecentNames;
+	   }
+	   else
+	   {
+		   TempTitleList = GetTitleList(arrMenuNames[nCurLauncherItem0]);
+	   }
+	   UpdateTrackList(); 
+	}
+}
+
+function GetTitleList(mnuName)
+{
+	CacheFile.section = "Cache";
+	var TitleList = new Array;
+	var TempList = new Array;
+	var i = 1;
+	TempList = Split(CacheFile.GetValue(mnuName),"|");
+	while(TempList.length == 25)
+	{
+		TitleList = TitleList.concat(TempList);
+		TempList = Split(CacheFile.GetValue(mnuName + "-" + i),"|");
+		i = i + 1;
+	}
+	TitleList = TitleList.concat(TempList);
+	return TitleList.sort();
+}
+
+DEF theLauncher Level
+{
+	archive "Music_PlayEdit2.xip"
+	children
+	[
+		Inline
+		{
+			url "Music_PlayEdit2/default2.xap"
+			
+			function onLoad()
+			{
+				
+				var c = theLauncher.children[0].children[0];
+				
+				c.MU_L3_panel_tracklist_overlay.visible = bUseUnderlay;
+				nMaxLauncherMenuItems = StringToNumber(GetSavedValue("LauncherMenu","MaxLauncherMenuItems"));
+				if( thcorb == true ) 
+				{
+					c.MU_L3_musicpod.visible = false;
+					c.MU_L3_musicpod_thc.visible = true; 
+					c.Spinning_Support.children[0].rpm = -1.3;
+					c.Spinning_Support2.children[0].rpm = -0.8;
+					c.Spinning_Support3.children[0].rpm = 1.4;
+					c.Spinning_Support4.children[0].rpm = -1.6;
+				}   
+				else
+				{ 
+					c.MU_L3_musicpod.visible = true;
+					c.MU_L3_musicpod_thc.visible = false; 
+					c.Spinning_Support.children[0].rpm = 0;
+					c.Spinning_Support2.children[0].rpm = 0;
+					c.Spinning_Support3.children[0].rpm = 0;
+					c.Spinning_Support4.children[0].rpm = 0;
+				}
+				var YStart;
+				var YStep;
+				var Y = 0;
+				if(bUseUnderlay)
+				{
+					nPlayVisible0 = 9;
+					YStart = .569;
+					YStep = .162;
+				}
+				else
+				{
+					nPlayVisible0 = 12;
+					YStart = .569;
+					YStep = .118;
+				}
+				for(var i = 0; i < 12; i = i + 1)
+				{
+					var Trans = c.TrackNames.children[i].translation;
+					if(i < nPlayVisible0)
+					{
+						Y = YStart - (i * YStep);
+						c.TrackNames.children[i].SetTranslation(parseTrans(Trans,"X"), Y, parseTrans(Trans,"Z"));
+						c.TrackNames.children[i].visible = true;
+					}
+					else
+					{
+						c.TrackNames.children[i].visible = false;
+						c.TrackNames.children[i].SetTranslation(parseTrans(Trans,"X"), Y, parseTrans(Trans,"Z"));
+					}
+				}
+				EnterLauncherMenu();
+			}
+		}
+	]
+	
+	shell Transform
+	{
+		scale 6.3176 6.3176 6.3176
+		//scale 4.3176 4.3176 4.3176
+		translation -47.220001 55 -204.300003
+		children
+		[
+			DEF theLauncherWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial
+							{
+								name "InnerWall_01"
+							}
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh { url "Inner_cell-FACES.xm" }
+					}
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial
+							{
+								name "InnerWall_02"
+							}
+						}
+						geometry Sphere
+						{
+							radius 1.0
+						}
+					}
+				]
+			}
+		]
+	}
+	
+	tunnel Transform
+	{
+		children
+		[
+			Shape
+			{
+				appearance Appearance { material MaxMaterial { name "Tubes" } }
+				geometry Mesh { url "Music/Tunnel_02-FACES.xm" }
+			}
+		]
+	}
+	
+	path USE LauncherViewpoint
+	
+	control DEF theLauncherJoystick Joystick
+	{
+		function OnADown()
+		{
+			theLauncher.children[0].children[0].MU_select_pod_HL.children[0].appearance.material.param = 1;
+			PlaySoundA();
+			
+			if (bLauncherVisible0)
+			{
+				var mnuName = arrMenuNames[nCurLauncherItem0];
+				if(mnuName == "")
+				{
+					return;
+				}
+				else if(mnuName == Translate("File Browser"))
+				{
+					bInBrowser = true;
+					subTitle0 = mnuName;
+					if(bInRoot)
+					{
+						TempTitleList = RootDirectory;
+						sFileType = new Array(RootDirectory.length);
+					}
+					else
+					{
+						TempTitleList = GetDirectoryContents(arrMenuPaths[nCurLauncherItem0]);
+					}
+					thePlayerPanelIn.Play();
+					StartTitleList();
+				}
+				else if(mnuName == Translate("Start UIX Toolbox"))
+				{
+					launch("Toolbox.xip","\\Device\\Harddisk0\\Partition2\\xboxdashdata.185ead00");
+				}
+				else
+				{
+					CurFillDir = arrMenuPaths[nCurLauncherItem0];
+					subTitle0 = mnuName;
+					TempTitleList = GetTitleList(mnuName);
+					thePlayerPanelIn.Play();
+					StartTitleList();
+				}
+			}
+			else if(bInRecentTitles)
+			{
+				LaunchItem(arrRecentPaths[nPlayCursor0],TempTitleList[nPlayCursor0]);
+			}
+			else if(bInBrowser)
+			{
+				if(sFileType[nPlayCursor0] == "folder" | bInRoot)
+				{
+					if(TempTitleList[nPlayCursor0] == "..")
+					{
+						GoBackDirectory();
+					}
+					else
+					{
+						ChangeDirectory(TempTitleList[nPlayCursor0]);
+					}
+				}
+				else if(sFileType[nPlayCursor0] == "xbe")
+				{
+					if(LeftTrigger & RightTrigger & bInRoot == false)
+					{
+						var sPath = arrMenuPaths[nCurLauncherItem0] + "\\" + TempTitleList[nPlayCursor0];
+						SetSavedValue("QuickLaunch","QuickLaunchA",sPath);
+						TellUser(Translate("ASSIGNED_QUICKLAUNCH") + "A","");
+					}
+					else
+					{
+						ExecuteFile(arrMenuPaths[nCurLauncherItem0] + "\\" + TempTitleList[nPlayCursor0]);
+					}
+				}
+			}
+			else
+			{
+				LaunchItem(CurFillDir,TempTitleList[nPlayCursor0]);
+			}
+		}
+		
+		function OnXDown()
+		{
+			if(bInRecentTitles) return;
+			theLauncher.children[0].children[0].MU_recent_pod_HL.children[0].appearance.material.param = 1;
+			PlaySoundA();
+			if(bInBrowser & bInRoot == false)
+			{
+				if(LeftTrigger & RightTrigger)
+				{
+					if(sFileType[nPlayCursor0] == "xbe")
+					{
+						var sPath = arrMenuPaths[nCurLauncherItem0] + "\\" + TempTitleList[nPlayCursor0];
+						SetSavedValue("QuickLaunch","QuickLaunchX",sPath);
+						TellUser(Translate("ASSIGNED_QUICKLAUNCH") + "X","");
+						return;
+					}
+				} 
+			}            
+			subTitle1 = subTitle0;
+			subTitle0 = Translate("Recent Titles");
+			TempTitleList = arrRecentNames;
+			if(bLauncherVisible0) 
+			{
+				thePlayerPanelIn.Play();
+				StartTitleList(); 
+			} 
+			else 
+			{
+				nPlayScroll1 = nPlayScroll0;
+				nPlayCursor1 = nPlayCursor0;
+				nPlayScroll0 = 0;
+				nPlayCursor0 = 0;
+				bRecentToggled = true;
+				UpdateTrackList(); 
+			}
+			bInRecentTitles = true;
+		}
+		
+		function OnYDown()
+		{
+			theLauncher.children[0].children[0].MU_refresh_pod_HL.children[0].appearance.material.param = 1;
+			PlaySoundA();
+			if(bInBrowser & bInRoot == false)
+			{
+				if(LeftTrigger & RightTrigger)
+				{
+					if(sFileType[nPlayCursor0] == "xbe")
+					{
+						var sPath = arrMenuPaths[nCurLauncherItem0] + "\\" + TempTitleList[nPlayCursor0];
+						SetSavedValue("QuickLaunch","QuickLaunchY",sPath);
+						TellUser(Translate("ASSIGNED_QUICKLAUNCH") + "Y","");
+						return;
+					}
+				} 
+			} 
+			bRefreshCache = true;
+			bHDDInitialize = true;
+		}
+		
+		function OnBDown()
+		{
+			theLauncher.children[0].children[0].MU_back_pod_HL.children[0].appearance.material.param = 1;
+			PlaySoundB();
+			if(bInBrowser & bInRoot == false)
+			{
+				if(LeftTrigger & RightTrigger)
+				{
+					if(sFileType[nPlayCursor0] == "xbe")
+					{
+						var sPath = arrMenuPaths[nCurLauncherItem0] + "\\" + TempTitleList[nPlayCursor0];
+						SetSavedValue("QuickLaunch","QuickLaunchB",sPath);
+						TellUser(Translate("ASSIGNED_QUICKLAUNCH") + "B","");
+						return;
+					}
+				} 
+			}
+			if (bLauncherVisible0)
+			{
+				if(bBackToSettings)
+				{
+					bBackToSettings = false;
+					theSettingsSubMenuOut.Play();
+					GoToSettings();
+				}
+				else
+				{
+					theGamesMenuOut.Play();
+					theMainMenu.GoBackTo();
+				}
+			}
+			else if(bRecentToggled)
+			{
+				if(bInBrowser)
+				{
+					if(bInRoot)
+					{
+						TempTitleList = RootDirectory;
+						sFileType = new Array(RootDirectory.length);
+					}
+					else
+					{
+						TempTitleList = GetDirectoryContents(arrMenuPaths[nCurLauncherItem0]);
+					}
+				}
+				else
+				{
+					TempTitleList = GetTitleList(arrMenuNames[nCurLauncherItem0]);
+				}
+				nPlayScroll0 = nPlayScroll1;
+				nPlayCursor0 = nPlayCursor1;
+				subTitle0 = subTitle1;
+				bInRecentTitles = false;
+				bRecentToggled = false;
+				UpdateTrackList();
+			}
+			else
+			{
+				CurrentViewpoint = LauncherViewpoint;
+				ShowLauncherMenu();
+				thePlayerPanelOut.Play();
+			}
+		}
+		function OnRightDown() { RightTrigger = true; if(bInBrowser == false) OnMoveRight(); }
+		function OnRightUp() { RightTrigger = false; }
+		function OnMoveRight()  
+		{ 
+			if (bLauncherVisible0 == false)
+			{
+				var a = (TempTitleList.length - 1);
+				if (nPlayCursor0 + nPlayVisible0 <= a)
+				{
+					nPlayCursor0 = nPlayCursor0 + nPlayVisible0;
+					nPlayScroll0 = nPlayScroll0 + nPlayVisible0;
+				}
+				else if(nPlayCursor0 == a)
+				{
+					return;
+				} 
+				else if(a - nPlayCursor0 < nPlayVisible0)
+				{
+					nPlayCursor0 = a;
+				}
+				PlaySoundMenuChange();
+				UpdateTrackList();
+			}
+		}
+		function OnLeftDown() { LeftTrigger = true; if(bInBrowser == false) OnMoveLeft(); }
+		function OnLeftUp() { LeftTrigger = false; }
+		function OnMoveLeft()  
+		{  
+			if (bLauncherVisible0 == false)
+			{
+				var a = (TempTitleList.length - 1);
+				if (nPlayCursor0 - nPlayVisible0 >= 0)
+				{
+					nPlayCursor0 = nPlayCursor0 - nPlayVisible0;
+					nPlayScroll0 = nPlayScroll0 - nPlayVisible0;
+				}
+				else if(nPlayCursor0 == 0)
+				{
+					return;
+				} 
+				else if(nPlayCursor0 - nPlayVisible0 < nPlayVisible0)
+				{
+					nPlayCursor0 = 0;
+					nPlayScroll0 = 0;
+				}
+				PlaySoundMenuChange();
+				UpdateTrackList();
+			}
+		}
+		
+		function OnMoveUp()
+		{
+			if (bLauncherVisible0)
+			{
+				if (nCurLauncherItem0 <= 0)
+				{
+					PlaySoundMenuChange();
+					nCurLauncherItem0 = TotalSections - 1;
+					if(TotalSections > 5) nCurLauncherScroll0 = TotalSections - 5; 
+				}
+				else
+				{
+					nCurLauncherItem0 = nCurLauncherItem0 - 1;
+					if(nCurLauncherItem0 < nCurLauncherScroll0) nCurLauncherScroll0 = nCurLauncherItem0; 
+					
+				}
+				PlaySoundMenuChange();
+				UpdateLauncherMenu();
+			}
+			else
+			{
+				var a = (TempTitleList.length - 1);
+				if (nPlayCursor0 <= 0)
+				{
+					nPlayCursor0 = a;
+					if(a > nPlayVisible0) nPlayScroll0 = a - nPlayVisible0;
+				}
+				else
+				{
+					nPlayCursor0 = nPlayCursor0 - 1;
+				}
+				PlaySoundMenuChange();
+				UpdateTrackList();
+			}
+		}
+		
+		function OnMoveDown()
+		{
+			if (bLauncherVisible0)
+			{
+				if (nCurLauncherItem0 == TotalSections - 1)
+				{
+					nCurLauncherScroll0 = 0;
+					nCurLauncherItem0 = 0;
+				}
+				else
+				{
+					nCurLauncherItem0 = nCurLauncherItem0 + 1; 
+					if(nCurLauncherItem0 - nCurLauncherScroll0 >= nCurLauncherVisible0) nCurLauncherScroll0 = nCurLauncherScroll0 + 1; 
+				}
+				PlaySoundMenuChange();
+				UpdateLauncherMenu();
+			}
+			else
+			{
+				var a = (TempTitleList.length - 1);
+				if (nPlayCursor0 == a)
+				{
+					nPlayCursor0 = 0;
+				}
+				else
+				{
+					nPlayCursor0 = nPlayCursor0 + 1;
+				}
+				PlaySoundMenuChange();
+				UpdateTrackList();
+			}
+		}
+	}
+	
+	function OnActivate()
+	{
+		if (children[0].children.length() > 0)
+		{
+			EnterLauncherMenu();
+		}
+	}
+	
+	function OnDeactivate()
+	{
+		theLauncher.children[0].children[0].theIconSelector.isActive = false;
+	}
+}
+
+///// File Browser Functions \\\\\
+var bInBrowser;
+var bInRoot;
+var sFileType;
+var RootDirectory;
+var sDirectory;
+
+function LoadDir()
+{
+	TempTitleList = GetDirectoryContents(sDirectory);
+	UpdateTrackList();
+}
+
+function LoadRootContents()
+{
+	bInRoot = true;
+	sFileType = new Array;
+	RootDirectory = new Array;
+	RootDirectory[RootDirectory.length] = "C";
+	RootDirectory[RootDirectory.length] = "E";
+	var nPartitions = StringToNumber(GetSavedValue("ExtendedPartitions","Partitions"));
+	if(nPartitions & 1) RootDirectory[RootDirectory.length] = "F";
+	if(nPartitions & 2) RootDirectory[RootDirectory.length] = "G";
+	if(nPartitions & 16) RootDirectory[RootDirectory.length] = "R";
+	if(nPartitions & 4) RootDirectory[RootDirectory.length] = "H";
+	if(nPartitions & 8) RootDirectory[RootDirectory.length] = "I";
+}
+
+function ChangeDirectory(x)
+{
+	if(bInRoot)
+	{
+		arrMenuPaths[nCurLauncherItem0] = x + ":";
+		bInRoot = false;
+	}
+	else
+	{
+		arrMenuPaths[nCurLauncherItem0] = arrMenuPaths[nCurLauncherItem0] + "\\" + x;
+	}
+	TempTitleList = GetDirectoryContents(arrMenuPaths[nCurLauncherItem0]);
+	if(TempTitleList.length >= 0) UpdateTrackList();
+}
+
+function GoBackDirectory()
+{
+	var CurPath = arrMenuPaths[nCurLauncherItem0];
+	if(CurPath.lastIndexOf("\\") < 0)
+	{
+		nPlayScroll0 = 0;
+		nPlayCursor0 = 0;
+		bInRoot = true;
+		arrMenuPaths[nCurLauncherItem0] = Translate("Xbox Root");
+		TempTitleList = RootDirectory;
+	}
+	else
+	{
+		arrMenuPaths[nCurLauncherItem0] = CurPath.substr(0,CurPath.lastIndexOf("\\"));
+		TempTitleList = GetDirectoryContents(arrMenuPaths[nCurLauncherItem0]);
+	}
+	UpdateTrackList();
+}
+
+function GetDirectoryContents(x)
+{
+	nPlayScroll0 = 0;
+	nPlayCursor0 = 0;
+	var CurFiles = new Array;
+	var CurDirectoryContents = new Array;
+	var sPath = x.substr(x.indexOf(":"));
+	var sDrive = x.substr(0,x.indexOf(":"));
+	if(bHDDInitialized == false)
+	{
+		if(sDrive.charAt(0) == "F" | sDrive.charAt(0) == "G")
+		{
+			sDirectory = x;
+			bLoadDir = true;
+			bHDDInitialize = true;
+			return;
+		}
+	}
+	var c = new Folder;
+	c.path = GetDrive(sDrive) + sPath;
+	sFileType = new Array;
+	CurDirectoryContents[CurDirectoryContents.length] = "..";
+	sFileType[sFileType.length] = "folder";
+	if(c.subFolders.length() > 0)                   //Add folders if any
+	{
+		for(var i = 0; i < c.subFolders.length(); i = i + 1)
+		{
+			CurDirectoryContents[CurDirectoryContents.length] = c.subFolders[i].name;
+			sFileType[sFileType.length] = "folder";
+		}
+		CurDirectoryContents = CurDirectoryContents.sort();
+	}
+	
+	if(c.files.length() > 0)                        //Get files if any
+	{
+		for(var i = 0; i < c.files.length(); i = i + 1)
+		{
+			CurFiles[CurFiles.length] = c.files[i].name + "." + c.files[i].type;
+		}
+		CurFiles = CurFiles.sort();
+	}
+	for(var i = 0; i < CurFiles.length; i = i + 1)  //Add files to folders
+	{
+		var tempFile = CurFiles[i];
+		CurDirectoryContents[CurDirectoryContents.length] = tempFile;
+		if(tempFile.lastIndexOf(".") < 0)
+		{
+			sFileType[sFileType.length] = "unk";
+		}
+		else
+		{
+			sFileType[sFileType.length] = tempFile.substr(tempFile.lastIndexOf(".") + 1).toLowerCase();
+		}
+	}
+	return CurDirectoryContents;
+}
+
+function GetDrive(x)
+{
+	if(x == "C") return "C";
+	if(x == "E") return "E";
+	if(x == "F") return "F";
+	if(x == "G") return "G";
+	if(x == "E2") return "R";
+	if(x == "F2") return "H";
+	if(x == "G2") return "I";
+}
+
+function PathEllipsis(x,MaxCharacters)
+{
+	var sPath, arrPath, center, a, b, c; 
+	sPath = x;
+	c = sPath.length();
+	while(c > MaxCharacters)
+	{
+		arrPath = Split(sPath,"\\");
+		center = Math.ceil(arrPath.length / 2);
+		a = arrPath.slice(0,center - 1);
+		b = arrPath.slice(center,arrPath.length);
+		sPath = a.join("\\") + "\\" + b.join("\\");
+		c = sPath.length();
+	}
+	return a.join("\\") + "\\...\\" + b.join("\\");
+}

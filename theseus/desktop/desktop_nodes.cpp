@@ -4609,3 +4609,71 @@ START_NODE_FUN(CPlaylistCollection, CNode)
 	NODE_FUN_SI(GetItemTitle)
 	NODE_FUN_VI(PlayFromIndex)
 END_NODE_FUN()
+
+
+// ============================================================================
+// CDisplay -- XAP-callable view over the desktop window's resolution + mode.
+// Same g_windowResolution / g_windowMode the ImGui Settings -> Display tab
+// drives, so changes from either surface stay in sync.
+// ============================================================================
+
+extern int  g_windowResolution;
+extern int  g_windowMode;
+extern bool g_displayChangeRequested;
+extern void SaveDesktopSettings();
+
+class CDisplay : public CNode
+{
+public:
+	CDisplay() {}
+	DECLARE_NODE(CDisplay, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
+
+	int GetResolution() { return g_windowResolution; }
+	int GetMode()       { return g_windowMode; }
+
+	void SetResolution(int n)
+	{
+		if (n != 0 && n != 720 && n != 1080 && n != 1440 && n != 2160) return;
+		if (g_windowResolution == n) return;
+		g_windowResolution = n;
+		g_displayChangeRequested = true;
+		SaveDesktopSettings();
+	}
+
+	void SetMode(int n)
+	{
+		if (n < 0 || n > 2) return;
+		if (g_windowMode == n) return;
+		g_windowMode = n;
+		g_displayChangeRequested = true;
+		SaveDesktopSettings();
+	}
+
+	// Convenience predicates the scene reads to render YES/NO labels.
+	int IsResolution720()  { return g_windowResolution == 720; }
+	int IsResolution1080() { return g_windowResolution == 1080; }
+	int IsResolution1440() { return g_windowResolution == 1440; }
+	int IsResolution2160() { return g_windowResolution == 2160; }
+	int IsFullscreen()     { return g_windowMode != 0; }
+};
+
+IMPLEMENT_NODE("Display", CDisplay, CNode)
+
+START_NODE_PROPS(CDisplay, CNode)
+END_NODE_PROPS()
+
+#undef _FND_CLASS
+#define _FND_CLASS CDisplay
+START_NODE_FUN(CDisplay, CNode)
+	NODE_FUN_IV(GetResolution)
+	NODE_FUN_IV(GetMode)
+	NODE_FUN_VI(SetResolution)
+	NODE_FUN_VI(SetMode)
+	NODE_FUN_IV(IsResolution720)
+	NODE_FUN_IV(IsResolution1080)
+	NODE_FUN_IV(IsResolution1440)
+	NODE_FUN_IV(IsResolution2160)
+	NODE_FUN_IV(IsFullscreen)
+END_NODE_FUN()

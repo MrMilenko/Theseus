@@ -72,6 +72,7 @@ NODE_FUN_VI(SetAutoOff)
 NODE_FUN_IV(GetVideoMode)
 NODE_FUN_VI(SetVideoMode)
 NODE_FUN_VV(ApplySkin)
+NODE_FUN_VV(FlushMeshCache)
 NODE_FUN_IV(GetAudioMode)
 NODE_FUN_VI(SetAudioMode)
 NODE_FUN_IV(GetDolbyDigitalSupport)
@@ -394,7 +395,9 @@ void CConfig::SetAutoOff(int bAutoOff) { XAutoPowerDownSet(bAutoOff); }
 // =========================================================================
 
 extern void ReloadSkin();
+extern void FlushMeshCache();
 void CConfig::ApplySkin() { ReloadSkin(); }
+void CConfig::FlushMeshCache() { ::FlushMeshCache(); }
 
 // =========================================================================
 // Network

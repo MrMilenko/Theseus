@@ -399,6 +399,15 @@ void LoadDesktopSettings() {
         }
         else if (strncmp(line, "Hwdec=", 6) == 0)
             g_hwdec = atoi(line + 6) != 0;
+        else if (strncmp(line, "Resolution=", 11) == 0) {
+            int n = atoi(line + 11);
+            if (n == 0 || n == 720 || n == 1080 || n == 1440 || n == 2160)
+                g_windowResolution = n;
+        }
+        else if (strncmp(line, "DisplayMode=", 12) == 0) {
+            int n = atoi(line + 12);
+            if (n >= 0 && n <= 2) g_windowMode = n;
+        }
     }
     fclose(fp);
 }
@@ -449,6 +458,8 @@ void SaveDesktopSettings() {
     fprintf(fp, "Vsync=%d\n",               g_vsyncMode);
     fprintf(fp, "FpsCap=%d\n",              g_fpsCap);
     fprintf(fp, "Hwdec=%d\n",               g_hwdec ? 1 : 0);
+    fprintf(fp, "Resolution=%d\n",          g_windowResolution);
+    fprintf(fp, "DisplayMode=%d\n",         g_windowMode);
     fprintf(fp, "\n[CRT]\n");
     fprintf(fp, "CRT_Enabled=%d\n", g_crt.enabled ? 1 : 0);
     fprintf(fp, "CRT_Scanlines=%.3f\n", g_crt.scanlineIntensity);
@@ -648,6 +659,13 @@ int  g_fpsCap = 0;
 // Takes effect on next media open; existing mpv handle won't pick it up.
 bool g_hwdec = false;
 
+// Window resolution. 720 / 1080 / 1440 / 2160 = those many vertical pixels at
+// 16:9. 0 = native (use the display's current mode in fullscreen).
+int  g_windowResolution = 720;
+// Display mode. 0=windowed, 1=borderless desktop, 2=exclusive fullscreen.
+int  g_windowMode = 0;
+bool g_displayChangeRequested = false;
+
 // Per-pass timings populated each frame in the main loop. Read by the
 // --graphics-debug overlay. Single-frame ms; FPS is EMA-smoothed.
 double g_perfDrawMs  = 0.0;
@@ -660,6 +678,27 @@ void ApplyVsyncMode() {
     int interval = (g_vsyncMode == 2) ? 0 : (g_vsyncMode == 1) ? 1 : -1;
     if (SDL_GL_SetSwapInterval(interval) != 0 && interval == -1)
         SDL_GL_SetSwapInterval(1);
+}
+
+// Pushes g_windowResolution + g_windowMode at the SDL window. Mode change
+// drops fullscreen first (if set), resizes, then re-applies the new mode.
+void ApplyDisplayMode() {
+    if (!g_pSDLWindow) return;
+
+    SDL_SetWindowFullscreen(g_pSDLWindow, 0);
+
+    if (g_windowResolution > 0) {
+        // 16:9 width derived from vertical pixel count.
+        int h = g_windowResolution;
+        int w = (h * 16) / 9;
+        SDL_SetWindowSize(g_pSDLWindow, w, h);
+        SDL_SetWindowPosition(g_pSDLWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+    }
+
+    Uint32 flags = 0;
+    if (g_windowMode == 1) flags = SDL_WINDOW_FULLSCREEN_DESKTOP;
+    else if (g_windowMode == 2) flags = SDL_WINDOW_FULLSCREEN;
+    if (flags) SDL_SetWindowFullscreen(g_pSDLWindow, flags);
 }
 bool g_scrollToSelected = false; // set true when 3D click selects a node
 // g_bWireframe is the canonical wireframe flag, defined in dashapp.cpp.
@@ -1085,12 +1124,11 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Apply CLI overrides
-    // Exclusive mode bypasses DWM, so AMD Adrenaline (and equivalents)
-    // recognise the process as a fullscreen game and stop compositor-throttling.
-    if (cliFullscreen && g_pSDLWindow) {
-        SDL_SetWindowFullscreen(g_pSDLWindow, SDL_WINDOW_FULLSCREEN);
-    }
+    // Apply CLI overrides. --fullscreen forces exclusive mode (DWM bypass for
+    // AMD Adrenaline / NVIDIA overlay recognition); persisted state wins
+    // otherwise. ApplyDisplayMode handles either path.
+    if (cliFullscreen) g_windowMode = 2;
+    if (g_pSDLWindow) ApplyDisplayMode();
     if (cliUiScale > 0.0f) {
         ImGui::GetIO().FontGlobalScale = cliUiScale;
         fprintf(stderr, "[ui] FontGlobalScale = %.2f\n", cliUiScale);
@@ -1329,10 +1367,12 @@ int main(int argc, char* argv[]) {
                         g_showMenuBar = !g_showMenuBar;
                     }
                     if (event.key.keysym.sym == SDLK_F11) {
-                        // F11: toggle exclusive fullscreen.
-                        Uint32 flags = SDL_GetWindowFlags(g_pSDLWindow);
-                        bool isFs = (flags & SDL_WINDOW_FULLSCREEN) != 0;
-                        SDL_SetWindowFullscreen(g_pSDLWindow, isFs ? 0 : SDL_WINDOW_FULLSCREEN);
+                        // F11: toggle between windowed and exclusive fullscreen
+                        // through the unified display state so the value persists
+                        // and the in-dashboard Settings reflects it.
+                        g_windowMode = (g_windowMode == 2) ? 0 : 2;
+                        g_displayChangeRequested = true;
+                        SaveDesktopSettings();
                     }
                     if (event.key.keysym.sym == SDLK_F12) {
                         // F12: toggle borderless windowed (no title bar /
@@ -1502,6 +1542,11 @@ int main(int argc, char* argv[]) {
         if (g_vsyncChangeRequested) {
             g_vsyncChangeRequested = false;
             ApplyVsyncMode();
+        }
+
+        if (g_displayChangeRequested) {
+            g_displayChangeRequested = false;
+            ApplyDisplayMode();
         }
 
         // Handle MSAA change; recreate GL context with new sample count
