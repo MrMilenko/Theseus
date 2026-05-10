@@ -72,6 +72,7 @@ extern void Launcher_RegisterShell();
 extern void Launcher_RegisterUrl();
 extern void Launcher_RegisterXemu();
 extern void Launcher_RegisterSteam();
+extern void Launcher_RegisterRetroArch();
 
 void Launchers_RegisterAll() {
 	// Order matters only for the implicit registration ordering, not
@@ -79,5 +80,6 @@ void Launchers_RegisterAll() {
 	Launcher_RegisterUrl();
 	Launcher_RegisterXemu();
 	Launcher_RegisterSteam();
+	Launcher_RegisterRetroArch();
 	Launcher_RegisterShell();
 }

@@ -22,6 +22,7 @@
 // empty value is fine and produces an empty substitution.
 extern char s_xemuPath[512];
 extern char s_steamPath[512];
+extern char s_retroarchPath[512];
 extern char g_qcowPath[512];
 extern char g_romsDir[512];
 
@@ -31,16 +32,18 @@ struct VarEntry {
 	const char* (*resolve)();
 };
 
-static const char* ResolveXemuPath()  { return s_xemuPath; }
-static const char* ResolveSteamPath() { return s_steamPath; }
-static const char* ResolveQcowPath()  { return g_qcowPath; }
-static const char* ResolveRomsDir()   { return g_romsDir; }
+static const char* ResolveXemuPath()      { return s_xemuPath; }
+static const char* ResolveSteamPath()     { return s_steamPath; }
+static const char* ResolveRetroArchPath() { return s_retroarchPath; }
+static const char* ResolveQcowPath()      { return g_qcowPath; }
+static const char* ResolveRomsDir()       { return g_romsDir; }
 
 static const VarEntry s_vars[] = {
-	{ "XEMU_PATH",  ResolveXemuPath  },
-	{ "STEAM_PATH", ResolveSteamPath },
-	{ "QCOW_PATH",  ResolveQcowPath  },
-	{ "ROMS_DIR",   ResolveRomsDir   },
+	{ "XEMU_PATH",      ResolveXemuPath      },
+	{ "STEAM_PATH",     ResolveSteamPath     },
+	{ "RETROARCH_PATH", ResolveRetroArchPath },
+	{ "QCOW_PATH",      ResolveQcowPath      },
+	{ "ROMS_DIR",       ResolveRomsDir       },
 };
 
 static bool IsVarChar(char c) {
