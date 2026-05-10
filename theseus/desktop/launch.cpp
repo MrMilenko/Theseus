@@ -110,7 +110,7 @@ static bool Launch_DoSpawn(const char* expanded)
 		si.cb = sizeof(si);
 		PROCESS_INFORMATION pi = {};
 		char cmd[2048];
-		snprintf(cmd, sizeof(cmd), "cmd /S /C \"%s\"", expanded);
+		snprintf(cmd, sizeof(cmd), "cmd /S /C \"\"%s\"\"", expanded);
 		if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
 		                    DETACHED_PROCESS, NULL, NULL, &si, &pi))
 		{
