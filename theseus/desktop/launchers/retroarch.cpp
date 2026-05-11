@@ -112,12 +112,6 @@ bool Build(const char* spec, char* outCmd, size_t outSize) {
 
 	const char* install = s_retroarchPath[0] ? s_retroarchPath : "";
 
-	char exePath[1024];
-	if (install[0])
-		snprintf(exePath, sizeof(exePath), "%s%c%s", install, kPathSep, kRetroArchExe);
-	else
-		snprintf(exePath, sizeof(exePath), "%s", kRetroArchExe);
-
 	char corePath[1024];
 	if (LooksAbsolute(core))
 		snprintf(corePath, sizeof(corePath), "%s", core);
@@ -127,9 +121,24 @@ bool Build(const char* spec, char* outCmd, size_t outSize) {
 	else
 		snprintf(corePath, sizeof(corePath), "cores%c%s", kPathSep, core);
 
+#ifdef __APPLE__
+	// macOS: the cores dir is in ~/Library/Application Support/RetroArch,
+	// but the binary is inside /Applications/RetroArch.app. Launch via
+	// `open -na RetroArch --args ...` so we don't hardcode the bundle path.
 	int n = snprintf(outCmd, outSize,
-	                 "%s -L \"%s\" \"%s\"",
+	                 "open -na RetroArch --args -L \"%s\" \"%s\"",
+	                 corePath, content);
+#else
+	char exePath[1024];
+	if (install[0])
+		snprintf(exePath, sizeof(exePath), "%s%c%s", install, kPathSep, kRetroArchExe);
+	else
+		snprintf(exePath, sizeof(exePath), "%s", kRetroArchExe);
+
+	int n = snprintf(outCmd, outSize,
+	                 "\"%s\" -L \"%s\" \"%s\"",
 	                 exePath, corePath, content);
+#endif
 	return n > 0 && (size_t)n < outSize;
 }
 
