@@ -414,6 +414,54 @@ static bool TM_ParseRetroArchField(const char* launch, const char* key, char* ou
     return true;
 }
 
+// ASCII transliteration of Latin-1 Supplement and Latin Extended-A
+// codepoints. The dashboard's text atlas only renders ASCII glyphs;
+// Steam library entries often carry accented chars that need flattening.
+static void TM_TransliterateUTF8(char* dst, const char* src, int maxLen) {
+    static const struct { unsigned char b1, b2; char repl; } map[] = {
+        {0xC3,0x80,'A'},{0xC3,0x81,'A'},{0xC3,0x82,'A'},{0xC3,0x83,'A'},{0xC3,0x84,'A'},{0xC3,0x85,'A'},
+        {0xC3,0x87,'C'},
+        {0xC3,0x88,'E'},{0xC3,0x89,'E'},{0xC3,0x8A,'E'},{0xC3,0x8B,'E'},
+        {0xC3,0x8C,'I'},{0xC3,0x8D,'I'},{0xC3,0x8E,'I'},{0xC3,0x8F,'I'},
+        {0xC3,0x90,'D'},{0xC3,0x91,'N'},
+        {0xC3,0x92,'O'},{0xC3,0x93,'O'},{0xC3,0x94,'O'},{0xC3,0x95,'O'},{0xC3,0x96,'O'},{0xC3,0x98,'O'},
+        {0xC3,0x99,'U'},{0xC3,0x9A,'U'},{0xC3,0x9B,'U'},{0xC3,0x9C,'U'},
+        {0xC3,0x9D,'Y'},{0xC3,0x9F,'s'},
+        {0xC3,0xA0,'a'},{0xC3,0xA1,'a'},{0xC3,0xA2,'a'},{0xC3,0xA3,'a'},{0xC3,0xA4,'a'},{0xC3,0xA5,'a'},
+        {0xC3,0xA7,'c'},
+        {0xC3,0xA8,'e'},{0xC3,0xA9,'e'},{0xC3,0xAA,'e'},{0xC3,0xAB,'e'},
+        {0xC3,0xAC,'i'},{0xC3,0xAD,'i'},{0xC3,0xAE,'i'},{0xC3,0xAF,'i'},
+        {0xC3,0xB0,'d'},{0xC3,0xB1,'n'},
+        {0xC3,0xB2,'o'},{0xC3,0xB3,'o'},{0xC3,0xB4,'o'},{0xC3,0xB5,'o'},{0xC3,0xB6,'o'},{0xC3,0xB8,'o'},
+        {0xC3,0xB9,'u'},{0xC3,0xBA,'u'},{0xC3,0xBB,'u'},{0xC3,0xBC,'u'},
+        {0xC3,0xBD,'y'},{0xC3,0xBF,'y'},
+    };
+    int di = 0;
+    for (const unsigned char* s = (const unsigned char*)src; *s && di < maxLen - 1; ) {
+        if (*s < 0x80) {
+            dst[di++] = (char)*s++;
+        } else if (s[0] >= 0xC0 && s[0] < 0xE0 && s[1]) {
+            bool found = false;
+            for (int m = 0; m < (int)(sizeof(map)/sizeof(map[0])); m++) {
+                if (s[0] == map[m].b1 && s[1] == map[m].b2) {
+                    dst[di++] = map[m].repl;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) dst[di++] = '?';
+            s += 2;
+        } else if (s[0] >= 0xE0 && s[0] < 0xF0) {
+            dst[di++] = '?'; s += 3;
+        } else if (s[0] >= 0xF0) {
+            dst[di++] = '?'; s += 4;
+        } else {
+            s++;
+        }
+    }
+    dst[di] = 0;
+}
+
 // Read Icons.ini, upsert one name -> titleID mapping, write back.
 // harddrive.xap reads this to route a tile's display name back to the
 // right icon file under Configs/icons/.
@@ -437,6 +485,156 @@ static void TM_RegisterIcon(const char* name, const char* titleID) {
         count++;
     }
     TM_WriteIconsIni(keys, vals, count);
+}
+
+// Try a series of Steam CDN art URLs for an appid, copy the first hit
+// to <VGAMES_ICONS>/<titleID>.jpg, resize to 128px on macOS / Linux.
+// Returns true if an icon ended up on disk.
+static bool TM_DownloadSteamIcon(int appid, const char* titleID) {
+    char iconPath[512];
+    snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", VGAMES_ICONS, titleID);
+    struct stat ist;
+    if (stat(iconPath, &ist) == 0) return true; // already have one
+
+    const char* tryUrls[] = {
+        "logo.png", "icon.jpg", "logo.jpg",
+        "library_icon.jpg", "library_icon.png",
+        "header.jpg",
+        NULL
+    };
+    bool gotIcon = false;
+    for (int u = 0; tryUrls[u] && !gotIcon; u++) {
+        bool isPng = strstr(tryUrls[u], ".png") != NULL;
+        char tmpPath[512], url[512];
+        snprintf(tmpPath, sizeof(tmpPath), "%s/%s_tmp%s",
+                 VGAMES_ICONS, titleID, isPng ? ".png" : ".jpg");
+        snprintf(url, sizeof(url),
+                 "https://cdn.akamai.steamstatic.com/steam/apps/%d/%s",
+                 appid, tryUrls[u]);
+        if (Http_GetToFile(url, tmpPath) && stat(tmpPath, &ist) == 0 && ist.st_size > 1000) {
+#ifdef __APPLE__
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd),
+                "sips -z 128 128 -s format jpeg \"%s\" --out \"%s\" >/dev/null 2>&1",
+                tmpPath, iconPath);
+            bool resizeOk = (system(cmd) == 0);
+#elif defined(_WIN32)
+            bool resizeOk = TM_CopyFile(tmpPath, iconPath);
+#else
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd),
+                "convert \"%s\" -resize 128x128! -quality 90 \"%s\" 2>/dev/null || cp \"%s\" \"%s\"",
+                tmpPath, iconPath, tmpPath, iconPath);
+            bool resizeOk = (system(cmd) == 0);
+#endif
+            if (resizeOk && stat(iconPath, &ist) == 0 && ist.st_size > 500)
+                gotIcon = true;
+        }
+        remove(tmpPath);
+    }
+    if (!gotIcon) remove(iconPath);
+    return gotIcon;
+}
+
+// Walk every installed Steam app (via Steam_DiscoverLibraries +
+// appmanifest_*.acf parsing) and add fresh entries to VGames as
+// steam://rungameid/<id> launches. Returns counts via outparams.
+static void TM_ImportSteamLibrary(const char* steamPath,
+                                   int* outCreated, int* outSkipped, int* outIcons) {
+    if (outCreated) *outCreated = 0;
+    if (outSkipped) *outSkipped = 0;
+    if (outIcons)   *outIcons   = 0;
+
+    struct SteamGame { int appid; char name[256]; };
+    static SteamGame games[256];
+    int gameCount = 0;
+
+    char libDirs[16][512];
+    int libCount = Steam_DiscoverLibraries(steamPath, libDirs, 16);
+
+    auto ParseAppManifest = [&](const char* libDir, const char* fileName) {
+        if (gameCount >= 256) return;
+        if (strncmp(fileName, "appmanifest_", 12) != 0) return;
+        char acfPath[512];
+        snprintf(acfPath, sizeof(acfPath), "%s/%s", libDir, fileName);
+        FILE* acf = fopen(acfPath, "r");
+        if (!acf) return;
+        int appid = 0;
+        char name[256] = {};
+        char acfLine[1024];
+        while (fgets(acfLine, sizeof(acfLine), acf)) {
+            char* aq = strstr(acfLine, "\"appid\"");
+            if (aq) {
+                char* v1 = strchr(aq + 7, '"');
+                if (v1) { char* v2 = strchr(v1 + 1, '"'); if (v2) { *v2 = 0; appid = atoi(v1 + 1); } }
+            }
+            char* nq = strstr(acfLine, "\"name\"");
+            if (nq) {
+                char* v1 = strchr(nq + 6, '"');
+                if (v1) { char* v2 = strchr(v1 + 1, '"'); if (v2) { *v2 = 0; strncpy(name, v1 + 1, 255); } }
+            }
+        }
+        fclose(acf);
+        if (appid > 0 && name[0]) {
+            games[gameCount].appid = appid;
+            TM_TransliterateUTF8(games[gameCount].name, name, 256);
+            gameCount++;
+        }
+    };
+
+    for (int d = 0; d < libCount && gameCount < 256; d++) {
+#ifdef _WIN32
+        char searchBuf[512];
+        snprintf(searchBuf, sizeof(searchBuf), "%s\\appmanifest_*", libDirs[d]);
+        struct _finddata_t fd;
+        intptr_t hFind = _findfirst(searchBuf, &fd);
+        if (hFind != -1) {
+            do { ParseAppManifest(libDirs[d], fd.name); } while (_findnext(hFind, &fd) == 0 && gameCount < 256);
+            _findclose(hFind);
+        }
+#else
+        DIR* dir = opendir(libDirs[d]);
+        if (!dir) continue;
+        struct dirent* ent;
+        while ((ent = readdir(dir)) != NULL && gameCount < 256) {
+            ParseAppManifest(libDirs[d], ent->d_name);
+        }
+        closedir(dir);
+#endif
+    }
+
+    if (gameCount == 0) return;
+
+    TM_EnsureDir(VGAMES_ICONS);
+    int created = 0, skipped = 0, iconsDl = 0;
+
+    for (int i = 0; i < gameCount; i++) {
+        char safeName[256];
+        strncpy(safeName, games[i].name, 255); safeName[255] = 0;
+        TM_SanitizeName(safeName, sizeof(safeName));
+
+        char titleID[16];
+        snprintf(titleID, sizeof(titleID), "%08x", games[i].appid);
+
+        TM_RegisterIcon(safeName, titleID);
+
+        if (VGames_FindByName(safeName) >= 0) { skipped++; continue; }
+
+        char launchCmd[256];
+        snprintf(launchCmd, sizeof(launchCmd), "steam://rungameid/%d", games[i].appid);
+        VGames_Add(safeName, titleID, launchCmd, "E", "Games");
+        created++;
+
+        if (TM_DownloadSteamIcon(games[i].appid, titleID)) iconsDl++;
+    }
+
+    VGames_Save();
+    UDataSynth_RebuildAll();
+    VGames_Reload();
+
+    if (outCreated) *outCreated = created;
+    if (outSkipped) *outSkipped = skipped;
+    if (outIcons)   *outIcons   = iconsDl;
 }
 
 // ============================================================================
@@ -567,14 +765,13 @@ void RenderTitleMaker() {
     ImGui::Separator();
 
     ImGui::BeginTabBar("TMTabs");
-    if (ImGui::BeginTabItem("Games")) {
+    if (ImGui::BeginTabItem("Main")) {
 
     if (ImGui::CollapsingHeader("Optional Tabs")) {
-        if (ImGui::Checkbox("RetroArch", &g_showRetroArchTab)) {
-            SaveDesktopSettings();
-        }
+        if (ImGui::Checkbox("Steam",     &g_showSteamTab))     SaveDesktopSettings();
+        if (ImGui::Checkbox("RetroArch", &g_showRetroArchTab)) SaveDesktopSettings();
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-            "Hiding a tab only hides its authoring UI. Existing entries stay in this list.");
+            "Hiding a tab only hides its authoring UI. Existing entries stay listed in Main.");
     }
 
     // xemu path setting
@@ -623,76 +820,6 @@ void RenderTitleMaker() {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "Set xemu path to enable ISO launching");
     }
 
-    // Steam install path setting
-    {
-        ImGui::Text("Steam:");
-        ImGui::SameLine();
-        // [Save][Find][Browse] + gaps + right margin.
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 220);
-        ImGui::InputText("##steampath", s_steamPath, sizeof(s_steamPath));
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Save##steam")) {
-            SaveDesktopSettings();
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Find##steam")) {
-            const char* user = NULL;
-#ifdef _WIN32
-            user = getenv("USERNAME");
-#else
-            user = getenv("USER");
-#endif
-            if (!user) user = "user";
-
-            char buf[512];
-            const char* tryRoots[] = {
-#ifdef __APPLE__
-                "/Users/%s/Library/Application Support/Steam",
-#elif defined(_WIN32)
-                "C:\\Program Files (x86)\\Steam",
-                "C:\\Program Files\\Steam",
-                "D:\\Steam",
-                "D:\\Program Files (x86)\\Steam",
-                "E:\\Steam",
-                "E:\\SteamLibrary",
-#else
-                "/home/%s/.steam/steam",
-                "/home/%s/.local/share/Steam",
-#endif
-                NULL
-            };
-            bool found = false;
-            for (int i = 0; tryRoots[i] && !found; i++) {
-                snprintf(buf, sizeof(buf), tryRoots[i], user);
-                struct stat st;
-                if (stat(buf, &st) == 0) {
-                    strncpy(s_steamPath, buf, sizeof(s_steamPath) - 1);
-                    s_steamPath[sizeof(s_steamPath) - 1] = 0;
-                    found = true;
-                }
-            }
-            if (!found) {
-                strncpy(s_statusMsg, "Steam not found in common locations; use Browse",
-                        sizeof(s_statusMsg) - 1);
-                s_statusTime = 3.0f;
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("Browse##steam")) {
-            if (s_steamPath[0]) s_steamBrowser.SetPwd(s_steamPath);
-            s_steamBrowser.Open();
-        }
-        s_steamBrowser.Display();
-        if (s_steamBrowser.HasSelected()) {
-            std::string sel = s_steamBrowser.GetSelected().string();
-            strncpy(s_steamPath, sel.c_str(), sizeof(s_steamPath) - 1);
-            s_steamPath[sizeof(s_steamPath) - 1] = 0;
-            s_steamBrowser.ClearSelected();
-        }
-        if (s_steamPath[0] == 0)
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
-                "Optional; leave blank to auto-detect Steam at import time");
-    }
     ImGui::Separator();
 
     // Search and category filter
@@ -1111,233 +1238,6 @@ void RenderTitleMaker() {
         }
     }
 
-    // Transliterate helper for Steam import
-    auto TransliterateUTF8 = [](char* dst, const char* src, int maxLen) {
-        // Map of 2-byte UTF-8 sequences (Latin-1 Supplement / Latin Extended-A) to ASCII
-        // Format: { byte1, byte2, replacement char }
-        static const struct { unsigned char b1, b2; char repl; } map[] = {
-            {0xC3,0x80,'A'},{0xC3,0x81,'A'},{0xC3,0x82,'A'},{0xC3,0x83,'A'},{0xC3,0x84,'A'},{0xC3,0x85,'A'},
-            {0xC3,0x87,'C'},
-            {0xC3,0x88,'E'},{0xC3,0x89,'E'},{0xC3,0x8A,'E'},{0xC3,0x8B,'E'},
-            {0xC3,0x8C,'I'},{0xC3,0x8D,'I'},{0xC3,0x8E,'I'},{0xC3,0x8F,'I'},
-            {0xC3,0x90,'D'},{0xC3,0x91,'N'},
-            {0xC3,0x92,'O'},{0xC3,0x93,'O'},{0xC3,0x94,'O'},{0xC3,0x95,'O'},{0xC3,0x96,'O'},{0xC3,0x98,'O'},
-            {0xC3,0x99,'U'},{0xC3,0x9A,'U'},{0xC3,0x9B,'U'},{0xC3,0x9C,'U'},
-            {0xC3,0x9D,'Y'},{0xC3,0x9F,'s'},
-            {0xC3,0xA0,'a'},{0xC3,0xA1,'a'},{0xC3,0xA2,'a'},{0xC3,0xA3,'a'},{0xC3,0xA4,'a'},{0xC3,0xA5,'a'},
-            {0xC3,0xA7,'c'},
-            {0xC3,0xA8,'e'},{0xC3,0xA9,'e'},{0xC3,0xAA,'e'},{0xC3,0xAB,'e'},
-            {0xC3,0xAC,'i'},{0xC3,0xAD,'i'},{0xC3,0xAE,'i'},{0xC3,0xAF,'i'},
-            {0xC3,0xB0,'d'},{0xC3,0xB1,'n'},
-            {0xC3,0xB2,'o'},{0xC3,0xB3,'o'},{0xC3,0xB4,'o'},{0xC3,0xB5,'o'},{0xC3,0xB6,'o'},{0xC3,0xB8,'o'},
-            {0xC3,0xB9,'u'},{0xC3,0xBA,'u'},{0xC3,0xBB,'u'},{0xC3,0xBC,'u'},
-            {0xC3,0xBD,'y'},{0xC3,0xBF,'y'},
-        };
-        int di = 0;
-        for (const unsigned char* s = (const unsigned char*)src; *s && di < maxLen - 1; ) {
-            if (*s < 0x80) {
-                dst[di++] = (char)*s++;
-            } else if (s[0] >= 0xC0 && s[0] < 0xE0 && s[1]) {
-                // 2-byte UTF-8: check transliteration map.
-                bool found = false;
-                for (int m = 0; m < (int)(sizeof(map)/sizeof(map[0])); m++) {
-                    if (s[0] == map[m].b1 && s[1] == map[m].b2) {
-                        dst[di++] = map[m].repl;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) dst[di++] = '?';
-                s += 2;
-            } else if (s[0] >= 0xE0 && s[0] < 0xF0) {
-                dst[di++] = '?'; s += 3; // 3-byte UTF-8 (CJK, etc.)
-            } else if (s[0] >= 0xF0) {
-                dst[di++] = '?'; s += 4; // 4-byte UTF-8 (emoji, etc.)
-            } else {
-                s++; // skip invalid continuation bytes
-            }
-        }
-        dst[di] = 0;
-    };
-
-    // Import Steam Library
-    ImGui::SameLine();
-    if (ImGui::Button("Import Steam")) {
-        struct SteamGame { int appid; char name[256]; };
-        SteamGame games[256];
-        int gameCount = 0;
-
-        // Library discovery delegated to the Steam launcher module so
-        // path detection (Flatpak, Debian's steam-installer, Steam
-        // Deck, Windows registry, custom drives via libraryfolders.vdf)
-        // lives in one place. Title Maker just iterates the result.
-        char libDirs[16][512];
-        int libCount = Steam_DiscoverLibraries(s_steamPath, libDirs, 16);
-
-        auto ParseAppManifest = [&](const char* libDir, const char* fileName) {
-            if (gameCount >= 256) return;
-            if (strncmp(fileName, "appmanifest_", 12) != 0) return;
-            char acfPath[512];
-            snprintf(acfPath, sizeof(acfPath), "%s/%s", libDir, fileName);
-            FILE* acf = fopen(acfPath, "r");
-            if (!acf) return;
-            int appid = 0;
-            char name[256] = {};
-            char acfLine[1024];
-            while (fgets(acfLine, sizeof(acfLine), acf)) {
-                char* aq = strstr(acfLine, "\"appid\"");
-                if (aq) {
-                    char* v1 = strchr(aq + 7, '"');
-                    if (v1) { char* v2 = strchr(v1 + 1, '"'); if (v2) { *v2 = 0; appid = atoi(v1 + 1); } }
-                }
-                char* nq = strstr(acfLine, "\"name\"");
-                if (nq) {
-                    char* v1 = strchr(nq + 6, '"');
-                    if (v1) { char* v2 = strchr(v1 + 1, '"'); if (v2) { *v2 = 0; strncpy(name, v1 + 1, 255); } }
-                }
-            }
-            fclose(acf);
-            if (appid > 0 && name[0]) {
-                games[gameCount].appid = appid;
-                TransliterateUTF8(games[gameCount].name, name, 256);
-                gameCount++;
-            }
-        };
-
-        for (int d = 0; d < libCount && gameCount < 256; d++) {
-#ifdef _WIN32
-            char searchBuf[512];
-            snprintf(searchBuf, sizeof(searchBuf), "%s\\appmanifest_*", libDirs[d]);
-            struct _finddata_t fd;
-            intptr_t hFind = _findfirst(searchBuf, &fd);
-            if (hFind != -1) {
-                do { ParseAppManifest(libDirs[d], fd.name); } while (_findnext(hFind, &fd) == 0 && gameCount < 256);
-                _findclose(hFind);
-            }
-#else
-            DIR* dir = opendir(libDirs[d]);
-            if (!dir) continue;
-            struct dirent* ent;
-            while ((ent = readdir(dir)) != NULL && gameCount < 256) {
-                ParseAppManifest(libDirs[d], ent->d_name);
-            }
-            closedir(dir);
-#endif
-        }
-
-        if (gameCount == 0) {
-            snprintf(s_statusMsg, sizeof(s_statusMsg), "No Steam games found");
-            s_statusTime = 3.0f;
-        } else {
-            int created = 0, skipped = 0, iconsDl = 0;
-
-            TM_EnsureDir(VGAMES_ICONS);
-
-            // Read existing Icons.ini so we can extend it with the names we
-            // create here. harddrive.xap reads this file to map displayed
-            // title names back to TitleIDs for icon lookup; without it, the
-            // imported titles render with no icon even though the .jpg file
-            // is sitting in Configs/icons/.
-            static char iconKeys[TM_MAX_ICONS][128];
-            static char iconVals[TM_MAX_ICONS][128];
-            int iconCount = TM_ReadIconsIni(iconKeys, iconVals);
-
-            for (int i = 0; i < gameCount; i++) {
-                char safeName[256];
-                strncpy(safeName, games[i].name, 255); safeName[255] = 0;
-                TM_SanitizeName(safeName, sizeof(safeName));
-
-                char titleID[16];
-                snprintf(titleID, sizeof(titleID), "%08x", games[i].appid);
-
-                // Mirror the Name->TitleID mapping into the Icons.ini buffer.
-                // Done unconditionally so re-running the import backfills the
-                // mapping for entries we'd otherwise skip via FindByName.
-                {
-                    bool found = false;
-                    for (int k = 0; k < iconCount; k++) {
-                        if (strcasecmp(iconKeys[k], safeName) == 0) {
-                            strncpy(iconVals[k], titleID, 127);
-                            iconVals[k][127] = 0;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if (!found && iconCount < TM_MAX_ICONS) {
-                        strncpy(iconKeys[iconCount], safeName, 127);
-                        iconKeys[iconCount][127] = 0;
-                        strncpy(iconVals[iconCount], titleID, 127);
-                        iconVals[iconCount][127] = 0;
-                        iconCount++;
-                    }
-                }
-
-                if (VGames_FindByName(safeName) >= 0) { skipped++; continue; }
-
-                char launchCmd[256];
-                snprintf(launchCmd, sizeof(launchCmd), "steam://rungameid/%d", games[i].appid);
-                VGames_Add(safeName, titleID, launchCmd, "E", "Games");
-                created++;
-
-                // Download icon from Steam CDN
-                char iconPath[512];
-                snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", VGAMES_ICONS, titleID);
-                struct stat ist;
-                if (stat(iconPath, &ist) != 0) {
-                    char tmpPath[512];
-                    bool gotIcon = false;
-
-                    const char* tryUrls[] = {
-                        "logo.png", "icon.jpg", "logo.jpg",
-                        "library_icon.jpg", "library_icon.png",
-                        "header.jpg",
-                        NULL
-                    };
-                    for (int u = 0; tryUrls[u] && !gotIcon; u++) {
-                        bool isPng = strstr(tryUrls[u], ".png") != NULL;
-                        char url[512];
-                        snprintf(tmpPath, sizeof(tmpPath), "%s/%s_tmp%s", VGAMES_ICONS, titleID, isPng ? ".png" : ".jpg");
-                        snprintf(url, sizeof(url),
-                            "https://cdn.akamai.steamstatic.com/steam/apps/%d/%s",
-                            games[i].appid, tryUrls[u]);
-                        if (Http_GetToFile(url, tmpPath) && stat(tmpPath, &ist) == 0 && ist.st_size > 1000) {
-#ifdef __APPLE__
-                            // sips ships with macOS, resize to 128x128.
-                            char cmd[1024];
-                            snprintf(cmd, sizeof(cmd),
-                                "sips -z 128 128 -s format jpeg \"%s\" --out \"%s\" >/dev/null 2>&1", tmpPath, iconPath);
-                            bool resizeOk = (system(cmd) == 0);
-#elif defined(_WIN32)
-                            // No resize. CDN art is close to 128 and we scale at draw.
-                            // stdio copy avoids a cmd.exe console flash.
-                            bool resizeOk = TM_CopyFile(tmpPath, iconPath);
-#else
-                            // convert if installed, else cp.
-                            char cmd[1024];
-                            snprintf(cmd, sizeof(cmd),
-                                "convert \"%s\" -resize 128x128! -quality 90 \"%s\" 2>/dev/null || cp \"%s\" \"%s\"", tmpPath, iconPath, tmpPath, iconPath);
-                            bool resizeOk = (system(cmd) == 0);
-#endif
-                            if (resizeOk && stat(iconPath, &ist) == 0 && ist.st_size > 500)
-                                gotIcon = true;
-                        }
-                        remove(tmpPath);
-                    }
-
-                    if (gotIcon) iconsDl++;
-                    else remove(iconPath);
-                }
-            }
-
-            VGames_Save(); UDataSynth_RebuildAll();
-            VGames_Reload();
-            TM_WriteIconsIni(iconKeys, iconVals, iconCount);
-
-            snprintf(s_statusMsg, sizeof(s_statusMsg), "Imported %d new, %d existing, %d icons", created, skipped, iconsDl);
-            s_statusTime = 5.0f;
-            s_needsScan = true;
-        }
-    }
 
     // Bulk-cleanup button: re-runs Title_SanitizeName over every existing
     // games.ini entry. Useful for libraries imported before the sanitize
@@ -1402,7 +1302,369 @@ void RenderTitleMaker() {
     }
 
     ImGui::EndTabItem();
-    } // Games tab
+    } // Main tab
+
+    if (g_showSteamTab && ImGui::BeginTabItem("Steam")) {
+        // Header: tinted logo on left, project info on right.
+        {
+            static GLuint s_stLogoTex = 0;
+            static int s_stLogoW = 0, s_stLogoH = 0;
+            static bool s_stLogoTried = false;
+            if (!s_stLogoTried) {
+                s_stLogoTried = true;
+                int w = 0, h = 0, ch = 0;
+                unsigned char* pixels = stbi_load("Configs/steamlogo.png", &w, &h, &ch, 4);
+                if (pixels) {
+                    glGenTextures(1, &s_stLogoTex);
+                    glBindTexture(GL_TEXTURE_2D, s_stLogoTex);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
+                                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                    stbi_image_free(pixels);
+                    s_stLogoW = w;
+                    s_stLogoH = h;
+                }
+            }
+            float headerH = 64.0f;
+            if (s_stLogoTex && s_stLogoH > 0) {
+                float scale = headerH / (float)s_stLogoH;
+                float logoDisplayW = (float)s_stLogoW * scale;
+                ImGui::Image((ImTextureID)(intptr_t)s_stLogoTex,
+                             ImVec2(logoDisplayW, headerH),
+                             ImVec2(0, 0), ImVec2(1, 1),
+                             ImVec4(0.4f, 1.0f, 0.4f, 1.0f));
+                ImGui::SameLine();
+            }
+            ImGui::BeginGroup();
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Steam");
+            ImGui::Text("Your installed games, imported and launched via steam:// URLs.");
+            ImGui::TextColored(ImVec4(0.5f, 0.8f, 0.5f, 1.0f), "https://store.steampowered.com");
+            if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (ImGui::IsItemClicked()) TM_OpenUrl("https://store.steampowered.com");
+            ImGui::EndGroup();
+        }
+        ImGui::Separator();
+
+        // Install path
+        {
+            ImGui::Text("Install:");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 220);
+            ImGui::InputText("##stpath", s_steamPath, sizeof(s_steamPath));
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Save##st")) {
+                SaveDesktopSettings();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Find##st")) {
+                const char* user = NULL;
+#ifdef _WIN32
+                user = getenv("USERNAME");
+#else
+                user = getenv("USER");
+#endif
+                if (!user) user = "user";
+                char buf[512];
+                const char* tryRoots[] = {
+#ifdef __APPLE__
+                    "/Users/%s/Library/Application Support/Steam",
+#elif defined(_WIN32)
+                    "C:\\Program Files (x86)\\Steam",
+                    "C:\\Program Files\\Steam",
+                    "D:\\Steam",
+                    "D:\\Program Files (x86)\\Steam",
+                    "E:\\Steam",
+                    "E:\\SteamLibrary",
+#else
+                    "/home/%s/.steam/steam",
+                    "/home/%s/.local/share/Steam",
+                    "/home/%s/.var/app/com.valvesoftware.Steam/data/Steam",
+#endif
+                    NULL
+                };
+                bool found = false;
+                for (int i = 0; tryRoots[i] && !found; i++) {
+                    snprintf(buf, sizeof(buf), tryRoots[i], user);
+                    struct stat st;
+                    if (stat(buf, &st) == 0) {
+                        strncpy(s_steamPath, buf, sizeof(s_steamPath) - 1);
+                        s_steamPath[sizeof(s_steamPath) - 1] = 0;
+                        found = true;
+                    }
+                }
+                if (!found) {
+                    snprintf(s_statusMsg, sizeof(s_statusMsg),
+                             "Steam not found in common locations; use Browse");
+                    s_statusTime = 3.0f;
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Browse##st")) {
+                if (s_steamPath[0]) s_steamBrowser.SetPwd(s_steamPath);
+                s_steamBrowser.Open();
+            }
+            s_steamBrowser.Display();
+            if (s_steamBrowser.HasSelected()) {
+                std::string sel = s_steamBrowser.GetSelected().string();
+                strncpy(s_steamPath, sel.c_str(), sizeof(s_steamPath) - 1);
+                s_steamPath[sizeof(s_steamPath) - 1] = 0;
+                s_steamBrowser.ClearSelected();
+            }
+            if (s_steamPath[0] == 0)
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                    "Optional; leave blank to auto-detect Steam at import time");
+        }
+        ImGui::Separator();
+
+        // State for the Add Game by App ID form + details panel
+        static char s_stTitle[128] = "";
+        static char s_stAppID[16]  = "";
+        static int  s_stSelectedVi = -1;
+        static GLuint s_stDetailsTex = 0;
+        static char s_stDetailsTexPath[600] = "";
+        static int  s_stDetailsTexW = 0, s_stDetailsTexH = 0;
+        static ImGui::FileBrowser s_stIconBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
+        static bool s_stIconBrowserInit = false;
+        if (!s_stIconBrowserInit) {
+            s_stIconBrowser.SetTitle("Select icon image");
+            s_stIconBrowser.SetTypeFilters({ ".jpg", ".jpeg", ".png", ".bmp", ".JPG", ".PNG" });
+            s_stIconBrowserInit = true;
+        }
+
+        if (s_stSelectedVi >= 0 &&
+            (s_stSelectedVi >= g_vgames.count || !g_vgames.games[s_stSelectedVi].valid))
+            s_stSelectedVi = -1;
+
+        const float kSFormPanelH = 200.0f;
+        ImGui::BeginChild("##stform", ImVec2(380, kSFormPanelH), false);
+
+        ImGui::Text("Add Game by App ID");
+
+        ImGui::Text("Title:");
+        ImGui::SameLine(80);
+        ImGui::SetNextItemWidth(300);
+        ImGui::InputText("##sttitle", s_stTitle, sizeof(s_stTitle));
+
+        ImGui::Text("AppID:");
+        ImGui::SameLine(80);
+        ImGui::SetNextItemWidth(160);
+        ImGui::InputText("##stappid", s_stAppID, sizeof(s_stAppID),
+                         ImGuiInputTextFlags_CharsDecimal);
+
+        ImGui::Spacing();
+        int appidNum = atoi(s_stAppID);
+        bool canAdd = s_stTitle[0] && appidNum > 0;
+        if (!canAdd) ImGui::BeginDisabled();
+        if (ImGui::Button("Add to Library")) {
+            char launch[256];
+            snprintf(launch, sizeof(launch), "steam://rungameid/%d", appidNum);
+            char genID[16];
+            snprintf(genID, sizeof(genID), "%08x", (unsigned)appidNum);
+            extern int Title_SanitizeName(const char*, char*, size_t);
+            char cleanName[128];
+            Title_SanitizeName(s_stTitle, cleanName, sizeof(cleanName));
+            if (!cleanName[0]) {
+                snprintf(s_statusMsg, sizeof(s_statusMsg),
+                         "Title sanitizes to empty, pick another");
+                s_statusTime = 4.0f;
+            } else {
+                VGames_Add(cleanName, genID, launch, "E", "Games");
+                TM_RegisterIcon(cleanName, genID);
+                bool gotIcon = TM_DownloadSteamIcon(appidNum, genID);
+                VGames_Save();
+                UDataSynth_RebuildAll();
+                snprintf(s_statusMsg, sizeof(s_statusMsg),
+                         "Added: %s (%s)", cleanName,
+                         gotIcon ? "with icon" : "no icon found");
+                s_statusTime = 3.0f;
+                s_stTitle[0] = 0;
+                s_stAppID[0] = 0;
+                s_needsScan = true;
+            }
+        }
+        if (!canAdd) ImGui::EndDisabled();
+
+        ImGui::SameLine();
+        bool canImport = s_steamPath[0] != 0;
+        if (!canImport) ImGui::BeginDisabled();
+        if (ImGui::Button("Import Steam Library")) {
+            int created = 0, skipped = 0, iconsDl = 0;
+            TM_ImportSteamLibrary(s_steamPath, &created, &skipped, &iconsDl);
+            s_needsScan = true;
+            snprintf(s_statusMsg, sizeof(s_statusMsg),
+                     "Imported %d new, %d existing, %d icons",
+                     created, skipped, iconsDl);
+            s_statusTime = 5.0f;
+        }
+        if (!canImport) ImGui::EndDisabled();
+
+        ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("##stdetails", ImVec2(0, kSFormPanelH), true);
+
+        if (s_stSelectedVi < 0) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                "Select an entry below to view details.");
+        } else {
+            VirtualGame& g = g_vgames.games[s_stSelectedVi];
+            char iconPng[600], iconJpg[600];
+            snprintf(iconPng, sizeof(iconPng), "Configs/icons/%s.png", g.titleID);
+            snprintf(iconJpg, sizeof(iconJpg), "Configs/icons/%s.jpg", g.titleID);
+            struct stat st;
+            const char* iconPath = (stat(iconJpg, &st) == 0) ? iconJpg
+                                 : (stat(iconPng, &st) == 0) ? iconPng : 0;
+
+            if (iconPath && strcmp(iconPath, s_stDetailsTexPath) != 0) {
+                if (s_stDetailsTex) { glDeleteTextures(1, &s_stDetailsTex); s_stDetailsTex = 0; }
+                int w = 0, h = 0, ch = 0;
+                unsigned char* pixels = stbi_load(iconPath, &w, &h, &ch, 4);
+                if (pixels) {
+                    glGenTextures(1, &s_stDetailsTex);
+                    glBindTexture(GL_TEXTURE_2D, s_stDetailsTex);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                    stbi_image_free(pixels);
+                    s_stDetailsTexW = w;
+                    s_stDetailsTexH = h;
+                }
+                strncpy(s_stDetailsTexPath, iconPath, sizeof(s_stDetailsTexPath) - 1);
+                s_stDetailsTexPath[sizeof(s_stDetailsTexPath) - 1] = 0;
+            } else if (!iconPath) {
+                if (s_stDetailsTex) { glDeleteTextures(1, &s_stDetailsTex); s_stDetailsTex = 0; }
+                s_stDetailsTexPath[0] = 0;
+            }
+
+            if (s_stDetailsTex) {
+                float maxSide = 128.0f;
+                float aspect = s_stDetailsTexH > 0
+                    ? (float)s_stDetailsTexW / (float)s_stDetailsTexH : 1.0f;
+                float dispW = (aspect >= 1.0f) ? maxSide : maxSide * aspect;
+                float dispH = (aspect >= 1.0f) ? maxSide / aspect : maxSide;
+                ImGui::Image((ImTextureID)(intptr_t)s_stDetailsTex, ImVec2(dispW, dispH));
+            } else {
+                ImGui::Dummy(ImVec2(128, 128));
+            }
+            ImGui::SameLine();
+            ImGui::BeginGroup();
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%s", g.name);
+
+            int appid = 0;
+            const char* rg = strstr(g.launch, "rungameid/");
+            if (rg) appid = atoi(rg + 10);
+            ImGui::Text("App ID: %d", appid);
+            ImGui::Spacing();
+
+            if (ImGui::Button("Open Store Page") && appid > 0) {
+                char url[64];
+                snprintf(url, sizeof(url), "steam://store/%d", appid);
+                TM_OpenUrl(url);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Change Icon...")) {
+                s_stIconBrowser.Open();
+            }
+            ImGui::EndGroup();
+        }
+        s_stIconBrowser.Display();
+        if (s_stIconBrowser.HasSelected() && s_stSelectedVi >= 0) {
+            std::string src = s_stIconBrowser.GetSelected().string();
+            s_stIconBrowser.ClearSelected();
+            const char* titleID = g_vgames.games[s_stSelectedVi].titleID;
+            const char* ext = strrchr(src.c_str(), '.');
+            bool isPng = ext && (strcasecmp(ext, ".png") == 0);
+            TM_EnsureDir(VGAMES_ICONS);
+            char dst[600];
+            snprintf(dst, sizeof(dst), "%s/%s.%s",
+                     VGAMES_ICONS, titleID, isPng ? "png" : "jpg");
+            char other[600];
+            snprintf(other, sizeof(other), "%s/%s.%s",
+                     VGAMES_ICONS, titleID, isPng ? "jpg" : "png");
+            remove(other);
+            if (TM_CopyFile(src.c_str(), dst)) {
+                s_stDetailsTexPath[0] = 0;
+                snprintf(s_statusMsg, sizeof(s_statusMsg), "Icon updated: %s", dst);
+                s_statusTime = 3.0f;
+            }
+        }
+
+        ImGui::EndChild();
+        ImGui::Separator();
+
+        // Library list: every VGames entry whose launch URL is a
+        // steam:// spec.
+        {
+            int matchIdx[TM_MAX_ENTRIES];
+            int matchCount = 0;
+            for (int i = 0; i < g_vgames.count && matchCount < TM_MAX_ENTRIES; i++) {
+                if (!g_vgames.games[i].valid) continue;
+                if (strncmp(g_vgames.games[i].launch, "steam://", 8) != 0) continue;
+                matchIdx[matchCount++] = i;
+            }
+
+            ImGui::Text("Steam Library (%d)", matchCount);
+
+            ImGuiTableFlags tflags =
+                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
+            if (ImGui::BeginTable("##stlib", 3, tflags, ImVec2(0, 0))) {
+                ImGui::TableSetupScrollFreeze(0, 1);
+                ImGui::TableSetupColumn("Title",  ImGuiTableColumnFlags_WidthStretch, 0.70f);
+                ImGui::TableSetupColumn("App ID", ImGuiTableColumnFlags_WidthFixed,   80.0f);
+                ImGui::TableSetupColumn("",       ImGuiTableColumnFlags_WidthFixed,   28.0f);
+                ImGui::TableHeadersRow();
+
+                int pendingDelete = -1;
+                for (int r = 0; r < matchCount; r++) {
+                    int vi = matchIdx[r];
+                    VirtualGame& g = g_vgames.games[vi];
+                    int appid = 0;
+                    const char* rg = strstr(g.launch, "rungameid/");
+                    if (rg) appid = atoi(rg + 10);
+
+                    ImGui::TableNextRow(0, ImGui::GetFrameHeight());
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::PushID(r + 30000);
+                    bool selected = (s_stSelectedVi == vi);
+                    if (ImGui::Selectable(g.name, selected,
+                            ImGuiSelectableFlags_SpanAllColumns |
+                            ImGuiSelectableFlags_AllowItemOverlap)) {
+                        s_stSelectedVi = selected ? -1 : vi;
+                        s_stDetailsTexPath[0] = 0;
+                    }
+                    ImGui::PopID();
+
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::Text("%d", appid);
+
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::PushID(r + 40000);
+                    if (ImGui::SmallButton("X")) pendingDelete = vi;
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Remove %s", g.name);
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+
+                if (pendingDelete >= 0) {
+                    char name[128];
+                    strncpy(name, g_vgames.games[pendingDelete].name, sizeof(name) - 1);
+                    name[sizeof(name) - 1] = 0;
+                    VGames_DeleteByName(name);
+                    VGames_Save();
+                    UDataSynth_RebuildAll();
+                    s_needsScan = true;
+                    snprintf(s_statusMsg, sizeof(s_statusMsg), "Removed: %s", name);
+                    s_statusTime = 3.0f;
+                }
+            }
+        }
+
+        ImGui::EndTabItem();
+    } // Steam tab
 
     if (g_showRetroArchTab && ImGui::BeginTabItem("RetroArch")) {
         // Header: tinted logo on left, project info on right.
