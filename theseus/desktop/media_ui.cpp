@@ -18,7 +18,12 @@
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl3.h>
 #elif defined(_WIN32)
+#ifdef THESEUS_USE_BGFX
+#include <windows.h>
+#include <GL/gl.h>
+#else
 #include <GL/glew.h>
+#endif
 #else
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
@@ -143,6 +148,7 @@ void MediaUI_DrawFullscreenVideo()
 {
     // Pick destination size based on the actually-bound framebuffer.
     int ww = 1280, wh = 720;
+#ifndef THESEUS_USE_BGFX
     GLint boundFBO = 0;
     glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &boundFBO);
     if (boundFBO != 0) {
@@ -167,6 +173,13 @@ void MediaUI_DrawFullscreenVideo()
     glViewport(0, 0, ww, wh);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+#else
+    int boundFBO = 0; // unused under BGFX
+    if (g_pSDLWindow) SDL_GetWindowSize(g_pSDLWindow, &ww, &wh);
+    // bgfx view 0 owns presentation; MediaPlayer_RenderToScreen
+    // submits the fullscreen quad into view 0 directly. The clear is
+    // configured on view 0 by the dashboard's Clear() shim.
+#endif
 
     // Blit the video frame into whatever framebuffer is currently bound
     // (the CRT capture FBO when CRT is on, or the backbuffer otherwise).
@@ -174,6 +187,7 @@ void MediaUI_DrawFullscreenVideo()
     // the video, not just to the dashboard. Letterbox-fit to viewport size.
     s_videoBlittedToFBO = false;
 
+#ifndef THESEUS_USE_BGFX
     // CRT path only. With no FBO bound, RenderOSD does the picture as
     // an ImGui::Image instead (FBO0 blits aren't reliable cross-platform).
     if (boundFBO == 0) return;
@@ -207,6 +221,12 @@ void MediaUI_DrawFullscreenVideo()
             s_videoBlittedToFBO = true;
         }
     }
+#else
+    // CRT post-process is gated under BGFX (chunk 5d-3+ work). The
+    // fullscreen video display happens via MediaPlayer_RenderToScreen
+    // from CDVDPlayer::Render. nothing for us to do here.
+    (void)boundFBO; (void)ww; (void)wh;
+#endif
 }
 
 
@@ -291,10 +311,21 @@ void MediaUI_RenderOSD()
             float dstX = ((float)ww - dstW) * 0.5f;
             float dstY = ((float)wh - dstH) * 0.5f;
             // Background draw list so the OSD chrome (foreground list) layers above.
+            // UV orientation: GL renders the video into an FBO whose row 0 is
+            // visual bottom (GL framebuffer convention), so we sample with V
+            // flipped to put visual-top at the top of the drawn rect. bgfx's
+            // SW path writes the texture top-down (row 0 = visual top), so
+            // no flip needed.
             ImDrawList* bg = ImGui::GetBackgroundDrawList();
+#ifndef THESEUS_USE_BGFX
             bg->AddImage((ImTextureID)(intptr_t)tex,
                 ImVec2(dstX, dstY), ImVec2(dstX + dstW, dstY + dstH),
                 ImVec2(0, 1), ImVec2(1, 0));
+#else
+            bg->AddImage((ImTextureID)(intptr_t)tex,
+                ImVec2(dstX, dstY), ImVec2(dstX + dstW, dstY + dstH),
+                ImVec2(0, 0), ImVec2(1, 1));
+#endif
         }
     }
 
@@ -309,7 +340,7 @@ void MediaUI_RenderOSD()
 
     if (alpha <= 0.001f) return;
 
-    // Top gradient — Xbox green tint, fades to transparent.
+    // Top gradient, Xbox green tint, fades to transparent.
     {
         const float h = 96.0f;
         ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -335,7 +366,7 @@ void MediaUI_RenderOSD()
         }
     }
 
-    // Bottom gradient — fades up from black; transport sits on it.
+    // Bottom gradient, fades up from black; transport sits on it.
     {
         const float h = 110.0f;
         ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -374,7 +405,7 @@ void MediaUI_RenderOSD()
         float estHintW = (float)strlen(hint) * 6.5f;
         dl->AddText(font, hintSize, ImVec2((float)ww - estHintW - 28.0f, y0 + 30), hintCol, hint);
 
-        // Progress bar — Xbox green track on dim bg.
+        // Progress bar, Xbox green track on dim bg.
         float barX = 28.0f;
         float barW = (float)ww - 56.0f;
         float barY = y0 + 70.0f;
@@ -460,8 +491,13 @@ void MediaUI_StopFullscreen()
     // libmpv's render context just trashed our GL state without going
     // through the shim. Invalidate the cache so the dashboard's first frame
     // back actually re-applies blend/depth/cull instead of trusting stale
-    // cache values (otherwise the cellwall renders solid green).
+    // cache values (otherwise the cellwall renders solid green). Two
+    // layers to invalidate: the shim's own m_* cache, AND the
+    // theseus.h wrapper-level cache that short-circuits before the
+    // shim. Missing either leaves the dashboard's next "set" silently
+    // skipped.
     if (g_pD3DDev) g_pD3DDev->InvalidateStateCache();
+    TheseusInvalidateWrapperCaches();
     extern void ApplyEffectiveMute_Public();
     ApplyEffectiveMute_Public();
     g_mediaFullscreenTitle[0] = 0;

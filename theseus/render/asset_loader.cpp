@@ -554,12 +554,7 @@ LPDIRECT3DTEXTURE8 ParseTexture(const TCHAR *szURL, const BYTE *pbContent, int c
 				int cbHeaders = pxprh->dwHeaderSize - sizeof(XPR_HEADER);
 				int cbData = pxprh->dwTotalSize - pxprh->dwHeaderSize;
 
-				// Validate the XPR header before we touch the payload.
-				// All four checks must pass: enough room for the texture
-				// resource header, the resource has to be a texture, the
-				// data section has to be non-empty and within bounds, and
-				// the texture dimensions (decoded from the format dword)
-				// must match the caller's expected size if one was given.
+				// Validate the XPR header: header size, type, data bounds, dims.
 				if (cbHeaders < sizeof(IDirect3DTexture8))
 				{
 					TRACE(_T("Invalid XBX image file (wrong header size; is %d should be %d)!\n"), cbHeaders, sizeof(IDirect3DTexture8));
@@ -648,16 +643,9 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR *szURL, UINT width, UINT height)
 
 	CActiveFile file;
 
-	// === Skin override first ===
-	// Skin authors expect their custom .xbx files to replace the XIP
-	// defaults; if XIP wins (the previous order) skin overrides only
-	// fire for assets the XIP doesn't ship, which silently breaks
-	// every skin that retextures cellwall, hilites, panels, etc.
-	//
-	// Probe every member of the equivalence group via SkinCandidatesFor
-	// so a UI.X-era skin shipping menu_hilite.xbx alone can satisfy a
-	// retail XAP request for GameHilite_01.xbx (and vice versa). Xbox
-	// stays permissive: no IsSkinnableAsset gate.
+	// Skin override first; otherwise skins that retexture cellwall / hilites /
+	// panels get silently shadowed by the XIP. Probe the whole equivalence
+	// group so UI.X-era skins shipping a single hilite still satisfy retail.
 	if (TheseusGetSkinDir())
 	{
 		TCHAR OverrideName[MAX_PATH];
@@ -751,15 +739,8 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR *szURL, UINT width, UINT height)
 	return NULL;
 }
 
-// Load a texture from a standalone XPR / XBX file on disk.
-//
-// XPR is the Xbox Resource format the .xbx asset files use: a small
-// header (XPR_HEADER) followed by one or more D3DResource header
-// records, followed by the contiguous payload bytes those resources
-// point at. The dashboard's regular texture path goes through
-// ParseTexture() against an in-memory buffer; this function exists
-// for the few sites that need to read straight from a file handle
-// without staging into memory first.
+// Load a texture from a standalone XPR / XBX file on disk. The regular
+// texture path stages through memory; this reads straight from the file.
 LPDIRECT3DTEXTURE8 LoadTextureFromXPR(const char *xprfile)
 {
 	if (xprfile == NULL)
@@ -1211,7 +1192,7 @@ EXTERN_C HRESULT X_BitBlt(HDRAW hDraw, int x, int y, int cx, int cy, LPDIRECT3DT
 	}
 #endif
 
-	// Clipping is against the destination only -- callers are
+	// Clipping is against the destination only. callers are
 	// responsible for keeping (xSrc + cx) and (ySrc + cy) inside
 	// the source surface.
 	if (!Clip(hDraw, x, y, cx, cy))
@@ -1441,11 +1422,15 @@ void CMesh::Render(bool bSetFVF)
 	if (bSetFVF)
 		TheseusSetVertexShader(GetFixedFunctionShader(m_fvf));
 
+#ifdef _XBOX
 	if (m_nFaceCount > 800 && !g_bEdgeAntialiasOverride)
 	{
+		// Heavy mesh: swap edge AA for MSAA on the NV2A. Shim no-op on
+		// desktop GL, so the whole branch is skipped there.
 		TheseusSetRenderState(D3DRS_EDGEANTIALIAS, FALSE);
 		TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
 	}
+#endif
 
 	TheseusSetStreamSource(0, m_vertexBuffer, m_nVertexStride);
 	TheseusSetIndices(m_indexBuffer, 0);
@@ -1576,7 +1561,7 @@ void CMeshNode::Render()
 		else
 		{
 			// The bSetFVF flag is suppressed when shape_render has already
-			// programmed the FVF for this node in the same render pass --
+			// programmed the FVF for this node in the same render pass.
 			// happens when the same mesh is drawn back-to-back at different
 			// transforms inside one Group.
 			m_mesh->Render(g_pRenderMeshNode != this);
@@ -1593,17 +1578,9 @@ void CMeshNode::load(const TCHAR *szFile)
 
 	m_mesh = NULL;
 
-	// Skin override first. Lets skin authors ship custom meshes
-	// (cellwall.xm, Inner_cell-FACES.xm, custom pod shapes, etc.)
-	// that replace the XIP defaults. Mirrors what LoadTexture does
-	// for textures; without this hook, anything in default.xip
-	// always wins regardless of what the active skin ships.
-	//
-	// Use CMesh::Load's bool return directly instead of going
-	// through the LoadMesh() wrapper + GetFVF probe -- GetFVF()
-	// ASSERTs on m_fvf == 0 in debug builds, so the obvious
-	// "load then check" pattern fires the assert when a skin
-	// doesn't ship the mesh in question.
+	// Skin override first. Mirrors LoadTexture; without this, default.xip
+	// always wins over custom meshes. Use CMesh::Load's bool return because
+	// GetFVF() asserts on m_fvf == 0.
 	if (TheseusGetSkinDir() && TheseusGetSkinDir()[0])
 	{
 		// Probe every member of the equivalence group so a skin that ships
@@ -1636,7 +1613,7 @@ void CMeshNode::load(const TCHAR *szFile)
 		}
 	}
 
-	// XIP archive next -- the bundled default for any mesh the
+	// XIP archive next. the bundled default for any mesh the
 	// active skin doesn't override.
 	if (m_mesh == NULL)
 	{
@@ -1645,7 +1622,7 @@ void CMeshNode::load(const TCHAR *szFile)
 			m_ownMesh = false;
 	}
 
-	// Disk fallback -- relative to current scene dir, then app dir.
+	// Disk fallback. relative to current scene dir, then app dir.
 	if (m_mesh == NULL)
 	{
 		m_ownMesh = true;

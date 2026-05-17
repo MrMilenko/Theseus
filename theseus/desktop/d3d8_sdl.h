@@ -10,12 +10,20 @@
 extern "C" unsigned char* stbi_load_from_memory(const unsigned char*, int, int*, int*, int*, int);
 extern "C" void stbi_image_free(void*);
 
-// OpenGL 3.2 Core Profile
+// OpenGL headers. Under bgfx we never call into GL, but the legacy GL
+// state structs in this header still reference typedefs like GLuint /
+// GLint. On Windows that means we still need <GL/gl.h> for those base
+// types, but not GLEW (which only supplies 3.2+ function pointers).
 #ifdef __APPLE__
     #define GL_SILENCE_DEPRECATION
     #include <OpenGL/gl3.h>
 #elif defined(_WIN32)
-    #include <GL/glew.h>  // Windows needs GLEW for GL 3.2+ function pointers
+    #ifdef THESEUS_USE_BGFX
+        #include <windows.h>
+        #include <GL/gl.h>
+    #else
+        #include <GL/glew.h>
+    #endif
 #else
     #define GL_GLEXT_PROTOTYPES
     #include <GL/gl.h>
@@ -29,6 +37,58 @@ extern "C" void stbi_image_free(void*);
 #ifndef D3D_OVERLOADS
 #define D3D_OVERLOADS
 #endif
+
+#ifdef THESEUS_USE_BGFX
+// bgfx handles live on the D3D8 wrapper classes, so the types need to be
+// visible here.
+#include <bgfx/bgfx.h>
+// FF emulator program, owned in sdl_main.cpp; shadow-submit uses it.
+extern bgfx::ProgramHandle g_bgfxProgFF;
+
+// vs_ff / fs_ff uniform handles. Created at bgfx::init, mirrors the .sc layout.
+struct BgfxFFUniforms {
+    bgfx::UniformHandle u_FfWVP;          // mat4
+    bgfx::UniformHandle u_FfWorldView;    // mat4
+    bgfx::UniformHandle u_FfNormalInv;    // mat4
+    bgfx::UniformHandle u_FfFalloffFront; // vec4
+    bgfx::UniformHandle u_FfFalloffDelta; // vec4
+    bgfx::UniformHandle u_FfTFactor;      // vec4
+    bgfx::UniformHandle u_FfMatDiffuse;   // vec4
+    bgfx::UniformHandle u_FfFlags1;       // vec4 packed
+    bgfx::UniformHandle u_FfFlags2;       // vec4 packed
+    bgfx::UniformHandle u_FfViewportSize; // vec4
+    bgfx::UniformHandle u_FfFragFlags1;   // vec4 packed
+    bgfx::UniformHandle u_FfFragFlags2;   // vec4 packed
+    bgfx::UniformHandle s_tex0;           // sampler
+    bgfx::UniformHandle s_tex1;           // sampler
+};
+extern BgfxFFUniforms g_bgfxFF;
+extern bgfx::TextureHandle g_bgfxWhiteTex;
+
+// Chunk 5d-3+: fullscreen-quad blit program + sampler. Used by the
+// bgfx boot anim and (later) CRT post-process. Owned in sdl_main.cpp.
+extern bgfx::ProgramHandle g_bgfxProgBlit;
+extern bgfx::UniformHandle g_bgfxSamplerBlit;
+#endif
+
+// -------------------------------------------------------
+// D3D call-trace counters. Press F8 to dump. Storage + dump in dashapp.cpp.
+// -------------------------------------------------------
+struct D3DStateStats {
+    DWORD lastValue;
+    bool  hasValue;
+    int   totalCalls;       // every time SetRenderState was called for this state
+    int   redundantCalls;   // same value as previous call (new == prev)
+    int   filteredCalls;    // hit the shim-dead early-return switch
+};
+
+// 256 covers all D3DRS_* we use (max is around 200). 8 stages * 32 types
+// for D3DTSS_*; D3DTSS_* values currently used max out near 16.
+extern D3DStateStats g_rsStats[256];
+extern D3DStateStats g_tssStats[8 * 32];
+
+void Theseus_D3D_DumpTrace();
+void Theseus_D3D_ResetTrace();
 
 // -------------------------------------------------------
 // D3D enums and constants
@@ -813,6 +873,7 @@ struct CRTState {
     float    flickerAmount;     // subtle brightness variation
     float    colorBleed;        // horizontal color smear
     float    brightness;        // overall brightness adjustment
+#ifndef THESEUS_USE_BGFX
     // GL resources
     GLuint   fbo;
     GLuint   colorTex;
@@ -821,10 +882,22 @@ struct CRTState {
     GLint    u_SceneTex, u_Resolution, u_Time;
     GLint    u_ScanlineIntensity, u_Curvature, u_PhosphorMask;
     GLint    u_Vignette, u_Bloom, u_Flicker, u_ColorBleed, u_Brightness;
+#else
+    // bgfx resources. Offscreen target gets allocated lazily on the first
+    // frame CRT is on; freed when the window resizes.
+    bgfx::FrameBufferHandle fb;
+    bgfx::TextureHandle     colorTex; // attachment we sample in the blit
+    bgfx::ProgramHandle     program;  // vs_blit + fs_crt
+    bgfx::UniformHandle     s_scene;  // sampler for the offscreen color tex
+    bgfx::UniformHandle     u_p1;     // scanline / curvature / phosphor / vignette
+    bgfx::UniformHandle     u_p2;     // bloom / flicker / colorBleed / brightness
+    bgfx::UniformHandle     u_p3;     // time / resolution.x / resolution.y / unused
+#endif
     int      texW, texH;       // current FBO dimensions
 };
 extern CRTState g_crt;
 
+#ifndef THESEUS_USE_BGFX
 // Initialize CRT post-process FBO and shader
 inline bool InitCRTShader(int width, int height) {
     // ---- CRT Vertex Shader (fullscreen triangle) ----
@@ -1079,8 +1152,134 @@ inline void CRT_EndAndBlit(float time) {
     if (cullEnabled)  glEnable(GL_CULL_FACE);
     glActiveTexture(GL_TEXTURE0);
 }
+#else  // THESEUS_USE_BGFX
+
+// Forward decl matching the loader in sdl_main.cpp. Takes a stem like
+// "vs_blit"; resolves the per-renderer subdir + .bin extension.
+bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name);
+
+// Allocates the offscreen framebuffer + color attachment + program +
+// uniforms. Called once on startup. CRT toggle just gates whether we
+// actually route view 0 through this FB at frame time.
+inline bool InitCRTShader_Bgfx(int /*width*/, int /*height*/) {
+    bgfx::ShaderHandle vs = theseus_bgfx_load_shader("vs_blit");
+    bgfx::ShaderHandle fs = theseus_bgfx_load_shader("fs_crt");
+    if (!bgfx::isValid(vs) || !bgfx::isValid(fs)) {
+        fprintf(stderr, "[CRT] bgfx shader load failed\n");
+        return false;
+    }
+    g_crt.program = bgfx::createProgram(vs, fs, true);
+
+    g_crt.s_scene = bgfx::createUniform("s_crtScene",  bgfx::UniformType::Sampler);
+    g_crt.u_p1    = bgfx::createUniform("u_CrtParams1", bgfx::UniformType::Vec4);
+    g_crt.u_p2    = bgfx::createUniform("u_CrtParams2", bgfx::UniformType::Vec4);
+    g_crt.u_p3    = bgfx::createUniform("u_CrtParams3", bgfx::UniformType::Vec4);
+
+    g_crt.colorTex.idx = bgfx::kInvalidHandle;
+    g_crt.fb.idx       = bgfx::kInvalidHandle;
+    g_crt.texW = 0;
+    g_crt.texH = 0;
+    return true;
+}
+
+// (Re)allocate the offscreen framebuffer at the requested pixel size.
+// bgfx framebuffers are immutable; resize = destroy + create.
+inline void CRT_ResizeFBO_Bgfx(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    if (width == g_crt.texW && height == g_crt.texH && bgfx::isValid(g_crt.fb)) return;
+    if (bgfx::isValid(g_crt.fb))       bgfx::destroy(g_crt.fb);
+    if (bgfx::isValid(g_crt.colorTex)) bgfx::destroy(g_crt.colorTex);
+
+    const uint64_t sampleFlags = BGFX_TEXTURE_RT
+                               | BGFX_SAMPLER_U_CLAMP
+                               | BGFX_SAMPLER_V_CLAMP;
+    g_crt.colorTex = bgfx::createTexture2D(
+        (uint16_t)width, (uint16_t)height, false, 1,
+        bgfx::TextureFormat::BGRA8, sampleFlags);
+
+    bgfx::TextureHandle attachments[1] = { g_crt.colorTex };
+    g_crt.fb = bgfx::createFrameBuffer(1, attachments, false);
+    g_crt.texW = width;
+    g_crt.texH = height;
+}
+
+// Point view 0 at the offscreen FB before the scene draws. Must be
+// matched by exactly one CRT_EndAndBlit_Bgfx submit per frame; do not
+// reset view 0's framebuffer in between, because bgfx applies the most
+// recent setViewFrameBuffer call to *all* submits on that view in the
+// frame (so resetting after submits would draw the scene to the
+// backbuffer instead of into the FBO).
+inline void CRT_BeginCapture_Bgfx() {
+    bgfx::setViewFrameBuffer(0, g_crt.fb);
+}
+
+// Called every frame, regardless of toggle state, so view 0 binds to the
+// backbuffer once CRT goes off again (the previous frame may have left
+// it pointing at the offscreen FB).
+inline void CRT_PointViewToBackbuffer_Bgfx() {
+    bgfx::setViewFrameBuffer(0, BGFX_INVALID_HANDLE);
+}
+
+// Submit the fullscreen blit into view 1 (which targets the backbuffer)
+// with the CRT shader sampling view 0's color attachment.
+inline void CRT_EndAndBlit_Bgfx(float time, int width, int height) {
+    // View 1 = post-process pass to backbuffer.
+    bgfx::setViewFrameBuffer(1, BGFX_INVALID_HANDLE);
+    bgfx::setViewRect(1, 0, 0, (uint16_t)width, (uint16_t)height);
+    bgfx::setViewClear(1, 0); // backbuffer is fully overwritten by the quad
+
+    // Same fullscreen quad as boot_anim's blit. Layout has to match vs_blit's
+    // declared $input slots.
+    bgfx::VertexLayout layout;
+    layout.begin()
+        .add(bgfx::Attrib::Position,  3, bgfx::AttribType::Float)
+        .add(bgfx::Attrib::Normal,    3, bgfx::AttribType::Float)
+        .add(bgfx::Attrib::Color0,    4, bgfx::AttribType::Uint8, true)
+        .add(bgfx::Attrib::Color1,    4, bgfx::AttribType::Uint8, true)
+        .add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+        .end();
+
+    // UV layout matches boot_anim's blit: bottom of the quad samples V=1,
+    // top samples V=0. The offscreen FB written by view 0 follows the
+    // active backend's render-target origin, so the top-of-screen pixel
+    // sits at the top of the texture. Without this mapping the post-
+    // process samples the FBO upside-down, which on Metal manifests as
+    // the dashboard rendering rotated 180.
+    struct V { float px, py, pz, nx, ny, nz; uint32_t c0, c1; float u, v; };
+    V verts[4] = {
+        { -1.f, -1.f, 0.f, 0,0,0, 0,0, 0.f, 1.f },
+        {  1.f, -1.f, 0.f, 0,0,0, 0,0, 1.f, 1.f },
+        {  1.f,  1.f, 0.f, 0,0,0, 0,0, 1.f, 0.f },
+        { -1.f,  1.f, 0.f, 0,0,0, 0,0, 0.f, 0.f },
+    };
+    const uint16_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+
+    bgfx::TransientVertexBuffer tvb;
+    bgfx::TransientIndexBuffer  tib;
+    if (bgfx::getAvailTransientVertexBuffer(4, layout) < 4) return;
+    if (bgfx::getAvailTransientIndexBuffer(6) < 6)            return;
+    bgfx::allocTransientVertexBuffer(&tvb, 4, layout);
+    memcpy(tvb.data, verts, sizeof(verts));
+    bgfx::allocTransientIndexBuffer(&tib, 6);
+    memcpy(tib.data, idx, sizeof(idx));
+
+    float p1[4] = { g_crt.scanlineIntensity, g_crt.curvature, g_crt.phosphorMask, g_crt.vignette };
+    float p2[4] = { g_crt.bloom, g_crt.flickerAmount, g_crt.colorBleed, g_crt.brightness };
+    float p3[4] = { time, (float)g_crt.texW, (float)g_crt.texH, 0.0f };
+    bgfx::setUniform(g_crt.u_p1, p1);
+    bgfx::setUniform(g_crt.u_p2, p2);
+    bgfx::setUniform(g_crt.u_p3, p3);
+
+    bgfx::setTexture(0, g_crt.s_scene, g_crt.colorTex);
+    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+    bgfx::setVertexBuffer(0, &tvb, 0, 4);
+    bgfx::setIndexBuffer(&tib, 0, 6);
+    bgfx::submit(1, g_crt.program);
+}
+#endif // THESEUS_USE_BGFX
 
 // Compile and link the GL shader program. Called from sdl_main.cpp after GL context creation.
+#ifndef THESEUS_USE_BGFX
 inline bool InitGLShaders() {
     // ---- Vertex Shader ----
     const char* vsSrc = R"(
@@ -1102,7 +1301,7 @@ uniform int u_NormalType;     // 0=none, 1=float3, 2=packed
 uniform int u_EnvMapMode;    // 0=off, 1=spherical env map
 uniform vec2 u_ViewportSize; // backbuffer width/height for XYZRHW conversion
 
-in vec4 a_Position;       // xyz[rhw] — w=1 for XYZ, w=1/z for RHW
+in vec4 a_Position;       // xyz[rhw], w=1 for XYZ, w=1/z for RHW
 in vec3 a_Normal;         // float3 normal (when normalType==1)
 in uint a_PackedNrm;      // packed 11:11:10 normal (when normalType==2)
 in vec4 a_Diffuse;        // vertex color RGBA [0..1]
@@ -1154,7 +1353,7 @@ void main() {
     }
 
     // D3DCOLOR is ARGB (0xAARRGGBB), stored little-endian as [B,G,R,A]
-    // GL reads bytes in order so a_Diffuse = (B,G,R,A) — swizzle to RGBA
+    // GL reads bytes in order so a_Diffuse = (B,G,R,A), swizzle to RGBA
     vec4 diffuseRGBA = a_Diffuse.bgra;
 
     // Select vertex color source
@@ -1173,11 +1372,8 @@ void main() {
 
     alpha *= u_AlphaMul;
 
-    // Optional clip-by-vertex-alpha. text.cpp's VerticalFade writes per-vertex
-    // alpha into the diffuse channel for the soft-fade marquee clip; falloff
-    // lighting overwrites color.a so the per-vertex alpha needs an explicit
-    // multiplicative path. Only enabled for that draw, leaving normal lit
-    // meshes (which may have undefined diffuse alpha) untouched.
+    // Optional clip-by-vertex-alpha for text marquee fade. Falloff lighting
+    // overwrites color.a, so the per-vertex alpha needs its own path.
     if (u_VertexAlphaMul != 0) alpha *= diffuseRGBA.a;
 
     v_Color = vec4(color.rgb, alpha);
@@ -1362,6 +1558,7 @@ void main() {
 
     return true;
 }
+#endif // !THESEUS_USE_BGFX
 
 // -------------------------------------------------------
 // D3D8 interface stubs backed by OpenGL
@@ -1375,6 +1572,11 @@ public:
     BYTE* m_pixels;      // RGBA pixel data (for LockRect)
     int m_pitch;
     char m_srcName[128]; // Source filename for inspector
+#ifdef THESEUS_USE_BGFX
+    // Parallel bgfx handle to the GL texture above. Created lazily.
+    bgfx::TextureHandle m_bgfxTex;
+    bool m_bgfxDirty;
+#endif
 
     // Instance tracking for GL context reset
     IDirect3DTexture8* m_nextTex;
@@ -1382,10 +1584,19 @@ public:
 
     IDirect3DTexture8() : m_ref(1), m_glTexture(0), m_width(0), m_height(0), m_pixels(NULL), m_pitch(0) {
         m_srcName[0] = 0;
+#ifdef THESEUS_USE_BGFX
+        m_bgfxTex   = BGFX_INVALID_HANDLE;
+        m_bgfxDirty = true;
+#endif
         m_nextTex = s_firstTex; s_firstTex = this;
     }
     ~IDirect3DTexture8() {
+#ifndef THESEUS_USE_BGFX
         if (m_glTexture) glDeleteTextures(1, &m_glTexture);
+#endif
+#ifdef THESEUS_USE_BGFX
+        if (bgfx::isValid(m_bgfxTex)) bgfx::destroy(m_bgfxTex);
+#endif
         free(m_pixels);
         // Remove from linked list
         IDirect3DTexture8** pp = &s_firstTex;
@@ -1407,9 +1618,13 @@ public:
         }
         if (m_pixels) { lr->Pitch = m_pitch; lr->pBits = m_pixels; }
         else { static char dummy[4]={}; lr->Pitch=4; lr->pBits=dummy; }
+#ifdef THESEUS_USE_BGFX
+        m_bgfxDirty = true;
+#endif
         return S_OK;
     }
     HRESULT UnlockRect(UINT level) {
+#ifndef THESEUS_USE_BGFX
         // Sync pixel data to GL texture
         if (m_pixels && m_width > 0 && m_height > 0) {
             if (!m_glTexture) {
@@ -1427,16 +1642,18 @@ public:
                 glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_width, m_height, GL_RGBA, GL_UNSIGNED_BYTE, m_pixels);
             }
         }
+#endif
         return S_OK;
     }
 
-    // Create GL texture from RGBA pixel data
+    // Create from RGBA. bgfx upload is lazy via BgfxEnsureTextureUploaded.
     bool CreateFromRGBA(UINT w, UINT h, const BYTE* rgba) {
         if (!rgba || w == 0 || h == 0) return false;
         m_width = w; m_height = h; m_pitch = w * 4;
         m_pixels = (BYTE*)malloc(w * h * 4);
         if (!m_pixels) return false;
         memcpy(m_pixels, rgba, w * h * 4);
+#ifndef THESEUS_USE_BGFX
         glGenTextures(1, &m_glTexture);
         glBindTexture(GL_TEXTURE_2D, m_glTexture);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -1446,6 +1663,9 @@ public:
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+#else
+        m_bgfxDirty = true;
+#endif
         return true;
     }
 };
@@ -1457,17 +1677,31 @@ public:
     void* m_data;
     GLuint m_glBuffer;
     bool m_glDirty;
+#ifdef THESEUS_USE_BGFX
+    // bgfx VB handle. Layout depends on FVF, so it's built on first draw.
+    bgfx::DynamicVertexBufferHandle m_bgfxVB;
+    bool m_bgfxDirty;
+#endif
     IDirect3DVertexBuffer8* m_nextVB;
     static IDirect3DVertexBuffer8* s_firstVB;
 
     IDirect3DVertexBuffer8(UINT size) : m_ref(1), m_size(size), m_glBuffer(0), m_glDirty(true) {
         m_data = calloc(1, size ? size : 1);
-        // Defer glGenBuffers to EnsureUploaded — constructor may run on non-GL thread
+#ifdef THESEUS_USE_BGFX
+        m_bgfxVB    = BGFX_INVALID_HANDLE;
+        m_bgfxDirty = true;
+#endif
+        // Defer glGenBuffers to EnsureUploaded, constructor may run on non-GL thread
         m_nextVB = s_firstVB; s_firstVB = this;
     }
     ~IDirect3DVertexBuffer8() {
         free(m_data);
+#ifndef THESEUS_USE_BGFX
         if (m_glBuffer) glDeleteBuffers(1, &m_glBuffer);
+#endif
+#ifdef THESEUS_USE_BGFX
+        if (bgfx::isValid(m_bgfxVB)) bgfx::destroy(m_bgfxVB);
+#endif
         IDirect3DVertexBuffer8** pp = &s_firstVB;
         while (*pp && *pp != this) pp = &(*pp)->m_nextVB;
         if (*pp) *pp = m_nextVB;
@@ -1477,18 +1711,23 @@ public:
     HRESULT Lock(UINT off, UINT size, BYTE** ppData, DWORD flags) {
         *ppData = (BYTE*)m_data + off;
         m_glDirty = true;
+#ifdef THESEUS_USE_BGFX
+        m_bgfxDirty = true;
+#endif
         return S_OK;
     }
     HRESULT Unlock() { return S_OK; }
     UINT GetSize() const { return m_size; }
 
     void EnsureUploaded() {
+#ifndef THESEUS_USE_BGFX
         if (m_glBuffer == 0) glGenBuffers(1, &m_glBuffer);
         if (m_glDirty && m_size > 0) {
             glBindBuffer(GL_ARRAY_BUFFER, m_glBuffer);
             glBufferData(GL_ARRAY_BUFFER, m_size, m_data, GL_DYNAMIC_DRAW);
             m_glDirty = false;
         }
+#endif
     }
 };
 typedef IDirect3DVertexBuffer8* LPDIRECT3DVERTEXBUFFER8;
@@ -1499,38 +1738,62 @@ public:
     void* m_data;
     GLuint m_glBuffer;
     bool m_glDirty;
+#ifdef THESEUS_USE_BGFX
+    bgfx::DynamicIndexBufferHandle m_bgfxIB;
+    bool m_bgfxDirty;
+#endif
     IDirect3DIndexBuffer8* m_nextIB;
     static IDirect3DIndexBuffer8* s_firstIB;
 
     IDirect3DIndexBuffer8(UINT size) : m_ref(1), m_size(size), m_glBuffer(0), m_glDirty(true) {
         m_data = malloc(size);
-        // Defer glGenBuffers to EnsureUploaded — constructor may run on non-GL thread
+#ifdef THESEUS_USE_BGFX
+        m_bgfxIB    = BGFX_INVALID_HANDLE;
+        m_bgfxDirty = true;
+#endif
+        // Defer glGenBuffers to EnsureUploaded, constructor may run on non-GL thread
         m_nextIB = s_firstIB; s_firstIB = this;
     }
     ~IDirect3DIndexBuffer8() {
         free(m_data);
+#ifndef THESEUS_USE_BGFX
         if (m_glBuffer) glDeleteBuffers(1, &m_glBuffer);
+#endif
+#ifdef THESEUS_USE_BGFX
+        if (bgfx::isValid(m_bgfxIB)) bgfx::destroy(m_bgfxIB);
+#endif
         IDirect3DIndexBuffer8** pp = &s_firstIB;
         while (*pp && *pp != this) pp = &(*pp)->m_nextIB;
         if (*pp) *pp = m_nextIB;
     }
     ULONG AddRef() { return ++m_ref; }
     ULONG Release() { if(--m_ref <= 0) { delete this; return 0; } return m_ref; }
-    HRESULT Lock(UINT off, UINT size, BYTE** ppData, DWORD flags) { *ppData = (BYTE*)m_data + off; m_glDirty = true; return S_OK; }
+    HRESULT Lock(UINT off, UINT size, BYTE** ppData, DWORD flags) {
+        *ppData = (BYTE*)m_data + off;
+        m_glDirty = true;
+#ifdef THESEUS_USE_BGFX
+        m_bgfxDirty = true;
+#endif
+        return S_OK;
+    }
     HRESULT Unlock() { return S_OK; }
+    UINT GetSize() const { return m_size; }
 
     void EnsureUploaded() {
+#ifndef THESEUS_USE_BGFX
         if (m_glBuffer == 0) glGenBuffers(1, &m_glBuffer);
         if (m_glDirty && m_size > 0) {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_glBuffer);
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, m_size, m_data, GL_DYNAMIC_DRAW);
             m_glDirty = false;
         }
+#endif
     }
 };
 typedef IDirect3DIndexBuffer8* LPDIRECT3DINDEXBUFFER8;
 
 // Re-upload all GL resources after context recreation (MSAA change, etc.)
+#ifndef THESEUS_USE_BGFX
 inline void ReuploadAllGLResources() {
     // Re-upload textures from CPU pixel data
     for (IDirect3DTexture8* t = IDirect3DTexture8::s_firstTex; t; t = t->m_nextTex) {
@@ -1561,6 +1824,7 @@ inline void ReuploadAllGLResources() {
     }
     fprintf(stderr, "[GL] Re-uploaded all resources after context reset\n");
 }
+#endif // !THESEUS_USE_BGFX
 
 // Deferred implementations for ID3DXMesh (needs buffer classes to be defined)
 inline HRESULT ID3DXMesh::GetVertexBuffer(IDirect3DVertexBuffer8** ppVB) {
@@ -1610,6 +1874,10 @@ public:
     float m_normalInv[16];   // c5-c8: WV^-1 for normal transform
     bool m_alphaTestEnabled = false;
     float m_alphaRef = 0.0f;
+    // TheseusSetVertexAlphaMul gates the shader's per-vertex alpha
+    // multiply path. Used by text VerticalFade to clip text against a
+    // fade gradient. State is stage-0 only.
+    bool m_vertexAlphaMul = false;
     bool m_envMapMode;       // true when reflection shader sets c48
     bool m_effectShaderActive;
     bool m_alphaBlendEnable;
@@ -1621,6 +1889,12 @@ public:
     DWORD m_fillMode;
     bool m_lighting;
     bool m_colorVertex;
+#ifdef THESEUS_USE_BGFX
+    // Parallel BGFX_STATE_* bitmask mirroring the D3DRS_* writes above.
+    // Chunk 4 only computes it; chunk 5 will pass it to bgfx::setState
+    // at draw time. See project_bgfx_swap.md.
+    uint64_t m_bgfxState;
+#endif
 public:
     const char* m_dbgMatName; // debug: last material name
 
@@ -1652,6 +1926,11 @@ private:
     DWORD m_tss0AlphaOp, m_tss0AlphaArg1, m_tss0AlphaArg2;
     DWORD m_tss1ColorOp, m_tss1ColorArg1, m_tss1ColorArg2;
     DWORD m_tss1AlphaOp, m_tss1AlphaArg1, m_tss1AlphaArg2;
+#ifdef THESEUS_USE_BGFX
+    // Stage-0 sampler state. bgfx wants flags baked into setTexture per draw.
+    DWORD m_tss0AddressU, m_tss0AddressV;
+    DWORD m_tss0MinFilter, m_tss0MagFilter;
+#endif
 
     void UpdateWVP() {
         if (m_wvpDirty) {
@@ -1670,10 +1949,21 @@ public:
         m_tss0ColorOp(D3DTOP_DISABLE), m_tss0ColorArg1(D3DTA_TEXTURE), m_tss0ColorArg2(D3DTA_CURRENT),
         m_tss0AlphaOp(D3DTOP_DISABLE), m_tss0AlphaArg1(D3DTA_TEXTURE), m_tss0AlphaArg2(D3DTA_CURRENT),
         m_tss1ColorOp(D3DTOP_DISABLE), m_tss1ColorArg1(D3DTA_TEXTURE), m_tss1ColorArg2(D3DTA_CURRENT),
-        m_tss1AlphaOp(D3DTOP_DISABLE), m_tss1AlphaArg1(D3DTA_TEXTURE), m_tss1AlphaArg2(D3DTA_CURRENT) {
+        m_tss1AlphaOp(D3DTOP_DISABLE), m_tss1AlphaArg1(D3DTA_TEXTURE), m_tss1AlphaArg2(D3DTA_CURRENT)
+#ifdef THESEUS_USE_BGFX
+        , m_tss0AddressU(D3DTADDRESS_WRAP), m_tss0AddressV(D3DTADDRESS_WRAP)
+        , m_tss0MinFilter(D3DTEXF_LINEAR), m_tss0MagFilter(D3DTEXF_LINEAR)
+#endif
+    {
         memset(m_textures, 0, sizeof(m_textures));
         D3DXMatrixIdentity(&m_matWorld); D3DXMatrixIdentity(&m_matView); D3DXMatrixIdentity(&m_matProj);
         D3DXMatrixIdentity(&m_matWVP); D3DXMatrixIdentity(&m_matWV);
+#ifdef THESEUS_USE_BGFX
+        // Match GL boot state: blend off, depth-test off, depth-write on, no cull.
+        // bgfx default front winding is CW which matches D3D; don't add FRONT_CCW.
+        m_bgfxState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
+                    | BGFX_STATE_WRITE_Z;
+#endif
     }
     ULONG AddRef() { return ++m_ref; }
     ULONG Release() { if(--m_ref <= 0) { delete this; return 0; } return m_ref; }
@@ -1696,9 +1986,16 @@ public:
             strncpy(r.tex1Name, m_textures[1]->m_srcName, 127); r.tex1Name[127] = 0;
         }
 
-        // Compute screen-space AABB
+        // Compute screen-space AABB. Under bgfx we don't have a GL state
+        // mirror; use the present-params backbuffer size, which Set
+        // viewport keeps in sync with the active D3DVIEWPORT8.
         float minSX = 1e9f, minSY = 1e9f, maxSX = -1e9f, maxSY = -1e9f;
+#ifdef THESEUS_USE_BGFX
+        extern D3DPRESENT_PARAMETERS g_pp;
+        int vp[4] = { 0, 0, (int)g_pp.BackBufferWidth, (int)g_pp.BackBufferHeight };
+#else
         GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp);
+#endif
         float vpW = (float)vp[2], vpH = (float)vp[3];
 
         const BYTE* vd = (const BYTE*)vertData;
@@ -1753,16 +2050,19 @@ public:
         return -1;
     }
 
-    // Forces GL into a known defaults state and aligns the cache with it.
-    // Call after foreign code (libmpv, ImGui's GL3 backend, etc.) renders
-    // through our context; otherwise the cache thinks blend/depth/cull
-    // are still set the way Theseus left them and skips the gl* re-apply.
+    // Force GL state to defaults and align the cache. Call after foreign code
+    // (libmpv, ImGui's GL3 backend) renders through our context.
     void InvalidateStateCache() {
-        glDisable(GL_BLEND);                        m_alphaBlendEnable = false;
-        glDisable(GL_DEPTH_TEST);                   m_zEnable = false;
-        glDepthMask(GL_TRUE);                       m_zWriteEnable = true;
+#ifndef THESEUS_USE_BGFX
+        glDisable(GL_BLEND);
+        glDisable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
         glDisable(GL_CULL_FACE);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
+        m_alphaBlendEnable = false;
+        m_zEnable = false;
+        m_zWriteEnable = true;
         m_srcBlend  = 0xFFFFFFFF;
         m_destBlend = 0xFFFFFFFF;
         m_zFunc     = 0xFFFFFFFF;
@@ -1772,59 +2072,198 @@ public:
         m_tss0AlphaOp = 0xFFFFFFFF; m_tss0AlphaArg1 = 0xFFFFFFFF; m_tss0AlphaArg2 = 0xFFFFFFFF;
         m_tss1ColorOp = 0xFFFFFFFF; m_tss1ColorArg1 = 0xFFFFFFFF; m_tss1ColorArg2 = 0xFFFFFFFF;
         m_tss1AlphaOp = 0xFFFFFFFF; m_tss1AlphaArg1 = 0xFFFFFFFF; m_tss1AlphaArg2 = 0xFFFFFFFF;
+#ifdef THESEUS_USE_BGFX
+        m_tss0AddressU = D3DTADDRESS_WRAP; m_tss0AddressV = D3DTADDRESS_WRAP;
+        m_tss0MinFilter = D3DTEXF_LINEAR;  m_tss0MagFilter = D3DTEXF_LINEAR;
+        // CW winding matches D3D; don't add FRONT_CCW.
+        m_bgfxState = BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A
+                    | BGFX_STATE_WRITE_Z;
+#endif
     }
 
     HRESULT SetRenderState(DWORD state, DWORD value) {
+        // Sweep 2 trace counter (always on; cost ~4 instructions).
+        // F8 in the dashboard dumps top redundant + filtered states.
+        // See project_d3d_call_audit.md.
+        if (state < 256) {
+            g_rsStats[state].totalCalls++;
+            if (g_rsStats[state].hasValue && g_rsStats[state].lastValue == value)
+                g_rsStats[state].redundantCalls++;
+            g_rsStats[state].lastValue = value;
+            g_rsStats[state].hasValue = true;
+        }
+
+        // Skip dead state-sets at the top: NV2A-only, FF leftovers
+        // (fog/stencil/point sprite/vertex blend) the dashboard never uses.
+        switch (state) {
+            // Xbox-specific or already-stripped
+            case D3DRS_EDGEANTIALIAS:
+            case D3DRS_MULTISAMPLEANTIALIAS:
+            case D3DRS_MULTISAMPLEMASK:
+            case D3DRS_SWATHWIDTH:
+            // Fog: dashboard never enables it on desktop
+            case D3DRS_FOGENABLE:
+            case D3DRS_FOGCOLOR:
+            case D3DRS_FOGDENSITY:
+            case D3DRS_FOGEND:
+            case D3DRS_FOGSTART:
+            case D3DRS_FOGTABLEMODE:
+            case D3DRS_RANGEFOGENABLE:
+            // Point sprites: dashboard never uses
+            case D3DRS_POINTSIZE:
+            case D3DRS_POINTSIZE_MIN:
+            case D3DRS_POINTSCALEENABLE:
+            case D3DRS_POINTSPRITEENABLE:
+            case D3DRS_POINTSCALE_A:
+            case D3DRS_POINTSCALE_B:
+            case D3DRS_POINTSCALE_C:
+            // Stencil: not wired in the shim
+            case D3DRS_STENCILENABLE:
+            case D3DRS_STENCILFAIL:
+            case D3DRS_STENCILZFAIL:
+            case D3DRS_STENCILPASS:
+            case D3DRS_STENCILFUNC:
+            case D3DRS_STENCILREF:
+            case D3DRS_STENCILMASK:
+            case D3DRS_STENCILWRITEMASK:
+            // Indexed vertex blending for skeletal animation: not used
+            case D3DRS_VERTEXBLEND:
+            // Per-stage UVW wrap hints: GL handles wrap via sampler state
+            case D3DRS_WRAP0:
+            case D3DRS_WRAP1:
+            case D3DRS_WRAP2:
+            case D3DRS_WRAP3:
+            // Fixed-function lighting material sources / flags: no GL FF
+            case D3DRS_AMBIENT:
+            case D3DRS_AMBIENTMATERIALSOURCE:
+            case D3DRS_DIFFUSEMATERIALSOURCE:
+            case D3DRS_SPECULARMATERIALSOURCE:
+            case D3DRS_EMISSIVEMATERIALSOURCE:
+            case D3DRS_NORMALIZENORMALS:
+            case D3DRS_SPECULARENABLE:
+            case D3DRS_LOCALVIEWER:
+            // Misc no-ops on this shim
+            case D3DRS_DITHERENABLE:
+            case D3DRS_CLIPPING:
+            case D3DRS_SHADEMODE:
+            case D3DRS_ZBIAS:           // could map to glPolygonOffset, currently unused
+            case D3DRS_COLORWRITEENABLE: // could map to glColorMask, currently unused
+                if (state < 256) g_rsStats[state].filteredCalls++;
+                return S_OK;
+        }
         if (state == D3DRS_TEXTUREFACTOR) m_texFactor = (D3DCOLOR)value;
         else if (state == D3DRS_ALPHABLENDENABLE) {
             bool nv = (value != 0);
             if (nv == m_alphaBlendEnable) return S_OK;
             m_alphaBlendEnable = nv;
+#ifndef THESEUS_USE_BGFX
             if (nv) glEnable(GL_BLEND); else glDisable(GL_BLEND);
+#endif
+#ifdef THESEUS_USE_BGFX
+            RecomputeBgfxBlend();
+#endif
         }
         else if (state == D3DRS_SRCBLEND) {
             if (value == m_srcBlend) return S_OK;
             m_srcBlend = value;
+#ifndef THESEUS_USE_BGFX
             ApplyBlendFunc();
+#endif
+#ifdef THESEUS_USE_BGFX
+            RecomputeBgfxBlend();
+#endif
         }
         else if (state == D3DRS_DESTBLEND) {
             if (value == m_destBlend) return S_OK;
             m_destBlend = value;
+#ifndef THESEUS_USE_BGFX
             ApplyBlendFunc();
+#endif
+#ifdef THESEUS_USE_BGFX
+            RecomputeBgfxBlend();
+#endif
         }
         else if (state == D3DRS_ZENABLE) {
             bool nv = (value != 0);
             if (nv == m_zEnable) return S_OK;
             m_zEnable = nv;
+#ifndef THESEUS_USE_BGFX
             if (nv) glEnable(GL_DEPTH_TEST); else glDisable(GL_DEPTH_TEST);
+#endif
+#ifdef THESEUS_USE_BGFX
+            // When depth test is off, bgfx wants the test bits zeroed.
+            // Re-application of the actual func happens via D3DRS_ZFUNC.
+            m_bgfxState &= ~BGFX_STATE_DEPTH_TEST_MASK;
+            if (nv) {
+                uint64_t f = BGFX_STATE_DEPTH_TEST_LEQUAL;
+                if (m_zFunc == D3DCMP_LESS) f = BGFX_STATE_DEPTH_TEST_LESS;
+                else if (m_zFunc == D3DCMP_ALWAYS) f = BGFX_STATE_DEPTH_TEST_ALWAYS;
+                m_bgfxState |= f;
+            }
+#endif
         }
         else if (state == D3DRS_ZWRITEENABLE) {
             bool nv = (value != 0);
             if (nv == m_zWriteEnable) return S_OK;
             m_zWriteEnable = nv;
+#ifndef THESEUS_USE_BGFX
             glDepthMask(nv ? GL_TRUE : GL_FALSE);
+#endif
+#ifdef THESEUS_USE_BGFX
+            if (nv) m_bgfxState |= BGFX_STATE_WRITE_Z;
+            else    m_bgfxState &= ~BGFX_STATE_WRITE_Z;
+#endif
         }
         else if (state == D3DRS_ZFUNC) {
             if (value == m_zFunc) return S_OK;
             m_zFunc = value;
+#ifndef THESEUS_USE_BGFX
             GLenum func = GL_LEQUAL;
             if (value == D3DCMP_LESS) func = GL_LESS;
             else if (value == D3DCMP_ALWAYS) func = GL_ALWAYS;
             glDepthFunc(func);
+#endif
+#ifdef THESEUS_USE_BGFX
+            // Only emit DEPTH_TEST bits if the test is actually enabled;
+            // bgfx treats "no DEPTH_TEST bits set" as disabled.
+            if (m_zEnable) {
+                m_bgfxState &= ~BGFX_STATE_DEPTH_TEST_MASK;
+                uint64_t f = BGFX_STATE_DEPTH_TEST_LEQUAL;
+                if (value == D3DCMP_LESS) f = BGFX_STATE_DEPTH_TEST_LESS;
+                else if (value == D3DCMP_ALWAYS) f = BGFX_STATE_DEPTH_TEST_ALWAYS;
+                m_bgfxState |= f;
+            }
+#endif
         }
         else if (state == D3DRS_CULLMODE) {
             if (value == m_cullMode) return S_OK;
             m_cullMode = value;
+#ifndef THESEUS_USE_BGFX
             if (value == D3DCULL_NONE) glDisable(GL_CULL_FACE);
             else {
                 glEnable(GL_CULL_FACE);
                 glCullFace(value == D3DCULL_CW ? GL_FRONT : GL_BACK);
             }
+#endif
+#ifdef THESEUS_USE_BGFX
+            m_bgfxState &= ~BGFX_STATE_CULL_MASK;
+            if (value == D3DCULL_CW)       m_bgfxState |= BGFX_STATE_CULL_CW;
+            else if (value == D3DCULL_CCW) m_bgfxState |= BGFX_STATE_CULL_CCW;
+#endif
         }
         else if (state == D3DRS_FILLMODE) {
             if (value == m_fillMode) return S_OK;
             m_fillMode = value;
+#ifndef THESEUS_USE_BGFX
             glPolygonMode(GL_FRONT_AND_BACK, value == D3DFILL_WIREFRAME ? GL_LINE : GL_FILL);
+#endif
+#ifdef THESEUS_USE_BGFX
+            // bgfx has no fill-mode; PT_LINES is a primitive-type override
+            // and only kinda approximates wireframe. Dashboard never sets
+            // wireframe, so leave the PT bits at default (tri-list).
+            m_bgfxState &= ~BGFX_STATE_PT_MASK;
+            if (value == D3DFILL_WIREFRAME) m_bgfxState |= BGFX_STATE_PT_LINES;
+#endif
         }
         else if (state == D3DRS_LIGHTING) {
             m_lighting = (value != 0);
@@ -1844,6 +2283,7 @@ public:
         return S_OK;
     }
 
+#ifndef THESEUS_USE_BGFX
     void ApplyBlendFunc() {
         GLenum src = GL_SRC_ALPHA, dst = GL_ONE_MINUS_SRC_ALPHA;
         switch (m_srcBlend) {
@@ -1864,6 +2304,35 @@ public:
         }
         glBlendFunc(src, dst);
     }
+#endif
+
+#ifdef THESEUS_USE_BGFX
+    static uint64_t D3DBlendToBgfx(DWORD f) {
+        // Mirrors ApplyBlendFunc's switch: the shim's D3DBLEND_* enum
+        // only declares the six factors the dashboard actually uses.
+        switch (f) {
+            case D3DBLEND_ZERO:         return BGFX_STATE_BLEND_ZERO;
+            case D3DBLEND_ONE:          return BGFX_STATE_BLEND_ONE;
+            case D3DBLEND_SRCALPHA:     return BGFX_STATE_BLEND_SRC_ALPHA;
+            case D3DBLEND_INVSRCALPHA:  return BGFX_STATE_BLEND_INV_SRC_ALPHA;
+            case D3DBLEND_DESTALPHA:    return BGFX_STATE_BLEND_DST_ALPHA;
+            case D3DBLEND_INVDESTALPHA: return BGFX_STATE_BLEND_INV_DST_ALPHA;
+            default:                    return BGFX_STATE_BLEND_SRC_ALPHA;
+        }
+    }
+
+    void RecomputeBgfxBlend() {
+        // Recompute the blend bits from cached src/dest factors. Called
+        // when either factor or the enable flag changes; chunk 5 reads
+        // the result via m_bgfxState at draw time.
+        m_bgfxState &= ~BGFX_STATE_BLEND_MASK;
+        if (m_alphaBlendEnable) {
+            uint64_t s = D3DBlendToBgfx(m_srcBlend);
+            uint64_t d = D3DBlendToBgfx(m_destBlend);
+            m_bgfxState |= BGFX_STATE_BLEND_FUNC(s, d);
+        }
+    }
+#endif
 
     HRESULT GetRenderState(D3DRENDERSTATETYPE state, DWORD* pValue) {
         switch (state) {
@@ -1880,12 +2349,29 @@ public:
         }
         return S_OK;
     }
+#ifndef THESEUS_USE_BGFX
     static GLenum D3DWrapToGL(DWORD d3dAddr) {
         switch (d3dAddr) {
             case 3: return GL_CLAMP_TO_EDGE;  // D3DTADDRESS_CLAMP
             default: return GL_REPEAT;         // D3DTADDRESS_WRAP
         }
     }
+#endif
+#ifdef THESEUS_USE_BGFX
+    // BGFX_SAMPLER_* flag block derived from current stage-0 sampler
+    // state. Default is REPEAT + LINEAR which is bgfx's implicit state,
+    // so writes only set bits when the dashboard explicitly overrides.
+    uint32_t BgfxStage0SamplerFlags() const {
+        uint32_t f = 0;
+        if (m_tss0AddressU == D3DTADDRESS_CLAMP)  f |= BGFX_SAMPLER_U_CLAMP;
+        if (m_tss0AddressU == D3DTADDRESS_MIRROR) f |= BGFX_SAMPLER_U_MIRROR;
+        if (m_tss0AddressV == D3DTADDRESS_CLAMP)  f |= BGFX_SAMPLER_V_CLAMP;
+        if (m_tss0AddressV == D3DTADDRESS_MIRROR) f |= BGFX_SAMPLER_V_MIRROR;
+        if (m_tss0MinFilter == D3DTEXF_POINT)     f |= BGFX_SAMPLER_MIN_POINT;
+        if (m_tss0MagFilter == D3DTEXF_POINT)     f |= BGFX_SAMPLER_MAG_POINT;
+        return f;
+    }
+#endif
     static GLenum D3DFilterToGL(DWORD d3dFilter, bool isMag) {
         switch (d3dFilter) {
             case 1: return GL_NEAREST;  // D3DTEXF_POINT
@@ -1894,6 +2380,16 @@ public:
         }
     }
     HRESULT SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD value) {
+        // Sweep 2 trace counter.
+        if (stage < 8 && (DWORD)type < 32) {
+            int idx = (int)stage * 32 + (int)type;
+            g_tssStats[idx].totalCalls++;
+            if (g_tssStats[idx].hasValue && g_tssStats[idx].lastValue == value)
+                g_tssStats[idx].redundantCalls++;
+            g_tssStats[idx].lastValue = value;
+            g_tssStats[idx].hasValue = true;
+        }
+
         if (stage == 0) {
             switch (type) {
                 case D3DTSS_COLOROP:   m_tss0ColorOp   = value; break;
@@ -1902,6 +2398,7 @@ public:
                 case D3DTSS_ALPHAOP:   m_tss0AlphaOp   = value; break;
                 case D3DTSS_ALPHAARG1: m_tss0AlphaArg1  = value; break;
                 case D3DTSS_ALPHAARG2: m_tss0AlphaArg2  = value; break;
+#ifndef THESEUS_USE_BGFX
                 case D3DTSS_ADDRESSU:
                     glActiveTexture(GL_TEXTURE0);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, D3DWrapToGL(value));
@@ -1918,6 +2415,12 @@ public:
                     glActiveTexture(GL_TEXTURE0);
                     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, D3DFilterToGL(value, true));
                     break;
+#else
+                case D3DTSS_ADDRESSU: m_tss0AddressU  = value; break;
+                case D3DTSS_ADDRESSV: m_tss0AddressV  = value; break;
+                case D3DTSS_MINFILTER: m_tss0MinFilter = value; break;
+                case D3DTSS_MAGFILTER: m_tss0MagFilter = value; break;
+#endif
                 default: break;
             }
         } else if (stage == 1) {
@@ -1965,6 +2468,7 @@ public:
     HRESULT LightEnable(DWORD index, BOOL enable) { return S_OK; }
 
     HRESULT Clear(DWORD count, const void* rects, DWORD flags, D3DCOLOR color, float z, DWORD stencil) {
+#ifndef THESEUS_USE_BGFX
         GLbitfield mask = 0;
         if (flags & D3DCLEAR_TARGET) {
             float r = ((color >> 16) & 0xFF) / 255.0f;
@@ -1984,6 +2488,30 @@ public:
         // Restore depth write state
         if (flags & D3DCLEAR_ZBUFFER)
             glDepthMask(m_zWriteEnable ? GL_TRUE : GL_FALSE);
+#else
+        // bgfx clears are configured per-view, applied at the next submit
+        // to that view. View 0 is the dashboard's only view for now;
+        // chunk 5d-3+ may split out viewports per-scene if needed.
+        uint16_t bgMask = 0;
+        uint32_t rgba = 0;
+        if (flags & D3DCLEAR_TARGET) {
+            // D3DCOLOR is 0xAARRGGBB; bgfx wants 0xRRGGBBAA.
+            uint32_t r = (color >> 16) & 0xFF;
+            uint32_t g = (color >>  8) & 0xFF;
+            uint32_t b = (color      ) & 0xFF;
+            uint32_t a = (color >> 24) & 0xFF;
+            rgba = (r << 24) | (g << 16) | (b << 8) | a;
+            bgMask |= BGFX_CLEAR_COLOR;
+        }
+        if (flags & D3DCLEAR_ZBUFFER) bgMask |= BGFX_CLEAR_DEPTH;
+        if (bgMask) {
+            bgfx::setViewClear(0, bgMask, rgba, z, (uint8_t)stencil);
+            // touch() guarantees the view actually runs even with no
+            // draws submitted before bgfx::frame() (rare, but happens
+            // on the first frame before any geometry queues up).
+            bgfx::touch(0);
+        }
+#endif
         return S_OK;
     }
 
@@ -2075,8 +2603,367 @@ public:
         return l;
     }
 
+#ifdef THESEUS_USE_BGFX
+    // Chunk 5b: lazy-upload a texture's RGBA pixel data to its parallel
+    // bgfx handle. Mirrors UnlockRect/CreateFromRGBA's GL upload.
+    static void BgfxEnsureTextureUploaded(IDirect3DTexture8* tex) {
+        if (!tex || !tex->m_pixels) return;
+        if (tex->m_width == 0 || tex->m_height == 0) return;
+        UINT sz = tex->m_width * tex->m_height * 4;
+        if (!bgfx::isValid(tex->m_bgfxTex)) {
+            tex->m_bgfxTex = bgfx::createTexture2D(
+                (uint16_t)tex->m_width, (uint16_t)tex->m_height,
+                false, 1,
+                bgfx::TextureFormat::RGBA8,
+                BGFX_TEXTURE_NONE,
+                bgfx::copy(tex->m_pixels, sz));
+            tex->m_bgfxDirty = false;
+        } else if (tex->m_bgfxDirty) {
+            bgfx::updateTexture2D(tex->m_bgfxTex, 0, 0, 0, 0,
+                (uint16_t)tex->m_width, (uint16_t)tex->m_height,
+                bgfx::copy(tex->m_pixels, sz));
+            tex->m_bgfxDirty = false;
+        }
+    }
+
+    // Pack + push every FF uniform, bind the two samplers. WVP / WorldView
+    // ship raw row-major; NormalInv pre-transposed (bgfx has no GL_TRUE flag).
+    void BgfxSetupUniforms(const FVFLayout& l) {
+        UpdateWVP();
+
+        bgfx::setUniform(g_bgfxFF.u_FfWVP,       &m_matWVP.m[0][0]);
+        bgfx::setUniform(g_bgfxFF.u_FfWorldView, &m_matWV.m[0][0]);
+
+        // Pre-transpose normalInv to match GL's GL_TRUE transpose.
+        float niT[16];
+        for (int r = 0; r < 4; r++) for (int c = 0; c < 4; c++)
+            niT[c*4 + r] = m_normalInv[r*4 + c];
+        bgfx::setUniform(g_bgfxFF.u_FfNormalInv, niT);
+
+        bgfx::setUniform(g_bgfxFF.u_FfFalloffFront, m_falloffFront);
+        bgfx::setUniform(g_bgfxFF.u_FfFalloffDelta, m_falloffDelta);
+
+        float tf[4] = {
+            ((m_texFactor >> 16) & 0xFF) / 255.0f,
+            ((m_texFactor >> 8)  & 0xFF) / 255.0f,
+            ( m_texFactor        & 0xFF) / 255.0f,
+            ((m_texFactor >> 24) & 0xFF) / 255.0f
+        };
+        bgfx::setUniform(g_bgfxFF.u_FfTFactor, tf);
+
+        float md[4] = {
+            ((m_matDiffuse >> 16) & 0xFF) / 255.0f,
+            ((m_matDiffuse >> 8)  & 0xFF) / 255.0f,
+            ( m_matDiffuse        & 0xFF) / 255.0f,
+            ((m_matDiffuse >> 24) & 0xFF) / 255.0f
+        };
+        bgfx::setUniform(g_bgfxFF.u_FfMatDiffuse, md);
+
+        //. Re-derive the TSS state SetupGLUniforms computes; one.
+        //. to one with the GL path so output matches.           .
+        bool tex0Valid = m_textures[0] && m_textures[0]->m_pixels;
+        bool tex1Valid = m_textures[1] && m_textures[1]->m_pixels;
+        bool hasNrm = l.hasNormal || l.hasPackedNormal;
+        int  nrmType = l.hasNormal ? 1 : (l.hasPackedNormal ? 2 : 0);
+
+        bool stageRefsTex = (m_tss0ColorArg1 == D3DTA_TEXTURE || m_tss0ColorArg2 == D3DTA_TEXTURE ||
+                             m_tss0AlphaArg1 == D3DTA_TEXTURE || m_tss0AlphaArg2 == D3DTA_TEXTURE);
+        bool hasTex0 = stageRefsTex && tex0Valid;
+        bool hasTex1 = tex1Valid && m_tss1AlphaOp != D3DTOP_DISABLE;
+
+        // Vertex color source
+        int colorSource = 3;
+        int alphaSource = 0;
+        float alphaMul  = 1.0f;
+        if (m_tss0ColorOp == D3DTOP_DISABLE) {
+            colorSource = (hasNrm || m_effectShaderActive) ? 0 : 4;
+        } else if (m_tss0ColorOp == D3DTOP_SELECTARG1) {
+            if (m_tss0ColorArg1 == D3DTA_TFACTOR) colorSource = 2;
+            else if (m_tss0ColorArg1 == D3DTA_TEXTURE) colorSource = 3;
+            else if (m_tss0ColorArg1 == D3DTA_DIFFUSE) colorSource = (hasNrm || m_effectShaderActive) ? 0 : (l.hasDiffuse ? 1 : 4);
+            else colorSource = 3;
+        } else if (m_tss0ColorOp == D3DTOP_SELECTARG2) {
+            if (m_tss0ColorArg2 == D3DTA_TFACTOR) colorSource = 2;
+            else if (m_tss0ColorArg2 == D3DTA_TEXTURE) colorSource = 3;
+            else if (m_tss0ColorArg2 == D3DTA_DIFFUSE) colorSource = (hasNrm || m_effectShaderActive) ? 0 : (l.hasDiffuse ? 1 : 4);
+            else colorSource = 3;
+        } else if (m_tss0ColorOp == D3DTOP_MODULATE) {
+            DWORD nonTexArg = (m_tss0ColorArg1 == D3DTA_TEXTURE) ? m_tss0ColorArg2 : m_tss0ColorArg1;
+            if (nonTexArg == D3DTA_DIFFUSE) colorSource = (hasNrm || m_effectShaderActive) ? 0 : (l.hasDiffuse ? 1 : 4);
+            else if (nonTexArg == D3DTA_TFACTOR) colorSource = 2;
+            else colorSource = 3;
+        }
+
+        // Vertex alpha source
+        if (m_tss0AlphaOp == D3DTOP_DISABLE) {
+            alphaSource = 0;
+        } else if (m_tss0AlphaOp == D3DTOP_SELECTARG1) {
+            if (m_tss0AlphaArg1 == D3DTA_TFACTOR) alphaSource = 1;
+            else if (m_tss0AlphaArg1 == D3DTA_TEXTURE) alphaSource = 3;
+            else if (m_tss0AlphaArg1 == D3DTA_DIFFUSE) alphaSource = (hasNrm || m_effectShaderActive) ? 0 : 2;
+            else alphaSource = 3;
+        } else if (m_tss0AlphaOp == D3DTOP_SELECTARG2) {
+            if (m_tss0AlphaArg2 == D3DTA_TFACTOR) alphaSource = 1;
+            else if (m_tss0AlphaArg2 == D3DTA_TEXTURE) alphaSource = 3;
+            else if (m_tss0AlphaArg2 == D3DTA_DIFFUSE) alphaSource = (hasNrm || m_effectShaderActive) ? 0 : 2;
+            else alphaSource = 3;
+        } else if (m_tss0AlphaOp == D3DTOP_MODULATE) {
+            bool a1Tex = (m_tss0AlphaArg1 == D3DTA_TEXTURE);
+            bool a2Tex = (m_tss0AlphaArg2 == D3DTA_TEXTURE);
+            if (a1Tex || a2Tex) {
+                DWORD nonTex = a1Tex ? m_tss0AlphaArg2 : m_tss0AlphaArg1;
+                if (nonTex == D3DTA_TFACTOR) alphaSource = 1;
+                else if (nonTex == D3DTA_DIFFUSE) alphaSource = (hasNrm || m_effectShaderActive) ? 0 : 2;
+                else alphaSource = 0;
+            } else {
+                if ((m_tss0AlphaArg1 == D3DTA_DIFFUSE && m_tss0AlphaArg2 == D3DTA_TFACTOR) ||
+                    (m_tss0AlphaArg1 == D3DTA_TFACTOR && m_tss0AlphaArg2 == D3DTA_DIFFUSE))
+                    alphaSource = 1;
+                else
+                    alphaSource = 0;
+            }
+        }
+
+        // Stage 1 alpha modulation by TFACTOR
+        if (m_tss1AlphaOp == D3DTOP_MODULATE && !hasTex1) {
+            DWORD s1arg = (m_tss1AlphaArg1 == D3DTA_CURRENT) ? m_tss1AlphaArg2 : m_tss1AlphaArg1;
+            if (s1arg == D3DTA_TFACTOR)
+                alphaMul = ((m_texFactor >> 24) & 0xFF) / 255.0f;
+        }
+
+        // Fragment ops
+        int fragColorOp = 0;
+        int fragAlphaOp = 0;
+        if (m_tss0ColorOp == D3DTOP_SELECTARG1) {
+            if (m_tss0ColorArg1 == D3DTA_TEXTURE && hasTex0) fragColorOp = 1;
+        } else if (m_tss0ColorOp == D3DTOP_SELECTARG2) {
+            if (m_tss0ColorArg2 == D3DTA_TEXTURE && hasTex0) fragColorOp = 1;
+        } else if (m_tss0ColorOp == D3DTOP_MODULATE) {
+            if (hasTex0) fragColorOp = 2;
+        } else if (m_tss0ColorOp == D3DTOP_ADD) {
+            if (hasTex0) fragColorOp = 3;
+        }
+        if (m_tss0AlphaOp == D3DTOP_SELECTARG1) {
+            if (m_tss0AlphaArg1 == D3DTA_TEXTURE && hasTex0) fragAlphaOp = 1;
+        } else if (m_tss0AlphaOp == D3DTOP_SELECTARG2) {
+            if (m_tss0AlphaArg2 == D3DTA_TEXTURE && hasTex0) fragAlphaOp = 1;
+        } else if (m_tss0AlphaOp == D3DTOP_MODULATE) {
+            bool refsTex = (m_tss0AlphaArg1 == D3DTA_TEXTURE || m_tss0AlphaArg2 == D3DTA_TEXTURE);
+            if (refsTex && hasTex0) fragAlphaOp = 2;
+        }
+
+        int tex1AlphaOp = 0;
+        if (hasTex1 && m_tss1AlphaOp == D3DTOP_MODULATE &&
+            (m_tss1AlphaArg1 == D3DTA_TEXTURE || m_tss1AlphaArg2 == D3DTA_TEXTURE))
+            tex1AlphaOp = 1;
+        int tex1ColorOp = 0;
+        if (hasTex1 && m_tss1ColorOp == D3DTOP_ADD &&
+            (m_tss1ColorArg1 == D3DTA_TEXTURE || m_tss1ColorArg2 == D3DTA_TEXTURE))
+            tex1ColorOp = 1;
+
+        float alphaRefVal = m_alphaTestEnabled ? m_alphaRef : 0.0f;
+
+        // Pack the flag vec4s
+        float flags1[4] = { l.hasRHW ? 1.0f : 0.0f, (float)colorSource, (float)alphaSource, (float)nrmType };
+        float flags2[4] = { m_envMapMode ? 1.0f : 0.0f, m_vertexAlphaMul ? 1.0f : 0.0f, alphaMul, 0.0f };
+        float fragFlags1[4] = { (float)fragColorOp, (float)fragAlphaOp, hasTex1 ? 1.0f : 0.0f, (float)tex1AlphaOp };
+        float fragFlags2[4] = { (float)tex1ColorOp, alphaRefVal, 0.0f, 0.0f };
+        float vps[4] = { 1280.0f, 720.0f, 0.0f, 0.0f };
+        bgfx::setUniform(g_bgfxFF.u_FfFlags1,       flags1);
+        bgfx::setUniform(g_bgfxFF.u_FfFlags2,       flags2);
+        bgfx::setUniform(g_bgfxFF.u_FfFragFlags1,   fragFlags1);
+        bgfx::setUniform(g_bgfxFF.u_FfFragFlags2,   fragFlags2);
+        bgfx::setUniform(g_bgfxFF.u_FfViewportSize, vps);
+
+        // Samplers. Upload textures lazily; if no real texture, use the
+        // 1x1 white placeholder so the shader sample is well-defined.
+        bgfx::TextureHandle t0 = g_bgfxWhiteTex;
+        if (hasTex0) {
+            BgfxEnsureTextureUploaded(m_textures[0]);
+            if (bgfx::isValid(m_textures[0]->m_bgfxTex))
+                t0 = m_textures[0]->m_bgfxTex;
+        }
+        bgfx::setTexture(0, g_bgfxFF.s_tex0, t0, BgfxStage0SamplerFlags());
+
+        bgfx::TextureHandle t1 = g_bgfxWhiteTex;
+        if (hasTex1) {
+            BgfxEnsureTextureUploaded(m_textures[1]);
+            if (bgfx::isValid(m_textures[1]->m_bgfxTex))
+                t1 = m_textures[1]->m_bgfxTex;
+        }
+        bgfx::setTexture(1, g_bgfxFF.s_tex1, t1);
+    }
+
+    // Submit DrawIndexedPrimitive through bgfx (dynamic VB + transient IB).
+    // ExpandIndices subtracts minIdx; bgfx adds back m_baseVertex.
+    // STRIP / FAN expand to TRILIST, so bgfx only sees triangle lists.
+    void BgfxShadowSubmit(DWORD type, UINT minIdx, UINT numVerts,
+                          UINT startIdx, UINT primCount) {
+        if (!bgfx::isValid(g_bgfxProgFF)) return;
+        if (type != D3DPT_TRIANGLELIST &&
+            type != D3DPT_TRIANGLESTRIP &&
+            type != D3DPT_TRIANGLEFAN) return;
+        if (!m_streamVB || !m_streamIB) return;
+        if (m_streamStride == 0) return;
+
+        bgfx::VertexLayout layout;
+        if (!BuildBgfxLayout(m_fvf, layout)) return;
+
+        UINT vbSize = m_streamVB->GetSize();
+        if (!bgfx::isValid(m_streamVB->m_bgfxVB)) {
+            uint32_t nv = vbSize / m_streamStride;
+            if (nv == 0) return;
+            m_streamVB->m_bgfxVB =
+                bgfx::createDynamicVertexBuffer(nv, layout);
+            m_streamVB->m_bgfxDirty = true;
+        }
+        if (m_streamVB->m_bgfxDirty) {
+            bgfx::update(m_streamVB->m_bgfxVB, 0,
+                bgfx::copy(m_streamVB->m_data, vbSize));
+            m_streamVB->m_bgfxDirty = false;
+        }
+
+        const WORD* srcIdx = (const WORD*)m_streamIB->m_data + startIdx;
+        UINT idxCount = 0;
+        GLushort* triIdx = ExpandIndices(type, primCount, srcIdx,
+                                         minIdx, idxCount);
+        if (!triIdx || idxCount == 0) return;
+
+        bgfx::TransientIndexBuffer tib;
+        if (bgfx::getAvailTransientIndexBuffer(idxCount) < idxCount) return;
+        bgfx::allocTransientIndexBuffer(&tib, idxCount);
+        memcpy(tib.data, triIdx, idxCount * sizeof(uint16_t));
+
+        FVFLayout l = GetFVFLayout(m_fvf);
+        BgfxSetupUniforms(l);
+
+        bgfx::setState(m_bgfxState);
+        bgfx::setVertexBuffer(0, m_streamVB->m_bgfxVB,
+                              m_baseVertex, numVerts);
+        bgfx::setIndexBuffer(&tib, 0, idxCount);
+        bgfx::submit(0, g_bgfxProgFF);
+    }
+
+    // DrawPrimitiveUP / DrawIndexedPrimitiveUP go through transient buffers
+    // since the caller hands raw vertex/index data per draw. QUADLIST is
+    // expanded inline. indexData=nullptr means non-indexed.
+    void BgfxShadowSubmitUP(DWORD type, UINT primCount,
+                            const void* vertexData, UINT vertexStride,
+                            UINT numVerts,
+                            const WORD* indexData, UINT minIdx) {
+        if (!bgfx::isValid(g_bgfxProgFF)) return;
+        if (!vertexData || vertexStride == 0 || numVerts == 0) return;
+        if (type != D3DPT_TRIANGLELIST &&
+            type != D3DPT_TRIANGLESTRIP &&
+            type != D3DPT_TRIANGLEFAN &&
+            type != D3DPT_QUADLIST) return;
+
+        bgfx::VertexLayout layout;
+        if (!BuildBgfxLayout(m_fvf, layout)) return;
+
+        // Transient VB. Copy the raw user data in.
+        bgfx::TransientVertexBuffer tvb;
+        if (bgfx::getAvailTransientVertexBuffer(numVerts, layout) < numVerts) return;
+        bgfx::allocTransientVertexBuffer(&tvb, numVerts, layout);
+        memcpy(tvb.data, vertexData, (size_t)numVerts * vertexStride);
+
+        // QUADLIST expands inline. TRILIST/STRIP/FAN go through ExpandIndices.
+        // Both paths emit into the shared scratch buffer.
+        UINT idxCount = 0;
+        const uint16_t* idxSrc = nullptr;
+        if (type == D3DPT_QUADLIST) {
+            idxCount = primCount * 6;
+            GLushort* s = GetIndexScratch(idxCount);
+            if (!s) return;
+            UINT n = 0;
+            for (UINT q = 0; q < primCount; q++) {
+                GLushort b = (GLushort)(q * 4);
+                s[n++] = b;       s[n++] = (GLushort)(b+1); s[n++] = (GLushort)(b+2);
+                s[n++] = b;       s[n++] = (GLushort)(b+2); s[n++] = (GLushort)(b+3);
+            }
+            idxSrc = (const uint16_t*)s;
+        } else if (indexData != nullptr) {
+            GLushort* tri = ExpandIndices(type, primCount, indexData,
+                                          minIdx, idxCount);
+            if (!tri || idxCount == 0) return;
+            idxSrc = (const uint16_t*)tri;
+        } else {
+            // Non-indexed (DrawPrimitiveUP TRILIST/STRIP/FAN): emit
+            // sequential indices into scratch so the same submit path
+            // applies.
+            idxCount = primCount * 3;
+            GLushort* s = GetIndexScratch(idxCount);
+            if (!s) return;
+            UINT n = 0;
+            if (type == D3DPT_TRIANGLELIST) {
+                for (UINT i = 0; i < primCount; i++) {
+                    GLushort b = (GLushort)(i * 3);
+                    s[n++] = b; s[n++] = (GLushort)(b+1); s[n++] = (GLushort)(b+2);
+                }
+            } else if (type == D3DPT_TRIANGLESTRIP) {
+                for (UINT i = 0; i < primCount; i++) {
+                    if (i % 2 == 0) {
+                        s[n++] = (GLushort)i; s[n++] = (GLushort)(i+1); s[n++] = (GLushort)(i+2);
+                    } else {
+                        s[n++] = (GLushort)(i+1); s[n++] = (GLushort)i; s[n++] = (GLushort)(i+2);
+                    }
+                }
+            } else /* FAN */ {
+                for (UINT i = 0; i < primCount; i++) {
+                    s[n++] = 0; s[n++] = (GLushort)(i+1); s[n++] = (GLushort)(i+2);
+                }
+            }
+            idxSrc = (const uint16_t*)s;
+        }
+
+        bgfx::TransientIndexBuffer tib;
+        if (bgfx::getAvailTransientIndexBuffer(idxCount) < idxCount) return;
+        bgfx::allocTransientIndexBuffer(&tib, idxCount);
+        memcpy(tib.data, idxSrc, idxCount * sizeof(uint16_t));
+
+        FVFLayout l = GetFVFLayout(m_fvf);
+        BgfxSetupUniforms(l);
+
+        bgfx::setState(m_bgfxState);
+        bgfx::setVertexBuffer(0, &tvb, 0, numVerts);
+        bgfx::setIndexBuffer(&tib, 0, idxCount);
+        bgfx::submit(0, g_bgfxProgFF);
+    }
+
+    // FVF -> bgfx::VertexLayout. Mirrors GetFVFLayout. Returns false for
+    // FVFs the bgfx path doesn't support yet (XYZRHW HUD).
+    bool BuildBgfxLayout(DWORD fvf, bgfx::VertexLayout& out) {
+        FVFLayout l = GetFVFLayout(fvf);
+        if (l.hasRHW) return false;
+
+        out.begin();
+        out.add(bgfx::Attrib::Position, 3, bgfx::AttribType::Float);
+        // Float3 normal -> Normal attr. Packed 11:11:10 -> hijack Color1.
+        if (l.hasNormal)
+            out.add(bgfx::Attrib::Normal, 3, bgfx::AttribType::Float);
+        else if (l.hasPackedNormal)
+            // asInt=true Uint8x4 maps to UINT on Vulkan, mismatched with vec4
+            // a_color1 in the shader. normalized=true gives UNORM on both
+            // backends; the shader scales by 255.
+            out.add(bgfx::Attrib::Color1, 4, bgfx::AttribType::Uint8, true);
+        if (l.hasDiffuse)
+            out.add(bgfx::Attrib::Color0, 4, bgfx::AttribType::Uint8, true);
+        // Specular bytes are unused but have to occupy stride so TexCoord0
+        // lines up. Color2 carries them when packed-normal claimed Color1.
+        if (l.hasSpecular)
+            out.add(l.hasPackedNormal ? bgfx::Attrib::Color2
+                                       : bgfx::Attrib::Color1,
+                    4, bgfx::AttribType::Uint8, true);
+        if (l.texCount >= 1)
+            out.add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float);
+        out.end();
+        return true;
+    }
+#endif
+
     // Set GL uniforms for the current TSS/material/falloff state before a draw call
     void SetupGLUniforms(const FVFLayout& l) {
+#ifndef THESEUS_USE_BGFX
         // Ensure our shader program and VAO are active (ImGui uses its own)
         glUseProgram(g_gl.program);
         glBindVertexArray(g_gl.vao);
@@ -2135,7 +3022,7 @@ public:
         if (hasTex0) {
             glBindTexture(GL_TEXTURE_2D, m_textures[0]->m_glTexture);
         } else if (tex0Valid && m_tss0ColorOp == D3DTOP_DISABLE && m_tss0AlphaOp == D3DTOP_DISABLE) {
-            // Texture bound but TSS disabled — don't use it (falloff materials)
+            // Texture bound but TSS disabled, don't use it (falloff materials)
             glBindTexture(GL_TEXTURE_2D, g_gl.whiteTex);
         } else {
             glBindTexture(GL_TEXTURE_2D, g_gl.whiteTex);
@@ -2173,7 +3060,7 @@ public:
         float alphaMul = 1.0f;
 
         if (m_tss0ColorOp == D3DTOP_DISABLE) {
-            // No TSS color processing — use falloff or material diffuse
+            // No TSS color processing, use falloff or material diffuse
             colorSource = (hasNrm || m_effectShaderActive) ? 0 : 4;
         } else if (m_tss0ColorOp == D3DTOP_SELECTARG1) {
             if (m_tss0ColorArg1 == D3DTA_TFACTOR) colorSource = 2;
@@ -2281,11 +3168,13 @@ public:
 
         // Alpha test
         glUniform1f(g_gl.u_AlphaRef, m_alphaTestEnabled ? m_alphaRef : 0.0f);
+#endif
     }
 
     // Set up vertex attribute pointers for the given FVF layout
     // bufferOffset = byte offset into the currently bound VBO
     void SetupVertexAttribs(const FVFLayout& l, UINT stride, size_t bufferOffset) {
+#ifndef THESEUS_USE_BGFX
         // Position (always at offset 0 from vertex start)
         int posComps = l.hasRHW ? 4 : 3;
         glEnableVertexAttribArray(g_gl.a_Position);
@@ -2327,22 +3216,47 @@ public:
             glDisableVertexAttribArray(g_gl.a_TexCoord);
             glVertexAttrib2f(g_gl.a_TexCoord, 0.0f, 0.0f);
         }
+#endif
     }
 
-    // Expand index buffer for triangle strips/fans into triangle list
-    // Returns allocated index array (caller must free) and sets outCount
-    GLuint* ExpandIndices(DWORD type, UINT primCount, const WORD* srcIdx, UINT minIdx, UINT& outCount) {
+    // Expand STRIP/FAN to TRILIST. Scratch buffer is grown on demand and
+    // kept for the device's lifetime (was burning ~12K mallocs/sec at 60fps).
+    // GLushort because D3D8 index buffers are WORDs.
+    static GLushort* GetIndexScratch(UINT count) {
+        static GLushort* s_buf = nullptr;
+        static UINT      s_cap = 0;
+        if (count > s_cap) {
+            UINT newCap = s_cap ? s_cap * 2 : 256;
+            while (newCap < count) newCap *= 2;
+            GLushort* nb = (GLushort*)realloc(s_buf, newCap * sizeof(GLushort));
+            if (!nb) return nullptr;
+            s_buf = nb;
+            s_cap = newCap;
+        }
+        return s_buf;
+    }
+
+    // Returns a pointer into the shared scratch buffer. Caller must NOT
+    // free; pointer is valid until the next ExpandIndices call.
+    GLushort* ExpandIndices(DWORD type, UINT primCount, const WORD* srcIdx, UINT minIdx, UINT& outCount) {
         if (type == D3DPT_TRIANGLELIST) {
             outCount = primCount * 3;
-            GLuint* idx = (GLuint*)malloc(outCount * sizeof(GLuint));
-            for (UINT i = 0; i < outCount; i++) idx[i] = (GLuint)(srcIdx[i] - minIdx);
+            GLushort* idx = GetIndexScratch(outCount);
+            if (!idx) return nullptr;
+            if (minIdx == 0) {
+                // Common case: just copy. Same width source and dest.
+                memcpy(idx, srcIdx, outCount * sizeof(GLushort));
+            } else {
+                for (UINT i = 0; i < outCount; i++) idx[i] = (GLushort)(srcIdx[i] - minIdx);
+            }
             return idx;
         } else if (type == D3DPT_TRIANGLESTRIP) {
             outCount = primCount * 3;
-            GLuint* idx = (GLuint*)malloc(outCount * sizeof(GLuint));
+            GLushort* idx = GetIndexScratch(outCount);
+            if (!idx) return nullptr;
             UINT n = 0;
             for (UINT i = 0; i < primCount; i++) {
-                GLuint i0 = srcIdx[i] - minIdx, i1 = srcIdx[i+1] - minIdx, i2 = srcIdx[i+2] - minIdx;
+                GLushort i0 = srcIdx[i] - minIdx, i1 = srcIdx[i+1] - minIdx, i2 = srcIdx[i+2] - minIdx;
                 if (i % 2 == 0) { idx[n++]=i0; idx[n++]=i1; idx[n++]=i2; }
                 else { idx[n++]=i1; idx[n++]=i0; idx[n++]=i2; }
             }
@@ -2350,9 +3264,10 @@ public:
             return idx;
         } else if (type == D3DPT_TRIANGLEFAN) {
             outCount = primCount * 3;
-            GLuint* idx = (GLuint*)malloc(outCount * sizeof(GLuint));
+            GLushort* idx = GetIndexScratch(outCount);
+            if (!idx) return nullptr;
             UINT n = 0;
-            GLuint i0 = srcIdx[0] - minIdx;
+            GLushort i0 = srcIdx[0] - minIdx;
             for (UINT i = 0; i < primCount; i++) {
                 idx[n++]=i0; idx[n++]=srcIdx[i+1]-minIdx; idx[n++]=srcIdx[i+2]-minIdx;
             }
@@ -2360,50 +3275,44 @@ public:
             return idx;
         }
         outCount = 0;
-        return NULL;
+        return nullptr;
     }
 
     HRESULT DrawIndexedPrimitive(DWORD type, UINT minIdx, UINT numVerts, UINT startIdx, UINT primCount) {
         if (!m_streamVB || !m_streamVB->m_data || !m_streamIB || !m_streamIB->m_data) return S_OK;
         if (primCount == 0 || numVerts == 0) return S_OK;
-        // GL buffers are lazily created in EnsureUploaded, no need to check here
         if (m_streamStride == 0) return S_OK;
 
         FVFLayout l = GetFVFLayout(m_fvf);
 
-        // Upload VBO/IBO data to GL if dirty
-        m_streamVB->EnsureUploaded();
-        m_streamIB->EnsureUploaded();
-
-        // Set uniforms
-        SetupGLUniforms(l);
-
-        // Inspector: record draw call with screen AABB
+        // Inspector record runs on both backends. it's a software
+        // overlay, no GL/bgfx dependency.
         InspectorRecordDraw(numVerts, m_streamVB->m_data, m_streamStride, l.hasRHW);
 
-        // Bind VBO and set vertex attributes
+#ifndef THESEUS_USE_BGFX
+        m_streamVB->EnsureUploaded();
+        m_streamIB->EnsureUploaded();
+        SetupGLUniforms(l);
+
         glBindBuffer(GL_ARRAY_BUFFER, m_streamVB->m_glBuffer);
         size_t vbOffset = (size_t)m_baseVertex * m_streamStride;
         SetupVertexAttribs(l, m_streamStride, vbOffset);
 
-        // Build index array (expanding strips/fans to triangles)
         const WORD* srcIdx = (const WORD*)m_streamIB->m_data + startIdx;
         UINT idxCount = 0;
-        GLuint* triIdx = ExpandIndices(type, primCount, srcIdx, minIdx, idxCount);
-        if (!triIdx || idxCount == 0) { free(triIdx); return S_OK; }
+        GLushort* triIdx = ExpandIndices(type, primCount, srcIdx, minIdx, idxCount);
+        if (!triIdx || idxCount == 0) return S_OK;
 
-        // Upload indices to dynamic IBO and draw
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_gl.dynamicIBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, idxCount * sizeof(GLuint), triIdx, GL_STREAM_DRAW);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, idxCount * sizeof(GLushort), triIdx, GL_STREAM_DRAW);
 #ifndef NDEBUG
-        // Pre-draw glGetError flushes the pipeline; only worth the cost in
-        // debug builds where we actually inspect errors.
         while (glGetError() != GL_NO_ERROR) {}
 #endif
-        glDrawElements(GL_TRIANGLES, idxCount, GL_UNSIGNED_INT, 0);
-        free(triIdx);
+        glDrawElements(GL_TRIANGLES, idxCount, GL_UNSIGNED_SHORT, 0);
+#else
+        BgfxShadowSubmit(type, minIdx, numVerts, startIdx, primCount);
+#endif
         m_frameDrawCalls++;
-
         return S_OK;
     }
 
@@ -2424,10 +3333,11 @@ public:
         else if (type == D3DPT_QUADLIST) vertCount = primCount * 4;
         else return S_OK;
 
-        SetupGLUniforms(l);
         InspectorRecordDraw(vertCount, data, stride, l.hasRHW);
 
-        // Upload vertex data to dynamic VBO
+#ifndef THESEUS_USE_BGFX
+        SetupGLUniforms(l);
+
         glBindBuffer(GL_ARRAY_BUFFER, g_gl.dynamicVBO);
         glBufferData(GL_ARRAY_BUFFER, vertCount * stride, data, GL_STREAM_DRAW);
         SetupVertexAttribs(l, stride, 0);
@@ -2439,7 +3349,6 @@ public:
         } else if (type == D3DPT_TRIANGLEFAN) {
             glDrawArrays(GL_TRIANGLE_FAN, 0, vertCount);
         } else if (type == D3DPT_QUADLIST) {
-            // Convert quads to triangles
             UINT triCount = primCount * 2;
             GLuint* idx = (GLuint*)malloc(triCount * 3 * sizeof(GLuint));
             UINT n = 0;
@@ -2453,6 +3362,10 @@ public:
             glDrawElements(GL_TRIANGLES, n, GL_UNSIGNED_INT, 0);
             free(idx);
         }
+#else
+        BgfxShadowSubmitUP(type, primCount, data, stride, vertCount,
+                           /*indexData*/nullptr, /*minIdx*/0);
+#endif
         m_frameDrawCalls++;
         return S_OK;
     }
@@ -2461,23 +3374,25 @@ public:
         if (!indexData || !vertexData || primCount == 0 || numVerts == 0) return S_OK;
         FVFLayout l = GetFVFLayout(m_fvf);
 
+#ifndef THESEUS_USE_BGFX
         SetupGLUniforms(l);
 
-        // Upload vertex data
         glBindBuffer(GL_ARRAY_BUFFER, g_gl.dynamicVBO);
         glBufferData(GL_ARRAY_BUFFER, numVerts * vertexStride, vertexData, GL_STREAM_DRAW);
         SetupVertexAttribs(l, vertexStride, 0);
 
-        // Expand indices
         const WORD* srcIdx = (const WORD*)indexData;
         UINT idxCount = 0;
-        GLuint* triIdx = ExpandIndices(type, primCount, srcIdx, minIdx, idxCount);
-        if (!triIdx || idxCount == 0) { free(triIdx); return S_OK; }
+        GLushort* triIdx = ExpandIndices(type, primCount, srcIdx, minIdx, idxCount);
+        if (!triIdx || idxCount == 0) return S_OK;
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_gl.dynamicIBO);
-        glBufferData(GL_ELEMENT_ARRAY_BUFFER, idxCount * sizeof(GLuint), triIdx, GL_STREAM_DRAW);
-        glDrawElements(GL_TRIANGLES, idxCount, GL_UNSIGNED_INT, 0);
-        free(triIdx);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, idxCount * sizeof(GLushort), triIdx, GL_STREAM_DRAW);
+        glDrawElements(GL_TRIANGLES, idxCount, GL_UNSIGNED_SHORT, 0);
+#else
+        BgfxShadowSubmitUP(type, primCount, vertexData, vertexStride, numVerts,
+                           (const WORD*)indexData, minIdx);
+#endif
         m_frameDrawCalls++;
         return S_OK;
     }
@@ -2487,6 +3402,7 @@ public:
         tex->m_width = w; tex->m_height = h;
         tex->m_pitch = w * 4;
         tex->m_pixels = (BYTE*)calloc(w * h, 4);
+#ifndef THESEUS_USE_BGFX
         // Create GL texture immediately
         if (w > 0 && h > 0) {
             glActiveTexture(GL_TEXTURE0); // ensure we create on unit 0
@@ -2500,6 +3416,11 @@ public:
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tex->m_pixels);
         }
+#else
+        // bgfx upload happens lazily in BgfxEnsureTextureUploaded the
+        // first time this texture binds to a draw. Just mark dirty.
+        tex->m_bgfxDirty = true;
+#endif
         *pp = tex; return S_OK;
     }
     HRESULT CreateVertexBuffer(UINT length, DWORD usage, DWORD fvf, D3DPOOL pool, IDirect3DVertexBuffer8** pp) { *pp = new IDirect3DVertexBuffer8(length); return S_OK; }
@@ -2518,11 +3439,13 @@ public:
     ULONG Release() { if(--m_ref <= 0) { delete this; return 0; } return m_ref; }
     HRESULT CreateDevice(UINT adapter, DWORD type, void* wnd, DWORD flags, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice8** dev) {
         *dev = new IDirect3DDevice8();
+#ifndef THESEUS_USE_BGFX
         // Update XYZRHW viewport size uniform to match backbuffer
         if (pp && g_gl.program) {
             glUseProgram(g_gl.program);
             glUniform2f(g_gl.u_ViewportSize, (float)pp->BackBufferWidth, (float)pp->BackBufferHeight);
         }
+#endif
         return S_OK;
     }
 };
@@ -2587,23 +3510,25 @@ inline HRESULT D3DXCreateTextureFromFileA(IDirect3DDevice8* dev, const char* pat
     BYTE* data = (BYTE*)malloc(size);
     fread(data, 1, size, f);
     fclose(f);
-    // Try XBX parse (works for .xbx files)
-    IDirect3DTexture8* tex = XBX_ParseTexture(data, (int)size);
-    if (tex) { free(data); *ppTex = tex; return S_OK; }
-    // Fallback: try stb_image for JPG/PNG/BMP
+    // Probe XBX only when the file actually starts with the XPR magic;
+    // otherwise XBX_ParseTexture spams a "Bad magic" log on every
+    // JPG/PNG the dashboard loads (Steam icons, .png skin assets, ...).
+    IDirect3DTexture8* tex = NULL;
+    if (size >= (long)sizeof(uint32_t) &&
+        *(const uint32_t*)data == XPR_MAGIC_VALUE) {
+        tex = XBX_ParseTexture(data, (int)size);
+        if (tex) { free(data); *ppTex = tex; return S_OK; }
+    }
+    // Fallback: try stb_image for JPG/PNG/BMP. Route through
+    // CreateFromRGBA so the GL/bgfx upload picks the active backend
+    // (raw glGenTextures here crashes under BGFX with no GL context).
     {
-
         int w = 0, h = 0, ch = 0;
         unsigned char* pixels = stbi_load_from_memory(data, (int)size, &w, &h, &ch, 4);
         free(data);
         if (pixels && w > 0 && h > 0) {
             tex = new IDirect3DTexture8();
-            glGenTextures(1, &tex->m_glTexture);
-            glBindTexture(GL_TEXTURE_2D, tex->m_glTexture);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-            tex->m_width = w; tex->m_height = h;
+            tex->CreateFromRGBA((UINT)w, (UINT)h, pixels);
             stbi_image_free(pixels);
             *ppTex = tex; return S_OK;
         }
@@ -2615,21 +3540,22 @@ inline HRESULT D3DXCreateTextureFromFileInMemory(IDirect3DDevice8* dev, const vo
     (void)dev;
     *ppTex = NULL;
     if (!data || size == 0) return E_FAIL;
-    IDirect3DTexture8* tex = XBX_ParseTexture((const BYTE*)data, (int)size);
-    if (tex) { *ppTex = tex; return S_OK; }
-    // Fallback: stb_image for JPG/PNG/BMP
+    // Magic-gate the XBX probe so non-XBX (JPG/PNG) skips the
+    // "Bad magic" log path. See D3DXCreateTextureFromFileA.
+    IDirect3DTexture8* tex = NULL;
+    if (size >= sizeof(uint32_t) &&
+        *(const uint32_t*)data == XPR_MAGIC_VALUE) {
+        tex = XBX_ParseTexture((const BYTE*)data, (int)size);
+        if (tex) { *ppTex = tex; return S_OK; }
+    }
+    // Fallback: stb_image for JPG/PNG/BMP. Same backend-aware path
+    // as D3DXCreateTextureFromFileA.
     {
-
         int iw = 0, ih = 0, ch = 0;
         unsigned char* pixels = stbi_load_from_memory((const unsigned char*)data, (int)size, &iw, &ih, &ch, 4);
         if (pixels && iw > 0 && ih > 0) {
             tex = new IDirect3DTexture8();
-            glGenTextures(1, &tex->m_glTexture);
-            glBindTexture(GL_TEXTURE_2D, tex->m_glTexture);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, iw, ih, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-            tex->m_width = iw; tex->m_height = ih;
+            tex->CreateFromRGBA((UINT)iw, (UINT)ih, pixels);
             stbi_image_free(pixels);
             *ppTex = tex; return S_OK;
         }
@@ -2666,10 +3592,13 @@ inline HRESULT ID3DXMesh::DrawSubset(DWORD attr) {
     return S_OK;
 }
 
-// Toggle the per-vertex alpha multiply path in the vertex shader. Used by
-// text rendering (text.cpp) to make VerticalFade's per-vertex alpha clip
-// survive falloff lighting (which would otherwise overwrite color.a). Off
-// by default; callers must restore to 0 after their draw.
+// Per-vertex alpha multiply path. Used by text.cpp VerticalFade so the
+// per-vertex alpha survives falloff lighting. Caller must reset to 0.
+extern LPDIRECT3DDEVICE8 g_pD3DDev;
 inline void TheseusSetVertexAlphaMul(BOOL enable) {
+#ifndef THESEUS_USE_BGFX
     glUniform1i(g_gl.u_VertexAlphaMul, enable ? 1 : 0);
+#else
+    if (g_pD3DDev) g_pD3DDev->m_vertexAlphaMul = (enable != 0);
+#endif
 }

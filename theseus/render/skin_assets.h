@@ -83,7 +83,7 @@ static inline int SkinCandidatesFor(const char *name, const char **out, int max)
 // Returns true if `path` (full path or filename) names a file the
 // active skin is allowed to override. Case-insensitive on basename.
 // Members of an equivalence group all hit through their canonical
-// entry -- only one name per group needs to be in the list below.
+// entry. only one name per group needs to be in the list below.
 static inline bool IsSkinnableAsset(const char *path)
 {
 	if (!path || !*path) return false;

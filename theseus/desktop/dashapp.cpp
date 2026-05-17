@@ -16,6 +16,8 @@
 #include "audio_sdl.h"
 #include "cdaudio.h"
 #include "settingsfile.h"
+
+#include <algorithm>
 extern void PreloadSkinTextures();
 
 extern void Memory_Init();
@@ -154,6 +156,179 @@ HRESULT InitAudio()
 
 float g_transitionMotionBlur;
 
+// =========================================================================
+// D3D call-trace storage + dump (Sweep 2 of project_d3d_call_audit.md)
+// =========================================================================
+
+D3DStateStats g_rsStats[256] = {};
+D3DStateStats g_tssStats[8 * 32] = {};
+
+// Wrapper-level state caches (Phase 1 outcome of the Sweep 2 trace).
+// See TheseusSet* / TheseusGet* in theseus/shared/theseus.h.
+// BSS-zeroed: valid[] all false on first call.
+DWORD theseus_desktop_rs_cache[256];
+bool  theseus_desktop_rs_valid[256];
+DWORD theseus_desktop_tss_cache[8 * 32];
+bool  theseus_desktop_tss_valid[8 * 32];
+LPDIRECT3DTEXTURE8 theseus_desktop_tex_cache[8];
+bool theseus_desktop_tex_valid[8];
+D3DMATERIAL8 theseus_desktop_mat_cache;
+bool theseus_desktop_mat_valid;
+D3DMATRIX theseus_desktop_xform_cache[256];
+bool theseus_desktop_xform_valid[256];
+DWORD theseus_desktop_vs_cache;
+bool theseus_desktop_vs_valid;
+IDirect3DVertexBuffer8* theseus_desktop_vb_cache[4];
+UINT theseus_desktop_vb_stride_cache[4];
+bool theseus_desktop_vb_valid[4];
+IDirect3DIndexBuffer8* theseus_desktop_ib_cache;
+UINT theseus_desktop_ib_base_cache;
+bool theseus_desktop_ib_valid;
+
+// Trace counters for the new wrappers (currently storage-only; the
+// inline wrappers in theseus.h don't increment these yet since the
+// extra branch would cost more than the caches save. If we want to
+// measure cache hit-rate later we can add them in like the
+// SetRenderState path).
+D3DStateStats g_texStats[8] = {};
+D3DStateStats g_matStats = {};
+D3DStateStats g_xformStats[256] = {};
+
+// Pretty-print map for the common state IDs. Keeps the dump readable
+// without having to cross-reference numeric constants in d3d8_sdl.h.
+static const char* RsName(DWORD s)
+{
+    switch (s) {
+        case 7:   return "ZENABLE";
+        case 8:   return "FILLMODE";
+        case 9:   return "SHADEMODE";
+        case 14:  return "ZWRITEENABLE";
+        case 15:  return "ALPHATESTENABLE";
+        case 19:  return "SRCBLEND";
+        case 20:  return "DESTBLEND";
+        case 22:  return "CULLMODE";
+        case 23:  return "ZFUNC";
+        case 24:  return "ALPHAREF";
+        case 25:  return "ALPHAFUNC";
+        case 26:  return "DITHERENABLE";
+        case 27:  return "ALPHABLENDENABLE";
+        case 28:  return "FOGENABLE";
+        case 29:  return "SPECULARENABLE";
+        case 40:  return "EDGEANTIALIAS";
+        case 47:  return "ZBIAS";
+        case 60:  return "TEXTUREFACTOR";
+        case 136: return "CLIPPING";
+        case 137: return "LIGHTING";
+        case 139: return "AMBIENT";
+        case 141: return "COLORVERTEX";
+        case 145: return "DIFFUSEMATSRC";
+        case 146: return "SPECULARMATSRC";
+        case 147: return "AMBIENTMATSRC";
+        case 148: return "EMISSIVEMATSRC";
+        case 151: return "VERTEXBLEND";
+        case 161: return "MSAA";
+        case 162: return "MSAAMASK";
+        case 168: return "COLORWRITEENABLE";
+        case 200: return "SWATHWIDTH";
+        default:  return NULL;
+    }
+}
+
+static const char* TssName(DWORD t)
+{
+    // D3DTSS_* values from theseus/desktop/d3d8_sdl.h
+    switch (t) {
+        case 1:  return "COLOROP";
+        case 2:  return "COLORARG1";
+        case 3:  return "COLORARG2";
+        case 4:  return "ALPHAOP";
+        case 5:  return "ALPHAARG1";
+        case 6:  return "ALPHAARG2";
+        case 8:  return "RESULTARG";
+        case 11: return "TEXCOORDINDEX";
+        case 13: return "ADDRESSU";
+        case 14: return "ADDRESSV";
+        case 15: return "MINFILTER";
+        case 16: return "MAGFILTER";
+        case 17: return "MIPFILTER";
+        case 24: return "TEXTURETRANSFORMFLAGS";
+        default: return NULL;
+    }
+}
+
+void Theseus_D3D_DumpTrace()
+{
+    fprintf(stderr, "\n[D3DTrace] ============================================\n");
+    fprintf(stderr, "[D3DTrace] RenderState call counts (top 25 by redundant)\n");
+    fprintf(stderr, "[D3DTrace] ============================================\n");
+
+    int order[256];
+    for (int i = 0; i < 256; i++) order[i] = i;
+    std::sort(order, order + 256, [](int a, int b) {
+        return g_rsStats[a].redundantCalls > g_rsStats[b].redundantCalls;
+    });
+    fprintf(stderr, "  %-22s  %8s  %8s  %8s  %6s\n",
+            "state", "total", "redund", "filtered", "red%");
+    int shown = 0;
+    for (int i = 0; i < 256 && shown < 25; i++) {
+        int s = order[i];
+        if (g_rsStats[s].totalCalls == 0) continue;
+        const char* nm = RsName((DWORD)s);
+        char nmbuf[32];
+        if (!nm) { snprintf(nmbuf, sizeof(nmbuf), "(%d)", s); nm = nmbuf; }
+        float pct = 100.0f * g_rsStats[s].redundantCalls / g_rsStats[s].totalCalls;
+        fprintf(stderr, "  %-22s  %8d  %8d  %8d  %5.1f%%\n",
+                nm,
+                g_rsStats[s].totalCalls,
+                g_rsStats[s].redundantCalls,
+                g_rsStats[s].filteredCalls,
+                pct);
+        shown++;
+    }
+
+    fprintf(stderr, "\n[D3DTrace] ============================================\n");
+    fprintf(stderr, "[D3DTrace] TextureStageState call counts (top 25 by redundant)\n");
+    fprintf(stderr, "[D3DTrace] ============================================\n");
+
+    int tssOrder[8 * 32];
+    for (int i = 0; i < 8 * 32; i++) tssOrder[i] = i;
+    std::sort(tssOrder, tssOrder + (8 * 32), [](int a, int b) {
+        return g_tssStats[a].redundantCalls > g_tssStats[b].redundantCalls;
+    });
+    fprintf(stderr, "  %-30s  %8s  %8s  %6s\n",
+            "stage/type", "total", "redund", "red%");
+    shown = 0;
+    for (int i = 0; i < 8 * 32 && shown < 25; i++) {
+        int idx = tssOrder[i];
+        if (g_tssStats[idx].totalCalls == 0) continue;
+        int stage = idx / 32;
+        int type  = idx % 32;
+        const char* nm = TssName((DWORD)type);
+        char nmbuf[32];
+        if (!nm) { snprintf(nmbuf, sizeof(nmbuf), "type %d", type); nm = nmbuf; }
+        char full[64];
+        snprintf(full, sizeof(full), "stage %d / %s", stage, nm);
+        float pct = 100.0f * g_tssStats[idx].redundantCalls / g_tssStats[idx].totalCalls;
+        fprintf(stderr, "  %-30s  %8d  %8d  %5.1f%%\n",
+                full,
+                g_tssStats[idx].totalCalls,
+                g_tssStats[idx].redundantCalls,
+                pct);
+        shown++;
+    }
+
+    fprintf(stderr, "[D3DTrace] ============================================\n\n");
+    fflush(stderr);
+}
+
+void Theseus_D3D_ResetTrace()
+{
+    for (int i = 0; i < 256; i++) g_rsStats[i] = D3DStateStats{};
+    for (int i = 0; i < 8 * 32; i++) g_tssStats[i] = D3DStateStats{};
+    fprintf(stderr, "[D3DTrace] counters reset\n");
+    fflush(stderr);
+}
+
 void XboxInitRenderState()
 {
 	float fZero = 0.0f;
@@ -177,7 +352,7 @@ void XboxInitRenderState()
 	TheseusSetRenderState(D3DRS_FOGCOLOR, 0);
 	TheseusSetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
 	TheseusSetRenderState(D3DRS_FOGDENSITY, *(uint32_t*)&fOne);
-	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, FALSE);
+	// EDGEANTIALIAS stripped: Xbox NV2A feature, shim no-op on GL.
 	TheseusSetRenderState(D3DRS_ZBIAS, 0);
 	TheseusSetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
 	TheseusSetRenderState(D3DRS_STENCILENABLE, FALSE);
@@ -209,7 +384,8 @@ void XboxInitRenderState()
 	TheseusSetRenderState(D3DRS_POINTSCALE_A, *(uint32_t*)&fOne);
 	TheseusSetRenderState(D3DRS_POINTSCALE_B, *(uint32_t*)&fZero);
 	TheseusSetRenderState(D3DRS_POINTSCALE_C, *(uint32_t*)&fZero);
-	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
+	// MULTISAMPLEANTIALIAS stripped: MSAA on desktop is set at GL
+	// context creation, not via render-state at init.
 	TheseusSetRenderState(D3DRS_MULTISAMPLEMASK, 0xffffffff);
 	TheseusSetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
 

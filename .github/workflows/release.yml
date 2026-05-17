@@ -15,7 +15,10 @@ permissions:
   contents: write
 
 # Per-platform: build, package binary + Configs/Data/Library + runtime libs into a
-# platform-named archive, attach to the GitHub Release.
+# platform-named archive, attach to the GitHub Release. All desktop targets ship
+# the bgfx backend (Metal on macOS, Vulkan on Linux / Windows). Shader .bin files
+# live in-tree under Data/shaders/; shaderc only runs offline when authoring new
+# shaders, not during CI.
 
 jobs:
   release-macos:
@@ -23,6 +26,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install deps
         run: brew install sdl2 sdl2_mixer mpv curl pkg-config
@@ -30,8 +35,15 @@ jobs:
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build bgfx libs
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/darwin/genie --gcc=osx-arm64 gmake
+          make -C .build/projects/gmake-osx-arm64 -j$(sysctl -n hw.ncpu) \
+               bx bimg bgfx config=release
+
       - name: Build
-        run: PKG_CONFIG_PATH="$(brew --prefix curl)/lib/pkgconfig:${PKG_CONFIG_PATH}" make -C build desktop
+        run: PKG_CONFIG_PATH="$(brew --prefix curl)/lib/pkgconfig:${PKG_CONFIG_PATH}" make -C build desktop BGFX=1
 
       - name: Package
         # macOS users are expected to have Homebrew SDL2/mpv/curl installed.
@@ -57,19 +69,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install deps
         run: |
           sudo apt update
           sudo apt install -y build-essential pkg-config \
-                              libsdl2-dev libsdl2-mixer-dev libgl-dev \
+                              libsdl2-dev libsdl2-mixer-dev \
+                              libvulkan-dev libx11-dev \
                               libmpv-dev libcurl4-openssl-dev
 
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build bgfx libs
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          make -C .build/projects/gmake-linux-gcc -j$(nproc) \
+               bx bimg bgfx config=release64
+
       - name: Build
-        run: make -C build desktop
+        run: make -C build desktop BGFX=1
 
       - name: Package
         run: |
@@ -93,19 +115,42 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install deps
         run: |
           sudo apt update
           sudo apt install -y build-essential pkg-config \
-                              libsdl2-dev libsdl2-mixer-dev libgl-dev \
+                              libsdl2-dev libsdl2-mixer-dev \
+                              libvulkan-dev libx11-dev \
                               libmpv-dev libcurl4-openssl-dev
 
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build GENie from source (ARM64 host)
+        # GENie's shipped makefile passes -m64 which gcc rejects on ARM;
+        # strip it before building.
+        run: |
+          git clone --depth 1 https://github.com/bkaradzic/GENie.git /tmp/genie
+          find /tmp/genie/build -name '*.make' -exec sed -i 's/-m64//g' {} +
+          make -C /tmp/genie
+          cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
+
+      - name: Build bgfx libs
+        # Strip x86-specific flags from the genie-generated project files
+        # so they build clean on aarch64.
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          find .build/projects/gmake-linux-gcc -name '*.make' -exec \
+               sed -i -e 's/-m64//g' -e 's/-mfpmath=sse//g' -e 's/-msse4.2//g' {} +
+          make -C .build/projects/gmake-linux-gcc -j$(nproc) \
+               bx bimg bgfx config=release64
+
       - name: Build
-        run: make -C build desktop
+        run: make -C build desktop BGFX=1
 
       - name: Package
         run: |
@@ -130,9 +175,10 @@ jobs:
     env:
       SDL2_VER: 2.32.10
       SDL2_MIXER_VER: 2.8.1
-      GLEW_VER: 2.2.0
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install mingw-w64 (posix thread model)
         run: |
@@ -148,7 +194,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/cross
-          key: cross-mingw-sdl${{ env.SDL2_VER }}-mixer${{ env.SDL2_MIXER_VER }}-glew${{ env.GLEW_VER }}-mpv-curl-v1
+          key: cross-mingw-sdl${{ env.SDL2_VER }}-mixer${{ env.SDL2_MIXER_VER }}-mpv-curl-v2
 
       - name: Fetch SDL2 + SDL2_mixer
         if: steps.cache-cross.outputs.cache-hit != 'true'
@@ -159,18 +205,6 @@ jobs:
           curl -fsSL -O https://github.com/libsdl-org/SDL_mixer/releases/download/release-${SDL2_MIXER_VER}/SDL2_mixer-devel-${SDL2_MIXER_VER}-mingw.tar.gz
           tar xzf SDL2-devel-${SDL2_VER}-mingw.tar.gz
           tar xzf SDL2_mixer-devel-${SDL2_MIXER_VER}-mingw.tar.gz
-
-      - name: Build GLEW
-        if: steps.cache-cross.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/cross/glew-src
-          cd ~/cross/glew-src
-          curl -fsSL -o glew-${GLEW_VER}.tgz https://sourceforge.net/projects/glew/files/glew/${GLEW_VER}/glew-${GLEW_VER}.tgz/download
-          tar xzf glew-${GLEW_VER}.tgz
-          cd glew-${GLEW_VER}
-          mkdir -p build-mingw
-          x86_64-w64-mingw32-gcc -DGLEW_STATIC -Iinclude -c src/glew.c -o build-mingw/glew.o
-          x86_64-w64-mingw32-ar rcs build-mingw/libglew32.a build-mingw/glew.o
 
       - name: Fetch libmpv mingw devel
         if: steps.cache-cross.outputs.cache-hit != 'true'
@@ -202,8 +236,18 @@ jobs:
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build bgfx libs (mingw cross)
+        # Just the runtime libs; SPIR-V shaders ship in-tree under
+        # Data/shaders/spirv.
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
+          make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
+               bx bimg bgfx config=release64 \
+               CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
+
       - name: Build
-        run: make -C build desktop-win64
+        run: make -C build desktop-win64 BGFX=1
 
       - name: Package
         # The Makefile has already copied the runtime DLLs into the build

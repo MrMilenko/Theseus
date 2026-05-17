@@ -166,11 +166,9 @@ void CMesh::Render(bool bSetFVF)
 	if (bSetFVF)
 		TheseusSetVertexShader(GetFixedFunctionShader(m_fvf));
 
-	if (m_nFaceCount > 800 && !g_bEdgeAntialiasOverride)
-	{
-		TheseusSetRenderState(D3DRS_EDGEANTIALIAS, FALSE);
-		TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
-	}
+	// Heavy-mesh edge-AA/MSAA swap removed: Xbox NV2A feature, no GL
+	// equivalent in the shim. The g_bEdgeAntialiasOverride check is no
+	// longer reachable here on desktop.
 
 	TheseusSetStreamSource(0, m_vertexBuffer, m_nVertexStride);
 	TheseusSetIndices(m_indexBuffer, 0);

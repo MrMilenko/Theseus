@@ -72,12 +72,18 @@ void DrawWidgets()
     // alpha-blended setup.
     IDirect3DDevice8* dev = g_pD3DDev;
     dev->SetRenderState(D3DRS_ZENABLE, FALSE);
+#ifdef _XBOX
+    // LIGHTING + COLORVERTEX are fixed-function lighting hints; no GL
+    // effect via the desktop shim, kept for the Xbox path.
     dev->SetRenderState(D3DRS_LIGHTING, FALSE);
+#endif
     dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
     dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
     dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
     dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+#ifdef _XBOX
     dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
+#endif
     dev->SetTexture(0, NULL);
     dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
     dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);

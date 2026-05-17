@@ -60,15 +60,14 @@ void CHud::Render()
 	TheseusIdentityWorld();
 	TheseusUpdateWorld();
 
-	// Disable Edge Antialiasing
+#ifdef _XBOX
+	// Disable Edge Antialiasing. Xbox NV2A hardware feature; shim no-op
+	// on desktop GL.
 	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, FALSE);
 	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
-
-	// TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
+#endif
 
 	CGroup::Render();
-
-	// TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
 
 	TheseusPopWorld();
 
@@ -356,9 +355,12 @@ void CPicture::Render()
 		TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
 	}
 
-	// Disable Edge Antialiasing
+#ifdef _XBOX
+	// Disable Edge Antialiasing. Xbox NV2A hardware feature; shim no-op
+	// on desktop GL.
 	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, FALSE);
 	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
+#endif
 
 	D3DVERTEX *v;
 	VERIFYHR(m_pVB->Lock(0, 4 * sizeof(LITVERTEX), (BYTE **)&v, 0));

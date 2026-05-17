@@ -1,3 +1,39 @@
+// materials.cpp [XBOX SIDE]
+// CMaxMaterial + CMatInfo binders. Desktop fork at
+// theseus/desktop/materials_desktop.cpp. Keep them in sync per
+// the contract below or scenes break on the other build.
+//
+// PARITY CONTRACT
+//
+// XIPs reference materials by name (the string the .max exporter
+// wrote into the mesh's user data block). Both this file and
+// materials_desktop.cpp resolve those names to a CMatInfo
+// subclass. Out of sync means the same XIP looks different across
+// platforms, or worst case a scene fails to bind a material on one.
+//
+// 1. Adding a new variant (new CMatInfo). Same name and same
+//    MATINFO_* flag semantics in both files. Visual output CAN
+//    differ on purpose (Xbox might use a hardware feature desktop
+//    can't replicate) but the binding has to succeed on both.
+//
+// 2. Renaming a variant. Rename in both files in the same commit.
+//    Then grep xips-source/ and Data/Xips/ for the old name across
+//    default-xbox and default-desktop sets, update those too.
+//
+// 3. Removing a variant. Confirm zero XIP references first, then
+//    remove from both files in the same commit.
+//
+// 4. Changing render state behavior. Xbox changes go here.
+//    Desktop changes go in materials_desktop.cpp. If the visual
+//    diverges noticeably, document it in docs/decomp/Materials.md.
+//
+// 5. Why the fork exists. Desktop runs OpenGL via the D3D8 shim.
+//    Xbox runs real D3D8. A lot of SetRenderState calls on the
+//    Xbox path are dead, redundant, or counterproductive on GL
+//    drivers (Windows AMD and Intel iGPU especially). The fork
+//    lets us strip them on desktop without risking the Xbox
+//    binary. See project_d3d_call_audit.md.
+//
 // materials.cpp: CMaxMaterial (3ds Max-exported material) + the family of
 // concrete CMatInfo material binders (solid colour, falloff, modulate-
 // texture, alpha modes, etc.) selected per Shape via the .max exporter's
@@ -1131,7 +1167,7 @@ static void Material_Reload()
 	ReloadFalloffMat(SkinXBX, _T("FlatSurfaces2sided3"), &tmpA, &tmpB);
 	ReloadFalloffMat(SkinXBX, _T("console_hilite"), &tmpA, &tmpB);
 
-	// Wireframe (CFalloffTexInfo — same color fields as CFalloffMatInfo)
+	// Wireframe (CFalloffTexInfo, same color fields as CFalloffMatInfo)
 	ReloadFalloffMat(SkinXBX, _T("Wireframe"), &tmpA, &tmpB);
 
 	// Aniso materials (same color fields as CFalloffMatInfo)

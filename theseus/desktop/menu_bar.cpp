@@ -185,7 +185,9 @@ void RenderMainMenuBar() {
                 }
                 if (!g_debugMode && g_bWireframe) {
                     g_bWireframe = false;
+#ifndef THESEUS_USE_BGFX
                     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
                 }
             }
             if (ImGui::MenuItem("XAP Editor", "F2", g_xapEditorOpen)) {
@@ -461,7 +463,7 @@ void RenderSettingsWindow() {
             ImGui::Spacing();
 
             if (scanning) {
-                // Inline progress instead of a floating panel — user is
+                // Inline progress instead of a floating panel, user is
                 // already on this tab, show the scan status here.
                 const char* phase = MediaDB_GetScanPhase();
                 int prog  = MediaDB_GetScanProgress();

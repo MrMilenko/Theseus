@@ -58,3 +58,8 @@ MediaDB.cache
 # `xiptool extract`.
 Data/Xips/default/
 Data/Xips/default-xbox/
+
+# bgfx build artifacts (Phase 2 of D3D audit). Submodule sources live
+# at theseus/third-party/{bx,bimg,bgfx}/; their .build/ output is
+# machine-specific and rebuilds via `make osx-arm64-release` etc.
+theseus/third-party/bgfx/.build/

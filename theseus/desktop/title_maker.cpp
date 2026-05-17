@@ -45,17 +45,6 @@
 #undef RemoveDirectoryA
 #endif
 
-// OpenGL headers (for glGenTextures, glBindTexture, etc.)
-#ifdef __APPLE__
-    #define GL_SILENCE_DEPRECATION
-    #include <OpenGL/gl3.h>
-#elif defined(_WIN32)
-    #include <GL/glew.h>
-#else
-    #define GL_GLEXT_PROTOTYPES
-    #include <GL/gl.h>
-#endif
-
 bool g_titleMakerOpen = false;
 
 // ============================================================================
@@ -323,10 +312,10 @@ static void TM_OpenUrl(const char* url) {
     DesktopLaunch(url);
 }
 
-// Load <retroarchInstall>/assets/ozone/png/retroarch.png into a GL
+// Load <retroarchInstall>/assets/ozone/png/retroarch.png into an ImGui
 // texture, cached per resolved path. Returns 0 on failure.
-static unsigned int TM_LoadRetroArchLogo(const char* installPath, int* outW, int* outH) {
-    static unsigned int s_tex = 0;
+static unsigned long long TM_LoadRetroArchLogo(const char* installPath, int* outW, int* outH) {
+    static GuiTexture* s_tex = NULL;
     static char s_path[600] = "";
     static int s_w = 0, s_h = 0;
 
@@ -339,10 +328,10 @@ static unsigned int TM_LoadRetroArchLogo(const char* installPath, int* outW, int
     if (strcmp(probe, s_path) == 0) {
         if (outW) *outW = s_w;
         if (outH) *outH = s_h;
-        return s_tex;
+        return GuiTextureImId(s_tex);
     }
 
-    if (s_tex) { glDeleteTextures(1, &s_tex); s_tex = 0; }
+    GuiTextureDestroy(&s_tex);
     strncpy(s_path, probe, sizeof(s_path) - 1);
     s_path[sizeof(s_path) - 1] = 0;
     s_w = s_h = 0;
@@ -351,20 +340,14 @@ static unsigned int TM_LoadRetroArchLogo(const char* installPath, int* outW, int
     unsigned char* pixels = stbi_load(probe, &w, &h, &ch, 4);
     if (!pixels) return 0;
 
-    glGenTextures(1, &s_tex);
-    glBindTexture(GL_TEXTURE_2D, s_tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    s_tex = GuiTextureCreate(w, h, pixels);
     stbi_image_free(pixels);
 
     s_w = w;
     s_h = h;
     if (outW) *outW = w;
     if (outH) *outH = h;
-    return s_tex;
+    return GuiTextureImId(s_tex);
 }
 
 // Pull a "(Region)" tag out of a title's parenthetical metadata.
@@ -680,7 +663,7 @@ void RenderTitleMaker() {
     static char s_newTitleName[128] = "";
     static char s_statusMsg[256] = "";
     static float s_statusTime = 0;
-    static GLuint s_iconTex = 0;
+    static GuiTexture* s_iconTex = NULL;
     static int s_iconTexIdx = -1;
     static char s_searchFilter[128] = "";
     static const char* s_categories[] = { "Games", "Applications", "Homebrew", "Emulators", "Dashboards" };
@@ -701,7 +684,7 @@ void RenderTitleMaker() {
     static char s_isoStatus[256] = "";
     static bool s_isoParsed = false;
     static XisoTitleInfo s_isoInfo = {};
-    static GLuint s_isoPreviewTex = 0;
+    static GuiTexture* s_isoPreviewTex = NULL;
     static bool s_showIsoResult = false;
 
     if (!s_iconBrowserInit) {
@@ -739,7 +722,7 @@ void RenderTitleMaker() {
         s_entryCount = 0;
         s_selectedIdx = -1;
         s_iconTexIdx = -1;
-        if (s_iconTex) { glDeleteTextures(1, &s_iconTex); s_iconTex = 0; }
+        GuiTextureDestroy(&s_iconTex);
 
         VGames_Reload();
 
@@ -917,24 +900,20 @@ void RenderTitleMaker() {
         // Icon preview
         if (s_iconTexIdx != s_selectedIdx) {
             s_iconTexIdx = s_selectedIdx;
-            if (s_iconTex) { glDeleteTextures(1, &s_iconTex); s_iconTex = 0; }
+            GuiTextureDestroy(&s_iconTex);
             const char* iconPath = VGames_GetIconPath(sel.vgIndex);
             if (iconPath) {
                 int w, h, ch;
                 unsigned char* pixels = stbi_load(iconPath, &w, &h, &ch, 4);
                 if (pixels) {
-                    glGenTextures(1, &s_iconTex);
-                    glBindTexture(GL_TEXTURE_2D, s_iconTex);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                    s_iconTex = GuiTextureCreate(w, h, pixels);
                     stbi_image_free(pixels);
                 }
             }
         }
 
         if (s_iconTex) {
-            ImGui::Image((ImTextureID)(intptr_t)s_iconTex, ImVec2(64, 64));
+            ImGui::Image((ImTextureID)(intptr_t)GuiTextureImId(s_iconTex), ImVec2(64, 64));
             ImGui::SameLine();
         } else {
             ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "[No icon]");
@@ -1120,7 +1099,7 @@ void RenderTitleMaker() {
     }
     ImGui::SameLine();
 
-    // Add ISO button — use the global theme so it matches Create / Import.
+    // Add ISO button, use the global theme so it matches Create / Import.
     if (ImGui::Button("Add ISO")) {
         ImGui::OpenPopup("AddISOPopup");
     }
@@ -1143,7 +1122,7 @@ void RenderTitleMaker() {
             strncpy(s_isoPath, selected.c_str(), sizeof(s_isoPath) - 1);
             s_isoBrowser.ClearSelected();
 
-            if (s_isoPreviewTex) { glDeleteTextures(1, &s_isoPreviewTex); s_isoPreviewTex = 0; }
+            GuiTextureDestroy(&s_isoPreviewTex);
             XisoFreeTitleInfo(&s_isoInfo);
             s_isoInfo = XisoGetTitleInfo(s_isoPath);
             s_isoParsed = true;
@@ -1152,13 +1131,9 @@ void RenderTitleMaker() {
                 snprintf(s_isoStatus, sizeof(s_isoStatus), "Found: %s (ID: %08X)",
                          s_isoInfo.titleName, s_isoInfo.titleId);
                 if (s_isoInfo.titleImageRGBA) {
-                    glGenTextures(1, &s_isoPreviewTex);
-                    glBindTexture(GL_TEXTURE_2D, s_isoPreviewTex);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA,
-                                 s_isoInfo.titleImageWidth, s_isoInfo.titleImageHeight,
-                                 0, GL_RGBA, GL_UNSIGNED_BYTE, s_isoInfo.titleImageRGBA);
+                    s_isoPreviewTex = GuiTextureCreate(
+                        s_isoInfo.titleImageWidth, s_isoInfo.titleImageHeight,
+                        s_isoInfo.titleImageRGBA);
                 }
                 s_showIsoResult = true;
             } else {
@@ -1173,7 +1148,7 @@ void RenderTitleMaker() {
             if (ImGui::Begin("Add Xbox ISO", &s_showIsoResult, ImGuiWindowFlags_NoResize)) {
                 if (s_isoParsed && s_isoInfo.valid) {
                     if (s_isoPreviewTex) {
-                        ImGui::Image((ImTextureID)(intptr_t)s_isoPreviewTex, ImVec2(128, 128));
+                        ImGui::Image((ImTextureID)(intptr_t)GuiTextureImId(s_isoPreviewTex), ImVec2(128, 128));
                         ImGui::SameLine();
                     }
                     ImGui::BeginGroup();
@@ -1251,7 +1226,7 @@ void RenderTitleMaker() {
 
     // Bulk-cleanup button: re-runs Title_SanitizeName over every existing
     // games.ini entry. Useful for libraries imported before the sanitize
-    // pipeline existed, or after refining the substitution table -- one
+    // pipeline existed, or after refining the substitution table. one
     // click reconciles the dashboard view to what the atlas can actually
     // render.
     ImGui::SameLine();
@@ -1317,7 +1292,7 @@ void RenderTitleMaker() {
     if (g_showSteamTab && ImGui::BeginTabItem("Steam")) {
         // Header: tinted logo on left, project info on right.
         {
-            static GLuint s_stLogoTex = 0;
+            static GuiTexture* s_stLogoTex = NULL;
             static int s_stLogoW = 0, s_stLogoH = 0;
             static bool s_stLogoTried = false;
             if (!s_stLogoTried) {
@@ -1325,12 +1300,7 @@ void RenderTitleMaker() {
                 int w = 0, h = 0, ch = 0;
                 unsigned char* pixels = stbi_load("Configs/steamlogo.png", &w, &h, &ch, 4);
                 if (pixels) {
-                    glGenTextures(1, &s_stLogoTex);
-                    glBindTexture(GL_TEXTURE_2D, s_stLogoTex);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
-                                 GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                    s_stLogoTex = GuiTextureCreate(w, h, pixels);
                     stbi_image_free(pixels);
                     s_stLogoW = w;
                     s_stLogoH = h;
@@ -1340,7 +1310,7 @@ void RenderTitleMaker() {
             if (s_stLogoTex && s_stLogoH > 0) {
                 float scale = headerH / (float)s_stLogoH;
                 float logoDisplayW = (float)s_stLogoW * scale;
-                ImGui::Image((ImTextureID)(intptr_t)s_stLogoTex,
+                ImGui::Image((ImTextureID)(intptr_t)GuiTextureImId(s_stLogoTex),
                              ImVec2(logoDisplayW, headerH),
                              ImVec2(0, 0), ImVec2(1, 1),
                              ImVec4(0.4f, 1.0f, 0.4f, 1.0f));
@@ -1431,7 +1401,7 @@ void RenderTitleMaker() {
         static char s_stTitle[128] = "";
         static char s_stAppID[16]  = "";
         static int  s_stSelectedVi = -1;
-        static GLuint s_stDetailsTex = 0;
+        static GuiTexture* s_stDetailsTex = NULL;
         static char s_stDetailsTexPath[600] = "";
         static int  s_stDetailsTexW = 0, s_stDetailsTexH = 0;
         static ImGui::FileBrowser s_stIconBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
@@ -1526,15 +1496,11 @@ void RenderTitleMaker() {
                                  : (stat(iconPng, &st) == 0) ? iconPng : 0;
 
             if (iconPath && strcmp(iconPath, s_stDetailsTexPath) != 0) {
-                if (s_stDetailsTex) { glDeleteTextures(1, &s_stDetailsTex); s_stDetailsTex = 0; }
+                GuiTextureDestroy(&s_stDetailsTex);
                 int w = 0, h = 0, ch = 0;
                 unsigned char* pixels = stbi_load(iconPath, &w, &h, &ch, 4);
                 if (pixels) {
-                    glGenTextures(1, &s_stDetailsTex);
-                    glBindTexture(GL_TEXTURE_2D, s_stDetailsTex);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                    s_stDetailsTex = GuiTextureCreate(w, h, pixels);
                     stbi_image_free(pixels);
                     s_stDetailsTexW = w;
                     s_stDetailsTexH = h;
@@ -1542,7 +1508,7 @@ void RenderTitleMaker() {
                 strncpy(s_stDetailsTexPath, iconPath, sizeof(s_stDetailsTexPath) - 1);
                 s_stDetailsTexPath[sizeof(s_stDetailsTexPath) - 1] = 0;
             } else if (!iconPath) {
-                if (s_stDetailsTex) { glDeleteTextures(1, &s_stDetailsTex); s_stDetailsTex = 0; }
+                GuiTextureDestroy(&s_stDetailsTex);
                 s_stDetailsTexPath[0] = 0;
             }
 
@@ -1552,7 +1518,7 @@ void RenderTitleMaker() {
                     ? (float)s_stDetailsTexW / (float)s_stDetailsTexH : 1.0f;
                 float dispW = (aspect >= 1.0f) ? maxSide : maxSide * aspect;
                 float dispH = (aspect >= 1.0f) ? maxSide / aspect : maxSide;
-                ImGui::Image((ImTextureID)(intptr_t)s_stDetailsTex, ImVec2(dispW, dispH));
+                ImGui::Image((ImTextureID)(intptr_t)GuiTextureImId(s_stDetailsTex), ImVec2(dispW, dispH));
             } else {
                 ImGui::Dummy(ImVec2(128, 128));
             }
@@ -1680,7 +1646,7 @@ void RenderTitleMaker() {
         // Header: tinted logo on left, project info on right.
         {
             int logoW = 0, logoH = 0;
-            unsigned int logo = TM_LoadRetroArchLogo(s_retroarchPath, &logoW, &logoH);
+            unsigned long long logo = TM_LoadRetroArchLogo(s_retroarchPath, &logoW, &logoH);
             float headerH = 64.0f;
             float logoDisplayW = 0;
             if (logo && logoH > 0) {
@@ -1760,7 +1726,7 @@ void RenderTitleMaker() {
         static int  s_raCoreIdx         = -1;
         static char s_raLastScannedPath[512] = "";
         static int  s_raSelectedVi      = -1;
-        static GLuint s_raDetailsTex    = 0;
+        static GuiTexture* s_raDetailsTex = NULL;
         static char s_raDetailsTexPath[600] = "";
         static int  s_raDetailsTexW = 0;
         static int  s_raDetailsTexH = 0;
@@ -1942,15 +1908,11 @@ void RenderTitleMaker() {
                                  : (stat(iconJpg, &st) == 0) ? iconJpg : 0;
 
             if (iconPath && strcmp(iconPath, s_raDetailsTexPath) != 0) {
-                if (s_raDetailsTex) { glDeleteTextures(1, &s_raDetailsTex); s_raDetailsTex = 0; }
+                GuiTextureDestroy(&s_raDetailsTex);
                 int w = 0, h = 0, ch = 0;
                 unsigned char* pixels = stbi_load(iconPath, &w, &h, &ch, 4);
                 if (pixels) {
-                    glGenTextures(1, &s_raDetailsTex);
-                    glBindTexture(GL_TEXTURE_2D, s_raDetailsTex);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                    s_raDetailsTex = GuiTextureCreate(w, h, pixels);
                     stbi_image_free(pixels);
                     s_raDetailsTexW = w;
                     s_raDetailsTexH = h;
@@ -1958,7 +1920,7 @@ void RenderTitleMaker() {
                 strncpy(s_raDetailsTexPath, iconPath, sizeof(s_raDetailsTexPath) - 1);
                 s_raDetailsTexPath[sizeof(s_raDetailsTexPath) - 1] = 0;
             } else if (!iconPath) {
-                if (s_raDetailsTex) { glDeleteTextures(1, &s_raDetailsTex); s_raDetailsTex = 0; }
+                GuiTextureDestroy(&s_raDetailsTex);
                 s_raDetailsTexPath[0] = 0;
             }
 
@@ -1968,7 +1930,7 @@ void RenderTitleMaker() {
                     ? (float)s_raDetailsTexW / (float)s_raDetailsTexH : 1.0f;
                 float dispW = (aspect >= 1.0f) ? maxSide : maxSide * aspect;
                 float dispH = (aspect >= 1.0f) ? maxSide / aspect : maxSide;
-                ImGui::Image((ImTextureID)(intptr_t)s_raDetailsTex, ImVec2(dispW, dispH));
+                ImGui::Image((ImTextureID)(intptr_t)GuiTextureImId(s_raDetailsTex), ImVec2(dispW, dispH));
             } else {
                 ImGui::Dummy(ImVec2(128, 128));
             }

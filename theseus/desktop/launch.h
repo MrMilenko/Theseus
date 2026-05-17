@@ -24,7 +24,7 @@
 //                     registered handler for the steam scheme, which
 //                     causes "Unknown protocol 'steam'" errors.
 //                     macOS / Windows: fall through to the system URL
-//                     opener -- it works there.
+//                     opener. it works there.
 //   - "<scheme>://..." system URL opener (xdg-open / open / ShellExecute)
 //   - anything else   pass to the shell as a command line, so the user
 //                     can paste a raw executable path, a path with args,
@@ -55,4 +55,4 @@ bool         LaunchOverlay_IsActive();
 float        LaunchOverlay_Alpha();
 void         LaunchOverlay_Tick();
 void         LaunchOverlay_Reset();
-unsigned int LaunchOverlay_LogoGLTex(int* outW, int* outH); // 0 if not loaded yet
+unsigned long long LaunchOverlay_LogoGLTex(int* outW, int* outH); // 0 if not loaded yet

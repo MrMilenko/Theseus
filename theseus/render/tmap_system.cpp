@@ -1353,7 +1353,7 @@ bool CImageFader::OnSetProperty(const PRD* pprd, const void* pvValue)
 // into a CSurfx. Supports line scope, spinner scope, spectrum analyzer,
 // and spectral overlay effects.
 //
-// Xbox-only here -- desktop has its own SDL_mixer-backed CAudioVisualizer
+// Xbox-only here. desktop has its own SDL_mixer-backed CAudioVisualizer
 // in desktop/desktop_nodes.cpp because the audio sample buffer comes from
 // DashAudio_GetPCMSamples() (a ring buffer), not from CAudioClip::GetSampleBuffer().
 #ifdef _XBOX
@@ -1909,7 +1909,7 @@ void CAudioVisualizer::RenderEffect2(CSurfx* pSurfx)
 	}
 }
 
-#endif // _XBOX -- end CAudioVisualizer Xbox-only block
+#endif // _XBOX. end CAudioVisualizer Xbox-only block
 
 
 // ===== FFT ==================================================================

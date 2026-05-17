@@ -1,9 +1,13 @@
 name: UIX Theseus builder
 permissions:
-  contents: read 
+  contents: read
 on:
 # Manual trigger, no automatic trigger here.
   workflow_dispatch
+
+# All desktop targets build with bgfx: Metal on macOS, Vulkan on Linux / Windows.
+# bgfx lives as a git submodule under theseus/third-party/; shaderc emits the
+# per-backend shader bins into Data/shaders/{metal,spirv}/.
 
 jobs:
   linux-build:
@@ -13,6 +17,8 @@ jobs:
     steps:
       - name: Chekout repository
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - name: Install Dependencies
         run: |
           pacman -Syu --noconfirm \
@@ -21,13 +27,22 @@ jobs:
           libdecor  \
           sdl2      \
           sdl2_mixer \
-          mpv
+          mpv \
+          vulkan-icd-loader \
+          vulkan-headers \
+          libx11
+      - name: Build bgfx libs
+        run: |
+          cd $GITHUB_WORKSPACE/theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          make -C .build/projects/gmake-linux-gcc -j$(nproc) \
+               bx bimg bgfx config=release64
       - name: Build UIX Desktop (Linux)
         run: |
           cd $GITHUB_WORKSPACE/build
-          make DESKTOP_DIR=$GITHUB_WORKSPACE/UIX-Desktop desktop
+          make DESKTOP_DIR=$GITHUB_WORKSPACE/UIX-Desktop desktop BGFX=1
       - name: Pack UIX-Desktop
-        run: | 
+        run: |
           echo "Cleaning up build"
           cd $GITHUB_WORKSPACE/UIX-Desktop
           rm -rf ./desktop
@@ -45,19 +60,27 @@ jobs:
           path: "./UIX-Desktop-Linux.tar.gz"
           archive: false
 
-  macos-arm-build: 
+  macos-arm-build:
     name: Build UIX Desktop (MacOS Arm build)
     runs-on: macos-26
     steps:
         - name: Checkout repository
           uses: actions/checkout@v6
+          with:
+            submodules: recursive
         - name: Install Dependencies
           run: |
             brew install sdl2 sdl2_mixer
+        - name: Build bgfx libs
+          run: |
+            cd $GITHUB_WORKSPACE/theseus/third-party/bgfx
+            ../bx/tools/bin/darwin/genie --gcc=osx-arm64 gmake
+            make -C .build/projects/gmake-osx-arm64 -j$(sysctl -n hw.ncpu) \
+                 bx bimg bgfx config=release
         - name: Build UIX Desktop (MacOS Arm)
           run: |
             cd $GITHUB_WORKSPACE/build
-            make desktop
+            make desktop BGFX=1
         - name: Pack UIX-Desktop
           run: |
             echo "Cleaning up build"
@@ -78,20 +101,28 @@ jobs:
             name: UIX-Desktop-MacOS
             path: "./UIX-Desktop-MacOS.zip"
             archive: false
-          
+
   macos-intel-build:
     runs-on: macos-26-intel
     name: Build UIX Desktop (MacOS Intel build)
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          submodules: recursive
       - name: Install Dependencies
         run: |
           brew install sdl2 sdl2_mixer
+      - name: Build bgfx libs
+        run: |
+          cd $GITHUB_WORKSPACE/theseus/third-party/bgfx
+          ../bx/tools/bin/darwin/genie --gcc=osx-x64 gmake
+          make -C .build/projects/gmake-osx-x64 -j$(sysctl -n hw.ncpu) \
+               bx bimg bgfx config=release
       - name: Build UIX Desktop (MacOS Intel)
         run: |
           cd $GITHUB_WORKSPACE/build
-          make desktop
+          make desktop BGFX=1
       - name: Pack UIX-Desktop
         run: |
           echo "Cleaning up build"
@@ -122,11 +153,7 @@ jobs:
         uses: actions/checkout@v6
         with:
            path: Theseus
-      - name: Checkout GLEW repository
-        uses: actions/checkout@v6
-        with:
-          repository: nigels-com/glew
-          path: glew-src
+           submodules: recursive
       - name: Install Dependencies
         run: |
           pacman -Syu --noconfirm \
@@ -141,6 +168,9 @@ jobs:
           wget \
           git \
           mingw-w64-binutils \
+          vulkan-icd-loader \
+          vulkan-headers \
+          libx11 \
           zip
       - name: install SDL2 mingw libs
         run: |
@@ -153,26 +183,21 @@ jobs:
           echo "Moving blobs to required dir"
           cp -r ./SDL2-2.32.10 $GITHUB_WORKSPACE/sdl2-mingw
           cp -r ./SDL2_mixer-2.8.1 $GITHUB_WORKSPACE/sdl2-mingw
-      - name: Installing GLEW (Building against MINGW)
+      - name: Build bgfx libs (mingw cross)
+        # Just the runtime libs; SPIR-V shaders ship in-tree.
         run: |
-          cd ./glew-src/auto
-          make
-          cd $GITHUB_WORKSPACE/glew-src
-          make SYSTEM=linux-mingw64 GLEW_DEST=$GITHUB_WORKSPACE/glew-src/usr/local
-          make install DESTDIR=$GITHUB_WORKSPACE/glew-src
-          mkdir -p build-mingw
-          x86_64-w64-mingw32-gcc -DGLEW_STATIC -Iinclude -c src/glew.c -o build-mingw/glew.o
-          x86_64-w64-mingw32-ar rcs build-mingw/libglew32.a build-mingw/glew.o
+          cd $GITHUB_WORKSPACE/Theseus/theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
+          make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
+               bx bimg bgfx config=release64 \
+               CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
       - name: Build UIX Desktop (Windows)
         run: |
-          ls $GITHUB_WORKSPACE/glew-src/usr/local
-          ls $GITHUB_WORKSPACE/glew-src/usr/local/include
-          ls $GITHUB_WORKSPACE/glew-src/
           ls $GITHUB_WORKSPACE/sdl2-mingw
           cd $GITHUB_WORKSPACE/Theseus/build
-          make desktop-win64 SDL2_MINGW_DIR=$GITHUB_WORKSPACE/sdl2-mingw GLEW_MINGW_DIR=$GITHUB_WORKSPACE/glew-src
+          make desktop-win64 BGFX=1 SDL2_MINGW_DIR=$GITHUB_WORKSPACE/sdl2-mingw
       - name: Pack UIX-Desktop
-        run: | 
+        run: |
           mv /github/home/builds/theseus/desktop-win64 $GITHUB_WORKSPACE/UIX-Desktop
           echo "Cleaning up build"
           cd $GITHUB_WORKSPACE/UIX-Desktop
@@ -209,7 +234,7 @@ jobs:
 #         run: |
 #           brew install llvm
 #       - name: Build OXDK
-#         run: | 
+#         run: |
 #           cd ./OXDK
 #           echo "Builder Stubbed. Implement later."
 #       - name: build Theseus
@@ -240,7 +265,7 @@ jobs:
 #         run: |
 #           brew install llvm
 #       - name: Build OXDK
-#         run: | 
+#         run: |
 #           cd ./OXDK
 #           echo "Builder Stubbed. Implement later."
 #       - name: build Theseus
@@ -281,8 +306,9 @@ jobs:
            cat > "$NOTES_FILE" <<'EOF'
            # UIX Desktop builds
 
-           Built from the latest Theseus commits.
-           
+           Built from the latest Theseus commits. Rendering goes through bgfx:
+           Metal on macOS, Vulkan on Linux and Windows.
+
            ## Versions
            - `UIX-Desktop-Win` - Reverse Engineered Xbox Dashboard (Windows Build)
            - `UIX-Desktop-MacOS` - Reverse Engineered Xbox Dashboard (MacOS Arm build)

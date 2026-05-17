@@ -22,6 +22,47 @@
 #include "panel_shared.h"
 #include "launch.h"
 #include <signal.h>
+
+#ifdef THESEUS_USE_BGFX
+#include <SDL_syswm.h>
+#include <bgfx/bgfx.h>
+#include <bgfx/platform.h>
+#include <cstring>
+#include <cstdio>
+#include <cstdlib>
+
+// Loads Data/shaders/<backend>/<name>.bin. Picks subdir from the active renderer.
+bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
+{
+	const char* sub = "metal";
+	switch (bgfx::getRendererType()) {
+		case bgfx::RendererType::Direct3D11: sub = "dx11";   break;
+		case bgfx::RendererType::Metal:      sub = "metal";  break;
+		case bgfx::RendererType::Vulkan:     sub = "spirv";  break;
+		case bgfx::RendererType::OpenGL:     sub = "glsl";   break;
+		default: break;
+	}
+	char path[512];
+	snprintf(path, sizeof(path), "Data/shaders/%s/%s.bin", sub, name);
+	// fopen is macro-routed through xboxfs.h's path translator; the
+	// relative path passes through unchanged, no Xbox-style remap.
+	FILE* f = fopen(path, "rb");
+	if (!f) {
+		fprintf(stderr, "bgfx: shader file not found: %s\n", path);
+		return BGFX_INVALID_HANDLE;
+	}
+	fseek(f, 0, SEEK_END);
+	long sz = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	const bgfx::Memory* mem = bgfx::alloc((uint32_t)sz + 1);
+	fread(mem->data, 1, sz, f);
+	mem->data[sz] = '\0';
+	fclose(f);
+	bgfx::ShaderHandle sh = bgfx::createShader(mem);
+	bgfx::setName(sh, name);
+	return sh;
+}
+#endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h>  // _NSGetExecutablePath
 #endif
@@ -152,41 +193,68 @@ SDL_Window*   g_pSDLWindow = NULL;
 SDL_GLContext  g_pGLContext = NULL;
 GLState        g_gl = {};
 
-// CRT post-process state
-CRTState g_crt = {
-    false,   // enabled
-    false,   // settingsOpen
-    0.5f,    // scanlineIntensity
-    0.4f,    // curvature
-    0.3f,    // phosphorMask
-    0.3f,    // vignette
-    0.15f,   // bloom
-    0.2f,    // flickerAmount
-    1.0f,    // colorBleed
-    1.05f,   // brightness
-    0, 0, 0, 0, 0,  // GL resources (zeroed)
-    0, 0, 0, 0, 0, 0, 0, 0, 0,  // uniform locations
-    0, 0     // texW, texH
-};
+#ifdef THESEUS_USE_BGFX
+// Phase 2 / chunk 5a: linked FF emulator program, used by the shim's
+// shadow-submit path. Stays BGFX_INVALID_HANDLE if the shader binaries
+// were missing at init time; the shadow path no-ops in that case.
+bgfx::ProgramHandle g_bgfxProgFF = BGFX_INVALID_HANDLE;
+
+// Chunk 5b: uniform handles for the FF emulator program. Mirror
+// SetupGLUniforms / vs_ff / fs_ff. Created at bgfx init time and lived
+// for the run; bgfx destroys all handles on shutdown.
+BgfxFFUniforms g_bgfxFF = {};
+
+// Chunk 5b: 1x1 white texture bound when the shim has no real texture
+// at a stage. Real-texture upload via IDirect3DTexture8::m_bgfxTex is
+// chunk 5c.
+bgfx::TextureHandle g_bgfxWhiteTex = BGFX_INVALID_HANDLE;
+
+// Chunk 5d-3+: blit program for fullscreen textured quads (boot anim,
+// CRT post). vs_blit/fs_blit; sampler bound at slot 0 named "s_blit".
+bgfx::ProgramHandle g_bgfxProgBlit = BGFX_INVALID_HANDLE;
+bgfx::UniformHandle g_bgfxSamplerBlit = BGFX_INVALID_HANDLE;
+#endif
+
+// CRT post-process state. Effect params get sensible defaults; backend
+// handles are zeroed and lazy-allocated by Init / Resize on the first
+// frame the toggle goes hot.
+CRTState g_crt = {};
+struct CRTDefaults {
+    CRTDefaults() {
+        g_crt.scanlineIntensity = 0.5f;
+        g_crt.curvature         = 0.4f;
+        g_crt.phosphorMask      = 0.3f;
+        g_crt.vignette          = 0.3f;
+        g_crt.bloom             = 0.15f;
+        g_crt.flickerAmount     = 0.2f;
+        g_crt.colorBleed        = 1.0f;
+        g_crt.brightness        = 1.05f;
+#ifdef THESEUS_USE_BGFX
+        g_crt.fb.idx       = bgfx::kInvalidHandle;
+        g_crt.colorTex.idx = bgfx::kInvalidHandle;
+        g_crt.program.idx  = bgfx::kInvalidHandle;
+        g_crt.s_scene.idx  = bgfx::kInvalidHandle;
+        g_crt.u_p1.idx     = bgfx::kInvalidHandle;
+        g_crt.u_p2.idx     = bgfx::kInvalidHandle;
+        g_crt.u_p3.idx     = bgfx::kInvalidHandle;
+#endif
+    }
+} g_crtDefaults;
 static float s_crtTime = 0.0f;
 
 #ifdef _WIN32
-// Hint to NVIDIA Optimus and AMD switchable-graphics drivers that this
-// process should run on the discrete GPU instead of the integrated one.
-// Both drivers scan the running EXE's export table on startup for these
-// named symbols and route OpenGL calls accordingly. Without these, hybrid
-// laptops silently default to the iGPU and fps tanks.
+// Force discrete GPU on Optimus / switchable laptops. bgfx exports its own
+// pair, so skip under BGFX to avoid the dup-symbol link error.
+#ifndef THESEUS_USE_BGFX
 extern "C" {
     __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
 #endif
+#endif
 
-// Dumps the active GPU, driver, GL context, vsync, MSAA, and display
-// info to stderr and to a `theseus_graphics.log` file next to the binary.
-// Called when --graphics-debug is passed on the command line. Used to
-// diagnose performance reports remotely (which GPU did the user end up
-// on, was vsync forced, what MSAA samples were obtained, etc).
+// `--graphics-debug` dumper. Writes GPU / driver / vsync / MSAA / display info
+// to stderr and theseus_graphics.log next to the binary.
 static void DumpGraphicsInfo()
 {
     FILE* logFp = fopen("theseus_graphics.log", "w");
@@ -200,6 +268,7 @@ static void DumpGraphicsInfo()
 
     write2("=== Theseus graphics debug ===\n");
 
+#ifndef THESEUS_USE_BGFX
     snprintf(buf, sizeof(buf), "GL_VENDOR:   %s\n", (const char*)glGetString(GL_VENDOR));
     write2(buf);
     snprintf(buf, sizeof(buf), "GL_RENDERER: %s\n", (const char*)glGetString(GL_RENDERER));
@@ -209,6 +278,14 @@ static void DumpGraphicsInfo()
     const GLubyte* glsl = glGetString(GL_SHADING_LANGUAGE_VERSION);
     snprintf(buf, sizeof(buf), "GLSL:        %s\n", glsl ? (const char*)glsl : "(unknown)");
     write2(buf);
+#else
+    {
+        const bgfx::Caps* c = bgfx::getCaps();
+        snprintf(buf, sizeof(buf), "bgfx renderer: %s\n",
+                 bgfx::getRendererName(c->rendererType));
+        write2(buf);
+    }
+#endif
 
     int swap = SDL_GL_GetSwapInterval();
     snprintf(buf, sizeof(buf), "Swap interval: %d (vsync %s)\n",
@@ -234,7 +311,7 @@ static void DumpGraphicsInfo()
         write2(buf);
     }
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(THESEUS_USE_BGFX)
     snprintf(buf, sizeof(buf), "NvOptimusEnablement=%lu, AmdPowerXpressRequestHighPerformance=%d\n",
         (unsigned long)NvOptimusEnablement, AmdPowerXpressRequestHighPerformance);
     write2(buf);
@@ -300,9 +377,7 @@ char s_retroarchPath[512] = ""; // RetroArch install root (contains retroarch.ex
 bool g_showRetroArchTab = true; // hides the Title Maker RetroArch tab; games stay in games.ini
 bool g_showSteamTab     = true; // hides the Title Maker Steam tab; games stay in games.ini
 
-// Library roots — desktop-only paths to media collections.
-// Read from desktop.ini [Library] section; consumed by audio_sdl.cpp
-// (DashMusic_Scan) and desktop_nodes.cpp (CMediaCollection).
+// Library roots from desktop.ini [Library]. Consumed by audio_sdl.cpp + media nodes.
 char g_musicRoot[512]  = "";
 char g_moviesRoot[512] = "";
 char g_tvRoot[512]     = "";
@@ -312,10 +387,8 @@ int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
 bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
 bool g_bShowBootAnimation   = true;   // play xbox_boot.mp4 once at startup before the dashboard
 
-// Legacy [Progressive] / [Dashboard Settings] sections. Historically lived
-// in Q:\System\config.ini on Xbox; collapsed into desktop.ini on desktop
-// via xboxfs.h's path alias. Tracked here so SaveDesktopSettings can
-// round-trip them (we truncate-rewrite desktop.ini on every save).
+// Legacy [Progressive] / [Dashboard Settings] sections, round-tripped through
+// desktop.ini so the truncate-rewrite save doesn't drop them.
 char g_use720p[8]        = "Yes";
 char g_useProgressive[8] = "Yes";
 char g_currentSkin[64]   = "Stock";
@@ -421,11 +494,8 @@ void LoadDesktopSettings() {
     fclose(fp);
 }
 
-// Re-read just the legacy [Progressive] / [Dashboard Settings] keys from
-// disk so SaveDesktopSettings doesn't clobber values the XAP / CSettingsFile
-// wrote between Load and Save (e.g. user changed skin via the dashboard UI,
-// then toggled CRT through Settings -- without this, the save would overwrite
-// the new skin name).
+// Refresh the legacy sections from disk so a Save doesn't overwrite values
+// the dashboard wrote between Load and Save (e.g. skin change via XAP).
 static void RereadLegacyFromDisk() {
     FILE* fp = fopen("Configs/desktop.ini", "r");
     if (!fp) return;
@@ -504,6 +574,64 @@ bool ImGui_WantsKeyboard() {
     return ImGui::GetIO().WantCaptureKeyboard;
 }
 
+// Stores a GLuint or bgfx::TextureHandle depending on backend.
+struct GuiTexture {
+#ifndef THESEUS_USE_BGFX
+    GLuint glHandle;
+#else
+    bgfx::TextureHandle bgfxHandle;
+#endif
+    int w, h;
+};
+
+GuiTexture* GuiTextureCreate(int w, int h, const void* rgbaPixels) {
+    if (w <= 0 || h <= 0 || rgbaPixels == NULL) return NULL;
+    GuiTexture* t = new GuiTexture();
+    t->w = w;
+    t->h = h;
+#ifndef THESEUS_USE_BGFX
+    glGenTextures(1, &t->glHandle);
+    glBindTexture(GL_TEXTURE_2D, t->glHandle);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgbaPixels);
+#else
+    t->bgfxHandle = bgfx::createTexture2D(
+        (uint16_t)w, (uint16_t)h, false, 1,
+        bgfx::TextureFormat::RGBA8,
+        BGFX_TEXTURE_NONE | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP,
+        bgfx::copy(rgbaPixels, (uint32_t)(w * h * 4)));
+    if (!bgfx::isValid(t->bgfxHandle)) {
+        delete t;
+        return NULL;
+    }
+#endif
+    return t;
+}
+
+void GuiTextureDestroy(GuiTexture** ptex) {
+    if (!ptex || !*ptex) return;
+    GuiTexture* t = *ptex;
+#ifndef THESEUS_USE_BGFX
+    if (t->glHandle) glDeleteTextures(1, &t->glHandle);
+#else
+    if (bgfx::isValid(t->bgfxHandle)) bgfx::destroy(t->bgfxHandle);
+#endif
+    delete t;
+    *ptex = NULL;
+}
+
+unsigned long long GuiTextureImId(const GuiTexture* tex) {
+    if (!tex) return 0;
+#ifndef THESEUS_USE_BGFX
+    return (unsigned long long)tex->glHandle;
+#else
+    return (unsigned long long)tex->bgfxHandle.idx;
+#endif
+}
+
 // Forward declarations for PreSwapOverlays
 bool g_debugMode = false;
 bool g_showMenuBar = true;   // toggled by F10 / View > Hide Menu Bar / --no-toolbar
@@ -524,7 +652,12 @@ static void PreSwapOverlays() {
     // Always render ImGui frame for the menu bar
     // Video renders inside CDVDPlayer::Render() during the scene graph pass
 
+#ifndef THESEUS_USE_BGFX
     ImGui_ImplOpenGL3_NewFrame();
+#else
+    extern void ImGui_ImplBgfx_NewFrame();
+    ImGui_ImplBgfx_NewFrame();
+#endif
     ImGui_ImplSDL2_NewFrame();
     ImGui::NewFrame();
 
@@ -597,10 +730,8 @@ static void PreSwapOverlays() {
     // XAP Editor (F2); floating ImGui window
     RenderXAPEditor();
 
-    // Launch overlay (fade-to-black + Xbox logo before spawning a game).
-    // Tick advances the state machine and fires the actual spawn + window
-    // minimize when the fade reaches its hold point. Drawn last so it sits
-    // above the menu bar and any other overlay.
+    // Launch overlay (fade-to-black + Xbox logo). Drawn last so it sits
+    // above every other overlay.
     LaunchOverlay_Tick();
     if (LaunchOverlay_IsActive()) {
         float a = LaunchOverlay_Alpha();
@@ -611,12 +742,9 @@ static void PreSwapOverlays() {
                           IM_COL32(0, 0, 0, (int)(255.0f * a)));
 
         int texW = 0, texH = 0;
-        unsigned int tex = LaunchOverlay_LogoGLTex(&texW, &texH);
+        unsigned long long tex = LaunchOverlay_LogoGLTex(&texW, &texH);
         if (tex && texW > 0 && texH > 0 && a > 0.05f) {
-            // Logo dominates the screen during launch (matches the Xbox
-            // dashboard's launch beat). Target ~60% of the window width
-            // and clamp height to ~70% of window height for ultra-wide
-            // displays. Preserve source aspect ratio.
+            // 60% of window width, clamped to 70% height for ultra-wide.
             float drawW = (float)winW * 0.60f;
             float drawH = drawW * ((float)texH / (float)texW);
             float maxH = (float)winH * 0.70f;
@@ -649,7 +777,12 @@ static void PreSwapOverlays() {
     }
 
     ImGui::Render();
+#ifndef THESEUS_USE_BGFX
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+#else
+    extern void ImGui_ImplBgfx_RenderDrawData(ImDrawData*);
+    ImGui_ImplBgfx_RenderDrawData(ImGui::GetDrawData());
+#endif
     s_imguiHasRendered = true;
 
     // Video rendering moved before ImGui frame
@@ -692,6 +825,34 @@ void ApplyVsyncMode() {
         SDL_GL_SetSwapInterval(1);
 }
 
+#ifdef THESEUS_USE_BGFX
+// bgfx reset flags from g_vsyncMode + g_msaaSamples. Adaptive vsync (mode 2)
+// falls through to off; bgfx has no equivalent.
+static uint32_t BgfxResetFlags() {
+    uint32_t flags = 0;
+    if (g_vsyncMode == 1) flags |= BGFX_RESET_VSYNC;
+    switch (g_msaaSamples) {
+        case 2:  flags |= BGFX_RESET_MSAA_X2;  break;
+        case 4:  flags |= BGFX_RESET_MSAA_X4;  break;
+        case 8:  flags |= BGFX_RESET_MSAA_X8;  break;
+        case 16: flags |= BGFX_RESET_MSAA_X16; break;
+    }
+    return flags;
+}
+
+static void BgfxApplyReset() {
+    if (!g_pSDLWindow) return;
+    int w = 0, h = 0;
+    SDL_GetWindowSize(g_pSDLWindow, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    bgfx::reset((uint32_t)w, (uint32_t)h, BgfxResetFlags());
+    bgfx::setViewRect(0, 0, 0, (uint16_t)w, (uint16_t)h);
+    // ImGui lives on view 2 (sharp on top of any CRT pass on view 1).
+    // bgfx skips views with no rect set, so size it to the backbuffer.
+    bgfx::setViewRect(2, 0, 0, (uint16_t)w, (uint16_t)h);
+}
+#endif
+
 // Pushes g_windowResolution + g_windowMode at the SDL window. Mode change
 // drops fullscreen first (if set), resizes, then re-applies the new mode.
 void ApplyDisplayMode() {
@@ -713,16 +874,11 @@ void ApplyDisplayMode() {
     if (flags) SDL_SetWindowFullscreen(g_pSDLWindow, flags);
 }
 bool g_scrollToSelected = false; // set true when 3D click selects a node
-// g_bWireframe is the canonical wireframe flag, defined in dashapp.cpp.
-// dashapp.cpp's render loop converts it to D3DRS_FILLMODE every frame, which
-// the D3D8->GL translator turns into glPolygonMode. No need to set
-// glPolygonMode here — that path was getting clobbered by the per-frame reset.
+// g_bWireframe lives in dashapp.cpp; converted to D3DRS_FILLMODE per frame.
+// Don't poke glPolygonMode here, the per-frame reset clobbers it.
 extern bool g_bWireframe;
 
-// Media fullscreen mode: when true, sdl_main.cpp draws the libmpv video frame
-// fullscreen (with our ImGui OSD on top + CRT post-process) instead of the
-// dashboard 3D scene. CMediaCollection::PlayMovie/PlayEpisode set this; Esc
-// or B button clears it.
+// True while libmpv is rendering fullscreen video. Cleared by Esc/B.
 bool g_mediaFullscreen = false;
 char g_mediaFullscreenTitle[256] = "";
 char g_mediaFullscreenSubtitle[256] = "";
@@ -818,10 +974,8 @@ int main(int argc, char* argv[]) {
     s_execPath = argv[0];
 
 #ifdef _WIN32
-    // Linked as /SUBSYSTEM:WINDOWS so explorer launches don't pop a console.
-    // If we were launched from cmd.exe / PowerShell / Windows Terminal, attach
-    // to the parent's console so testers running with --dashboard etc. from a
-    // shell still see startup logs and the [VGames] / [launch] traces.
+    // /SUBSYSTEM:WINDOWS so explorer launches don't pop a console, but
+    // attach to a parent shell when one exists so stdout/stderr show up.
     if (AttachConsole(ATTACH_PARENT_PROCESS)) {
         freopen("CONOUT$", "w", stdout);
         freopen("CONOUT$", "w", stderr);
@@ -918,7 +1072,11 @@ int main(int argc, char* argv[]) {
     Playlist_LoadAll();
     MediaDB_LoadCache();
 
-    // Request OpenGL 3.2 Core Profile (required for GLSL #version 150)
+    // GL build wraps an OpenGL drawable into the window. BGFX leaves it
+    // plain so the backend layer (CAMetalLayer / Vulkan) can attach.
+    Uint32 windowFlags = SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE;
+#ifndef THESEUS_USE_BGFX
+    windowFlags |= SDL_WINDOW_OPENGL;
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -926,15 +1084,16 @@ int main(int argc, char* argv[]) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, g_msaaSamples > 0 ? 1 : 0);
     SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, g_msaaSamples);
+#endif
 
-    // Create window
     g_pSDLWindow = SDL_CreateWindow(
         "UIX Desktop - Preview",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         1280, 720,
-        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL
+        windowFlags
     );
 
+#ifndef THESEUS_USE_BGFX
     if (!g_pSDLWindow) {
         // Fallback 1: drop MSAA but keep GL 3.2 core + double buffer
         fprintf(stderr, "SDL_CreateWindow failed (%s), retrying without MSAA...\n", SDL_GetError());
@@ -944,7 +1103,7 @@ int main(int argc, char* argv[]) {
             "UIX Desktop - Preview",
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
             1280, 720,
-            SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL
+            windowFlags
         );
     }
 
@@ -958,9 +1117,10 @@ int main(int argc, char* argv[]) {
             "UIX Desktop - Preview",
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
             1280, 720,
-            SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_OPENGL
+            windowFlags
         );
     }
+#endif
 
     if (!g_pSDLWindow) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -983,6 +1143,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
+#ifndef THESEUS_USE_BGFX
     // Create OpenGL context
     g_pGLContext = SDL_GL_CreateContext(g_pSDLWindow);
     if (!g_pGLContext) {
@@ -993,14 +1154,159 @@ int main(int argc, char* argv[]) {
     }
 
     ApplyVsyncMode();
+#endif
+
+#ifdef THESEUS_USE_BGFX
+    // bgfx::init. nwh = NSWindow* on macOS, HWND on Win32, Window on X11.
+    {
+        SDL_SysWMinfo wmi;
+        SDL_VERSION(&wmi.version);
+        if (!SDL_GetWindowWMInfo(g_pSDLWindow, &wmi)) {
+            fprintf(stderr, "SDL_GetWindowWMInfo failed: %s\n", SDL_GetError());
+        } else {
+            bgfx::PlatformData pd;
+            std::memset(&pd, 0, sizeof(pd));
+#  if defined(__APPLE__)
+            pd.nwh = wmi.info.cocoa.window;
+#  elif defined(_WIN32)
+            pd.nwh = wmi.info.win.window;
+#  else
+            // Branch on SDL's actual subsystem. Feeding x11 lanes to
+            // bgfx on a Wayland session hands RADV a NULL Display and
+            // it crashes in vkGetPhysicalDeviceSurfaceSupportKHR.
+            if (wmi.subsystem == SDL_SYSWM_WAYLAND) {
+                pd.ndt  = wmi.info.wl.display;
+                pd.nwh  = wmi.info.wl.surface;
+                pd.type = bgfx::NativeWindowHandleType::Wayland;
+            } else {
+                pd.ndt  = wmi.info.x11.display;
+                pd.nwh  = (void*)(uintptr_t)wmi.info.x11.window;
+                pd.type = bgfx::NativeWindowHandleType::Default; // X11
+            }
+#  endif
+            bgfx::Init bgfxInit;
+            bgfxInit.platformData       = pd;
+            bgfxInit.resolution.width   = 1280;
+            bgfxInit.resolution.height  = 720;
+            bgfxInit.resolution.reset   = BgfxResetFlags();
+            // macOS: auto-pick (Metal). Windows: pin Vulkan. D3D11 would work
+            // too but needs DXBC, which only fxc.exe (Windows-only) can build.
+#if defined(_WIN32)
+            bgfxInit.type = bgfx::RendererType::Vulkan;
+#else
+            bgfxInit.type = bgfx::RendererType::Count; // auto-pick best backend
+#endif
+            if (!bgfx::init(bgfxInit)) {
+                fprintf(stderr, "bgfx::init failed\n");
+            } else {
+                const bgfx::Caps* caps = bgfx::getCaps();
+                fprintf(stdout, "bgfx initialized: %s\n",
+                        bgfx::getRendererName(caps->rendererType));
+
+                // Link the shader programs we use across the run.
+                {
+                    bgfx::ShaderHandle vsh = theseus_bgfx_load_shader("vs_simple");
+                    bgfx::ShaderHandle fsh = theseus_bgfx_load_shader("fs_simple");
+                    if (bgfx::isValid(vsh) && bgfx::isValid(fsh)) {
+                        bgfx::ProgramHandle prog = bgfx::createProgram(vsh, fsh, true);
+                        if (bgfx::isValid(prog))
+                            fprintf(stdout, "bgfx: vs_simple/fs_simple program linked\n");
+                        else
+                            fprintf(stderr, "bgfx: simple program link failed\n");
+                    }
+                }
+                {
+                    bgfx::ShaderHandle vsh = theseus_bgfx_load_shader("vs_ff");
+                    bgfx::ShaderHandle fsh = theseus_bgfx_load_shader("fs_ff");
+                    if (bgfx::isValid(vsh) && bgfx::isValid(fsh)) {
+                        bgfx::ProgramHandle prog = bgfx::createProgram(vsh, fsh, true);
+                        if (bgfx::isValid(prog)) {
+                            g_bgfxProgFF = prog;
+                            fprintf(stdout, "bgfx: vs_ff/fs_ff program linked (FF emulator)\n");
+                        } else {
+                            fprintf(stderr, "bgfx: ff program link failed\n");
+                        }
+                    }
+                }
+                {
+                    bgfx::ShaderHandle vsh = theseus_bgfx_load_shader("vs_blit");
+                    bgfx::ShaderHandle fsh = theseus_bgfx_load_shader("fs_blit");
+                    if (bgfx::isValid(vsh) && bgfx::isValid(fsh)) {
+                        bgfx::ProgramHandle prog = bgfx::createProgram(vsh, fsh, true);
+                        if (bgfx::isValid(prog)) {
+                            g_bgfxProgBlit = prog;
+                            g_bgfxSamplerBlit = bgfx::createUniform("s_blit", bgfx::UniformType::Sampler);
+                            fprintf(stdout, "bgfx: vs_blit/fs_blit program linked\n");
+                        } else {
+                            fprintf(stderr, "bgfx: blit program link failed\n");
+                        }
+                    }
+                }
+
+                // View 0 viewport. Required for shadow-submit (chunk 5a)
+                // to be a valid draw; bgfx skips submits to a view with
+                // no rect. ApplyBgfxResize bumps these to window size as
+                // soon as we have one; placeholders here for the first
+                // frame.
+                bgfx::setViewRect(0, 0, 0, 1280, 720);
+                bgfx::setViewRect(2, 0, 0, 1280, 720); // ImGui
+
+                // The dashboard renders D3D-style: it expects every draw
+                // to land on the framebuffer in the order it was issued,
+                // because most of the UI is alpha-blended over the scene
+                // with depth-test off (so painter's-algorithm order is
+                // what determines what's on top). bgfx's default view
+                // mode reorders submits by state for batching, which
+                // shuffles the painter order and corrupts everything
+                // that overlays. Force Sequential to match GL.
+                bgfx::setViewMode(0, bgfx::ViewMode::Sequential);
+
+                // Chunk 5b: create FF uniform + sampler handles. Names
+                // must match the .sc shader sources exactly.
+                g_bgfxFF.u_FfWVP          = bgfx::createUniform("u_FfWVP",          bgfx::UniformType::Mat4);
+                g_bgfxFF.u_FfWorldView    = bgfx::createUniform("u_FfWorldView",    bgfx::UniformType::Mat4);
+                g_bgfxFF.u_FfNormalInv    = bgfx::createUniform("u_FfNormalInv",    bgfx::UniformType::Mat4);
+                g_bgfxFF.u_FfFalloffFront = bgfx::createUniform("u_FfFalloffFront", bgfx::UniformType::Vec4);
+                g_bgfxFF.u_FfFalloffDelta = bgfx::createUniform("u_FfFalloffDelta", bgfx::UniformType::Vec4);
+                g_bgfxFF.u_FfTFactor      = bgfx::createUniform("u_FfTFactor",      bgfx::UniformType::Vec4);
+                g_bgfxFF.u_FfMatDiffuse   = bgfx::createUniform("u_FfMatDiffuse",   bgfx::UniformType::Vec4);
+                g_bgfxFF.u_FfFlags1       = bgfx::createUniform("u_FfFlags1",       bgfx::UniformType::Vec4);
+                g_bgfxFF.u_FfFlags2       = bgfx::createUniform("u_FfFlags2",       bgfx::UniformType::Vec4);
+                g_bgfxFF.u_FfViewportSize = bgfx::createUniform("u_FfViewportSize", bgfx::UniformType::Vec4);
+                g_bgfxFF.u_FfFragFlags1   = bgfx::createUniform("u_FfFragFlags1",   bgfx::UniformType::Vec4);
+                g_bgfxFF.u_FfFragFlags2   = bgfx::createUniform("u_FfFragFlags2",   bgfx::UniformType::Vec4);
+                g_bgfxFF.s_tex0           = bgfx::createUniform("s_tex0",           bgfx::UniformType::Sampler);
+                g_bgfxFF.s_tex1           = bgfx::createUniform("s_tex1",           bgfx::UniformType::Sampler);
+
+                // 1x1 white placeholder for stages without a real texture.
+                {
+                    static const uint8_t white[4] = { 0xFF, 0xFF, 0xFF, 0xFF };
+                    g_bgfxWhiteTex = bgfx::createTexture2D(
+                        1, 1, false, 1,
+                        bgfx::TextureFormat::RGBA8,
+                        BGFX_TEXTURE_NONE | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP,
+                        bgfx::copy(white, 4));
+                }
+
+                // CRT post-process program + uniforms. The offscreen
+                // framebuffer itself gets allocated lazily on the first
+                // frame the user enables the toggle.
+                if (!InitCRTShader_Bgfx(1280, 720))
+                    fprintf(stderr, "[CRT] bgfx init failed; effect will stay disabled\n");
+            }
+        }
+    }
+#endif
 
     fprintf(stdout, "UIX Desktop - SDL/OpenGL Preview Tool\n");
+#ifndef THESEUS_USE_BGFX
     fprintf(stdout, "OpenGL: %s\n", glGetString(GL_VERSION));
     fprintf(stdout, "Renderer: %s\n", glGetString(GL_RENDERER));
+#endif
     fprintf(stdout, "F1: Toggle Debug Tools | F2: XAP Editor | F10: Toggle Menu Bar\n");
     fflush(stdout); fflush(stderr);
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(THESEUS_USE_BGFX)
     // Initialize GLEW (must be called after GL context creation, before any GL calls)
     glewExperimental = GL_TRUE;
     GLenum glewErr = glewInit();
@@ -1015,6 +1321,7 @@ int main(int argc, char* argv[]) {
     glGetError();
 #endif
 
+#ifndef THESEUS_USE_BGFX
     // Enable MSAA
     glEnable(GL_MULTISAMPLE);
 
@@ -1032,6 +1339,7 @@ int main(int argc, char* argv[]) {
 
     // Initialize CRT post-process shader
     InitCRTShader(1280, 720);
+#endif
 
     // Initialize Dear ImGui
     IMGUI_CHECKVERSION();
@@ -1039,12 +1347,8 @@ int main(int argc, char* argv[]) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    // Xbox-green theme — applied globally so every ImGui window in the app
-    // (Settings, Title Maker, HDD Browser, Inspector, etc.) gets a unified
-    // look. Goals: high-contrast green text on near-black bg, subtle green
-    // tint on chrome (titles/borders/buttons), brighter green for active
-    // states. Tighter spacing and rounding match the dashboard's hard-edged
-    // aesthetic (no big rounded corners — feels modern web app, not Xbox).
+    // Xbox-green ImGui theme. High-contrast green text, subtle green tint on
+    // chrome, brighter green on active states. Tight spacing, square corners.
     ImGui::StyleColorsDark();
     ImGuiStyle& style = ImGui::GetStyle();
     ImVec4* c = style.Colors;
@@ -1110,8 +1414,24 @@ int main(int argc, char* argv[]) {
     style.WindowPadding     = ImVec2(12, 10);
     style.IndentSpacing     = 18.0f;
 
+#ifndef THESEUS_USE_BGFX
     ImGui_ImplSDL2_InitForOpenGL(g_pSDLWindow, g_pGLContext);
     ImGui_ImplOpenGL3_Init("#version 150");
+#else
+    // SDL2 feeds events / DPI; no GL context under BGFX.
+    ImGui_ImplSDL2_InitForOther(g_pSDLWindow);
+    {
+        // View layout under bgfx:
+        //   view 0 = dashboard 3D scene (FF emulator submits)
+        //   view 1 = CRT post-process blit (only touched when g_crt.enabled)
+        //   view 2 = ImGui (menu bar, panels, libmpv via ImGui::AddImage)
+        // ImGui always lives on view 2 so it draws sharp on top of the
+        // post-processed scene, matching the GL backend's behavior.
+        extern bool ImGui_ImplBgfx_Init(unsigned char);
+        if (!ImGui_ImplBgfx_Init(2))
+            fprintf(stderr, "ImGui_ImplBgfx_Init failed!\n");
+    }
+#endif
 
     // Check for CLI flags
     float cliUiScale = 0.0f; // 0 = unset, default 1.0 if not specified
@@ -1176,10 +1496,17 @@ int main(int argc, char* argv[]) {
     if (!InitApp()) {
         fprintf(stderr, "InitApp() failed!\n");
         CleanupApp();
+#ifndef THESEUS_USE_BGFX
         ImGui_ImplOpenGL3_Shutdown();
+#else
+        extern void ImGui_ImplBgfx_Shutdown();
+        ImGui_ImplBgfx_Shutdown();
+#endif
         ImGui_ImplSDL2_Shutdown();
         ImGui::DestroyContext();
+#ifndef THESEUS_USE_BGFX
         SDL_GL_DeleteContext(g_pGLContext);
+#endif
         SDL_DestroyWindow(g_pSDLWindow);
         SDL_Quit();
         return 1;
@@ -1196,11 +1523,8 @@ int main(int argc, char* argv[]) {
         Launchers_RegisterAll();
     }
 
-    // Synthesize Library/UDATA/<TitleID>/TitleMeta.xbx for every Title
-    // Maker entry so the dashboard's Memory section renders title pods
-    // for them. Any user-supplied TitleMeta.xbx files (real Xbox saves
-    // copied in) are left alone -- we only fill gaps. Skipped on Xbox
-    // build via the desktop-only call site here.
+    // Synthesize TitleMeta.xbx for every Title Maker entry so the Memory
+    // section renders pods. User-supplied files are left alone.
     {
         extern int UDataSynth_RebuildAll();
         UDataSynth_RebuildAll();
@@ -1241,7 +1565,13 @@ int main(int argc, char* argv[]) {
                         Uint32 mainWinID = SDL_GetWindowID(g_pSDLWindow);
                         if (event.window.windowID == mainWinID) {
                             int w = event.window.data1, h = event.window.data2;
+#ifndef THESEUS_USE_BGFX
                             glViewport(0, 0, w, h);
+#else
+                            bgfx::reset((uint32_t)w, (uint32_t)h, BgfxResetFlags());
+                            bgfx::setViewRect(0, 0, 0, (uint16_t)w, (uint16_t)h);
+                            bgfx::setViewRect(2, 0, 0, (uint16_t)w, (uint16_t)h);
+#endif
                             g_pp.BackBufferWidth = w;
                             g_pp.BackBufferHeight = h;
                             g_nViewWidth = (float)w;
@@ -1375,6 +1705,14 @@ int main(int argc, char* argv[]) {
                         extern void TogglePlaylistMaker();
                         TogglePlaylistMaker();
                     }
+                    if (event.key.keysym.sym == SDLK_F8) {
+                        // D3D call-trace dump (project_d3d_call_audit.md
+                        // Sweep 2). Shift+F8 resets the counters.
+                        if (event.key.keysym.mod & KMOD_SHIFT)
+                            Theseus_D3D_ResetTrace();
+                        else
+                            Theseus_D3D_DumpTrace();
+                    }
                     if (event.key.keysym.sym == SDLK_F10) {
                         g_showMenuBar = !g_showMenuBar;
                     }
@@ -1399,7 +1737,9 @@ int main(int argc, char* argv[]) {
                         g_inspectorOpen = g_debugMode;
                         if (!g_debugMode && g_bWireframe) {
                             g_bWireframe = false;
+#ifndef THESEUS_USE_BGFX
                             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
                         }
                         if (g_pD3DDev) {
                             g_pD3DDev->m_inspectorEnabled = g_debugMode;
@@ -1474,6 +1814,7 @@ int main(int argc, char* argv[]) {
         // when the user comes back. media_ui handles its own input.
         if (!g_mediaFullscreen) Advance();
 
+#ifndef THESEUS_USE_BGFX
         // CRT: render to FBO if enabled
         if (g_crt.enabled && g_crt.fbo) {
             int ww, wh;
@@ -1482,6 +1823,21 @@ int main(int argc, char* argv[]) {
             CRT_BeginCapture();
             glViewport(0, 0, ww, wh);
         }
+#else
+        // Same idea under bgfx: allocate / resize the offscreen FB to
+        // window size, point view 0 at it so the scene draws there
+        // instead of straight to the backbuffer. Always set view 0's
+        // framebuffer here every frame, otherwise toggling CRT off
+        // leaves view 0 stuck on the FBO from the previous frame.
+        if (g_crt.enabled && bgfx::isValid(g_crt.program)) {
+            int ww, wh;
+            SDL_GetWindowSize(g_pSDLWindow, &ww, &wh);
+            CRT_ResizeFBO_Bgfx(ww, wh);
+            CRT_BeginCapture_Bgfx();
+        } else {
+            CRT_PointViewToBackbuffer_Bgfx();
+        }
+#endif
 
         // Render 3D scene (viewport set to left portion; Present() skips swap when inspector is open)
         Uint64 tDraw0 = SDL_GetPerformanceCounter();
@@ -1493,17 +1849,24 @@ int main(int argc, char* argv[]) {
         }
         Uint64 tDraw1 = SDL_GetPerformanceCounter();
 
-        // Force fill before ImGui so overlays render solid. Goes through the
-        // shim so its FILLMODE cache stays in sync; otherwise next frame's
-        // SetRenderState(WIREFRAME) is a cache hit and never re-applies.
+        // Force fill before ImGui so overlays render solid. Must go through
+        // the wrapper, otherwise the wrapper cache stays at WIREFRAME and
+        // the next frame's set is short-circuited.
         if (g_bWireframe && g_pD3DDev)
-            g_pD3DDev->SetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
+            TheseusSetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
 
+#ifndef THESEUS_USE_BGFX
         // CRT: blit with post-process shader
         if (g_crt.enabled && g_crt.fbo) {
             s_crtTime += 0.016f;
             CRT_EndAndBlit(s_crtTime);
         }
+#else
+        if (g_crt.enabled && bgfx::isValid(g_crt.program) && bgfx::isValid(g_crt.fb)) {
+            s_crtTime += 0.016f;
+            CRT_EndAndBlit_Bgfx(s_crtTime, g_crt.texW, g_crt.texH);
+        }
+#endif
 
         // Overlays (menu bar, inspector, Title Maker, etc.); always render
         Uint64 tImgui0 = SDL_GetPerformanceCounter();
@@ -1524,7 +1887,14 @@ int main(int argc, char* argv[]) {
 
         // Swap
         Uint64 tSwap0 = SDL_GetPerformanceCounter();
+#ifndef THESEUS_USE_BGFX
         if (g_pSDLWindow) SDL_GL_SwapWindow(g_pSDLWindow);
+#else
+        // Chunk 5d-2: bgfx now owns presentation. There is no GL
+        // drawable on the window so SDL_GL_SwapWindow is gone; bgfx's
+        // Metal layer becomes the visible contentView.
+        bgfx::frame();
+#endif
         Uint64 tSwap1 = SDL_GetPerformanceCounter();
 
         if (g_graphicsDebug) {
@@ -1553,7 +1923,11 @@ int main(int argc, char* argv[]) {
 
         if (g_vsyncChangeRequested) {
             g_vsyncChangeRequested = false;
+#ifndef THESEUS_USE_BGFX
             ApplyVsyncMode();
+#else
+            BgfxApplyReset();
+#endif
         }
 
         if (g_displayChangeRequested) {
@@ -1561,7 +1935,11 @@ int main(int argc, char* argv[]) {
             ApplyDisplayMode();
         }
 
-        // Handle MSAA change; recreate GL context with new sample count
+        // Handle MSAA change. GL path tears down + recreates the GL
+        // context with new sample count (heavy: reloads shaders, re-
+        // uploads textures). bgfx path is a single bgfx::reset call;
+        // bgfx keeps all GPU resources alive across the reset.
+#ifndef THESEUS_USE_BGFX
         if (g_msaaChangeRequested) {
             g_msaaChangeRequested = false;
 
@@ -1612,17 +1990,39 @@ int main(int argc, char* argv[]) {
             glViewport(0, 0, winW, winH);
 
         }
+#else
+        // bgfx::reset keeps all resources alive; MSAA toggle is one call.
+        if (g_msaaChangeRequested) {
+            g_msaaChangeRequested = false;
+            BgfxApplyReset();
+        }
+#endif
     }
 
     // Cleanup
     DestroyXapEditorWindow();
     XapEditor_Cleanup();
+#ifndef THESEUS_USE_BGFX
     ImGui_ImplOpenGL3_Shutdown();
+#else
+    {
+        extern void ImGui_ImplBgfx_Shutdown();
+        ImGui_ImplBgfx_Shutdown();
+    }
+#endif
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 
     CleanupApp();
+#ifndef THESEUS_USE_BGFX
     SDL_GL_DeleteContext(g_pGLContext);
+#else
+    // Intentionally NOT calling bgfx::shutdown() here. Several static
+    // CXipFile / CMesh / CTexture instances have destructors that run
+    // AFTER main returns and call bgfx::destroy on their handles; if
+    // shutdown ran first those destroys segfault on a dead context.
+    // The OS reclaims everything at process exit.
+#endif
     SDL_DestroyWindow(g_pSDLWindow);
     SDL_Quit();
 
