@@ -397,6 +397,17 @@ void RenderSettingsWindow() {
                 SaveDesktopSettings();
             }
 
+            ImGui::AlignTextToFramePadding(); ImGui::Text("Renderer:");
+            ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
+            static const char* s_rendererLabels[] = { "Auto", "Direct3D 11", "Vulkan", "OpenGL" };
+            if (ImGui::Combo("##renderer", &g_rendererPref, s_rendererLabels, 4)) {
+                SaveDesktopSettings();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Takes effect on next launch. Switch to Direct3D 11\nif you see a black screen on Windows with Vulkan.");
+
             ImGui::AlignTextToFramePadding(); ImGui::Text("Display Mode:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
             if (ImGui::Combo("##dispmode", &g_windowMode, s_displayModeLabels, 3)) {
