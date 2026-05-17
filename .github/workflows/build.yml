@@ -47,6 +47,13 @@ jobs:
       - name: Verify
         run: file ~/builds/theseus/desktop/theseus
 
+      - name: Upload macOS build
+        uses: actions/upload-artifact@v4
+        with:
+          name: theseus-macos
+          path: ~/builds/theseus/desktop/
+          if-no-files-found: error
+
   desktop-linux:
     name: Desktop / Linux
     runs-on: ubuntu-latest
@@ -78,6 +85,13 @@ jobs:
 
       - name: Verify
         run: file ~/builds/theseus/desktop/theseus
+
+      - name: Upload Linux build
+        uses: actions/upload-artifact@v4
+        with:
+          name: theseus-linux-x64
+          path: ~/builds/theseus/desktop/
+          if-no-files-found: error
 
   desktop-linux-arm64:
     name: Desktop / Linux ARM64
@@ -126,6 +140,13 @@ jobs:
 
       - name: Verify
         run: file ~/builds/theseus/desktop/theseus
+
+      - name: Upload Linux ARM64 build
+        uses: actions/upload-artifact@v4
+        with:
+          name: theseus-linux-arm64
+          path: ~/builds/theseus/desktop/
+          if-no-files-found: error
 
   # Windows binaries cross-compiled from Ubuntu via mingw-w64.
   # SDL2/SDL2_mixer/libcurl mingw devel are pulled from upstream tarballs;
