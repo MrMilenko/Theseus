@@ -1986,9 +1986,16 @@ public:
             strncpy(r.tex1Name, m_textures[1]->m_srcName, 127); r.tex1Name[127] = 0;
         }
 
-        // Compute screen-space AABB
+        // Compute screen-space AABB. Under bgfx we don't have a GL state
+        // mirror; use the present-params backbuffer size, which Set
+        // viewport keeps in sync with the active D3DVIEWPORT8.
         float minSX = 1e9f, minSY = 1e9f, maxSX = -1e9f, maxSY = -1e9f;
+#ifdef THESEUS_USE_BGFX
+        extern D3DPRESENT_PARAMETERS g_pp;
+        int vp[4] = { 0, 0, (int)g_pp.BackBufferWidth, (int)g_pp.BackBufferHeight };
+#else
         GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp);
+#endif
         float vpW = (float)vp[2], vpH = (float)vp[3];
 
         const BYTE* vd = (const BYTE*)vertData;

@@ -1737,7 +1737,9 @@ int main(int argc, char* argv[]) {
                         g_inspectorOpen = g_debugMode;
                         if (!g_debugMode && g_bWireframe) {
                             g_bWireframe = false;
+#ifndef THESEUS_USE_BGFX
                             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
                         }
                         if (g_pD3DDev) {
                             g_pD3DDev->m_inspectorEnabled = g_debugMode;
