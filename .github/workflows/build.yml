@@ -110,9 +110,14 @@ jobs:
           cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
 
       - name: Build bgfx libs
+        # bgfx's linux-gcc profile bakes in -m64 / -msse4.2 / -mfpmath=sse,
+        # which fail on aarch64. Strip them after genie generates the
+        # project makefiles and the same gcc happily builds ARM.
         run: |
           cd theseus/third-party/bgfx
           ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          find .build/projects/gmake-linux-gcc -name '*.make' -exec \
+               sed -i -e 's/-m64//g' -e 's/-mfpmath=sse//g' -e 's/-msse4.2//g' {} +
           make -C .build/projects/gmake-linux-gcc -j$(nproc) \
                bx bimg bgfx config=release64
 

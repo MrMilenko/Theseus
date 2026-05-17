@@ -1279,6 +1279,7 @@ inline void CRT_EndAndBlit_Bgfx(float time, int width, int height) {
 #endif // THESEUS_USE_BGFX
 
 // Compile and link the GL shader program. Called from sdl_main.cpp after GL context creation.
+#ifndef THESEUS_USE_BGFX
 inline bool InitGLShaders() {
     // ---- Vertex Shader ----
     const char* vsSrc = R"(
@@ -1557,6 +1558,7 @@ void main() {
 
     return true;
 }
+#endif // !THESEUS_USE_BGFX
 
 // -------------------------------------------------------
 // D3D8 interface stubs backed by OpenGL

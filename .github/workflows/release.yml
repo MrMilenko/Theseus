@@ -139,9 +139,13 @@ jobs:
           cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
 
       - name: Build bgfx libs
+        # Strip x86-specific flags from the genie-generated project files
+        # so they build clean on aarch64.
         run: |
           cd theseus/third-party/bgfx
           ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          find .build/projects/gmake-linux-gcc -name '*.make' -exec \
+               sed -i -e 's/-m64//g' -e 's/-mfpmath=sse//g' -e 's/-msse4.2//g' {} +
           make -C .build/projects/gmake-linux-gcc -j$(nproc) \
                bx bimg bgfx config=release64
 
