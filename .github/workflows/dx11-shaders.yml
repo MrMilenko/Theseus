@@ -31,10 +31,11 @@ jobs:
             make
             mingw-w64-x86_64-gcc
 
-      - name: Build bgfx libs + shaderc (mingw)
+      - name: Build shaderc (mingw)
+        # --with-tools is required for genie to emit shaderc.make.
         run: |
           cd theseus/third-party/bgfx
-          ../bx/tools/bin/windows/genie.exe --gcc=mingw-gcc gmake
+          ../bx/tools/bin/windows/genie.exe --with-tools --gcc=mingw-gcc gmake
           make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
                shaderc config=release64
 
