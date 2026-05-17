@@ -30,7 +30,9 @@ jobs:
         shell: pwsh
         run: |
           $shaderc = "$pwd\bgfx-prebuilt\bgfx.cmake\bin\shaderc.exe"
-          $inc     = "$pwd\theseus\third-party\bgfx\src"
+          # bgfx_shader.sh ships in the prebuilt zip's include/bgfx dir.
+          # Pass that as the -i include path so the .sc sources resolve.
+          $inc     = "$pwd\bgfx-prebuilt\bgfx.cmake\include\bgfx"
           $srcDir  = "$pwd\theseus\desktop\shaders"
           $outDir  = "$pwd\Data\shaders\dx11"
           New-Item -ItemType Directory -Force $outDir | Out-Null
