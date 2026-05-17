@@ -31,14 +31,12 @@ jobs:
           vulkan-icd-loader \
           vulkan-headers \
           libx11
-      - name: Build bgfx libs + shaderc
+      - name: Build bgfx libs
         run: |
-          cd $GITHUB_WORKSPACE
-          make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
-      - name: Compile shaders (SPIR-V)
-        run: |
-          cd $GITHUB_WORKSPACE
-          make -C build shaders-bgfx-spirv
+          cd $GITHUB_WORKSPACE/theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          make -C .build/projects/gmake-linux-gcc -j$(nproc) \
+               bx bimg bgfx config=release64
       - name: Build UIX Desktop (Linux)
         run: |
           cd $GITHUB_WORKSPACE/build
@@ -73,14 +71,12 @@ jobs:
         - name: Install Dependencies
           run: |
             brew install sdl2 sdl2_mixer
-        - name: Build bgfx libs + shaderc
+        - name: Build bgfx libs
           run: |
-            cd $GITHUB_WORKSPACE
-            make -C theseus/third-party/bgfx -j$(sysctl -n hw.ncpu) osx-arm64-release
-        - name: Compile shaders (Metal)
-          run: |
-            cd $GITHUB_WORKSPACE
-            make -C build shaders-bgfx
+            cd $GITHUB_WORKSPACE/theseus/third-party/bgfx
+            ../bx/tools/bin/darwin/genie --gcc=osx-arm64 gmake
+            make -C .build/projects/gmake-osx-arm64 -j$(sysctl -n hw.ncpu) \
+                 bx bimg bgfx config=release
         - name: Build UIX Desktop (MacOS Arm)
           run: |
             cd $GITHUB_WORKSPACE/build
@@ -117,14 +113,12 @@ jobs:
       - name: Install Dependencies
         run: |
           brew install sdl2 sdl2_mixer
-      - name: Build bgfx libs + shaderc
+      - name: Build bgfx libs
         run: |
-          cd $GITHUB_WORKSPACE
-          make -C theseus/third-party/bgfx -j$(sysctl -n hw.ncpu) osx-x64-release
-      - name: Compile shaders (Metal)
-        run: |
-          cd $GITHUB_WORKSPACE
-          make -C build shaders-bgfx
+          cd $GITHUB_WORKSPACE/theseus/third-party/bgfx
+          ../bx/tools/bin/darwin/genie --gcc=osx-x64 gmake
+          make -C .build/projects/gmake-osx-x64 -j$(sysctl -n hw.ncpu) \
+               bx bimg bgfx config=release
       - name: Build UIX Desktop (MacOS Intel)
         run: |
           cd $GITHUB_WORKSPACE/build
@@ -190,22 +184,13 @@ jobs:
           cp -r ./SDL2-2.32.10 $GITHUB_WORKSPACE/sdl2-mingw
           cp -r ./SDL2_mixer-2.8.1 $GITHUB_WORKSPACE/sdl2-mingw
       - name: Build bgfx libs (mingw cross)
-        # Just the runtime libs; the all-target rule chokes on glslang
-        # using Unix-only headers under mingw cross-compile.
+        # Just the runtime libs; SPIR-V shaders ship in-tree.
         run: |
           cd $GITHUB_WORKSPACE/Theseus/theseus/third-party/bgfx
           ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
           make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
                bx bimg bgfx config=release64 \
                CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
-      - name: Build shaderc (host Linux, for cross shader compile)
-        run: |
-          cd $GITHUB_WORKSPACE/Theseus
-          make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
-      - name: Compile shaders (SPIR-V)
-        run: |
-          cd $GITHUB_WORKSPACE/Theseus
-          SHADERC=theseus/third-party/bgfx/.build/linux64_gcc/bin/shadercRelease make -C build shaders-bgfx-spirv
       - name: Build UIX Desktop (Windows)
         run: |
           ls $GITHUB_WORKSPACE/sdl2-mingw

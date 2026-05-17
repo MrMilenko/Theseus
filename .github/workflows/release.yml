@@ -16,8 +16,9 @@ permissions:
 
 # Per-platform: build, package binary + Configs/Data/Library + runtime libs into a
 # platform-named archive, attach to the GitHub Release. All desktop targets ship
-# the bgfx backend (Metal on macOS, Vulkan on Linux / Windows). Shaders are
-# precompiled by shaderc and bundled under Data/shaders/.
+# the bgfx backend (Metal on macOS, Vulkan on Linux / Windows). Shader .bin files
+# live in-tree under Data/shaders/; shaderc only runs offline when authoring new
+# shaders, not during CI.
 
 jobs:
   release-macos:
@@ -34,11 +35,12 @@ jobs:
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
-      - name: Build bgfx libs + shaderc
-        run: make -C theseus/third-party/bgfx -j$(sysctl -n hw.ncpu) osx-arm64-release
-
-      - name: Compile shaders (Metal)
-        run: make -C build shaders-bgfx
+      - name: Build bgfx libs
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/darwin/genie --gcc=osx-arm64 gmake
+          make -C .build/projects/gmake-osx-arm64 -j$(sysctl -n hw.ncpu) \
+               bx bimg bgfx config=release
 
       - name: Build
         run: PKG_CONFIG_PATH="$(brew --prefix curl)/lib/pkgconfig:${PKG_CONFIG_PATH}" make -C build desktop BGFX=1
@@ -81,11 +83,12 @@ jobs:
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
-      - name: Build bgfx libs + shaderc
-        run: make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
-
-      - name: Compile shaders (SPIR-V)
-        run: make -C build shaders-bgfx-spirv
+      - name: Build bgfx libs
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          make -C .build/projects/gmake-linux-gcc -j$(nproc) \
+               bx bimg bgfx config=release64
 
       - name: Build
         run: make -C build desktop BGFX=1
@@ -132,11 +135,12 @@ jobs:
           make -C /tmp/genie
           cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
 
-      - name: Build bgfx libs + shaderc
-        run: make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
-
-      - name: Compile shaders (SPIR-V)
-        run: make -C build shaders-bgfx-spirv
+      - name: Build bgfx libs
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          make -C .build/projects/gmake-linux-gcc -j$(nproc) \
+               bx bimg bgfx config=release64
 
       - name: Build
         run: make -C build desktop BGFX=1
@@ -174,8 +178,7 @@ jobs:
           sudo apt update
           sudo apt install -y mingw-w64 p7zip-full \
                               g++-mingw-w64-x86-64-posix \
-                              gcc-mingw-w64-x86-64-posix \
-                              libvulkan-dev libx11-dev
+                              gcc-mingw-w64-x86-64-posix
           sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
           sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
 
@@ -227,21 +230,14 @@ jobs:
         run: mkdir -p Configs Data Library
 
       - name: Build bgfx libs (mingw cross)
-        # Limit to bx / bimg / bgfx: the all-target build pulls in
-        # glslang whose Unix source breaks under mingw. Host shaderc is
-        # built in the next step for the SPIR-V emit.
+        # Just the runtime libs; SPIR-V shaders ship in-tree under
+        # Data/shaders/spirv.
         run: |
           cd theseus/third-party/bgfx
           ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
           make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
                bx bimg bgfx config=release64 \
                CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
-
-      - name: Build shaderc (host Linux, for cross shader compile)
-        run: make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
-
-      - name: Compile shaders (SPIR-V)
-        run: SHADERC=theseus/third-party/bgfx/.build/linux64_gcc/bin/shadercRelease make -C build shaders-bgfx-spirv
 
       - name: Build
         run: make -C build desktop-win64 BGFX=1
