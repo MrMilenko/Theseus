@@ -1,9 +1,8 @@
 name: dx11-shaders
 
-# Manual trigger only. Builds shaderc on Windows (needed because the
-# DXBC emit path inside shaderc calls into d3dcompiler_47.dll which
-# only ships on Windows), runs make shaders-bgfx-dx11, and uploads
-# the resulting Data/shaders/dx11/*.bin files as an artifact.
+# Manual trigger. Downloads prebuilt shaderc.exe from bkaradzic/bgfx.cmake's
+# Windows nightly, compiles the .sc files in theseus/desktop/shaders to DXBC,
+# uploads the resulting Data/shaders/dx11/*.bin set as an artifact.
 on:
   workflow_dispatch
 
@@ -12,48 +11,43 @@ permissions:
 
 jobs:
   compile-dx11-shaders:
-    name: Compile DX11 shaders (windows-latest)
+    name: Compile DX11 shaders
     runs-on: windows-latest
-    defaults:
-      run:
-        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Setup MSYS2 (mingw64)
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          update: false
-          install: >-
-            make
-            mingw-w64-x86_64-gcc
-
-      - name: Build shaderc (mingw)
-        # --with-tools is required for genie to emit shaderc.make.
-        # bgfx's mingw-gcc profile builds the compiler path as
-        # ${MINGW}/bin/x86_64-w64-mingw32-gcc, so MINGW has to point
-        # at the MSYS2 mingw64 root for the binaries to resolve.
-        env:
-          MINGW: /mingw64
+      - name: Fetch prebuilt shaderc
+        shell: pwsh
         run: |
-          cd theseus/third-party/bgfx
-          ../bx/tools/bin/windows/genie.exe --with-tools --gcc=mingw-gcc gmake
-          make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
-               shaderc config=release64
-
-      - name: Locate shaderc binary
-        run: find theseus/third-party/bgfx/.build -name 'shaderc*.exe' -o -name 'shaderc' 2>/dev/null
+          $ver = (gh release view --repo bkaradzic/bgfx.cmake --json tagName -q .tagName)
+          $url = "https://github.com/bkaradzic/bgfx.cmake/releases/download/$ver/bgfx.cmake.binary.windows.$ver.zip"
+          curl.exe -fsSL -o bgfx.zip $url
+          Expand-Archive bgfx.zip -DestinationPath bgfx-prebuilt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compile DX11 shaders
-        # The host shaderc just built has the bgfx_shader.sh include
-        # paths baked in; point the Makefile at it explicitly.
+        shell: pwsh
         run: |
-          SHADERC=$(find theseus/third-party/bgfx/.build -name 'shadercRelease*' -type f | head -1)
-          echo "Using shaderc at: $SHADERC"
-          SHADERC="$SHADERC" make -C build shaders-bgfx-dx11
+          $shaderc = "$pwd\bgfx-prebuilt\bgfx.cmake\bin\shaderc.exe"
+          $inc     = "$pwd\theseus\third-party\bgfx\src"
+          $srcDir  = "$pwd\theseus\desktop\shaders"
+          $outDir  = "$pwd\Data\shaders\dx11"
+          New-Item -ItemType Directory -Force $outDir | Out-Null
+          Get-ChildItem "$srcDir\vs_*.sc" | ForEach-Object {
+              $name = $_.BaseName
+              Write-Host "shaderc [dx11] $name"
+              & $shaderc -f $_.FullName -o "$outDir\$name.bin" `
+                  --type v --platform windows --profile s_5_0 -i $inc
+              if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
+          Get-ChildItem "$srcDir\fs_*.sc" | ForEach-Object {
+              $name = $_.BaseName
+              Write-Host "shaderc [dx11] $name"
+              & $shaderc -f $_.FullName -o "$outDir\$name.bin" `
+                  --type f --platform windows --profile s_5_0 -i $inc
+              if ($LASTEXITCODE -ne 0) { exit 1 }
+          }
 
       - name: Upload DX11 shader bins
         uses: actions/upload-artifact@v4
