@@ -93,6 +93,15 @@ jobs:
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build GENie from source (ARM64 host)
+        # bx ships prebuilt genie for linux x86_64 / darwin / windows only;
+        # on aarch64 the kernel cant run the shipped x86 binary. Build from
+        # source and drop it in place so bgfx's makefile finds it.
+        run: |
+          git clone --depth 1 https://github.com/bkaradzic/GENie.git /tmp/genie
+          make -C /tmp/genie
+          cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
+
       - name: Build bgfx libs + shaderc
         run: make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
 
@@ -179,9 +188,18 @@ jobs:
         run: mkdir -p Configs Data Library
 
       - name: Build bgfx libs (mingw cross)
-        # bgfx ships GENie project files; mingw target writes libs to
-        # .build/win64_mingw-gcc/bin/lib{bx,bimg,bgfx}Release.a.
-        run: make -C theseus/third-party/bgfx -j$(nproc) mingw-gcc-release64
+        # bgfx's "mingw-gcc-release64" rule builds every project in the
+        # generated solution (incl. glslang / shaderc / spirv-tools).
+        # glslang's Unix source pulls sys/resource.h which mingw doesnt
+        # ship, so the all-target build dies. We only need the three
+        # runtime libs for the Windows binary; the SPIR-V shaders are
+        # cross-emitted by the host Linux shaderc later in this job.
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
+          make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
+               bx bimg bgfx config=release64 \
+               CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
 
       - name: Build shaderc (host Linux, for cross shader compile)
         # shaderc runs on the host to emit SPIR-V; build the Linux flavor.

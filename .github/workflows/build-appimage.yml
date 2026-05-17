@@ -190,9 +190,14 @@ jobs:
           cp -r ./SDL2-2.32.10 $GITHUB_WORKSPACE/sdl2-mingw
           cp -r ./SDL2_mixer-2.8.1 $GITHUB_WORKSPACE/sdl2-mingw
       - name: Build bgfx libs (mingw cross)
+        # Just the runtime libs; the all-target rule chokes on glslang
+        # using Unix-only headers under mingw cross-compile.
         run: |
-          cd $GITHUB_WORKSPACE/Theseus
-          make -C theseus/third-party/bgfx -j$(nproc) mingw-gcc-release64
+          cd $GITHUB_WORKSPACE/Theseus/theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
+          make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
+               bx bimg bgfx config=release64 \
+               CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
       - name: Build shaderc (host Linux, for cross shader compile)
         run: |
           cd $GITHUB_WORKSPACE/Theseus
