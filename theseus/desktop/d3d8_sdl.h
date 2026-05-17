@@ -865,6 +865,7 @@ struct CRTState {
     float    flickerAmount;     // subtle brightness variation
     float    colorBleed;        // horizontal color smear
     float    brightness;        // overall brightness adjustment
+#ifndef THESEUS_USE_BGFX
     // GL resources
     GLuint   fbo;
     GLuint   colorTex;
@@ -873,10 +874,22 @@ struct CRTState {
     GLint    u_SceneTex, u_Resolution, u_Time;
     GLint    u_ScanlineIntensity, u_Curvature, u_PhosphorMask;
     GLint    u_Vignette, u_Bloom, u_Flicker, u_ColorBleed, u_Brightness;
+#else
+    // bgfx resources. Offscreen target gets allocated lazily on the first
+    // frame CRT is on; freed when the window resizes.
+    bgfx::FrameBufferHandle fb;
+    bgfx::TextureHandle     colorTex; // attachment we sample in the blit
+    bgfx::ProgramHandle     program;  // vs_blit + fs_crt
+    bgfx::UniformHandle     s_scene;  // sampler for the offscreen color tex
+    bgfx::UniformHandle     u_p1;     // scanline / curvature / phosphor / vignette
+    bgfx::UniformHandle     u_p2;     // bloom / flicker / colorBleed / brightness
+    bgfx::UniformHandle     u_p3;     // time / resolution.x / resolution.y / unused
+#endif
     int      texW, texH;       // current FBO dimensions
 };
 extern CRTState g_crt;
 
+#ifndef THESEUS_USE_BGFX
 // Initialize CRT post-process FBO and shader
 inline bool InitCRTShader(int width, int height) {
     // ---- CRT Vertex Shader (fullscreen triangle) ----
@@ -1131,6 +1144,131 @@ inline void CRT_EndAndBlit(float time) {
     if (cullEnabled)  glEnable(GL_CULL_FACE);
     glActiveTexture(GL_TEXTURE0);
 }
+#else  // THESEUS_USE_BGFX
+
+// Forward decl matching the loader in sdl_main.cpp. Takes a stem like
+// "vs_blit"; resolves the per-renderer subdir + .bin extension.
+bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name);
+
+// Allocates the offscreen framebuffer + color attachment + program +
+// uniforms. Called once on startup. CRT toggle just gates whether we
+// actually route view 0 through this FB at frame time.
+inline bool InitCRTShader_Bgfx(int /*width*/, int /*height*/) {
+    bgfx::ShaderHandle vs = theseus_bgfx_load_shader("vs_blit");
+    bgfx::ShaderHandle fs = theseus_bgfx_load_shader("fs_crt");
+    if (!bgfx::isValid(vs) || !bgfx::isValid(fs)) {
+        fprintf(stderr, "[CRT] bgfx shader load failed\n");
+        return false;
+    }
+    g_crt.program = bgfx::createProgram(vs, fs, true);
+
+    g_crt.s_scene = bgfx::createUniform("s_crtScene",  bgfx::UniformType::Sampler);
+    g_crt.u_p1    = bgfx::createUniform("u_CrtParams1", bgfx::UniformType::Vec4);
+    g_crt.u_p2    = bgfx::createUniform("u_CrtParams2", bgfx::UniformType::Vec4);
+    g_crt.u_p3    = bgfx::createUniform("u_CrtParams3", bgfx::UniformType::Vec4);
+
+    g_crt.colorTex.idx = bgfx::kInvalidHandle;
+    g_crt.fb.idx       = bgfx::kInvalidHandle;
+    g_crt.texW = 0;
+    g_crt.texH = 0;
+    return true;
+}
+
+// (Re)allocate the offscreen framebuffer at the requested pixel size.
+// bgfx framebuffers are immutable; resize = destroy + create.
+inline void CRT_ResizeFBO_Bgfx(int width, int height) {
+    if (width <= 0 || height <= 0) return;
+    if (width == g_crt.texW && height == g_crt.texH && bgfx::isValid(g_crt.fb)) return;
+    if (bgfx::isValid(g_crt.fb))       bgfx::destroy(g_crt.fb);
+    if (bgfx::isValid(g_crt.colorTex)) bgfx::destroy(g_crt.colorTex);
+
+    const uint64_t sampleFlags = BGFX_TEXTURE_RT
+                               | BGFX_SAMPLER_U_CLAMP
+                               | BGFX_SAMPLER_V_CLAMP;
+    g_crt.colorTex = bgfx::createTexture2D(
+        (uint16_t)width, (uint16_t)height, false, 1,
+        bgfx::TextureFormat::BGRA8, sampleFlags);
+
+    bgfx::TextureHandle attachments[1] = { g_crt.colorTex };
+    g_crt.fb = bgfx::createFrameBuffer(1, attachments, false);
+    g_crt.texW = width;
+    g_crt.texH = height;
+}
+
+// Point view 0 at the offscreen FB before the scene draws. Must be
+// matched by exactly one CRT_EndAndBlit_Bgfx submit per frame; do not
+// reset view 0's framebuffer in between, because bgfx applies the most
+// recent setViewFrameBuffer call to *all* submits on that view in the
+// frame (so resetting after submits would draw the scene to the
+// backbuffer instead of into the FBO).
+inline void CRT_BeginCapture_Bgfx() {
+    bgfx::setViewFrameBuffer(0, g_crt.fb);
+}
+
+// Called every frame, regardless of toggle state, so view 0 binds to the
+// backbuffer once CRT goes off again (the previous frame may have left
+// it pointing at the offscreen FB).
+inline void CRT_PointViewToBackbuffer_Bgfx() {
+    bgfx::setViewFrameBuffer(0, BGFX_INVALID_HANDLE);
+}
+
+// Submit the fullscreen blit into view 1 (which targets the backbuffer)
+// with the CRT shader sampling view 0's color attachment.
+inline void CRT_EndAndBlit_Bgfx(float time, int width, int height) {
+    // View 1 = post-process pass to backbuffer.
+    bgfx::setViewFrameBuffer(1, BGFX_INVALID_HANDLE);
+    bgfx::setViewRect(1, 0, 0, (uint16_t)width, (uint16_t)height);
+    bgfx::setViewClear(1, 0); // backbuffer is fully overwritten by the quad
+
+    // Same fullscreen quad as boot_anim's blit. Layout has to match vs_blit's
+    // declared $input slots.
+    bgfx::VertexLayout layout;
+    layout.begin()
+        .add(bgfx::Attrib::Position,  3, bgfx::AttribType::Float)
+        .add(bgfx::Attrib::Normal,    3, bgfx::AttribType::Float)
+        .add(bgfx::Attrib::Color0,    4, bgfx::AttribType::Uint8, true)
+        .add(bgfx::Attrib::Color1,    4, bgfx::AttribType::Uint8, true)
+        .add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+        .end();
+
+    // UV layout matches boot_anim's blit: bottom of the quad samples V=1,
+    // top samples V=0. The offscreen FB written by view 0 follows the
+    // active backend's render-target origin, so the top-of-screen pixel
+    // sits at the top of the texture. Without this mapping the post-
+    // process samples the FBO upside-down, which on Metal manifests as
+    // the dashboard rendering rotated 180.
+    struct V { float px, py, pz, nx, ny, nz; uint32_t c0, c1; float u, v; };
+    V verts[4] = {
+        { -1.f, -1.f, 0.f, 0,0,0, 0,0, 0.f, 1.f },
+        {  1.f, -1.f, 0.f, 0,0,0, 0,0, 1.f, 1.f },
+        {  1.f,  1.f, 0.f, 0,0,0, 0,0, 1.f, 0.f },
+        { -1.f,  1.f, 0.f, 0,0,0, 0,0, 0.f, 0.f },
+    };
+    const uint16_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+
+    bgfx::TransientVertexBuffer tvb;
+    bgfx::TransientIndexBuffer  tib;
+    if (bgfx::getAvailTransientVertexBuffer(4, layout) < 4) return;
+    if (bgfx::getAvailTransientIndexBuffer(6) < 6)            return;
+    bgfx::allocTransientVertexBuffer(&tvb, 4, layout);
+    memcpy(tvb.data, verts, sizeof(verts));
+    bgfx::allocTransientIndexBuffer(&tib, 6);
+    memcpy(tib.data, idx, sizeof(idx));
+
+    float p1[4] = { g_crt.scanlineIntensity, g_crt.curvature, g_crt.phosphorMask, g_crt.vignette };
+    float p2[4] = { g_crt.bloom, g_crt.flickerAmount, g_crt.colorBleed, g_crt.brightness };
+    float p3[4] = { time, (float)g_crt.texW, (float)g_crt.texH, 0.0f };
+    bgfx::setUniform(g_crt.u_p1, p1);
+    bgfx::setUniform(g_crt.u_p2, p2);
+    bgfx::setUniform(g_crt.u_p3, p3);
+
+    bgfx::setTexture(0, g_crt.s_scene, g_crt.colorTex);
+    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+    bgfx::setVertexBuffer(0, &tvb, 0, 4);
+    bgfx::setIndexBuffer(&tib, 0, 6);
+    bgfx::submit(1, g_crt.program);
+}
+#endif // THESEUS_USE_BGFX
 
 // Compile and link the GL shader program. Called from sdl_main.cpp after GL context creation.
 inline bool InitGLShaders() {

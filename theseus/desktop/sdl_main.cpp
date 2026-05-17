@@ -32,7 +32,7 @@
 #include <cstdlib>
 
 // Loads Data/shaders/<backend>/<name>.bin. Picks subdir from the active renderer.
-static bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
+bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
 {
 	const char* sub = "metal";
 	switch (bgfx::getRendererType()) {
@@ -215,22 +215,31 @@ bgfx::ProgramHandle g_bgfxProgBlit = BGFX_INVALID_HANDLE;
 bgfx::UniformHandle g_bgfxSamplerBlit = BGFX_INVALID_HANDLE;
 #endif
 
-// CRT post-process state
-CRTState g_crt = {
-    false,   // enabled
-    false,   // settingsOpen
-    0.5f,    // scanlineIntensity
-    0.4f,    // curvature
-    0.3f,    // phosphorMask
-    0.3f,    // vignette
-    0.15f,   // bloom
-    0.2f,    // flickerAmount
-    1.0f,    // colorBleed
-    1.05f,   // brightness
-    0, 0, 0, 0, 0,  // GL resources (zeroed)
-    0, 0, 0, 0, 0, 0, 0, 0, 0,  // uniform locations
-    0, 0     // texW, texH
-};
+// CRT post-process state. Effect params get sensible defaults; backend
+// handles are zeroed and lazy-allocated by Init / Resize on the first
+// frame the toggle goes hot.
+CRTState g_crt = {};
+struct CRTDefaults {
+    CRTDefaults() {
+        g_crt.scanlineIntensity = 0.5f;
+        g_crt.curvature         = 0.4f;
+        g_crt.phosphorMask      = 0.3f;
+        g_crt.vignette          = 0.3f;
+        g_crt.bloom             = 0.15f;
+        g_crt.flickerAmount     = 0.2f;
+        g_crt.colorBleed        = 1.0f;
+        g_crt.brightness        = 1.05f;
+#ifdef THESEUS_USE_BGFX
+        g_crt.fb.idx       = bgfx::kInvalidHandle;
+        g_crt.colorTex.idx = bgfx::kInvalidHandle;
+        g_crt.program.idx  = bgfx::kInvalidHandle;
+        g_crt.s_scene.idx  = bgfx::kInvalidHandle;
+        g_crt.u_p1.idx     = bgfx::kInvalidHandle;
+        g_crt.u_p2.idx     = bgfx::kInvalidHandle;
+        g_crt.u_p3.idx     = bgfx::kInvalidHandle;
+#endif
+    }
+} g_crtDefaults;
 static float s_crtTime = 0.0f;
 
 #ifdef _WIN32
@@ -838,6 +847,9 @@ static void BgfxApplyReset() {
     if (w <= 0 || h <= 0) return;
     bgfx::reset((uint32_t)w, (uint32_t)h, BgfxResetFlags());
     bgfx::setViewRect(0, 0, 0, (uint16_t)w, (uint16_t)h);
+    // ImGui lives on view 2 (sharp on top of any CRT pass on view 1).
+    // bgfx skips views with no rect set, so size it to the backbuffer.
+    bgfx::setViewRect(2, 0, 0, (uint16_t)w, (uint16_t)h);
 }
 #endif
 
@@ -1233,10 +1245,11 @@ int main(int argc, char* argv[]) {
 
                 // View 0 viewport. Required for shadow-submit (chunk 5a)
                 // to be a valid draw; bgfx skips submits to a view with
-                // no rect. Output isn't visible (GL still owns the
-                // contentView) so dimensions are placeholder; chunk 5d
-                // will recompute on window resize.
+                // no rect. ApplyBgfxResize bumps these to window size as
+                // soon as we have one; placeholders here for the first
+                // frame.
                 bgfx::setViewRect(0, 0, 0, 1280, 720);
+                bgfx::setViewRect(2, 0, 0, 1280, 720); // ImGui
 
                 // The dashboard renders D3D-style: it expects every draw
                 // to land on the framebuffer in the order it was issued,
@@ -1274,6 +1287,12 @@ int main(int argc, char* argv[]) {
                         BGFX_TEXTURE_NONE | BGFX_SAMPLER_U_CLAMP | BGFX_SAMPLER_V_CLAMP,
                         bgfx::copy(white, 4));
                 }
+
+                // CRT post-process program + uniforms. The offscreen
+                // framebuffer itself gets allocated lazily on the first
+                // frame the user enables the toggle.
+                if (!InitCRTShader_Bgfx(1280, 720))
+                    fprintf(stderr, "[CRT] bgfx init failed; effect will stay disabled\n");
             }
         }
     }
@@ -1402,10 +1421,14 @@ int main(int argc, char* argv[]) {
     // SDL2 feeds events / DPI; no GL context under BGFX.
     ImGui_ImplSDL2_InitForOther(g_pSDLWindow);
     {
-        // ImGui on view 0 alongside the scene. Video frames go through
-        // ImGui::AddImage so one render path works for both backends.
+        // View layout under bgfx:
+        //   view 0 = dashboard 3D scene (FF emulator submits)
+        //   view 1 = CRT post-process blit (only touched when g_crt.enabled)
+        //   view 2 = ImGui (menu bar, panels, libmpv via ImGui::AddImage)
+        // ImGui always lives on view 2 so it draws sharp on top of the
+        // post-processed scene, matching the GL backend's behavior.
         extern bool ImGui_ImplBgfx_Init(unsigned char);
-        if (!ImGui_ImplBgfx_Init(0))
+        if (!ImGui_ImplBgfx_Init(2))
             fprintf(stderr, "ImGui_ImplBgfx_Init failed!\n");
     }
 #endif
@@ -1547,6 +1570,7 @@ int main(int argc, char* argv[]) {
 #else
                             bgfx::reset((uint32_t)w, (uint32_t)h, BgfxResetFlags());
                             bgfx::setViewRect(0, 0, 0, (uint16_t)w, (uint16_t)h);
+                            bgfx::setViewRect(2, 0, 0, (uint16_t)w, (uint16_t)h);
 #endif
                             g_pp.BackBufferWidth = w;
                             g_pp.BackBufferHeight = h;
@@ -1797,6 +1821,20 @@ int main(int argc, char* argv[]) {
             CRT_BeginCapture();
             glViewport(0, 0, ww, wh);
         }
+#else
+        // Same idea under bgfx: allocate / resize the offscreen FB to
+        // window size, point view 0 at it so the scene draws there
+        // instead of straight to the backbuffer. Always set view 0's
+        // framebuffer here every frame, otherwise toggling CRT off
+        // leaves view 0 stuck on the FBO from the previous frame.
+        if (g_crt.enabled && bgfx::isValid(g_crt.program)) {
+            int ww, wh;
+            SDL_GetWindowSize(g_pSDLWindow, &ww, &wh);
+            CRT_ResizeFBO_Bgfx(ww, wh);
+            CRT_BeginCapture_Bgfx();
+        } else {
+            CRT_PointViewToBackbuffer_Bgfx();
+        }
 #endif
 
         // Render 3D scene (viewport set to left portion; Present() skips swap when inspector is open)
@@ -1820,6 +1858,11 @@ int main(int argc, char* argv[]) {
         if (g_crt.enabled && g_crt.fbo) {
             s_crtTime += 0.016f;
             CRT_EndAndBlit(s_crtTime);
+        }
+#else
+        if (g_crt.enabled && bgfx::isValid(g_crt.program) && bgfx::isValid(g_crt.fb)) {
+            s_crtTime += 0.016f;
+            CRT_EndAndBlit_Bgfx(s_crtTime, g_crt.texW, g_crt.texH);
         }
 #endif
 
