@@ -215,3 +215,22 @@ jobs:
 
       - name: Verify
         run: file ~/builds/theseus/desktop-win64/theseus.exe
+
+      - name: Stage drop dir
+        # Strip the *.o / *.d compile cruft + intermediate subdirs so
+        # the artifact is just the runnable distro.
+        run: |
+          DROP=$HOME/builds/theseus-win64-drop
+          mkdir -p "$DROP"
+          cp -R ~/builds/theseus/desktop-win64/. "$DROP/"
+          find "$DROP" -name '*.o' -delete
+          find "$DROP" -name '*.d' -delete
+          rm -rf "$DROP/desktop" "$DROP/shared" "$DROP/engine" "$DROP/render" "$DROP/xbox" || true
+          ls -la "$DROP"
+
+      - name: Upload Win64 build
+        uses: actions/upload-artifact@v4
+        with:
+          name: theseus-windows-x64
+          path: ~/builds/theseus-win64-drop/
+          if-no-files-found: error
