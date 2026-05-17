@@ -33,6 +33,11 @@ jobs:
 
       - name: Build shaderc (mingw)
         # --with-tools is required for genie to emit shaderc.make.
+        # bgfx's mingw-gcc profile builds the compiler path as
+        # ${MINGW}/bin/x86_64-w64-mingw32-gcc, so MINGW has to point
+        # at the MSYS2 mingw64 root for the binaries to resolve.
+        env:
+          MINGW: /mingw64
         run: |
           cd theseus/third-party/bgfx
           ../bx/tools/bin/windows/genie.exe --with-tools --gcc=mingw-gcc gmake
