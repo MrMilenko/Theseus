@@ -718,7 +718,7 @@ DESKTOP_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(DESKTOP_DIR)/%.o,$(DESKTOP_ALL_
 DESKTOP_DEPS = $(DESKTOP_OBJS:.o=.d)
 -include $(DESKTOP_DEPS)
 
-.PHONY: desktop desktop-clean shaders-bgfx shaders-bgfx-spirv
+.PHONY: desktop desktop-clean shaders-bgfx shaders-bgfx-spirv shaders-bgfx-dx11
 
 # bgfx shader compilation (Phase 2 of project_d3d_call_audit.md).
 # Cross-compiles each .sc file in theseus/desktop/shaders/ to a .bin
@@ -791,6 +791,29 @@ shaders-bgfx-spirv:
 			|| exit 1; \
 	done
 	@echo "=== bgfx shaders compiled to $(SHADERS_OUT_DIR)/spirv/ ==="
+
+# DXBC for the D3D11 renderer. Has to run on Windows because shaderc
+# delegates HLSL -> DXBC compilation to fxc.exe, which only ships in
+# the Windows SDK. Vertex shaders go through vs_5_0, fragment shaders
+# through ps_5_0. The runtime loader picks Data/shaders/dx11/ when
+# bgfx::getRendererType() == RendererType::Direct3D11.
+shaders-bgfx-dx11:
+	@mkdir -p $(SHADERS_OUT_DIR)/dx11
+	@for SC in $(SHADERS_SRC_DIR)/vs_*.sc; do \
+		NAME=$$(basename $$SC .sc); \
+		echo "shaderc [dx11] $$NAME"; \
+		$(SHADERC) -f $$SC -o $(SHADERS_OUT_DIR)/dx11/$$NAME.bin \
+			--type v --platform windows --profile s_5_0 -i $(BGFX_SHADER_INC) \
+			|| exit 1; \
+	done
+	@for SC in $(SHADERS_SRC_DIR)/fs_*.sc; do \
+		NAME=$$(basename $$SC .sc); \
+		echo "shaderc [dx11] $$NAME"; \
+		$(SHADERC) -f $$SC -o $(SHADERS_OUT_DIR)/dx11/$$NAME.bin \
+			--type f --platform windows --profile s_5_0 -i $(BGFX_SHADER_INC) \
+			|| exit 1; \
+	done
+	@echo "=== bgfx shaders compiled to $(SHADERS_OUT_DIR)/dx11/ ==="
 
 
 desktop: $(DESKTOP_TARGET)

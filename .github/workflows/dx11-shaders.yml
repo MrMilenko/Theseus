@@ -1,0 +1,53 @@
+name: dx11-shaders
+
+# Manual trigger only. Builds shaderc on Windows (needed because the
+# DXBC emit path inside shaderc calls into d3dcompiler_47.dll which
+# only ships on Windows), runs make shaders-bgfx-dx11, and uploads
+# the resulting Data/shaders/dx11/*.bin files as an artifact.
+on:
+  workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  compile-dx11-shaders:
+    name: Compile DX11 shaders (windows-latest)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2 (mingw64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          install: >-
+            make
+            mingw-w64-x86_64-gcc
+
+      - name: Build bgfx libs + shaderc (mingw)
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/windows/genie.exe --gcc=mingw-gcc gmake
+          make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
+               shaderc config=release64
+
+      - name: Compile DX11 shaders
+        # The host shaderc just built has the bgfx_shader.sh include
+        # paths baked in; point the Makefile at it explicitly.
+        run: |
+          SHADERC=theseus/third-party/bgfx/.build/win64_mingw-gcc/bin/shadercRelease.exe \
+            make -C build shaders-bgfx-dx11
+
+      - name: Upload DX11 shader bins
+        uses: actions/upload-artifact@v4
+        with:
+          name: bgfx-dx11-shaders
+          path: Data/shaders/dx11/
+          if-no-files-found: error
