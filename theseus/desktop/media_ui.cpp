@@ -18,7 +18,12 @@
 #define GL_SILENCE_DEPRECATION
 #include <OpenGL/gl3.h>
 #elif defined(_WIN32)
+#ifdef THESEUS_USE_BGFX
+#include <windows.h>
+#include <GL/gl.h>
+#else
 #include <GL/glew.h>
+#endif
 #else
 #define GL_GLEXT_PROTOTYPES
 #include <GL/gl.h>
