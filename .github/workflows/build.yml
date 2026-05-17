@@ -100,10 +100,12 @@ jobs:
 
       - name: Build GENie from source (ARM64 host)
         # bx ships prebuilt genie for linux x86_64 / darwin / windows only;
-        # on aarch64 the kernel cant run the shipped x86 binary. Build from
-        # source and drop it in place so bgfx's makefile finds it.
+        # on aarch64 the kernel cant run the shipped x86 binary. GENie's
+        # shipped makefile is generated for x86 and passes -m64 (which gcc
+        # rejects on ARM), so strip that flag before building.
         run: |
           git clone --depth 1 https://github.com/bkaradzic/GENie.git /tmp/genie
+          find /tmp/genie/build -name '*.make' -exec sed -i 's/-m64//g' {} +
           make -C /tmp/genie
           cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
 

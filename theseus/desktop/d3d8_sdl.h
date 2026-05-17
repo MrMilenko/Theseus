@@ -10,12 +10,20 @@
 extern "C" unsigned char* stbi_load_from_memory(const unsigned char*, int, int*, int*, int*, int);
 extern "C" void stbi_image_free(void*);
 
-// OpenGL 3.2 Core Profile
+// OpenGL headers. Under bgfx we never call into GL, but the legacy GL
+// state structs in this header still reference typedefs like GLuint /
+// GLint. On Windows that means we still need <GL/gl.h> for those base
+// types, but not GLEW (which only supplies 3.2+ function pointers).
 #ifdef __APPLE__
     #define GL_SILENCE_DEPRECATION
     #include <OpenGL/gl3.h>
 #elif defined(_WIN32)
-    #include <GL/glew.h>  // Windows needs GLEW for GL 3.2+ function pointers
+    #ifdef THESEUS_USE_BGFX
+        #include <windows.h>
+        #include <GL/gl.h>
+    #else
+        #include <GL/glew.h>
+    #endif
 #else
     #define GL_GLEXT_PROTOTYPES
     #include <GL/gl.h>

@@ -130,8 +130,11 @@ jobs:
         run: mkdir -p Configs Data Library
 
       - name: Build GENie from source (ARM64 host)
+        # GENie's shipped makefile passes -m64 which gcc rejects on ARM;
+        # strip it before building.
         run: |
           git clone --depth 1 https://github.com/bkaradzic/GENie.git /tmp/genie
+          find /tmp/genie/build -name '*.make' -exec sed -i 's/-m64//g' {} +
           make -C /tmp/genie
           cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
 

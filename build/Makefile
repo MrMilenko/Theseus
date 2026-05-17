@@ -908,12 +908,12 @@ WIN64_CFLAGS = \
 	-D_WINDOWS=1 \
 	-D_THESEUS_STD_H=1 \
 	-DSDL_MAIN_HANDLED \
-	-DGLEW_STATIC \
+	$(if $(BGFX),,-DGLEW_STATIC) \
 	-DUIX_CDAUDIO=1 \
 	-fpermissive \
 	-I$(SDL2_MINGW_INC)/SDL2 \
 	-I$(MIXER_MINGW_INC)/SDL2 \
-	-I$(GLEW_MINGW_INC) \
+	$(if $(BGFX),,-I$(GLEW_MINGW_INC)) \
 	-I$(MPV_MINGW_INC) \
 	-I$(CURL_MINGW_INC) \
 	-I$(THESEUS_SRC)/desktop \
@@ -943,16 +943,16 @@ WIN64_CFLAGS = \
 WIN64_LDFLAGS = \
 	-L$(SDL2_MINGW_LIB) \
 	-L$(MIXER_MINGW_LIB) \
-	-L$(GLEW_MINGW_LIB) \
+	$(if $(BGFX),,-L$(GLEW_MINGW_LIB)) \
 	-L$(MPV_MINGW_LIB) \
 	-L$(CURL_MINGW_LIB) \
 	-static-libgcc -static-libstdc++ \
 	-Wl,--subsystem,windows -Wl,-emainCRTStartup \
 	-Wl,--export-all-symbols \
 	-lmingw32 -lSDL2main -lSDL2 -lSDL2_mixer \
-	-lglew32 \
+	$(if $(BGFX),,-lglew32) \
 	-lmpv -lcurl \
-	-lopengl32 -lgdi32 -limm32 -lole32 -loleaut32 -lsetupapi -lversion -lwinmm -luuid \
+	$(if $(BGFX),,-lopengl32) -lgdi32 -limm32 -lole32 -loleaut32 -lsetupapi -lversion -lwinmm -luuid \
 	-lws2_32 -ldbghelp -lavrt -ldwmapi
 
 # BGFX=1 on Windows: link Vulkan via bgfx, drop the OpenGL backend.
