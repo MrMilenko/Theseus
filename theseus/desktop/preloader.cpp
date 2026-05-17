@@ -6,7 +6,9 @@
 #include "std.h"
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
+#ifndef THESEUS_USE_BGFX
 #include "imgui_impl_opengl3.h"
+#endif
 #include <SDL.h>
 #include <sys/stat.h>
 #include <cstring>
@@ -21,7 +23,9 @@
 #include <dirent.h>
 #endif
 
-#ifdef __APPLE__
+#ifdef THESEUS_USE_BGFX
+#include <bgfx/bgfx.h>
+#elif defined(__APPLE__)
 #include <OpenGL/gl.h>
 #else
 #include <GL/gl.h>
@@ -365,7 +369,12 @@ bool RunPreloader(SDL_Window* window) {
 
         animTime += 0.016f;
 
+#ifndef THESEUS_USE_BGFX
         ImGui_ImplOpenGL3_NewFrame();
+#else
+        extern void ImGui_ImplBgfx_NewFrame();
+        ImGui_ImplBgfx_NewFrame();
+#endif
         ImGui_ImplSDL2_NewFrame();
         ImGui::NewFrame();
 
@@ -579,11 +588,22 @@ bool RunPreloader(SDL_Window* window) {
 
         // Render
         ImGui::Render();
+#ifndef THESEUS_USE_BGFX
         glViewport(0, 0, winW, winH);
         glClearColor(0.02f, 0.03f, 0.02f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);
+#else
+        bgfx::setViewRect(0, 0, 0, (uint16_t)winW, (uint16_t)winH);
+        bgfx::setViewClear(0, BGFX_CLEAR_COLOR,
+                           (uint32_t)((5<<24) | (8<<16) | (5<<8) | 0xFF),
+                           1.0f, 0);
+        bgfx::touch(0);
+        extern void ImGui_ImplBgfx_RenderDrawData(ImDrawData*);
+        ImGui_ImplBgfx_RenderDrawData(ImGui::GetDrawData());
+        bgfx::frame();
+#endif
     }
 
     return extractedMode;

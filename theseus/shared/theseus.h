@@ -213,12 +213,81 @@ inline LPDIRECT3DDEVICE8 TheseusGetD3DDev()
 	return g_pD3DDev;
 }
 
+#ifndef _XBOX
+// Desktop-side wrapper caches. Sweep 2 trace in
+// project_d3d_call_audit.md showed ~2.5M shim dispatches per session
+// where the value was identical to the previous call. Short-circuit
+// those at the wrapper layer, before the virtual call into the shim.
+//
+// 256 covers all D3DRS_* in use; valid[] BSS-zeroed so first call for
+// any state always reaches the shim.
+extern DWORD theseus_desktop_rs_cache[256];
+extern bool  theseus_desktop_rs_valid[256];
+// TSS cache: 8 stages * 32 state types.
+extern DWORD theseus_desktop_tss_cache[8 * 32];
+extern bool  theseus_desktop_tss_valid[8 * 32];
+// Texture cache: 8 stages of pointer compare.
+extern LPDIRECT3DTEXTURE8 theseus_desktop_tex_cache[8];
+extern bool theseus_desktop_tex_valid[8];
+// Material cache: single struct (D3DMATERIAL8 is 68 bytes).
+extern D3DMATERIAL8 theseus_desktop_mat_cache;
+extern bool theseus_desktop_mat_valid;
+// Transform cache: 4 transform types (WORLD, VIEW, PROJECTION, TEXTURE0)
+// indexed by D3DTS_WORLD etc. 256 is the practical upper bound.
+extern D3DMATRIX theseus_desktop_xform_cache[256];
+extern bool theseus_desktop_xform_valid[256];
+// Per-draw wrappers: vertex shader handle, stream source per stream, indices.
+extern DWORD theseus_desktop_vs_cache;
+extern bool theseus_desktop_vs_valid;
+extern IDirect3DVertexBuffer8* theseus_desktop_vb_cache[4];
+extern UINT theseus_desktop_vb_stride_cache[4];
+extern bool theseus_desktop_vb_valid[4];
+extern IDirect3DIndexBuffer8* theseus_desktop_ib_cache;
+extern UINT theseus_desktop_ib_base_cache;
+extern bool theseus_desktop_ib_valid;
+
+// Sweep 2 trace counters for the additional wrappers, sharing the
+// D3DStateStats struct from d3d8_sdl.h.
+struct D3DStateStats;
+extern D3DStateStats g_texStats[8];
+extern D3DStateStats g_matStats;
+extern D3DStateStats g_xformStats[256];
+
+// Reset every wrapper-level cache's validity flag. Call when foreign
+// code (libmpv, MSAA reset, GL context recreate) has invalidated
+// downstream state. otherwise the wrappers above short-circuit
+// before reaching the shim and the next "set" sees no actual call,
+// leaving the shim with stale state. This is the pair to the shim's
+// InvalidateStateCache() (which clears the SHIM cache); both layers
+// must be invalidated together.
+inline void TheseusInvalidateWrapperCaches()
+{
+	memset(theseus_desktop_rs_valid,    0, sizeof(theseus_desktop_rs_valid));
+	memset(theseus_desktop_tss_valid,   0, sizeof(theseus_desktop_tss_valid));
+	memset(theseus_desktop_tex_valid,   0, sizeof(theseus_desktop_tex_valid));
+	theseus_desktop_mat_valid = false;
+	memset(theseus_desktop_xform_valid, 0, sizeof(theseus_desktop_xform_valid));
+	theseus_desktop_vs_valid = false;
+	memset(theseus_desktop_vb_valid,    0, sizeof(theseus_desktop_vb_valid));
+	theseus_desktop_ib_valid = false;
+}
+#endif
+
 inline void TheseusSetRenderState(D3DRENDERSTATETYPE dwRenderStateType, DWORD dwRenderState)
 {
 #ifdef _XBOX // cache eliminates GetRenderState round-trips on Xbox
 	ASSERT((UINT)dwRenderStateType < countof (theseus_rgdwRenderStateCache));
 	theseus_rgdwRenderStateCache[(UINT)dwRenderStateType] = dwRenderState;
 	theseus_rgbRenderStateCache[(UINT)dwRenderStateType] = true;
+#else
+	// Wrapper-level dedup. Skip the virtual call if value unchanged.
+	if ((UINT)dwRenderStateType < 256) {
+		if (theseus_desktop_rs_valid[dwRenderStateType] &&
+		    theseus_desktop_rs_cache[dwRenderStateType] == dwRenderState)
+			return;
+		theseus_desktop_rs_cache[dwRenderStateType] = dwRenderState;
+		theseus_desktop_rs_valid[dwRenderStateType] = true;
+	}
 #endif
 
 	VERIFYHR(TheseusGetD3DDev()->SetRenderState(dwRenderStateType, dwRenderState));
@@ -231,32 +300,93 @@ inline void TheseusGetRenderState(D3DRENDERSTATETYPE dwRenderStateType, LPDWORD 
 	ASSERT(theseus_rgbRenderStateCache[(UINT)dwRenderStateType]); // state must be written before reading
 	*lpdwRenderState = theseus_rgdwRenderStateCache[(UINT)dwRenderStateType];
 #else
+	// Serve from the desktop wrapper cache when we've seen this state
+	// before. Saves the virtual call into the shim's switch.
+	if ((UINT)dwRenderStateType < 256 && theseus_desktop_rs_valid[dwRenderStateType]) {
+		*lpdwRenderState = theseus_desktop_rs_cache[dwRenderStateType];
+		return;
+	}
 	VERIFYHR(TheseusGetD3DDev()->GetRenderState(dwRenderStateType, lpdwRenderState));
 #endif
 }
 
 inline void TheseusSetTextureStageState(DWORD dwStage, D3DTEXTURESTAGESTATETYPE dwState, DWORD dwValue)
 {
+#ifndef _XBOX
+	// Wrapper-level dedup for the per-stage texture state cluster.
+	// Sweep 2 trace showed this is where most of the redundancy lives
+	// (>388K wasted calls per session on COLOROP / ALPHAOP alone).
+	if (dwStage < 8 && (DWORD)dwState < 32) {
+		int idx = (int)dwStage * 32 + (int)dwState;
+		if (theseus_desktop_tss_valid[idx] &&
+		    theseus_desktop_tss_cache[idx] == dwValue)
+			return;
+		theseus_desktop_tss_cache[idx] = dwValue;
+		theseus_desktop_tss_valid[idx] = true;
+	}
+#endif
 	VERIFYHR(TheseusGetD3DDev()->SetTextureStageState(dwStage, dwState, dwValue));
 }
 
 inline void TheseusGetTextureStageState(DWORD dwStage, D3DTEXTURESTAGESTATETYPE dwState, LPDWORD lpdwValue)
 {
+#ifndef _XBOX
+	if (dwStage < 8 && (DWORD)dwState < 32) {
+		int idx = (int)dwStage * 32 + (int)dwState;
+		if (theseus_desktop_tss_valid[idx]) {
+			*lpdwValue = theseus_desktop_tss_cache[idx];
+			return;
+		}
+	}
+#endif
 	VERIFYHR(TheseusGetD3DDev()->GetTextureStageState(dwStage, dwState, lpdwValue));
 }
 
 inline void TheseusSetTexture(DWORD dwStage, LPDIRECT3DTEXTURE8 lpTexture)
 {
+#ifndef _XBOX
+	if (dwStage < 8) {
+		if (theseus_desktop_tex_valid[dwStage] &&
+		    theseus_desktop_tex_cache[dwStage] == lpTexture)
+			return;
+		theseus_desktop_tex_cache[dwStage] = lpTexture;
+		theseus_desktop_tex_valid[dwStage] = true;
+	}
+#endif
 	VERIFYHR(TheseusGetD3DDev()->SetTexture(dwStage, lpTexture));
 }
 
 inline void TheseusSetMaterial(D3DMATERIAL8* lpMaterial)
 {
+#ifndef _XBOX
+	// Materials are 68 bytes; memcmp is faster than the virtual call.
+	if (lpMaterial && theseus_desktop_mat_valid &&
+	    memcmp(&theseus_desktop_mat_cache, lpMaterial, sizeof(D3DMATERIAL8)) == 0)
+		return;
+	if (lpMaterial) {
+		theseus_desktop_mat_cache = *lpMaterial;
+		theseus_desktop_mat_valid = true;
+	}
+#endif
 	VERIFYHR(TheseusGetD3DDev()->SetMaterial(lpMaterial));
 }
 
 inline void TheseusSetTransform(D3DTRANSFORMSTATETYPE dtstTransformStateType, D3DMATRIX* lpD3DMatrix)
 {
+#ifndef _XBOX
+	// 4x4 matrix compare. ~16 ns cost on miss, saves the virtual call
+	// + GL matrix upload on hit. WORLD updates are usually unique per
+	// draw so we expect lower hit rate here than for state setters,
+	// but PROJECTION / VIEW often stay constant across many draws.
+	if (lpD3DMatrix && (UINT)dtstTransformStateType < 256) {
+		if (theseus_desktop_xform_valid[dtstTransformStateType] &&
+		    memcmp(&theseus_desktop_xform_cache[dtstTransformStateType],
+		           lpD3DMatrix, sizeof(D3DMATRIX)) == 0)
+			return;
+		theseus_desktop_xform_cache[dtstTransformStateType] = *lpD3DMatrix;
+		theseus_desktop_xform_valid[dtstTransformStateType] = true;
+	}
+#endif
 	VERIFYHR(TheseusGetD3DDev()->SetTransform(dtstTransformStateType, lpD3DMatrix));
 }
 
@@ -329,6 +459,12 @@ inline void TheseusGetTextureSize(LPDIRECT3DTEXTURE8 pTexture, float& nWidth, fl
 
 inline void TheseusSetVertexShader(DWORD Handle)
 {
+#ifndef _XBOX
+	if (theseus_desktop_vs_valid && theseus_desktop_vs_cache == Handle)
+		return;
+	theseus_desktop_vs_cache = Handle;
+	theseus_desktop_vs_valid = true;
+#endif
 	VERIFYHR(TheseusGetD3DDev()->SetVertexShader(Handle));
 }
 
@@ -339,11 +475,31 @@ inline void TheseusSetVertexShaderConstant(DWORD Register, const void* pConstant
 
 inline void TheseusSetStreamSource(UINT StreamNumber, IDirect3DVertexBuffer8* pStreamData, UINT Stride)
 {
+#ifndef _XBOX
+	if (StreamNumber < 4) {
+		if (theseus_desktop_vb_valid[StreamNumber] &&
+		    theseus_desktop_vb_cache[StreamNumber] == pStreamData &&
+		    theseus_desktop_vb_stride_cache[StreamNumber] == Stride)
+			return;
+		theseus_desktop_vb_cache[StreamNumber] = pStreamData;
+		theseus_desktop_vb_stride_cache[StreamNumber] = Stride;
+		theseus_desktop_vb_valid[StreamNumber] = true;
+	}
+#endif
 	VERIFYHR(TheseusGetD3DDev()->SetStreamSource(StreamNumber, pStreamData, Stride));
 }
 
 inline void TheseusSetIndices(IDirect3DIndexBuffer8* pIndexData, UINT BaseVertexIndex)
 {
+#ifndef _XBOX
+	if (theseus_desktop_ib_valid &&
+	    theseus_desktop_ib_cache == pIndexData &&
+	    theseus_desktop_ib_base_cache == BaseVertexIndex)
+		return;
+	theseus_desktop_ib_cache = pIndexData;
+	theseus_desktop_ib_base_cache = BaseVertexIndex;
+	theseus_desktop_ib_valid = true;
+#endif
 	VERIFYHR(TheseusGetD3DDev()->SetIndices(pIndexData, BaseVertexIndex));
 }
 

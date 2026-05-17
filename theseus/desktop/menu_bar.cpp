@@ -185,7 +185,9 @@ void RenderMainMenuBar() {
                 }
                 if (!g_debugMode && g_bWireframe) {
                     g_bWireframe = false;
+#ifndef THESEUS_USE_BGFX
                     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
                 }
             }
             if (ImGui::MenuItem("XAP Editor", "F2", g_xapEditorOpen)) {
@@ -201,10 +203,18 @@ void RenderMainMenuBar() {
 
     // ---- View ----
     if (ImGui::BeginMenu("View")) {
+#ifndef THESEUS_USE_BGFX
         if (ImGui::MenuItem("CRT Effect", NULL, g_crt.enabled)) {
             g_crt.enabled = !g_crt.enabled;
             SaveDesktopSettings();
         }
+#else
+        ImGui::BeginDisabled();
+        ImGui::MenuItem("CRT Effect", NULL, false);
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("CRT post-process not yet ported to the BGFX backend");
+#endif
         ImGui::Separator();
         if (ImGui::MenuItem("Mute Audio", "Ctrl+M", g_audioMuted)) {
             g_audioMuted = !g_audioMuted;
@@ -322,7 +332,15 @@ void RenderSettingsWindow() {
 
             // Slider drags fire IsItemDeactivatedAfterEdit on release; saves
             // once at end of drag, not every frame.
+#ifdef THESEUS_USE_BGFX
+            ImGui::BeginDisabled();
+            ImGui::Checkbox("CRT Effect", &g_crt.enabled);
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("CRT post-process not yet ported to the BGFX backend");
+#else
             if (ImGui::Checkbox("CRT Effect", &g_crt.enabled)) SaveDesktopSettings();
+#endif
             if (g_crt.enabled) {
                 ImGui::Spacing();
                 ImGui::SliderFloat("Scanlines",     &g_crt.scanlineIntensity, 0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
@@ -461,7 +479,7 @@ void RenderSettingsWindow() {
             ImGui::Spacing();
 
             if (scanning) {
-                // Inline progress instead of a floating panel — user is
+                // Inline progress instead of a floating panel, user is
                 // already on this tab, show the scan status here.
                 const char* phase = MediaDB_GetScanPhase();
                 int prog  = MediaDB_GetScanProgress();

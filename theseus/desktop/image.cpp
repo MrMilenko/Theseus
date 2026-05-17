@@ -70,14 +70,9 @@ LPDIRECT3DTEXTURE8 ParseTexture(const char *szURL, const uint8_t *pbContent, int
 			unsigned char* pixels = stbi_load_from_memory(pbContent, cbContent, &w, &h, &ch, 4);
 			if (pixels && w > 0 && h > 0) {
 				IDirect3DTexture8* pTexture = new IDirect3DTexture8();
-				glGenTextures(1, &pTexture->m_glTexture);
-				glBindTexture(GL_TEXTURE_2D, pTexture->m_glTexture);
-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-				glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-				glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-				pTexture->m_width = w; pTexture->m_height = h;
+				pTexture->CreateFromRGBA((UINT)w, (UINT)h, pixels);
 				stbi_image_free(pixels);
-					return pTexture;
+				return pTexture;
 			}
 		}
 	}

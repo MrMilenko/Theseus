@@ -102,3 +102,12 @@ extern "C" void DashAudio_UnmuteAll();
 // ============================================================================
 
 bool ImGui_WantsKeyboard();
+
+// ============================================================================
+// GUI texture (backend-agnostic ImGui texture)
+// ============================================================================
+// Opaque handle: dev-tool panels upload RGBA without touching GL or bgfx directly.
+struct GuiTexture;
+GuiTexture*       GuiTextureCreate(int w, int h, const void* rgbaPixels);
+void              GuiTextureDestroy(GuiTexture** ptex);
+unsigned long long GuiTextureImId(const GuiTexture* tex); // cast to ImTextureID

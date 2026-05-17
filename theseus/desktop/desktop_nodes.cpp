@@ -119,7 +119,7 @@ public:
 			return;
 		}
 
-		// Handle "cd:N" URLs — CDDA track; CdAudio_Play handles the actual load
+		// Handle "cd:N" URLs, CDDA track; CdAudio_Play handles the actual load
 		if (strncmp(m_url, "cd:", 3) == 0) {
 			m_loadedUrl = strdup(m_url);
 			return;
@@ -1812,15 +1812,8 @@ static void EnumerateTitles()
 		snprintf(xboxMetaPath, sizeof(xboxMetaPath), "E:\\UDATA\\%s\\TitleMeta.xbx", entName);
 		if (!ParseXboxMetaValue(xboxMetaPath, "TitleName", title.titleName, sizeof(title.titleName)))
 			strncpy(title.titleName, entName, sizeof(title.titleName) - 1);
-		// imagePath is stored as an Xbox-style path (E:\UDATA\... or
-		// C:\icons\...) because the rendering pipeline runs it through
-		// MakeAbsoluteURL, which only treats a URL as already-absolute
-		// when it contains a colon. A host-style path like
-		// "Library/UDATA/.../TitleImage.xbx" would otherwise get
-		// prepended with g_szCurDir (currently Q:\Xips\Memory_Files2\
-		// during the Memory scene) and resolve to the wrong tree.
-		// We do the access() probes against host-style forms and only
-		// commit the Xbox-style equivalent into imagePath on success.
+		// imagePath has to be an Xbox-style path so MakeAbsoluteURL leaves it
+		// alone. Probe with the host-style form, commit Xbox-style on success.
 		title.hasImage = false;
 		char hostProbe[1024];
 		snprintf(hostProbe, sizeof(hostProbe), "%s/TitleImage.xbx", titlePath);
@@ -2192,7 +2185,7 @@ public:
 				static char szPodImg[512];
 				if (nTitle >= 0 && nTitle < s_titleCount && s_titles[nTitle].hasImage) {
 					// imagePath is already host-relative (set in
-					// ProcessTitleEntry) -- either Library/UDATA/.../TitleImage.xbx
+					// ProcessTitleEntry). either Library/UDATA/.../TitleImage.xbx
 					// for real Xbox saves or Configs/icons/<TitleID>.{jpg,png}
 					// for synthesized title pods. Pass it through directly
 					// instead of rebuilding an Xbox-style path that only
@@ -3016,9 +3009,16 @@ public:
 	void Render() {
 		if (!MediaPlayer_HasVideo()) return;
 		extern void MediaPlayer_RenderToScreen(int w, int h);
+#ifndef THESEUS_USE_BGFX
 		GLint viewport[4];
 		glGetIntegerv(GL_VIEWPORT, viewport);
 		MediaPlayer_RenderToScreen(viewport[2], viewport[3]);
+#else
+		// w/h are ignored by the bgfx RenderToScreen path. view 0's
+		// viewport rect (kept current by SDL_WINDOWEVENT_SIZE_CHANGED)
+		// decides where the fullscreen quad lands.
+		MediaPlayer_RenderToScreen(0, 0);
+#endif
 	}
 
 	// === Transport ===
@@ -3331,7 +3331,7 @@ END_NODE_FUN()
 
 // Library roots come from desktop.ini globals (loaded by sdl_main.cpp).
 // Empty by default; user configures via Settings -> Media Library tab.
-// The scan no-ops on empty paths -- no library shown until configured.
+// The scan no-ops on empty paths. no library shown until configured.
 static const char* kCachePath = "Library/MediaDB.cache";
 
 extern char g_moviesRoot[512];
@@ -3950,7 +3950,7 @@ public:
 
 	// Plot synopsis from the cached MediaDB record (filled by TMDB enrichment
 	// during MediaDB_ScanAndCache). No network. Empty string if not enriched
-	// (no TMDB key, or no match) — caller can show meta-only.
+	// (no TMDB key, or no match), caller can show meta-only.
 	CStrObject* GetMoviePlot(int i)
 	{
 		std::lock_guard<std::mutex> lock(g_dbMutex);
@@ -3965,7 +3965,7 @@ public:
 		return new CStrObject(_T(g_shows[i].overview.c_str()));
 	}
 
-	// Legacy — TMDB fetch is now bundled into MediaDB_ScanAndCache so these
+	// Legacy, TMDB fetch is now bundled into MediaDB_ScanAndCache so these
 	// are no-ops. Keep the symbols so existing XAPs don't break.
 	void PrefetchMovieTmdb(int) {}
 	void PrefetchShowTmdb(int)  {}
@@ -4076,14 +4076,8 @@ public:
 };
 
 
-// Per-item TMDB enrichment. Skips movies/shows that already have data
-// (tmdbId != 0). Used after a fresh scan AND on user-triggered refresh
-// to backfill any new titles.
-// Parallel TMDB enrichment with a worker pool. Each worker pulls the next
-// item index from an atomic counter; libcurl handles are per-request inside
-// TMDB_LookupMovie/Show so concurrent calls are safe. Periodically writes
-// the in-progress state to disk (under g_dbMutex) so a kill mid-scan doesn't
-// throw away minutes of HTTP work.
+// Parallel TMDB enrichment. Skips items with tmdbId != 0. Workers pull from
+// an atomic counter; checkpoints to disk so a kill mid-scan keeps progress.
 
 #define TMDB_WORKERS         8
 #define TMDB_CHECKPOINT_EVERY 10
@@ -4366,8 +4360,8 @@ extern "C" void MediaDB_ScanAndCache()
 		CarryForwardShows(tmpShows);
 
 		// Persist the bare catalog before TMDB enrichment starts. Without
-		// this, quitting during the (possibly long) HTTP enrichment phase --
-		// or running with no TMDB key at all -- would leave nothing on disk.
+		// this, quitting during the (possibly long) HTTP enrichment phase.
+		// or running with no TMDB key at all. would leave nothing on disk.
 		printf("[MediaDB] Catalog scan finished (%u movies, %u shows). Saving baseline cache...\n",
 			(unsigned)tmpMovies.size(), (unsigned)tmpShows.size());
 		WriteCacheTo(tmpMovies, tmpShows, kCachePath);
@@ -4533,7 +4527,7 @@ END_NODE_FUN()
 
 
 // ============================================================================
-// CPlaylistCollection — XAP-callable view over the user's named playlists.
+// CPlaylistCollection, XAP-callable view over the user's named playlists.
 // Mirrors the GetCount / GetTitle / SetCurrent / Play... shape of
 // CMediaCollection so the playlist scene can be a near-clone of the TV flow.
 // ============================================================================
@@ -4771,7 +4765,7 @@ END_NODE_FUN()
 
 
 // ============================================================================
-// CDisplay -- XAP-callable view over the desktop window's resolution + mode.
+// CDisplay. XAP-callable view over the desktop window's resolution + mode.
 // Same g_windowResolution / g_windowMode the ImGui Settings -> Display tab
 // drives, so changes from either surface stay in sync.
 // ============================================================================

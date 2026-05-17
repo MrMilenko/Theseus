@@ -1,0 +1,9 @@
+[submodule "theseus/third-party/bx"]
+	path = theseus/third-party/bx
+	url = https://github.com/bkaradzic/bx.git
+[submodule "theseus/third-party/bimg"]
+	path = theseus/third-party/bimg
+	url = https://github.com/bkaradzic/bimg.git
+[submodule "theseus/third-party/bgfx"]
+	path = theseus/third-party/bgfx
+	url = https://github.com/bkaradzic/bgfx.git

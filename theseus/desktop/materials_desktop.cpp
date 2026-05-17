@@ -1,13 +1,15 @@
-// materials.cpp [XBOX SIDE]
-// CMaxMaterial + CMatInfo binders. Desktop fork at
-// theseus/desktop/materials_desktop.cpp. Keep them in sync per
-// the contract below or scenes break on the other build.
+// materials_desktop.cpp [DESKTOP FORK]
+// CMaxMaterial + CMatInfo binders. Forked from
+// theseus/render/materials.cpp so the D3D8 shim's dead and
+// redundant SetRenderState calls can come out without touching
+// the Xbox build. Keep this and the Xbox file in sync per the
+// contract below or scenes break on the other build.
 //
 // PARITY CONTRACT
 //
 // XIPs reference materials by name (the string the .max exporter
 // wrote into the mesh's user data block). Both this file and
-// materials_desktop.cpp resolve those names to a CMatInfo
+// theseus/render/materials.cpp resolve those names to a CMatInfo
 // subclass. Out of sync means the same XIP looks different across
 // platforms, or worst case a scene fails to bind a material on one.
 //
@@ -23,9 +25,10 @@
 // 3. Removing a variant. Confirm zero XIP references first, then
 //    remove from both files in the same commit.
 //
-// 4. Changing render state behavior. Xbox changes go here.
-//    Desktop changes go in materials_desktop.cpp. If the visual
-//    diverges noticeably, document it in docs/decomp/Materials.md.
+// 4. Changing render state behavior. Desktop changes go here.
+//    Xbox changes go in theseus/render/materials.cpp. If the
+//    visual diverges noticeably, document it in
+//    docs/decomp/Materials.md.
 //
 // 5. Why the fork exists. Desktop runs OpenGL via the D3D8 shim.
 //    Xbox runs real D3D8. A lot of SetRenderState calls on the
@@ -34,7 +37,8 @@
 //    lets us strip them on desktop without risking the Xbox
 //    binary. See project_d3d_call_audit.md.
 //
-// materials.cpp: CMaxMaterial (3ds Max-exported material) + the family of
+// Original decomp header preserved:
+// CMaxMaterial (3ds Max-exported material) + the family of
 // concrete CMatInfo material binders (solid colour, falloff, modulate-
 // texture, alpha modes, etc.) selected per Shape via the .max exporter's
 // user-data block. Decompiled from the 5960 retail XBE.
@@ -558,9 +562,10 @@ bool CModulateTextureMatInfo::Setup(CMaxMaterial *pMaxMat)
 
 	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_RGBA(m_r, m_g, m_b, (BYTE)(m_a * (a * 0.25f + 0.75f) * g_nEffectAlpha)));
 
-	// Edge Aliasing mode enable
-	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, TRUE);
-	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
+	// Edge AA + per-material MSAA toggle stripped (shim no-op on GL).
+	// On Xbox these flip the NV2A's hardware edge AA; on desktop MSAA
+	// is configured at GL context creation and EDGEANTIALIAS has no
+	// GL equivalent.
 
 	return CMatInfo::Setup(pMaxMat);
 }
@@ -740,8 +745,7 @@ bool CKeyMatInfo::Setup(CMaxMaterial *pMaxMat)
 		}
 	}
 
-	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, TRUE);
-	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
+	// Edge AA + MSAA toggle stripped (shim no-op on GL).
 
 	return CFalloffMatInfo::Setup(pMaxMat);
 }
@@ -875,9 +879,10 @@ bool CSolidMatInfo::Setup(CMaxMaterial *pMaxMat)
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
 	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_RGBA(m_r, m_g, m_b, (BYTE)(m_a * g_nEffectAlpha)));
 
-	// Edge Aliasing mode enable
-	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, TRUE);
-	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
+	// Edge AA + per-material MSAA toggle stripped (shim no-op on GL).
+	// On Xbox these flip the NV2A's hardware edge AA; on desktop MSAA
+	// is configured at GL context creation and EDGEANTIALIAS has no
+	// GL equivalent.
 
 	return CMatInfo::Setup(pMaxMat);
 }
@@ -900,9 +905,10 @@ bool CFalloffMatInfo::Setup(CMaxMaterial *pMaxMat)
 	TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_DISABLE);
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 
-	// Edge Aliasing mode enable
-	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, TRUE);
-	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
+	// Edge AA + per-material MSAA toggle stripped (shim no-op on GL).
+	// On Xbox these flip the NV2A's hardware edge AA; on desktop MSAA
+	// is configured at GL context creation and EDGEANTIALIAS has no
+	// GL equivalent.
 
 	SetFalloffShaderValues(m_colorSide, m_colorFront);
 
@@ -1891,8 +1897,9 @@ void CMaxMaterial::Render()
 		return;
 	}
 
-	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, FALSE);
-	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
+	// Edge AA + MSAA reset stripped (shim no-op on GL). On Xbox this
+	// is the default-state preamble before per-material Setup() runs;
+	// on desktop both states have no shim handler.
 
 	if (_tcscmp(m_name, TEXT("Tubes")) == 0 ||
 		_tcscmp(m_name, TEXT("TubesFade")) == 0 ||

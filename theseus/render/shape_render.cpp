@@ -891,7 +891,12 @@ void SetReflectShaderFrameValues()
 	D3DXVec4Normalize(&lightDir, &lightDir);
 	TheseusSetVertexShaderConstant(49, &lightDir, 1);
 
-    TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
+#ifdef _XBOX
+	// GL backend doesn't honor fixed-function LIGHTING; shim stores
+	// the value for GetRenderState round-trips but never enables
+	// glEnable(GL_LIGHTING). Xbox path keeps the original semantics.
+	TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
+#endif
 }
 
 // ===== Falloff Shader Setup =====
@@ -923,7 +928,10 @@ void SetFalloffShaderFrameValues()
 	TheseusSetVertexShaderConstant(4, &lightDir, 1);
 
 	TheseusSetTexture(0, NULL);
+#ifdef _XBOX
+	// See shape_render.cpp note above: LIGHTING is FF-only, no GL effect.
 	TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
+#endif
 }
 
 // ===== Falloff Shader Values =====

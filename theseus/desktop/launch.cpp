@@ -5,6 +5,7 @@
 
 #include "std.h"
 #include "launch.h"
+#include "panel_shared.h"
 
 #include <SDL.h>
 
@@ -329,15 +330,15 @@ void LaunchOverlay_Reset()
 	s_pendingSpec[0] = 0;
 }
 
-// Lazy-load the Xbox logo PNG (Configs/xboxlogo.png) into a
-// GL texture and cache the handle for the rest of the process. The PNG is
+// Lazy-load the Xbox logo PNG (Configs/xboxlogo.png) into an ImGui
+// texture and cache the handle for the rest of the process. The PNG is
 // pre-decoded from Stock's xboxlogo.xbx via OXDK xbx-convert and lives in
 // the desktop-only UIX Configs directory; loading raw PNG with stb_image
 // avoids dragging the engine's asset loader (and its TCHAR / Xbox typedef
 // chain) into launch.cpp.
-unsigned int LaunchOverlay_LogoGLTex(int* outW, int* outH)
+unsigned long long LaunchOverlay_LogoGLTex(int* outW, int* outH)
 {
-	static GLuint s_logoTex = 0;
+	static GuiTexture* s_logoTex = NULL;
 	static int    s_logoW = 0;
 	static int    s_logoH = 0;
 	static bool   s_loadAttempted = false;
@@ -348,19 +349,11 @@ unsigned int LaunchOverlay_LogoGLTex(int* outW, int* outH)
 		int w = 0, h = 0, ch = 0;
 		unsigned char* pixels = stbi_load(path, &w, &h, &ch, 4);
 		if (pixels) {
-			glGenTextures(1, &s_logoTex);
-			glBindTexture(GL_TEXTURE_2D, s_logoTex);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-			glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0,
-			             GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+			s_logoTex = GuiTextureCreate(w, h, pixels);
 			stbi_image_free(pixels);
 			s_logoW = w;
 			s_logoH = h;
-			fprintf(stderr, "[launch] Loaded Xbox logo: %dx%d (tex %u)\n",
-			        w, h, (unsigned)s_logoTex);
+			fprintf(stderr, "[launch] Loaded Xbox logo: %dx%d\n", w, h);
 		} else {
 			fprintf(stderr, "[launch] Failed to load %s: %s\n",
 			        path, stbi_failure_reason());
@@ -369,7 +362,7 @@ unsigned int LaunchOverlay_LogoGLTex(int* outW, int* outH)
 
 	if (outW) *outW = s_logoW;
 	if (outH) *outH = s_logoH;
-	return (unsigned int)s_logoTex;
+	return GuiTextureImId(s_logoTex);
 }
 
 void LaunchOverlay_Tick()
@@ -457,7 +450,7 @@ void DesktopLaunchTitle(const char* devicePath)
 		return;
 	}
 
-	// Translate via the canonical xboxfs.h resolver -- handles both
+	// Translate via the canonical xboxfs.h resolver. handles both
 	// drive-letter ("E:\...") and device-path ("\Device\Harddisk0\...")
 	// forms and routes to Library/Configs/Data as appropriate.
 	const char* translated = XboxFS_TranslatePath(devicePath);

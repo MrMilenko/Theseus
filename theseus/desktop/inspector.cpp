@@ -229,7 +229,7 @@ static void RenderNodeTree(CNode* pNode, CInstance* pRoot, IDirect3DDevice8* dev
     bool isGroup = (pGroup != NULL);
     bool isSelected = (dev && dev->m_inspectorSelectedNode == (void*)pNode);
 
-    // Visibility toggle -- small button before the tree node
+    // Visibility toggle. small button before the tree node
     ImGui::PushID((void*)pNode);
     if (!pNode->m_visible) {
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
@@ -375,7 +375,12 @@ void RenderInspectorPanel(IDirect3DDevice8* dev) {
         // Sync debug mode when closed via X button
         if (!g_inspectorOpen) {
             g_debugMode = false;
-            if (g_bWireframe) { g_bWireframe = false; glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); }
+            if (g_bWireframe) {
+                g_bWireframe = false;
+#ifndef THESEUS_USE_BGFX
+                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+#endif
+            }
             dev->m_inspectorEnabled = false;
             dev->m_inspectorSelectedNode = NULL;
             dev->m_inspectorHitID = -1;
@@ -475,15 +480,23 @@ void RenderInspectorPanel(IDirect3DDevice8* dev) {
                             CNodeClass* tnc = baseTex->GetNodeClass();
                             ImGui::Text("  Texture: %s", (tnc && tnc->m_className) ? tnc->m_className : "?");
                         }
-                        if (baseTex && baseTex->m_surface && baseTex->m_surface->m_glTexture) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%dx%d", baseTex->m_nImageWidth, baseTex->m_nImageHeight);
-                            float thumbH = 64.0f;
-                            float aspect = baseTex->m_nImageWidth > 0 ? (float)baseTex->m_nImageWidth / baseTex->m_nImageHeight : 1.0f;
-                            float thumbW = thumbH * aspect;
-                            if (thumbW > ImGui::GetContentRegionAvail().x)
-                                thumbW = ImGui::GetContentRegionAvail().x;
-                            ImGui::Image((ImTextureID)(intptr_t)baseTex->m_surface->m_glTexture, ImVec2(thumbW, thumbH));
+                        if (baseTex && baseTex->m_surface) {
+#ifndef THESEUS_USE_BGFX
+                            uintptr_t imguiTex = (uintptr_t)baseTex->m_surface->m_glTexture;
+#else
+                            uintptr_t imguiTex = bgfx::isValid(baseTex->m_surface->m_bgfxTex)
+                                ? (uintptr_t)baseTex->m_surface->m_bgfxTex.idx : 0;
+#endif
+                            if (imguiTex) {
+                                ImGui::SameLine();
+                                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%dx%d", baseTex->m_nImageWidth, baseTex->m_nImageHeight);
+                                float thumbH = 64.0f;
+                                float aspect = baseTex->m_nImageWidth > 0 ? (float)baseTex->m_nImageWidth / baseTex->m_nImageHeight : 1.0f;
+                                float thumbW = thumbH * aspect;
+                                if (thumbW > ImGui::GetContentRegionAvail().x)
+                                    thumbW = ImGui::GetContentRegionAvail().x;
+                                ImGui::Image((ImTextureID)imguiTex, ImVec2(thumbW, thumbH));
+                            }
                         }
                     }
                 }

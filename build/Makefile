@@ -78,7 +78,7 @@
 #   ASAN=1                          Native desktop build with AddressSanitizer
 
 # ============================================================
-# Paths -- override these via environment or make command line
+# Paths. override these via environment or make command line
 # ============================================================
 
 THESEUS_SRC  = ../theseus
@@ -115,7 +115,7 @@ ifeq ($(CONFIG),retail)
   OUTPUT_DIR     = $(BUILDS_ROOT)/xbox-retail
   OPT_FLAGS      = -O0
   XBE_MODE       = RETAIL
-  # Release libs -- no debug asserts, no XBDM dependency
+  # Release libs. no debug asserts, no XBDM dependency
   D3D_LIB        = d3d8.lib
   D3DX_LIB       = d3dx8.lib
   DSOUND_LIB     = dsound.lib
@@ -206,7 +206,7 @@ CFLAGS = \
 	-I$(XDK_PRV_INC)/crypto
 
 # stdcall is the default calling convention for Xbox (MSVC /Gz).
-# Only set for C++ -- C functions use explicit WINAPI/WSAAPI attributes.
+# Only set for C++. C functions use explicit WINAPI/WSAAPI attributes.
 CXXFLAGS = $(CFLAGS) -fno-rtti -Xclang -fdefault-calling-conv=stdcall
 
 LDFLAGS = \
@@ -369,7 +369,7 @@ OBJS = $(addprefix $(OUTPUT_DIR)/,$(ALL_SRCS:.cpp=.obj)) $(OUTPUT_DIR)/d3d_compa
 XBOX_DEPS = $(OBJS:.obj=.d)
 
 # Pull in auto-generated header dependencies (from -MMD -MP). On a fresh
-# tree these don't exist yet -- the leading '-' tells make to ignore that.
+# tree these don't exist yet. the leading '-' tells make to ignore that.
 -include $(XBOX_DEPS)
 -include $(THESEUSLIB_DEPS)
 
@@ -397,7 +397,7 @@ $(TARGET_XBE): $(TARGET_EXE)
 $(TARGET_EXE): $(OBJS) $(THESEUSLIB_LIB)
 	$(LD) $(LDFLAGS) /out:$@ $(OBJS) $(THESEUSLIB_LIB) $(LIBS)
 
-# minimp3 is compiled in isolation -- no XDK headers, no force-include.
+# minimp3 is compiled in isolation. no XDK headers, no force-include.
 # Only needs CRT headers (stdlib.h, string.h, math.h).
 $(OUTPUT_DIR)/engine/minimp3_decode.obj: $(THESEUS_SRC)/engine/minimp3_decode.cpp | $(OUTPUT_DIR)/engine
 	$(CXX) $(TARGET_FLAGS) -c -MMD -MP $(OPT_FLAGS) -fno-rtti \
@@ -457,7 +457,7 @@ ifeq ($(UNAME_S),Darwin)
   SDL2_LDFLAGS := $(shell sdl2-config --libs 2>/dev/null || echo -L/opt/homebrew/lib -lSDL2)
   DESKTOP_PLATFORM_LDFLAGS = -framework OpenGL -lSDL2_mixer
 else ifeq ($(UNAME_S),Linux)
-  # Default to system g++ -- Debian/Ubuntu ship gcc by default; users with
+  # Default to system g++. Debian/Ubuntu ship gcc by default; users with
   # clang installed can still override with `make desktop DESKTOP_CXX=clang++`.
   DESKTOP_CXX  ?= g++
   DESKTOP_CC   ?= gcc
@@ -481,9 +481,9 @@ endif
 
 # libmpv + libcurl: REQUIRED for the native desktop target.
 #
-#   libmpv -- fullscreen video playback (media_player.cpp + media_ui.cpp)
+#   libmpv. fullscreen video playback (media_player.cpp + media_ui.cpp)
 #             and CD audio (cdaudio.cpp).
-#   libcurl -- in-process HTTPS for TMDB metadata (tmdb.cpp).
+#   libcurl. in-process HTTPS for TMDB metadata (tmdb.cpp).
 #
 # The dashboard ships with these features always-on; there is no
 # fallback / stub build. We probe via pkg-config and error out loudly
@@ -566,8 +566,42 @@ ifdef ASAN
   DESKTOP_LDFLAGS += -fsanitize=address
 endif
 
+# Toggle: build the desktop with the bgfx backend instead of the
+# OpenGL backend of d3d8_sdl.h. See project_bgfx_swap.md for context.
+# `make desktop BGFX=1`. Submodules live at theseus/third-party/{bx,bimg,bgfx}.
+# Build them first with `make -C theseus/third-party/bgfx osx-arm64-release`
+# (or the right target for your platform) to get libbgfxRelease.a etc.
+ifdef BGFX
+  BGFX_ROOT       := $(THESEUS_SRC)/third-party/bgfx
+  BX_ROOT         := $(THESEUS_SRC)/third-party/bx
+  BIMG_ROOT       := $(THESEUS_SRC)/third-party/bimg
+  DESKTOP_CFLAGS  += -DTHESEUS_USE_BGFX=1 \
+                     -I$(BGFX_ROOT)/include -I$(BX_ROOT)/include -I$(BIMG_ROOT)/include
+  ifeq ($(UNAME_S),Darwin)
+    BGFX_BUILD_DIR  := $(BGFX_ROOT)/.build/osx-arm64/bin
+    DESKTOP_CFLAGS  += -I$(BX_ROOT)/include/compat/osx
+    DESKTOP_LDFLAGS += $(BGFX_BUILD_DIR)/libbgfxRelease.a \
+                       $(BGFX_BUILD_DIR)/libbxRelease.a \
+                       $(BGFX_BUILD_DIR)/libbimgRelease.a \
+                       -framework Cocoa -framework Metal -framework MetalKit \
+                       -framework QuartzCore -framework IOKit -framework CoreFoundation
+  else ifeq ($(UNAME_S),Linux)
+    # Build libs locally via:
+    #   make -C theseus/third-party/bgfx linux-gcc-release64
+    # bgfx on Linux uses Vulkan by default (sdl_main.cpp's auto-pick
+    # lands there since Vulkan caps trump GL). Runtime needs vulkan-loader
+    # + X11 system libs; -ldl/-lpthread are dl/thread for bgfx's RTLD use.
+    BGFX_BUILD_DIR  := $(BGFX_ROOT)/.build/linux64_gcc/bin
+    DESKTOP_CFLAGS  += -I$(BX_ROOT)/include/compat/linux
+    DESKTOP_LDFLAGS += $(BGFX_BUILD_DIR)/libbgfxRelease.a \
+                       $(BGFX_BUILD_DIR)/libbxRelease.a \
+                       $(BGFX_BUILD_DIR)/libbimgRelease.a \
+                       -lvulkan -lX11 -ldl -lpthread
+  endif
+endif
+
 # Desktop sources: ALL from theseus/desktop/ (UIX Desktop tree imported in full).
-# This is the "in entirety" import -- after we have a working build, we'll
+# This is the "in entirety" import. after we have a working build, we'll
 # refactor by moving files into theseus/engine/, shared/, render/ etc.
 DESKTOP_SRCS_ENGINE = \
 	$(THESEUS_SRC)/shared/xap_vm.cpp \
@@ -591,7 +625,7 @@ DESKTOP_SRCS_RENDER = \
 	$(THESEUS_SRC)/desktop/image.cpp \
 	$(THESEUS_SRC)/desktop/texture.cpp \
 	$(THESEUS_SRC)/render/tmap_system.cpp \
-	$(THESEUS_SRC)/render/materials.cpp \
+	$(THESEUS_SRC)/desktop/materials_desktop.cpp \
 	$(THESEUS_SRC)/desktop/mesh.cpp \
 	$(THESEUS_SRC)/render/shape_render.cpp \
 	$(THESEUS_SRC)/desktop/text.cpp \
@@ -655,14 +689,20 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/http_util.cpp \
 	$(THESEUS_SRC)/desktop/xiso.cpp
 
-# ImGui sources
+# ImGui sources. imgui_impl_opengl3 is the GL renderer backend used by
+# the default build; imgui_impl_bgfx (chunk 5d-3) is its bgfx
+# counterpart, swapped in when THESEUS_USE_BGFX is set.
 DESKTOP_SRCS_IMGUI = \
 	$(THESEUS_SRC)/desktop/imgui/imgui.cpp \
 	$(THESEUS_SRC)/desktop/imgui/imgui_draw.cpp \
 	$(THESEUS_SRC)/desktop/imgui/imgui_tables.cpp \
 	$(THESEUS_SRC)/desktop/imgui/imgui_widgets.cpp \
-	$(THESEUS_SRC)/desktop/imgui/imgui_impl_sdl2.cpp \
-	$(THESEUS_SRC)/desktop/imgui/imgui_impl_opengl3.cpp
+	$(THESEUS_SRC)/desktop/imgui/imgui_impl_sdl2.cpp
+ifdef BGFX
+  DESKTOP_SRCS_IMGUI += $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp
+else
+  DESKTOP_SRCS_IMGUI += $(THESEUS_SRC)/desktop/imgui/imgui_impl_opengl3.cpp
+endif
 
 DESKTOP_ALL_SRCS = \
 	$(DESKTOP_SRCS_ENGINE) \
@@ -677,7 +717,69 @@ DESKTOP_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(DESKTOP_DIR)/%.o,$(DESKTOP_ALL_
 DESKTOP_DEPS = $(DESKTOP_OBJS:.o=.d)
 -include $(DESKTOP_DEPS)
 
-.PHONY: desktop desktop-clean
+.PHONY: desktop desktop-clean shaders-bgfx shaders-bgfx-spirv
+
+# bgfx shader compilation (Phase 2 of project_d3d_call_audit.md).
+# Cross-compiles each .sc file in theseus/desktop/shaders/ to a .bin
+# for every backend we care about: macOS Metal (shaders-bgfx) and
+# Windows D3D11 (shaders-bgfx-dx11). Vulkan / GL fallback profiles
+# slot in here when those platform builds land.
+#
+# Run manually with `make -C build shaders-bgfx[-dx11]`; not yet
+# wired into the desktop rebuild flow since shader edits are
+# infrequent and require a separate run anyway.
+SHADERC := $(THESEUS_SRC)/third-party/bgfx/.build/osx-arm64/bin/shadercRelease
+SHADERS_SRC_DIR := $(THESEUS_SRC)/desktop/shaders
+SHADERS_OUT_DIR := $(THESEUS_SRC)/../Data/shaders
+BGFX_SHADER_INC := $(THESEUS_SRC)/third-party/bgfx/src
+
+shaders-bgfx:
+	@mkdir -p $(SHADERS_OUT_DIR)/metal
+	@for SC in $(SHADERS_SRC_DIR)/vs_*.sc; do \
+		NAME=$$(basename $$SC .sc); \
+		echo "shaderc [metal] $$NAME"; \
+		$(SHADERC) -f $$SC -o $(SHADERS_OUT_DIR)/metal/$$NAME.bin \
+			--type v --platform osx --profile metal -i $(BGFX_SHADER_INC) \
+			|| exit 1; \
+	done
+	@for SC in $(SHADERS_SRC_DIR)/fs_*.sc; do \
+		NAME=$$(basename $$SC .sc); \
+		echo "shaderc [metal] $$NAME"; \
+		$(SHADERC) -f $$SC -o $(SHADERS_OUT_DIR)/metal/$$NAME.bin \
+			--type f --platform osx --profile metal -i $(BGFX_SHADER_INC) \
+			|| exit 1; \
+	done
+	@echo "=== bgfx shaders compiled to $(SHADERS_OUT_DIR)/metal/ ==="
+
+# SPIR-V for the Vulkan renderer (Windows / Linux). bgfx's HLSL
+# backend invokes Microsoft fxc.exe which isn't available on macOS,
+# so we can't emit DXBC from the macOS cross-compile host. Vulkan
+# delivers the same per-call CPU-cost win as D3D11 on Windows (the
+# Phase 2 audit goal). AMD / NVIDIA / Intel all ship first-class
+# Vulkan drivers there. The runtime loader resolves Data/shaders/
+# spirv/ when bgfx::getRendererType() == RendererType::Vulkan.
+#
+# Run shaders-bgfx + shaders-bgfx-spirv before bundling a Windows
+# BGFX build, otherwise theseus_bgfx_load_shader returns null and
+# the FF shader program never links.
+shaders-bgfx-spirv:
+	@mkdir -p $(SHADERS_OUT_DIR)/spirv
+	@for SC in $(SHADERS_SRC_DIR)/vs_*.sc; do \
+		NAME=$$(basename $$SC .sc); \
+		echo "shaderc [spirv] $$NAME"; \
+		$(SHADERC) -f $$SC -o $(SHADERS_OUT_DIR)/spirv/$$NAME.bin \
+			--type v --platform windows --profile spirv -i $(BGFX_SHADER_INC) \
+			|| exit 1; \
+	done
+	@for SC in $(SHADERS_SRC_DIR)/fs_*.sc; do \
+		NAME=$$(basename $$SC .sc); \
+		echo "shaderc [spirv] $$NAME"; \
+		$(SHADERC) -f $$SC -o $(SHADERS_OUT_DIR)/spirv/$$NAME.bin \
+			--type f --platform windows --profile spirv -i $(BGFX_SHADER_INC) \
+			|| exit 1; \
+	done
+	@echo "=== bgfx shaders compiled to $(SHADERS_OUT_DIR)/spirv/ ==="
+
 
 desktop: $(DESKTOP_TARGET)
 	@echo "=== desktop build complete: $(DESKTOP_TARGET) ==="
@@ -723,7 +825,7 @@ desktop-clean:
 # ============================================================
 # Uses x86_64-w64-mingw32-g++ + the SDL2 mingw devel libs from
 # https://www.libsdl.org/. Output is a self-contained drop with the
-# .exe, SDL2.dll, SDL2_mixer.dll, and Configs/Data/Library -- runnable on Windows
+# .exe, SDL2.dll, SDL2_mixer.dll, and Configs/Data/Library. runnable on Windows
 # directly or under Wine/Whiskey on macOS.
 #
 # Setup (one-time):
@@ -841,8 +943,43 @@ WIN64_LDFLAGS = \
 	-lopengl32 -lgdi32 -limm32 -lole32 -loleaut32 -lsetupapi -lversion -lwinmm -luuid \
 	-lws2_32 -ldbghelp -lavrt -ldwmapi
 
-# Same source list as desktop -- the compiler reads the same files.
-WIN64_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(WIN64_DIR)/%.o,$(DESKTOP_ALL_SRCS))
+# BGFX=1 on Windows: link Vulkan via bgfx, drop the OpenGL backend.
+# bgfx libs were built from the macOS host with:
+#   cd theseus/third-party/bgfx
+#   MINGW=/opt/homebrew/Cellar/mingw-w64/14.0.0/toolchain-x86_64 \
+#   make -C .build/projects/gmake-mingw-gcc bx bimg bgfx \
+#     config=release64 AR=x86_64-w64-mingw32-ar
+# Outputs at .build/win64_mingw-gcc/bin/lib{bx,bimg,bgfx}Release.a.
+# Shaders ship as SPIR-V (see shaders-bgfx-spirv); the runtime
+# pins bgfx::RendererType::Vulkan on Windows in sdl_main.cpp.
+# Windows system libs bgfx pulls in: gdi32 + psapi (renderer_d3d*
+# stubs even though we use Vulkan).
+ifdef BGFX
+  BGFX_WIN64_BUILD_DIR := $(THESEUS_SRC)/third-party/bgfx/.build/win64_mingw-gcc/bin
+  WIN64_CFLAGS  += -DTHESEUS_USE_BGFX=1 \
+                   -I$(THESEUS_SRC)/third-party/bgfx/include \
+                   -I$(THESEUS_SRC)/third-party/bx/include \
+                   -I$(THESEUS_SRC)/third-party/bimg/include \
+                   -I$(THESEUS_SRC)/third-party/bx/include/compat/mingw
+  WIN64_LDFLAGS += $(BGFX_WIN64_BUILD_DIR)/libbgfxRelease.a \
+                   $(BGFX_WIN64_BUILD_DIR)/libbxRelease.a \
+                   $(BGFX_WIN64_BUILD_DIR)/libbimgRelease.a \
+                   -lgdi32 -lpsapi
+endif
+
+# Source list mirrors desktop's BGFX branching (imgui_impl_bgfx
+# instead of imgui_impl_opengl3 when BGFX=1).
+WIN64_SRCS = $(filter-out \
+  $(THESEUS_SRC)/desktop/imgui/imgui_impl_opengl3.cpp \
+  $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp, $(DESKTOP_ALL_SRCS))
+ifdef BGFX
+  WIN64_SRCS += $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp
+else
+  WIN64_SRCS += $(THESEUS_SRC)/desktop/imgui/imgui_impl_opengl3.cpp
+endif
+
+# Same source list as desktop. the compiler reads the same files.
+WIN64_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(WIN64_DIR)/%.o,$(WIN64_SRCS))
 WIN64_DEPS = $(WIN64_OBJS:.o=.d)
 -include $(WIN64_DEPS)
 
@@ -918,7 +1055,7 @@ LINUX_ARM64_CXX     = aarch64-linux-gnu-g++
 # Multiarch SDL2 paths. Debian's arm64 multiarch puts the headers under
 # /usr/include/SDL2 (shared with the host arch) and the libs under
 # /usr/lib/aarch64-linux-gnu/. sdl2-config returns x86_64 paths under
-# multiarch, so don't use it here -- override directly.
+# multiarch, so don't use it here. override directly.
 LINUX_ARM64_SDL2_INC = /usr/include/SDL2
 LINUX_ARM64_SDL2_LIB = /usr/lib/aarch64-linux-gnu
 
@@ -973,7 +1110,7 @@ LINUX_ARM64_LDFLAGS = \
 	$(LINUX_ARM64_CURL_LDFLAGS) \
 	-lm -ldl -lpthread
 
-# Same source list as desktop -- the compiler reads the same files.
+# Same source list as desktop. the compiler reads the same files.
 LINUX_ARM64_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(LINUX_ARM64_DIR)/%.o,$(DESKTOP_ALL_SRCS))
 LINUX_ARM64_DEPS = $(LINUX_ARM64_OBJS:.o=.d)
 -include $(LINUX_ARM64_DEPS)
