@@ -44,12 +44,16 @@ jobs:
           make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
                shaderc config=release64
 
+      - name: Locate shaderc binary
+        run: find theseus/third-party/bgfx/.build -name 'shaderc*.exe' -o -name 'shaderc' 2>/dev/null
+
       - name: Compile DX11 shaders
         # The host shaderc just built has the bgfx_shader.sh include
         # paths baked in; point the Makefile at it explicitly.
         run: |
-          SHADERC=theseus/third-party/bgfx/.build/win64_mingw-gcc/bin/shadercRelease.exe \
-            make -C build shaders-bgfx-dx11
+          SHADERC=$(find theseus/third-party/bgfx/.build -name 'shadercRelease*' -type f | head -1)
+          echo "Using shaderc at: $SHADERC"
+          SHADERC="$SHADERC" make -C build shaders-bgfx-dx11
 
       - name: Upload DX11 shader bins
         uses: actions/upload-artifact@v4
