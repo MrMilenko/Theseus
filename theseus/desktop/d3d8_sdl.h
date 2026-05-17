@@ -1793,6 +1793,7 @@ public:
 typedef IDirect3DIndexBuffer8* LPDIRECT3DINDEXBUFFER8;
 
 // Re-upload all GL resources after context recreation (MSAA change, etc.)
+#ifndef THESEUS_USE_BGFX
 inline void ReuploadAllGLResources() {
     // Re-upload textures from CPU pixel data
     for (IDirect3DTexture8* t = IDirect3DTexture8::s_firstTex; t; t = t->m_nextTex) {
@@ -1823,6 +1824,7 @@ inline void ReuploadAllGLResources() {
     }
     fprintf(stderr, "[GL] Re-uploaded all resources after context reset\n");
 }
+#endif // !THESEUS_USE_BGFX
 
 // Deferred implementations for ID3DXMesh (needs buffer classes to be defined)
 inline HRESULT ID3DXMesh::GetVertexBuffer(IDirect3DVertexBuffer8** ppVB) {
@@ -2340,12 +2342,14 @@ public:
         }
         return S_OK;
     }
+#ifndef THESEUS_USE_BGFX
     static GLenum D3DWrapToGL(DWORD d3dAddr) {
         switch (d3dAddr) {
             case 3: return GL_CLAMP_TO_EDGE;  // D3DTADDRESS_CLAMP
             default: return GL_REPEAT;         // D3DTADDRESS_WRAP
         }
     }
+#endif
 #ifdef THESEUS_USE_BGFX
     // BGFX_SAMPLER_* flag block derived from current stage-0 sampler
     // state. Default is REPEAT + LINEAR which is bgfx's implicit state,
@@ -3428,11 +3432,13 @@ public:
     ULONG Release() { if(--m_ref <= 0) { delete this; return 0; } return m_ref; }
     HRESULT CreateDevice(UINT adapter, DWORD type, void* wnd, DWORD flags, D3DPRESENT_PARAMETERS* pp, IDirect3DDevice8** dev) {
         *dev = new IDirect3DDevice8();
+#ifndef THESEUS_USE_BGFX
         // Update XYZRHW viewport size uniform to match backbuffer
         if (pp && g_gl.program) {
             glUseProgram(g_gl.program);
             glUniform2f(g_gl.u_ViewportSize, (float)pp->BackBufferWidth, (float)pp->BackBufferHeight);
         }
+#endif
         return S_OK;
     }
 };
