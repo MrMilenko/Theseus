@@ -4,9 +4,15 @@
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Xbox%20%7C%20macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](#)
 
+<p align="center">
+  <img src="docs/images/vulkan-logo.svg" height="36" alt="Vulkan">
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  <img src="docs/images/metal-logo.png" height="36" alt="Metal">
+</p>
+
 Six years of reverse engineering the original Xbox dashboard. This repo is the result.
 
-Theseus boots on modded Xbox hardware as a drop in replacement for the stock dashboard. The same engine compiles natively on macOS, Linux, and Windows, where it doubles as **UIX Desktop**: a 3D launcher and media center.
+Theseus boots on modded Xbox hardware as a drop in replacement for the stock dashboard. The same engine compiles natively on macOS, Linux, and Windows, where it doubles as **UIX Desktop**: a 3D launcher and media center. The desktop build renders through [bgfx](https://github.com/bkaradzic/bgfx): Metal on macOS, Vulkan on Linux and Windows.
 
 The split is intentional. The Xbox build stays faithful to what you'd expect from the Xbox dashboard (or UIX Lite, if you've used a custom dashboard before). Everything that doesn't belong on an Xbox (Steam libraries, modern video playback, emulator-hosted ISOs, playlists, skin authoring tools) lives on the desktop side instead. Two projects, one engine.
 
@@ -172,20 +178,44 @@ Output lands at `~/builds/theseus/xbox-retail/default.xbe`.
 
 ### Desktop
 
-Same source tree, different Makefile target. Needs C++17, OpenGL 3.2, SDL2, SDL2_mixer, libmpv, libcurl.
+Same source tree, different Makefile target. Needs C++17, SDL2, SDL2_mixer, libmpv, libcurl. Rendering goes through bgfx: Metal on macOS, Vulkan on Linux and Windows. bgfx ships as a git submodule and the shaders compile from .sc source via `shaderc`.
+
+Init the submodules once before the first build:
+
+```
+git submodule update --init --recursive
+```
+
+Then build the bgfx libraries (one time per platform) and compile shaders:
+
+```
+# macOS (Apple Silicon)
+make -C theseus/third-party/bgfx -j osx-arm64
+make -C build shaders-bgfx
+
+# Linux
+make -C theseus/third-party/bgfx -j linux-release64
+make -C build shaders-bgfx-spirv
+
+# Windows (built from a MSYS2 mingw shell, or cross-compiled from Linux)
+make -C theseus/third-party/bgfx -j mingw-gcc-release64
+make -C build shaders-bgfx-spirv
+```
+
+After that, the per-OS build commands:
 
 **macOS:**
 ```
 brew install sdl2 sdl2_mixer mpv curl pkg-config
-cd build && make desktop
+cd build && make desktop BGFX=1
 ~/builds/theseus/desktop/theseus
 ```
 
 **Linux:**
 ```
 sudo apt install build-essential pkg-config libsdl2-dev libsdl2-mixer-dev \
-                 libgl-dev libmpv-dev libcurl4-openssl-dev
-cd build && make desktop
+                 libvulkan-dev libx11-dev libmpv-dev libcurl4-openssl-dev
+cd build && make desktop BGFX=1
 ~/builds/theseus/desktop/theseus
 ```
 
@@ -193,17 +223,20 @@ cd build && make desktop
 ```
 pacman -S make pkg-config mingw-w64-x86_64-gcc \
           mingw-w64-x86_64-SDL2 mingw-w64-x86_64-SDL2_mixer \
-          mingw-w64-x86_64-mpv mingw-w64-x86_64-curl
-cd build && make desktop
+          mingw-w64-x86_64-mpv mingw-w64-x86_64-curl \
+          mingw-w64-x86_64-vulkan-headers mingw-w64-x86_64-vulkan-loader
+cd build && make desktop-win64 BGFX=1
 ```
 
 Cross-compiling for Windows from macOS / Linux, ARM64 Linux, or any of the more involved setups is in [`docs/desktop/`](docs/desktop/). The CI workflow runs all the build matrix combinations on every push, which is the closest thing to executable docs for the one-time setup.
+
+The legacy OpenGL backend still compiles by dropping the `BGFX=1` flag, useful for older hardware without Vulkan support. Shipped releases use the bgfx path.
 
 ## How it works
 
 The engine is approximately 50 source files reconstructed from the retail and patched XBE's spanning 4920 to 5960, organized the same way the original dashboard was: script VM, scene graph, rendering, asset loading, UI framework, system integration, and launcher. Per-subsystem reverse engineering notes are in [`docs/decomp/`](docs/decomp/).
 
-The XAP scripting layer is a custom JS-like bytecode VM. The scene graph is VRML97-inspired with runtime reflection via FND/PRD property tables. D3D8 calls are translated to OpenGL 3.2 on the desktop side; everything else compiles for both targets from the same shared source.
+The XAP scripting layer is a custom JS-like bytecode VM. The scene graph is VRML97-inspired with runtime reflection via FND/PRD property tables. On the desktop side, D3D8 calls translate through a thin shim into bgfx, which targets Metal on macOS and Vulkan on Linux and Windows. Everything else compiles for both targets from the same shared source.
 
 If you're poking around the source, the high-level layout:
 
@@ -213,7 +246,7 @@ theseus/
   shared/      Cross-platform with Win32 types (file I/O, audio, settings)
   render/      Scene graph, materials, shapes
   xbox/        Xbox-only (XTL, modchip, kernel APIs)
-  desktop/     Desktop-only (SDL/OpenGL, ImGui tools)
+  desktop/     Desktop-only (SDL, bgfx, ImGui tools)
   toolbox/     PrometheOS-derived FTP / drive / network (Xbox-only)
 theseuslib/    Shared C library (xiso parser, xip parser)
 ```
@@ -259,7 +292,10 @@ Desktop build:
 | [Dear ImGui](https://github.com/ocornut/imgui) | MIT | Developer tool UI |
 | [ImGuiColorTextEdit](https://github.com/BalazsJako/ImGuiColorTextEdit) | MIT | XAP script editor with syntax highlighting |
 | [stb_image](https://github.com/nothings/stb) | Public Domain | Image loading |
-| [GLEW](https://glew.sourceforge.net/) | Modified BSD / MIT | OpenGL extension loader (Windows only) |
+| [bgfx](https://github.com/bkaradzic/bgfx) | BSD 2-Clause | Cross-platform render abstraction (Metal, Vulkan) |
+| [bx](https://github.com/bkaradzic/bx) | BSD 2-Clause | bgfx base library |
+| [bimg](https://github.com/bkaradzic/bimg) | BSD 2-Clause | bgfx image utility library |
+| [GLEW](https://glew.sourceforge.net/) | Modified BSD / MIT | OpenGL extension loader (legacy GL backend, Windows only) |
 
 Full catalog with attributions is in [`LICENSE-THIRD-PARTY.md`](LICENSE-THIRD-PARTY.md).
 

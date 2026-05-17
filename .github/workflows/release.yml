@@ -15,7 +15,9 @@ permissions:
   contents: write
 
 # Per-platform: build, package binary + Configs/Data/Library + runtime libs into a
-# platform-named archive, attach to the GitHub Release.
+# platform-named archive, attach to the GitHub Release. All desktop targets ship
+# the bgfx backend (Metal on macOS, Vulkan on Linux / Windows). Shaders are
+# precompiled by shaderc and bundled under Data/shaders/.
 
 jobs:
   release-macos:
@@ -23,6 +25,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install deps
         run: brew install sdl2 sdl2_mixer mpv curl pkg-config
@@ -30,8 +34,14 @@ jobs:
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build bgfx libs + shaderc
+        run: make -C theseus/third-party/bgfx -j$(sysctl -n hw.ncpu) osx-arm64-release
+
+      - name: Compile shaders (Metal)
+        run: make -C build shaders-bgfx
+
       - name: Build
-        run: PKG_CONFIG_PATH="$(brew --prefix curl)/lib/pkgconfig:${PKG_CONFIG_PATH}" make -C build desktop
+        run: PKG_CONFIG_PATH="$(brew --prefix curl)/lib/pkgconfig:${PKG_CONFIG_PATH}" make -C build desktop BGFX=1
 
       - name: Package
         # macOS users are expected to have Homebrew SDL2/mpv/curl installed.
@@ -57,19 +67,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install deps
         run: |
           sudo apt update
           sudo apt install -y build-essential pkg-config \
-                              libsdl2-dev libsdl2-mixer-dev libgl-dev \
+                              libsdl2-dev libsdl2-mixer-dev \
+                              libvulkan-dev libx11-dev \
                               libmpv-dev libcurl4-openssl-dev
 
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build bgfx libs + shaderc
+        run: make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
+
+      - name: Compile shaders (SPIR-V)
+        run: make -C build shaders-bgfx-spirv
+
       - name: Build
-        run: make -C build desktop
+        run: make -C build desktop BGFX=1
 
       - name: Package
         run: |
@@ -93,19 +112,28 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install deps
         run: |
           sudo apt update
           sudo apt install -y build-essential pkg-config \
-                              libsdl2-dev libsdl2-mixer-dev libgl-dev \
+                              libsdl2-dev libsdl2-mixer-dev \
+                              libvulkan-dev libx11-dev \
                               libmpv-dev libcurl4-openssl-dev
 
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build bgfx libs + shaderc
+        run: make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
+
+      - name: Compile shaders (SPIR-V)
+        run: make -C build shaders-bgfx-spirv
+
       - name: Build
-        run: make -C build desktop
+        run: make -C build desktop BGFX=1
 
       - name: Package
         run: |
@@ -130,16 +158,18 @@ jobs:
     env:
       SDL2_VER: 2.32.10
       SDL2_MIXER_VER: 2.8.1
-      GLEW_VER: 2.2.0
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Install mingw-w64 (posix thread model)
         run: |
           sudo apt update
           sudo apt install -y mingw-w64 p7zip-full \
                               g++-mingw-w64-x86-64-posix \
-                              gcc-mingw-w64-x86-64-posix
+                              gcc-mingw-w64-x86-64-posix \
+                              libvulkan-dev libx11-dev
           sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-posix
           sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-posix
 
@@ -148,7 +178,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/cross
-          key: cross-mingw-sdl${{ env.SDL2_VER }}-mixer${{ env.SDL2_MIXER_VER }}-glew${{ env.GLEW_VER }}-mpv-curl-v1
+          key: cross-mingw-sdl${{ env.SDL2_VER }}-mixer${{ env.SDL2_MIXER_VER }}-mpv-curl-v2
 
       - name: Fetch SDL2 + SDL2_mixer
         if: steps.cache-cross.outputs.cache-hit != 'true'
@@ -159,18 +189,6 @@ jobs:
           curl -fsSL -O https://github.com/libsdl-org/SDL_mixer/releases/download/release-${SDL2_MIXER_VER}/SDL2_mixer-devel-${SDL2_MIXER_VER}-mingw.tar.gz
           tar xzf SDL2-devel-${SDL2_VER}-mingw.tar.gz
           tar xzf SDL2_mixer-devel-${SDL2_MIXER_VER}-mingw.tar.gz
-
-      - name: Build GLEW
-        if: steps.cache-cross.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p ~/cross/glew-src
-          cd ~/cross/glew-src
-          curl -fsSL -o glew-${GLEW_VER}.tgz https://sourceforge.net/projects/glew/files/glew/${GLEW_VER}/glew-${GLEW_VER}.tgz/download
-          tar xzf glew-${GLEW_VER}.tgz
-          cd glew-${GLEW_VER}
-          mkdir -p build-mingw
-          x86_64-w64-mingw32-gcc -DGLEW_STATIC -Iinclude -c src/glew.c -o build-mingw/glew.o
-          x86_64-w64-mingw32-ar rcs build-mingw/libglew32.a build-mingw/glew.o
 
       - name: Fetch libmpv mingw devel
         if: steps.cache-cross.outputs.cache-hit != 'true'
@@ -202,8 +220,19 @@ jobs:
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build bgfx libs (mingw cross)
+        # bgfx libs cross-built with the host mingw toolchain; outputs land
+        # at .build/win64_mingw-gcc/bin/lib{bx,bimg,bgfx}Release.a.
+        run: make -C theseus/third-party/bgfx -j$(nproc) mingw-gcc-release64
+
+      - name: Build shaderc (host Linux, for cross shader compile)
+        run: make -C theseus/third-party/bgfx -j$(nproc) linux-gcc-release64
+
+      - name: Compile shaders (SPIR-V)
+        run: SHADERC=theseus/third-party/bgfx/.build/linux64_gcc/bin/shadercRelease make -C build shaders-bgfx-spirv
+
       - name: Build
-        run: make -C build desktop-win64
+        run: make -C build desktop-win64 BGFX=1
 
       - name: Package
         # The Makefile has already copied the runtime DLLs into the build

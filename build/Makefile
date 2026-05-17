@@ -450,6 +450,7 @@ DESKTOP_TARGET = $(DESKTOP_DIR)/theseus
 
 # Detect platform
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 ifeq ($(UNAME_S),Darwin)
   DESKTOP_CXX  ?= clang++
   DESKTOP_CC   ?= clang
@@ -728,7 +729,18 @@ DESKTOP_DEPS = $(DESKTOP_OBJS:.o=.d)
 # Run manually with `make -C build shaders-bgfx[-dx11]`; not yet
 # wired into the desktop rebuild flow since shader edits are
 # infrequent and require a separate run anyway.
-SHADERC := $(THESEUS_SRC)/third-party/bgfx/.build/osx-arm64/bin/shadercRelease
+ifeq ($(UNAME_S),Darwin)
+  ifeq ($(UNAME_M),arm64)
+    SHADERC_BUILD_DIR := osx-arm64
+  else
+    SHADERC_BUILD_DIR := osx-x64
+  endif
+else ifeq ($(UNAME_S),Linux)
+  SHADERC_BUILD_DIR := linux64_gcc
+else
+  SHADERC_BUILD_DIR := win64_mingw-gcc
+endif
+SHADERC ?= $(THESEUS_SRC)/third-party/bgfx/.build/$(SHADERC_BUILD_DIR)/bin/shadercRelease
 SHADERS_SRC_DIR := $(THESEUS_SRC)/desktop/shaders
 SHADERS_OUT_DIR := $(THESEUS_SRC)/../Data/shaders
 BGFX_SHADER_INC := $(THESEUS_SRC)/third-party/bgfx/src
