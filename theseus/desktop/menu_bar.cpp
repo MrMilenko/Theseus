@@ -399,14 +399,26 @@ void RenderSettingsWindow() {
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("Renderer:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
-            static const char* s_rendererLabels[] = { "Auto", "Direct3D 11", "Vulkan", "OpenGL" };
-            if (ImGui::Combo("##renderer", &g_rendererPref, s_rendererLabels, 4)) {
+            static const char* s_rendererLabels[] = {
+                "Auto",
+                "Direct3D 11",
+                "Vulkan",
+                "OpenGL",
+                "Metal",
+                "OpenGL ES",
+            };
+            if (ImGui::Combo("##renderer", &g_rendererPref, s_rendererLabels, 6)) {
                 SaveDesktopSettings();
             }
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Takes effect on next launch. Switch to Direct3D 11\nif you see a black screen on Windows with Vulkan.");
+                ImGui::SetTooltip(
+                    "Takes effect on next launch.\n"
+                    "Auto picks the best backend for your OS\n"
+                    "(Metal on macOS, Direct3D 11 on Windows,\n"
+                    "Vulkan on Linux). Pick a specific backend\n"
+                    "if Auto doesn't work for you.");
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("Display Mode:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);

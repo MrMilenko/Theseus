@@ -718,7 +718,7 @@ DESKTOP_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(DESKTOP_DIR)/%.o,$(DESKTOP_ALL_
 DESKTOP_DEPS = $(DESKTOP_OBJS:.o=.d)
 -include $(DESKTOP_DEPS)
 
-.PHONY: desktop desktop-clean shaders-bgfx shaders-bgfx-spirv shaders-bgfx-dx11 shaders-bgfx-dx9 shaders-bgfx-glsl shaders-bgfx-essl
+.PHONY: desktop desktop-clean shaders-bgfx shaders-bgfx-spirv shaders-bgfx-dx11 shaders-bgfx-glsl shaders-bgfx-essl
 
 # bgfx shader compilation (Phase 2 of project_d3d_call_audit.md).
 # Cross-compiles each .sc file in theseus/desktop/shaders/ to a .bin
@@ -791,31 +791,6 @@ shaders-bgfx-spirv:
 			|| exit 1; \
 	done
 	@echo "=== bgfx shaders compiled to $(SHADERS_OUT_DIR)/spirv/ ==="
-
-# DXBC for the D3D9 renderer (s_3_0 / shader model 3). Same fxc.exe
-# dependency as dx11 - Windows-host build only. Output lands in
-# Data/shaders/dx9/ and gets picked up when bgfx auto-falls back to
-# Direct3D9 on old Windows hardware. Note: shaders that rely on
-# integer bitwise ops (current vs_ff packed normal, fs_crt phosphor
-# mask) won't compile against s_3_0; they'll need float-only rewrites
-# before DX9 lights up properly.
-shaders-bgfx-dx9:
-	@mkdir -p $(SHADERS_OUT_DIR)/dx9
-	@for SC in $(SHADERS_SRC_DIR)/vs_*.sc; do \
-		NAME=$$(basename $$SC .sc); \
-		echo "shaderc [dx9] $$NAME"; \
-		$(SHADERC) -f $$SC -o $(SHADERS_OUT_DIR)/dx9/$$NAME.bin \
-			--type v --platform windows --profile s_3_0 -i $(BGFX_SHADER_INC) \
-			|| exit 1; \
-	done
-	@for SC in $(SHADERS_SRC_DIR)/fs_*.sc; do \
-		NAME=$$(basename $$SC .sc); \
-		echo "shaderc [dx9] $$NAME"; \
-		$(SHADERC) -f $$SC -o $(SHADERS_OUT_DIR)/dx9/$$NAME.bin \
-			--type f --platform windows --profile s_3_0 -i $(BGFX_SHADER_INC) \
-			|| exit 1; \
-	done
-	@echo "=== bgfx shaders compiled to $(SHADERS_OUT_DIR)/dx9/ ==="
 
 # GLSL 1.50 (core, OpenGL 3.2+). Cross-emits cleanly from any host
 # since glslang doesn't need a vendor toolchain. Runtime loader picks

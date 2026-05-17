@@ -1,8 +1,9 @@
 name: windows-shaders
 
 # Manual trigger. Downloads prebuilt shaderc.exe from bkaradzic/bgfx.cmake's
-# Windows nightly, compiles the .sc files for DX11 (s_5_0) and DX9 (s_3_0),
-# uploads both backends as separate artifacts.
+# Windows nightly, compiles the .sc files to DXBC for the D3D11 renderer,
+# uploads Data/shaders/dx11/*.bin as an artifact. D3D9 isn't a target -
+# bgfx upstream dropped the backend in v1.118.
 on:
   workflow_dispatch
 
@@ -11,7 +12,7 @@ permissions:
 
 jobs:
   compile-windows-shaders:
-    name: Compile Windows shaders (dx11 + dx9)
+    name: Compile DX11 shaders
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -49,42 +50,9 @@ jobs:
               if ($LASTEXITCODE -ne 0) { exit 1 }
           }
 
-      - name: Compile DX9 shaders (s_3_0)
-        # Continues on error: shaders that use SM4+ features (integer
-        # bitwise ops in the FF packed-normal unpack, CRT phosphor mask)
-        # will fail. The ones that do compile still upload as an artifact
-        # so we can see how much of the dashboard works under D3D9.
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $shaderc = "$pwd\bgfx-prebuilt\bgfx.cmake\bin\shaderc.exe"
-          $inc     = "$pwd\bgfx-prebuilt\bgfx.cmake\include\bgfx"
-          $srcDir  = "$pwd\theseus\desktop\shaders"
-          $outDir  = "$pwd\Data\shaders\dx9"
-          New-Item -ItemType Directory -Force $outDir | Out-Null
-          Get-ChildItem "$srcDir\vs_*.sc" | ForEach-Object {
-              $name = $_.BaseName
-              Write-Host "shaderc [dx9] $name"
-              & $shaderc -f $_.FullName -o "$outDir\$name.bin" `
-                  --type v --platform windows --profile s_3_0 -i $inc
-          }
-          Get-ChildItem "$srcDir\fs_*.sc" | ForEach-Object {
-              $name = $_.BaseName
-              Write-Host "shaderc [dx9] $name"
-              & $shaderc -f $_.FullName -o "$outDir\$name.bin" `
-                  --type f --platform windows --profile s_3_0 -i $inc
-          }
-
       - name: Upload DX11 shader bins
         uses: actions/upload-artifact@v4
         with:
           name: bgfx-dx11-shaders
           path: Data/shaders/dx11/
           if-no-files-found: error
-
-      - name: Upload DX9 shader bins
-        uses: actions/upload-artifact@v4
-        with:
-          name: bgfx-dx9-shaders
-          path: Data/shaders/dx9/
-          if-no-files-found: warn
