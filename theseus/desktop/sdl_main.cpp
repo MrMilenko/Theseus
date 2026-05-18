@@ -9,6 +9,8 @@
 #include "shape_render.h"
 #include "asset_loader.h"
 #include "audio_sdl.h"
+#include "joystick.h"
+#include "milkdrop_window.h"
 #include "xiso.h"
 #include "hdd_browser.h"
 #include "title_maker.h"
@@ -1916,6 +1918,25 @@ int main(int argc, char* argv[]) {
             fpsCapPrev = SDL_GetPerformanceCounter();
         }
 
+        // X+Y combo (keyboard or controller) toggles the MilkDrop window.
+        // Original Xbox music visualizer used the same combo to fullscreen
+        // the orb viz; we repurpose it to spawn / dismiss the libprojectM
+        // overlay window.
+        {
+            const Uint8* keys = SDL_GetKeyboardState(NULL);
+            bool kbXY = keys[SDL_SCANCODE_X] && keys[SDL_SCANCODE_Y];
+            bool padXY = false;
+            if (CJoystick::c_controller) {
+                padXY = SDL_GameControllerGetButton(CJoystick::c_controller, SDL_CONTROLLER_BUTTON_X)
+                     && SDL_GameControllerGetButton(CJoystick::c_controller, SDL_CONTROLLER_BUTTON_Y);
+            }
+            static bool s_prevXY = false;
+            bool xy = kbXY || padXY;
+            if (xy && !s_prevXY) MilkdropWindow_Toggle();
+            s_prevXY = xy;
+        }
+        MilkdropWindow_Tick();
+
         // Swap
         Uint64 tSwap0 = SDL_GetPerformanceCounter();
 #ifndef THESEUS_USE_BGFX
@@ -2044,6 +2065,7 @@ int main(int argc, char* argv[]) {
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 
+    MilkdropWindow_Shutdown();
     CleanupApp();
 #ifndef THESEUS_USE_BGFX
     SDL_GL_DeleteContext(g_pGLContext);

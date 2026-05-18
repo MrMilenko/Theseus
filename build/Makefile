@@ -513,6 +513,14 @@ MSYS2 `pacman -S mingw-w64-x86_64-mpv`)
 `brew install curl`; Debian/Ubuntu `sudo apt install libcurl4-openssl-dev`; \
 MSYS2 `pacman -S mingw-w64-x86_64-curl`)
   endif
+  # libprojectM is optional; without it the milkdrop window compiles to stubs.
+  ifeq ($(shell pkg-config --exists libprojectM 2>/dev/null && echo yes),yes)
+    PROJECTM_CFLAGS  := $(shell pkg-config --cflags libprojectM) -DTHESEUS_HAS_MILKDROP=1
+    PROJECTM_LDFLAGS := $(shell pkg-config --libs libprojectM)
+  else
+    PROJECTM_CFLAGS  :=
+    PROJECTM_LDFLAGS :=
+  endif
 endif
 CDAUDIO_CFLAGS  := $(MPV_CFLAGS)
 CDAUDIO_LDFLAGS :=
@@ -556,9 +564,10 @@ DESKTOP_CFLAGS = \
 	$(MPV_CFLAGS) \
 	$(CDAUDIO_DEFINES) \
 	$(CDAUDIO_CFLAGS) \
-	$(CURL_CFLAGS)
+	$(CURL_CFLAGS) \
+	$(PROJECTM_CFLAGS)
 
-DESKTOP_LDFLAGS = $(SDL2_LDFLAGS) $(DESKTOP_PLATFORM_LDFLAGS) $(MPV_LDFLAGS) $(CDAUDIO_LDFLAGS) $(CURL_LDFLAGS) -lm
+DESKTOP_LDFLAGS = $(SDL2_LDFLAGS) $(DESKTOP_PLATFORM_LDFLAGS) $(MPV_LDFLAGS) $(CDAUDIO_LDFLAGS) $(CURL_LDFLAGS) $(PROJECTM_LDFLAGS) -lm
 
 # Toggle: build the desktop with AddressSanitizer to catch UB / UAF
 # at runtime. Use: `make desktop ASAN=1`.
@@ -686,6 +695,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/media_player.cpp \
 	$(THESEUS_SRC)/desktop/boot_anim.cpp \
 	$(THESEUS_SRC)/desktop/media_ui.cpp \
+	$(THESEUS_SRC)/desktop/milkdrop_window.cpp \
 	$(THESEUS_SRC)/desktop/tmdb.cpp \
 	$(THESEUS_SRC)/desktop/http_util.cpp \
 	$(THESEUS_SRC)/desktop/xiso.cpp

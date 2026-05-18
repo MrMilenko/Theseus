@@ -601,12 +601,13 @@ static void VizSetPixel2(CSurfx* pSurfx, int x, int y, BYTE color)
 
 void CAudioVisualizer::RenderDynamicTexture(CSurfx* pSurfx)
 {
-	// On desktop, check if source audio clip is playing
-	CAudioClip* pAudioClip = (CAudioClip*)m_source;
-	if (pAudioClip == NULL || pAudioClip->GetNodeClass() != NODE_CLASS(CAudioClip) || pAudioClip->m_transportMode != TRANSPORT_PLAY)
-		return;
-
-	// Desktop: pull PCM from the Mix_SetPostMix ring buffer
+	// Desktop music playback goes through Mix_PlayMusic (CMP3Pump /
+	// CMusicCollection), not the CAudioClip API the Xbox path uses, so the
+	// scene's m_source CAudioClip never enters TRANSPORT_PLAY. The
+	// Mix_SetPostMix ring captures every mixed channel anyway; just pull
+	// from it whenever the visualizer ticks. Silence reads as zeros and
+	// draws a flat scope, which is the right behaviour when nothing is
+	// playing.
 	DashAudio_GetPCMSamples(m_pcmLeft, m_pcmRight, 256);
 
 	int nSamples = 256;
