@@ -385,6 +385,8 @@ char g_moviesRoot[512] = "";
 char g_tvRoot[512]     = "";
 char g_tmdbKey[128]    = "";  // TMDB v3 API key, optional
 char g_romsDir[512]    = "";  // Default ROMs/ISOs root, expanded as $ROMS_DIR in launch templates
+char g_plexToken[256]   = "";  // PIN-flow token
+char g_plexClientId[64] = "";  // UUID, stable per install
 int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
 bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
 bool g_bShowBootAnimation   = true;   // play xbox_boot.mp4 once at startup before the dashboard
@@ -466,6 +468,14 @@ void LoadDesktopSettings() {
             strncpy(g_tvRoot, line + 7, sizeof(g_tvRoot) - 1);
         else if (strncmp(line, "TMDBKey=", 8) == 0)
             strncpy(g_tmdbKey, line + 8, sizeof(g_tmdbKey) - 1);
+        else if (strncmp(line, "PlexToken=", 10) == 0) {
+            strncpy(g_plexToken, line + 10, sizeof(g_plexToken) - 1);
+            g_plexToken[sizeof(g_plexToken) - 1] = 0;
+        }
+        else if (strncmp(line, "PlexClientId=", 13) == 0) {
+            strncpy(g_plexClientId, line + 13, sizeof(g_plexClientId) - 1);
+            g_plexClientId[sizeof(g_plexClientId) - 1] = 0;
+        }
         else if (strncmp(line, "RomsDir=", 8) == 0)
             strncpy(g_romsDir, line + 8, sizeof(g_romsDir) - 1);
         else if (strncmp(line, "MSAA=", 5) == 0) {
@@ -580,6 +590,8 @@ void SaveDesktopSettings() {
     fprintf(fp, "TvRoot=%s\n", g_tvRoot);
     fprintf(fp, "TMDBKey=%s\n", g_tmdbKey);
     fprintf(fp, "RomsDir=%s\n", g_romsDir);
+    fprintf(fp, "PlexToken=%s\n",    g_plexToken);
+    fprintf(fp, "PlexClientId=%s\n", g_plexClientId);
     // Legacy Q:\System\config.ini sections (aliased to this file by xboxfs.h).
     fprintf(fp, "\n[Progressive]\n");
     fprintf(fp, "Use 720p=%s\n",        g_use720p);
@@ -1098,6 +1110,8 @@ int main(int argc, char* argv[]) {
     extern void Playlist_LoadAll();
     Playlist_LoadAll();
     MediaDB_LoadCache();
+    extern void Plex_StartSync();
+    Plex_StartSync();
 
     // GL build wraps an OpenGL drawable into the window. BGFX leaves it
     // plain so the backend layer (CAMetalLayer / Vulkan) can attach.

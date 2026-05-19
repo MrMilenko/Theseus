@@ -648,6 +648,32 @@ function GoToMedia()
 
 ////////////////////////////////////////////////////////////////////////////
 
+DEF thePlexInline Inline
+{
+	visible false
+	url "Plex.xap"
+
+	function onLoad()
+	{
+		thePlexInline.children[0].thePlexMenu.GoTo();
+	}
+}
+
+function GoToPlex()
+{
+	// Hide theMediaInline so its scene graph doesn't z-fight thePlexMenu.
+	theMediaInline.visible = false;
+	if (thePlexInline.visible)
+		thePlexInline.children[0].thePlexMenu.GoTo();
+	else
+	{
+		BlockMemoryUnitInsert();
+		thePlexInline.visible = true;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
 DEF theMemoryInline Inline
 {
 	visible false

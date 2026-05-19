@@ -10,6 +10,7 @@
 #include "hdd_browser.h"
 #include "audio_sdl.h"
 #include "imgui.h"
+#include "plex_client.h"
 
 extern bool g_bWireframe;
 
@@ -535,6 +536,85 @@ void RenderSettingsWindow() {
 
             if (ImGui::Button("Save Library Paths"))
                 SaveDesktopSettings();
+
+            ImGui::EndTabItem();
+        }
+
+        // ---- Plex ----
+        // PIN-flow sign in. Plex_StartPinAuth() spawns a worker that POSTs
+        // to plex.tv/api/v2/pins, then polls until the user enters the
+        // code at plex.tv/link. On success the token lands in
+        // g_plexToken via SaveDesktopSettings(); we just have to show
+        // the user the code while we wait.
+        if (ImGui::BeginTabItem("Plex")) {
+            ImGui::Spacing();
+            ImGui::TextWrapped(
+                "Sign in to your Plex account to browse your libraries from the "
+                "Movies/TV scene. Tonight: auth + browse only. Playback coming "
+                "next.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if (Plex_HasToken()) {
+                Plex_StartSync();
+
+                ImGui::TextColored(ImVec4(0.55f, 1.0f, 0.55f, 1.0f),
+                    "Signed in.");
+                ImGui::Spacing();
+
+                if (!Plex_SyncReady()) {
+                    ImGui::Text("%s", Plex_SyncPhase().c_str());
+                    float frac = Plex_SyncProgress() / 1000.0f;
+                    ImGui::ProgressBar(frac, ImVec2(-1, 6.0f), "");
+                    ImGui::Spacing();
+                } else {
+                    ImGui::TextDisabled("Library ready (%d libraries).",
+                        (int)Plex_Cache_GetLibraries().size());
+                    ImGui::Spacing();
+                }
+
+                if (ImGui::Button("Sign out")) {
+                    Plex_SignOut();
+                    SaveDesktopSettings();
+                }
+            } else if (Plex_PinAuthInFlight()) {
+                std::string code = Plex_GetPinCode();
+                if (code.empty()) {
+                    ImGui::Text("Requesting code...");
+                } else {
+                    ImGui::Text("1. Open");
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f),
+                        "plex.tv/link");
+                    ImGui::SameLine();
+                    ImGui::Text("on any device.");
+                    ImGui::Text("2. Enter this code:");
+                    ImGui::Spacing();
+
+                    // Big, centered code display.
+                    ImFont* font = ImGui::GetFont();
+                    float old = font->Scale;
+                    font->Scale = 3.0f;
+                    ImGui::PushFont(font);
+                    ImVec2 sz = ImGui::CalcTextSize(code.c_str());
+                    float avail = ImGui::GetContentRegionAvail().x;
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                        (avail - sz.x) * 0.5f);
+                    ImGui::TextColored(ImVec4(0.85f, 1.0f, 0.85f, 1.0f),
+                        "%s", code.c_str());
+                    ImGui::PopFont();
+                    font->Scale = old;
+                }
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                if (ImGui::Button("Cancel")) Plex_CancelPinAuth();
+            } else {
+                ImGui::TextDisabled("Not signed in.");
+                ImGui::Spacing();
+                if (ImGui::Button("Sign in to Plex")) Plex_StartPinAuth();
+            }
 
             ImGui::EndTabItem();
         }
