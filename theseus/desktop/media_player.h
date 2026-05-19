@@ -102,3 +102,7 @@ int         MediaPlayer_GetAudioFormat();    // 0=AC3, 1=MPEG1, 2=MPEG2, 3=PCM/S
 const char* MediaPlayer_GetAudioLanguage();  // current audio track language
 const char* MediaPlayer_GetSubtitleLanguage(); // current subtitle track language
 int         MediaPlayer_GetSubtitleTrack();  // 0 = off, >0 = track index
+
+// Master volume (0.0 - 1.0). Applies immediately if a session is live and
+// is re-applied on every Open so subsequent playbacks inherit the value.
+void MediaPlayer_SetMasterVolume(float vol);

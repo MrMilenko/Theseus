@@ -72,6 +72,9 @@ const char* DashMusic_FormatTime(int totalSeconds);
 void DashAudio_MuteAll(void);
 void DashAudio_UnmuteAll(void);
 
+// Master volume (0.0 - 1.0). Composes on top of per-channel and music volumes.
+void DashAudio_SetMasterVolume(float vol);
+
 // PCM capture for audio visualizer
 // Fills outLeft/outRight with the most recent 'count' stereo samples (int16)
 void DashAudio_GetPCMSamples(int16_t* outLeft, int16_t* outRight, int count);

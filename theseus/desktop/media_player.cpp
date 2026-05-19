@@ -256,6 +256,12 @@ bool MediaPlayer_Open(const char* path) {
     const char* cmd[] = { "loadfile", path, NULL };
     mpv_command(s_mpv, cmd);
 
+    // Apply master volume to the new playback session. mpv's volume property
+    // takes 0-100, our slider is 0.0-1.0.
+    extern float g_masterVolume;
+    double mpvVol = (double)(g_masterVolume * 100.0f);
+    mpv_set_property(s_mpv, "volume", MPV_FORMAT_DOUBLE, &mpvVol);
+
     s_state = MP_PLAYING;
     s_position = 0.0;
     s_duration = 0.0;
@@ -264,6 +270,14 @@ bool MediaPlayer_Open(const char* path) {
     s_videoHeight = 0;
     fprintf(stderr, "[MediaPlayer] Opening: %s\n", path);
     return true;
+}
+
+void MediaPlayer_SetMasterVolume(float vol) {
+    if (vol < 0.0f) vol = 0.0f;
+    if (vol > 1.0f) vol = 1.0f;
+    if (!s_mpv) return;
+    double mpvVol = (double)(vol * 100.0f);
+    mpv_set_property(s_mpv, "volume", MPV_FORMAT_DOUBLE, &mpvVol);
 }
 
 void MediaPlayer_Play() {
