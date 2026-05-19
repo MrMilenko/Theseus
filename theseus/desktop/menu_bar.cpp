@@ -11,6 +11,7 @@
 #include "audio_sdl.h"
 #include "imgui.h"
 #include "plex_client.h"
+#include "jellyfin_client.h"
 
 extern bool g_bWireframe;
 
@@ -614,6 +615,94 @@ void RenderSettingsWindow() {
                 ImGui::TextDisabled("Not signed in.");
                 ImGui::Spacing();
                 if (ImGui::Button("Sign in to Plex")) Plex_StartPinAuth();
+            }
+
+            ImGui::EndTabItem();
+        }
+
+        // ---- Jellyfin ----
+        if (ImGui::BeginTabItem("Jellyfin")) {
+            ImGui::Spacing();
+            ImGui::TextWrapped(
+                "Sign in to your Jellyfin server. Enter the server URL, then "
+                "use Quick Connect to approve the 6-letter code on the server's "
+                "web UI.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            static char s_urlBuf[512];
+            static bool s_urlInit = false;
+            if (!s_urlInit) {
+                std::string cur = Jellyfin_GetServerUrl();
+                strncpy(s_urlBuf, cur.c_str(), sizeof(s_urlBuf) - 1);
+                s_urlBuf[sizeof(s_urlBuf) - 1] = 0;
+                s_urlInit = true;
+            }
+            ImGui::Text("Server URL");
+            ImGui::PushItemWidth(-1);
+            if (ImGui::InputText("##jellyurl", s_urlBuf, sizeof(s_urlBuf))) {
+                Jellyfin_SetServerUrl(s_urlBuf);
+            }
+            ImGui::PopItemWidth();
+            ImGui::Spacing();
+
+            if (Jellyfin_HasToken()) {
+                Jellyfin_StartSync();
+                ImGui::TextColored(ImVec4(0.55f, 1.0f, 0.55f, 1.0f),
+                    "Signed in as %s.", Jellyfin_GetUserName().c_str());
+                ImGui::Spacing();
+
+                if (!Jellyfin_SyncReady()) {
+                    ImGui::Text("%s", Jellyfin_SyncPhase().c_str());
+                    float frac = Jellyfin_SyncProgress() / 1000.0f;
+                    ImGui::ProgressBar(frac, ImVec2(-1, 6.0f), "");
+                    ImGui::Spacing();
+                } else {
+                    ImGui::TextDisabled("Library ready (%d libraries).",
+                        (int)Jellyfin_Cache_GetLibraries().size());
+                    ImGui::Spacing();
+                }
+
+                if (ImGui::Button("Sign out")) {
+                    Jellyfin_SignOut();
+                    SaveDesktopSettings();
+                }
+            } else if (Jellyfin_QuickConnectInFlight()) {
+                std::string code = Jellyfin_GetQuickConnectCode();
+                if (code.empty()) {
+                    ImGui::Text("Requesting code...");
+                } else {
+                    ImGui::Text("1. Open the Jellyfin web UI on any device.");
+                    ImGui::Text("2. Go to your account -> Quick Connect.");
+                    ImGui::Text("3. Enter this code:");
+                    ImGui::Spacing();
+
+                    ImFont* font = ImGui::GetFont();
+                    float old = font->Scale;
+                    font->Scale = 3.0f;
+                    ImGui::PushFont(font);
+                    ImVec2 sz = ImGui::CalcTextSize(code.c_str());
+                    float avail = ImGui::GetContentRegionAvail().x;
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                        (avail - sz.x) * 0.5f);
+                    ImGui::TextColored(ImVec4(0.85f, 1.0f, 0.85f, 1.0f),
+                        "%s", code.c_str());
+                    ImGui::PopFont();
+                    font->Scale = old;
+                }
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                if (ImGui::Button("Cancel")) Jellyfin_CancelQuickConnect();
+            } else {
+                ImGui::TextDisabled("Not signed in.");
+                ImGui::Spacing();
+                if (s_urlBuf[0] == 0) {
+                    ImGui::TextDisabled("Set a server URL first.");
+                } else if (ImGui::Button("Sign in with Quick Connect")) {
+                    Jellyfin_StartQuickConnect();
+                }
             }
 
             ImGui::EndTabItem();

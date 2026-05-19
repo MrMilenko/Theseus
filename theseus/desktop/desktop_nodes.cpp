@@ -5059,6 +5059,454 @@ END_NODE_FUN()
 
 
 // ============================================================================
+// CJellyfinLibrary -- mirror of CPlexLibrary over Jellyfin's API surface.
+// ============================================================================
+
+#include "jellyfin_client.h"
+
+class CJellyfinLibrary : public CNode
+{
+public:
+	CJellyfinLibrary()
+		: m_currentLib(-1), m_currentShow(-1), m_currentSeason(-1) {}
+
+	DECLARE_NODE(CJellyfinLibrary, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
+
+	int  m_currentLib;
+	int  m_currentShow;
+	int  m_currentSeason;
+
+	void EnsureLibrariesPending()
+	{
+		if (!Jellyfin_HasToken()) return;
+		Jellyfin_StartSync();
+	}
+
+	int GetCount()
+	{
+		EnsureLibrariesPending();
+		return (int)Jellyfin_Cache_GetLibraries().size();
+	}
+
+	CStrObject* GetName(int i)
+	{
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		return new CStrObject(_T(libs[i].name.c_str()));
+	}
+
+	CStrObject* GetMeta(int i)
+	{
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		return new CStrObject(_T(libs[i].type.c_str()));
+	}
+
+	void SetCurrent(int i)
+	{
+		if (i == m_currentLib) return;
+		m_currentLib    = i;
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+	}
+
+	CStrObject* GetServerName()
+	{
+		EnsureLibrariesPending();
+		// Jellyfin doesn't surface a friendly name in /Views; use the
+		// signed-in user's name as the breadcrumb anchor.
+		return new CStrObject(_T(Jellyfin_GetUserName().c_str()));
+	}
+
+	int         IsSyncReady()    { EnsureLibrariesPending(); return Jellyfin_SyncReady() ? 1 : 0; }
+	CStrObject* GetSyncPhase()   { return new CStrObject(_T(Jellyfin_SyncPhase().c_str())); }
+	int         GetSyncProgress(){ return Jellyfin_SyncProgress(); }
+
+	std::vector<JellyfinItem> CurrentItems()
+	{
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		return Jellyfin_Cache_GetItems(libs[m_currentLib].id);
+	}
+
+	int GetItemCount() { return (int)CurrentItems().size(); }
+
+	CStrObject* GetItemTitle(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		const JellyfinItem& it = items[i];
+		std::string s = it.name;
+		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	CStrObject* GetItemType(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		// Map Jellyfin type to the lowercase "show" the wrapper checks for.
+		std::string t = items[i].type;
+		if (t == "Series") return new CStrObject(_T("show"));
+		if (t == "Movie")  return new CStrObject(_T("movie"));
+		std::string lc = t;
+		for (auto& c : lc) c = (char)tolower((unsigned char)c);
+		return new CStrObject(_T(lc.c_str()));
+	}
+
+	void QueueItemArt(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		Jellyfin_QueueArtDownload(items[i].id, items[i].primaryTag);
+	}
+
+	CStrObject* GetItemArtPath(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		return new CStrObject(_T(Jellyfin_ArtCachePath(items[i].id).c_str()));
+	}
+
+	std::string CurrentShowId()
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return "";
+		return items[m_currentShow].id;
+	}
+
+	std::string CurrentSeasonId()
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return "";
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (m_currentSeason < 0 || m_currentSeason >= (int)seasons.size()) return "";
+		return seasons[m_currentSeason].id;
+	}
+
+	void PlayRatingKey(const std::string& itemId,
+	                   const std::string& title,
+	                   const std::string& subtitle)
+	{
+		std::string url = Jellyfin_StreamUrl(itemId);
+		if (url.empty()) {
+			fprintf(stderr, "[Jellyfin] stream URL build failed for %s\n", itemId.c_str());
+			return;
+		}
+		if (!MediaPlayer_Open(url.c_str())) {
+			fprintf(stderr, "[Jellyfin] MediaPlayer_Open failed\n");
+			return;
+		}
+		extern bool g_mediaFullscreen;
+		extern char g_mediaFullscreenTitle[256];
+		extern char g_mediaFullscreenSubtitle[256];
+		extern void ApplyEffectiveMute_Public();
+		g_mediaFullscreen = true;
+		ApplyEffectiveMute_Public();
+		strncpy(g_mediaFullscreenTitle, title.c_str(),
+			sizeof(g_mediaFullscreenTitle) - 1);
+		g_mediaFullscreenTitle[sizeof(g_mediaFullscreenTitle) - 1] = 0;
+		strncpy(g_mediaFullscreenSubtitle, subtitle.c_str(),
+			sizeof(g_mediaFullscreenSubtitle) - 1);
+		g_mediaFullscreenSubtitle[sizeof(g_mediaFullscreenSubtitle) - 1] = 0;
+	}
+
+	void PlayItem(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		const JellyfinItem& it = items[i];
+		std::string sub = "Jellyfin";
+		if (!it.year.empty()) { sub += "  \xE2\x80\xA2  "; sub += it.year; }
+		PlayRatingKey(it.id, it.name, sub);
+	}
+
+	void DrillIntoShow(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		const JellyfinItem& it = items[i];
+		if (it.type != "Series") return;
+		m_currentShow   = i;
+		m_currentSeason = -1;
+		std::vector<JellyfinSeason> dummy;
+		(void)Jellyfin_Cache_GetSeasons(it.id, dummy);
+	}
+
+	int GetSeasonCount()
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return 0;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		return (int)seasons.size();
+	}
+
+	CStrObject* GetSeasonTitle(int i)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return new CStrObject;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
+		return new CStrObject(_T(seasons[i].name.c_str()));
+	}
+
+	void DrillIntoSeason(int i)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return;
+		m_currentSeason = i;
+		std::vector<JellyfinEpisode> dummy;
+		(void)Jellyfin_Cache_GetEpisodes(seasons[i].id, dummy);
+	}
+
+	void QueueSeasonArt(int i)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return;
+		Jellyfin_QueueArtDownload(seasons[i].id, seasons[i].primaryTag);
+	}
+
+	CStrObject* GetSeasonArtPath(int i)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return new CStrObject;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
+		return new CStrObject(_T(Jellyfin_ArtCachePath(seasons[i].id).c_str()));
+	}
+
+	int GetEpisodeCount()
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return 0;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		return (int)eps.size();
+	}
+
+	CStrObject* GetEpisodeTitle(int i)
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return new CStrObject;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
+		const JellyfinEpisode& e = eps[i];
+		std::string s;
+		if (!e.index.empty()) { s += e.index; s += ". "; }
+		s += e.name;
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	void PlayEpisode(int i)
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		if (i < 0 || i >= (int)eps.size()) return;
+		const JellyfinEpisode& e = eps[i];
+		std::vector<JellyfinItem>   items = CurrentItems();
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (!showId.empty()) Jellyfin_Cache_GetSeasons(showId, seasons);
+		std::string sub;
+		if (m_currentShow >= 0 && m_currentShow < (int)items.size())
+			sub = items[m_currentShow].name;
+		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size()) {
+			sub += "  \xE2\x80\xA2  S";
+			sub += seasons[m_currentSeason].index;
+			if (!e.index.empty()) { sub += "E"; sub += e.index; }
+		}
+		PlayRatingKey(e.id, e.name, sub);
+	}
+
+	void QueueEpisodeArt(int i)
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		if (i < 0 || i >= (int)eps.size()) return;
+		Jellyfin_QueueArtDownload(eps[i].id, eps[i].primaryTag);
+	}
+
+	CStrObject* GetEpisodeArtPath(int i)
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return new CStrObject;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
+		return new CStrObject(_T(Jellyfin_ArtCachePath(eps[i].id).c_str()));
+	}
+
+	CStrObject* GetSubtitle(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string s;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			const JellyfinItem& it = items[i];
+			std::string t = it.type;
+			for (auto& c : t) c = (char)toupper((unsigned char)c);
+			s = t;
+			if (!it.year.empty()) { s += "  \xE2\x80\xA2  "; s += it.year; }
+			return new CStrObject(_T(s.c_str()));
+		}
+		if (view == 2) {
+			std::vector<JellyfinSeason> seasons;
+			std::string showId = CurrentShowId();
+			if (showId.empty()) return new CStrObject;
+			Jellyfin_Cache_GetSeasons(showId, seasons);
+			if (i >= (int)seasons.size()) return new CStrObject;
+			s = "SEASON ";
+			s += seasons[i].index;
+			return new CStrObject(_T(s.c_str()));
+		}
+		if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return new CStrObject;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			s = "S";
+			std::vector<JellyfinSeason> seasons;
+			std::string showId = CurrentShowId();
+			if (!showId.empty()) Jellyfin_Cache_GetSeasons(showId, seasons);
+			if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size())
+				s += seasons[m_currentSeason].index;
+			if (!eps[i].index.empty()) { s += "E"; s += eps[i].index; }
+			return new CStrObject(_T(s.c_str()));
+		}
+		return new CStrObject;
+	}
+
+	CStrObject* GetSummary(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string s;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			s = items[i].overview;
+		} else if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return new CStrObject;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			s = eps[i].overview;
+		} else {
+			return new CStrObject;
+		}
+		const size_t kMax = 140;
+		if (s.size() > kMax) {
+			s.resize(kMax - 1);
+			s += "\xE2\x80\xA6";
+		}
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	CStrObject* GetInfoText(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string body;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			const JellyfinItem& it = items[i];
+			body = it.name;
+			if (!it.year.empty()) { body += "  ("; body += it.year; body += ")"; }
+			if (!it.overview.empty()) { body += "\n\n"; body += it.overview; }
+		}
+		else if (view == 2) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return new CStrObject;
+			const JellyfinItem& sh = items[m_currentShow];
+			std::vector<JellyfinSeason> seasons;
+			Jellyfin_Cache_GetSeasons(sh.id, seasons);
+			body = sh.name;
+			if (i < (int)seasons.size()) { body += "  -  "; body += seasons[i].name; }
+			if (!sh.overview.empty()) { body += "\n\n"; body += sh.overview; }
+		}
+		else if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return new CStrObject;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			const JellyfinEpisode& e = eps[i];
+			body = "";
+			if (!e.index.empty()) { body += e.index; body += ".  "; }
+			body += e.name;
+			if (!e.overview.empty()) { body += "\n\n"; body += e.overview; }
+		}
+		const size_t kMax = 1200;
+		if (body.size() > kMax) {
+			body.resize(kMax - 1);
+			body += "\xE2\x80\xA6";
+		}
+		return new CStrObject(_T(body.c_str()));
+	}
+
+	int IsSignedIn() { return Jellyfin_HasToken() ? 1 : 0; }
+};
+
+IMPLEMENT_NODE("JellyfinLibrary", CJellyfinLibrary, CNode)
+
+START_NODE_PROPS(CJellyfinLibrary, CNode)
+END_NODE_PROPS()
+
+#undef _FND_CLASS
+#define _FND_CLASS CJellyfinLibrary
+START_NODE_FUN(CJellyfinLibrary, CNode)
+	NODE_FUN_IV(GetCount)
+	NODE_FUN_SI(GetName)
+	NODE_FUN_SI(GetMeta)
+	NODE_FUN_VI(SetCurrent)
+	NODE_FUN_SV(GetServerName)
+	NODE_FUN_IV(IsSyncReady)
+	NODE_FUN_SV(GetSyncPhase)
+	NODE_FUN_IV(GetSyncProgress)
+	NODE_FUN_IV(GetItemCount)
+	NODE_FUN_SI(GetItemTitle)
+	NODE_FUN_SI(GetItemType)
+	NODE_FUN_VI(QueueItemArt)
+	NODE_FUN_SI(GetItemArtPath)
+	NODE_FUN_VI(PlayItem)
+	NODE_FUN_SII(GetSubtitle)
+	NODE_FUN_SII(GetSummary)
+	NODE_FUN_SII(GetInfoText)
+	NODE_FUN_VI(DrillIntoShow)
+	NODE_FUN_IV(GetSeasonCount)
+	NODE_FUN_SI(GetSeasonTitle)
+	NODE_FUN_VI(DrillIntoSeason)
+	NODE_FUN_VI(QueueSeasonArt)
+	NODE_FUN_SI(GetSeasonArtPath)
+	NODE_FUN_IV(GetEpisodeCount)
+	NODE_FUN_SI(GetEpisodeTitle)
+	NODE_FUN_VI(PlayEpisode)
+	NODE_FUN_VI(QueueEpisodeArt)
+	NODE_FUN_SI(GetEpisodeArtPath)
+	NODE_FUN_IV(IsSignedIn)
+END_NODE_FUN()
+
+
+// ============================================================================
 // CGamesCollection - XAP-callable view over the VGames database (games.ini),
 // filtered by category. Pairs with the desktop harddrive scene to replace
 // the Xbox-era cache.ini batched paging (which capped at 25 per segment and

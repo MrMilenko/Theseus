@@ -51,7 +51,8 @@ function initialize()
 	rgCategoryName[0] = "Movies";
 	rgCategoryName[1] = "TV Shows";
 	rgCategoryName[2] = "Playlists";
-	rgCategoryName[3] = "Plex";   // picking this row routes to GoToPlex()
+	rgCategoryName[3] = "Plex";
+	rgCategoryName[4] = "Jellyfin";
 
 	bInPlaylistItemView   = 0;
 	nPlaylistCursorBackup = 0;
@@ -70,7 +71,7 @@ function BindActiveList()
 {
 	if (bInCategoryView)
 	{
-		nMediaItemCount = 4;
+		nMediaItemCount = 5;
 	}
 	else if (nCurCategory == 0)
 	{
@@ -259,6 +260,11 @@ DEF theMediaMenu Level
 				if (nCurMediaItem == 3)
 				{
 					GoToPlex();
+					return;
+				}
+				if (nCurMediaItem == 4)
+				{
+					GoToJellyfin();
 					return;
 				}
 
