@@ -402,7 +402,7 @@ void MediaUI_RenderOSD()
     // Top gradient, Xbox green tint, fades to transparent.
     {
         const float h = 96.0f;
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
         ImU32 top    = RGBA(0.02f, 0.10f, 0.04f, 0.85f * alpha);
         ImU32 bottom = RGBA(0.02f, 0.10f, 0.04f, 0.00f);
         dl->AddRectFilledMultiColor(
@@ -428,7 +428,7 @@ void MediaUI_RenderOSD()
     // Bottom gradient, fades up from black; transport sits on it.
     {
         const float h = 110.0f;
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
         ImU32 top    = RGBA(0.02f, 0.10f, 0.04f, 0.00f);
         ImU32 bottom = RGBA(0.02f, 0.10f, 0.04f, 0.85f * alpha);
         float y0 = (float)wh - h;

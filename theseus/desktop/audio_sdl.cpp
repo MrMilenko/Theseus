@@ -351,6 +351,17 @@ static std::string StripExtension(const char* name)
 // ---------------------------------------------------------------------------
 // Init / Shutdown
 // ---------------------------------------------------------------------------
+static bool s_muted = false;
+extern float g_masterVolume;
+
+static int MasterScaled(int v)
+{
+    int s = (int)(v * g_masterVolume);
+    if (s < 0) s = 0;
+    if (s > MIX_MAX_VOLUME) s = MIX_MAX_VOLUME;
+    return s;
+}
+
 int DashAudio_Init(void)
 {
     if (s_initialized) return 0;
@@ -385,6 +396,10 @@ int DashAudio_Init(void)
     // Honor --muted before XAP initialize() fires Audio nodes during InitApp.
     extern bool g_audioMuted;
     if (g_audioMuted) DashAudio_MuteAll();
+    else {
+        Mix_Volume(-1, MasterScaled(MIX_MAX_VOLUME));
+        Mix_VolumeMusic(MasterScaled(MIX_MAX_VOLUME));
+    }
 
 
     // Auto-scan music collection. Root is configurable via desktop.ini
@@ -406,8 +421,6 @@ const char* DashMusic_GetConfiguredRoot(void)
     return "Data/Music";
 }
 
-static bool s_muted = false;
-
 void DashAudio_MuteAll(void)
 {
     if (!s_initialized) return;
@@ -420,8 +433,18 @@ void DashAudio_UnmuteAll(void)
 {
     if (!s_initialized) return;
     s_muted = false;
-    Mix_Volume(-1, MIX_MAX_VOLUME);   // Restore all channels
-    Mix_VolumeMusic(MIX_MAX_VOLUME);  // Restore music
+    Mix_Volume(-1, MasterScaled(MIX_MAX_VOLUME));
+    Mix_VolumeMusic(MasterScaled(MIX_MAX_VOLUME));
+}
+
+extern "C" void DashAudio_SetMasterVolume(float vol)
+{
+    if (vol < 0.0f) vol = 0.0f;
+    if (vol > 1.0f) vol = 1.0f;
+    g_masterVolume = vol;
+    if (!s_initialized || s_muted) return;
+    Mix_Volume(-1, MasterScaled(MIX_MAX_VOLUME));
+    Mix_VolumeMusic(MasterScaled(MIX_MAX_VOLUME));
 }
 
 void DashAudio_Shutdown(void)
@@ -542,7 +565,7 @@ void DashAudio_SetChannelVolume(int channel, float vol)
     int v = (int)(vol * MIX_MAX_VOLUME);
     if (v < 0) v = 0;
     if (v > MIX_MAX_VOLUME) v = MIX_MAX_VOLUME;
-    Mix_Volume(channel, v);
+    Mix_Volume(channel, MasterScaled(v));
 }
 
 void DashAudio_SetChannelPan(int channel, float pan)
@@ -649,7 +672,7 @@ void DashAudio_SetMusicVolume(float vol)
     int v = (int)(vol * MIX_MAX_VOLUME);
     if (v < 0) v = 0;
     if (v > MIX_MAX_VOLUME) v = MIX_MAX_VOLUME;
-    Mix_VolumeMusic(v);
+    Mix_VolumeMusic(MasterScaled(v));
 }
 
 double DashAudio_GetMusicPosition(void)

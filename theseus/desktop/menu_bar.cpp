@@ -1,7 +1,5 @@
-// menu_bar.cpp: desktop top-level ImGui menu bar. Drives the
-// Settings, About, and Shortcuts windows. Features (Title Maker,
-// HDD Browser, Media) are always accessible; dev tools (Inspector,
-// XAP Editor) only appear in Development Mode. Desktop-only.
+// menu_bar.cpp: desktop top-level ImGui menu bar + Settings/About/Shortcuts
+// windows. The Development menu only renders in Development Mode.
 
 #include "std.h"
 #include "dashapp.h"
@@ -12,8 +10,10 @@
 #include "imgui.h"
 #include "plex_client.h"
 #include "jellyfin_client.h"
+#include "media_player.h"
 
-extern bool g_bWireframe;
+extern bool  g_bWireframe;
+extern float g_masterVolume;
 
 #include <cstdio>
 #include <cstring>
@@ -158,7 +158,7 @@ void RenderMainMenuBar() {
         ImGui::EndMenu();
     }
 
-    // ---- Tools (features always visible, dev tools gated) ----
+    // ---- Tools (shipping tools only; dev tools live under Development) ----
     if (ImGui::BeginMenu("Tools")) {
         if (ImGui::MenuItem("Title Maker", "F3", g_titleMakerOpen)) {
             g_titleMakerOpen = !g_titleMakerOpen;
@@ -170,11 +170,60 @@ void RenderMainMenuBar() {
         if (ImGui::MenuItem("Playlist Maker", "F6", g_playlistMakerOpen)) {
             g_playlistMakerOpen = !g_playlistMakerOpen;
         }
+        ImGui::EndMenu();
+    }
 
-        // Dev tools only in Development Mode
-        if (g_startupMode == 2 || g_extractedMode) {
-            ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 0.7f), "Development");
+    // ---- View (display only) ----
+    if (ImGui::BeginMenu("View")) {
+        if (ImGui::MenuItem("CRT Effect", NULL, g_crt.enabled)) {
+            g_crt.enabled = !g_crt.enabled;
+            SaveDesktopSettings();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Wireframe", NULL, g_bWireframe)) {
+            g_bWireframe = !g_bWireframe;
+        }
+        if (ImGui::BeginMenu("MSAA")) {
+            for (int i = 0; i < s_msaaCount; i++) {
+                if (ImGui::MenuItem(s_msaaLabels[i], NULL, g_msaaSamples == s_msaaValues[i])) {
+                    g_msaaSamples = s_msaaValues[i];
+                    g_msaaChangeRequested = true;
+                }
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenu();
+    }
+
+    // ---- Audio ----
+    if (ImGui::BeginMenu("Audio")) {
+        if (ImGui::MenuItem("Mute", "Ctrl+M", g_audioMuted)) {
+            g_audioMuted = !g_audioMuted;
+            if (g_audioMuted) DashAudio_MuteAll();
+            else DashAudio_UnmuteAll();
+            g_muteOverlayTimer = 2.0f;
+        }
+        ImGui::Separator();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Volume");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(180.0f);
+        float volPct = g_masterVolume * 100.0f;
+        if (ImGui::SliderFloat("##mastervol", &volPct, 0.0f, 100.0f, "%.0f%%",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+            float v = volPct / 100.0f;
+            DashAudio_SetMasterVolume(v);
+            MediaPlayer_SetMasterVolume(v);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            SaveDesktopSettings();
+        }
+        ImGui::EndMenu();
+    }
+
+    // ---- Development (dev-mode only) ----
+    if (g_startupMode == 2 || g_extractedMode) {
+        if (ImGui::BeginMenu("Development")) {
             if (ImGui::MenuItem("Inspector", "F1", g_debugMode)) {
                 g_debugMode = !g_debugMode;
                 g_inspectorOpen = g_debugMode;
@@ -199,37 +248,8 @@ void RenderMainMenuBar() {
                 else
                     DestroyXapEditorWindow();
             }
-        }
-        ImGui::EndMenu();
-    }
-
-    // ---- View ----
-    if (ImGui::BeginMenu("View")) {
-        if (ImGui::MenuItem("CRT Effect", NULL, g_crt.enabled)) {
-            g_crt.enabled = !g_crt.enabled;
-            SaveDesktopSettings();
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Mute Audio", "Ctrl+M", g_audioMuted)) {
-            g_audioMuted = !g_audioMuted;
-            if (g_audioMuted) DashAudio_MuteAll();
-            else DashAudio_UnmuteAll();
-            g_muteOverlayTimer = 2.0f;
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Wireframe", NULL, g_bWireframe)) {
-            g_bWireframe = !g_bWireframe;
-        }
-        if (ImGui::BeginMenu("MSAA")) {
-            for (int i = 0; i < s_msaaCount; i++) {
-                if (ImGui::MenuItem(s_msaaLabels[i], NULL, g_msaaSamples == s_msaaValues[i])) {
-                    g_msaaSamples = s_msaaValues[i];
-                    g_msaaChangeRequested = true;
-                }
-            }
             ImGui::EndMenu();
         }
-        ImGui::EndMenu();
     }
 
     // ---- Help ----
@@ -438,8 +458,47 @@ void RenderSettingsWindow() {
             ImGui::EndTabItem();
         }
 
+        // ---- Audio ----
+        if (ImGui::BeginTabItem("Audio")) {
+            ImGui::Spacing();
+
+            if (ImGui::Checkbox("Mute", &g_audioMuted)) {
+                if (g_audioMuted) DashAudio_MuteAll();
+                else DashAudio_UnmuteAll();
+                g_muteOverlayTimer = 2.0f;
+                SaveDesktopSettings();
+            }
+
+            ImGui::Spacing();
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Master Volume");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(220.0f);
+            float volPct = g_masterVolume * 100.0f;
+            if (ImGui::SliderFloat("##settingsmastervol", &volPct,
+                                   0.0f, 100.0f, "%.0f%%",
+                                   ImGuiSliderFlags_AlwaysClamp)) {
+                float v = volPct / 100.0f;
+                DashAudio_SetMasterVolume(v);
+                MediaPlayer_SetMasterVolume(v);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Scales dashboard sounds, music, and media\n"
+                                  "playback. Mute overrides this until cleared.");
+            }
+
+            ImGui::EndTabItem();
+        }
+
         // ---- Media Library ----
-        if (ImGui::BeginTabItem("Media Library")) {
+        if (ImGui::BeginTabItem("Media")) {
+            ImGui::Spacing();
+
+            if (ImGui::CollapsingHeader("Local Library", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Spacing();
             ImGui::TextWrapped("Configure where the dashboard scans for media. Empty values fall back to the bundled defaults shown in placeholder text.");
             ImGui::Spacing();
@@ -537,22 +596,13 @@ void RenderSettingsWindow() {
 
             if (ImGui::Button("Save Library Paths"))
                 SaveDesktopSettings();
+            } // Local Library header
 
-            ImGui::EndTabItem();
-        }
-
-        // ---- Plex ----
-        // PIN-flow sign in. Plex_StartPinAuth() spawns a worker that POSTs
-        // to plex.tv/api/v2/pins, then polls until the user enters the
-        // code at plex.tv/link. On success the token lands in
-        // g_plexToken via SaveDesktopSettings(); we just have to show
-        // the user the code while we wait.
-        if (ImGui::BeginTabItem("Plex")) {
+            if (ImGui::CollapsingHeader("Plex")) {
             ImGui::Spacing();
             ImGui::TextWrapped(
                 "Sign in to your Plex account to browse your libraries from the "
-                "Movies/TV scene. Tonight: auth + browse only. Playback coming "
-                "next.");
+                "Media -> Plex scene.");
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
@@ -616,12 +666,9 @@ void RenderSettingsWindow() {
                 ImGui::Spacing();
                 if (ImGui::Button("Sign in to Plex")) Plex_StartPinAuth();
             }
+            } // Plex header
 
-            ImGui::EndTabItem();
-        }
-
-        // ---- Jellyfin ----
-        if (ImGui::BeginTabItem("Jellyfin")) {
+            if (ImGui::CollapsingHeader("Jellyfin")) {
             ImGui::Spacing();
             ImGui::TextWrapped(
                 "Sign in to your Jellyfin server. Enter the server URL, then "
@@ -704,6 +751,7 @@ void RenderSettingsWindow() {
                     Jellyfin_StartQuickConnect();
                 }
             }
+            } // Jellyfin header
 
             ImGui::EndTabItem();
         }

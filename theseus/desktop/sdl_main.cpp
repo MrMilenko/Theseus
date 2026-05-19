@@ -348,6 +348,7 @@ static bool   s_softRestartPending = false; // reinit after game exits
 
 // Audio mute state (Ctrl+M toggle, auto-muted during game launch)
 bool g_audioMuted = false;       // user choice (Ctrl+M)
+float g_masterVolume = 1.0f;     // 0.0 - 1.0, applied to mixer + libmpv
 bool g_windowFocused = true;     // SDL focus state
 // Mute ambient (SDL_mixer) when: user pressed Ctrl+M, window unfocused, or
 // media is playing. mpv runs through its own audio out, unaffected by this.
@@ -518,6 +519,11 @@ void LoadDesktopSettings() {
         }
         else if (strncmp(line, "Hwdec=", 6) == 0)
             g_hwdec = atoi(line + 6) != 0;
+        else if (strncmp(line, "MasterVolume=", 13) == 0) {
+            float v = (float)atof(line + 13);
+            if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
+            g_masterVolume = v;
+        }
         else if (strncmp(line, "Renderer=", 9) == 0) {
             const char* v = line + 9;
             // Order matters: opengles before opengl, metal before "" prefix.
@@ -588,6 +594,7 @@ void SaveDesktopSettings() {
     fprintf(fp, "Vsync=%d\n",               g_vsyncMode);
     fprintf(fp, "FpsCap=%d\n",              g_fpsCap);
     fprintf(fp, "Hwdec=%d\n",               g_hwdec ? 1 : 0);
+    fprintf(fp, "MasterVolume=%.3f\n",      g_masterVolume);
     {
         const char* rname = (g_rendererPref == 1) ? "d3d11"
                           : (g_rendererPref == 2) ? "vulkan"
