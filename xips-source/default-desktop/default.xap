@@ -674,6 +674,31 @@ function GoToPlex()
 
 ////////////////////////////////////////////////////////////////////////////
 
+DEF theJellyfinInline Inline
+{
+	visible false
+	url "Jellyfin.xap"
+
+	function onLoad()
+	{
+		theJellyfinInline.children[0].theJellyfinMenu.GoTo();
+	}
+}
+
+function GoToJellyfin()
+{
+	theMediaInline.visible = false;
+	if (theJellyfinInline.visible)
+		theJellyfinInline.children[0].theJellyfinMenu.GoTo();
+	else
+	{
+		BlockMemoryUnitInsert();
+		theJellyfinInline.visible = true;
+	}
+}
+
+////////////////////////////////////////////////////////////////////////////
+
 DEF theMemoryInline Inline
 {
 	visible false

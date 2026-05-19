@@ -387,6 +387,11 @@ char g_tmdbKey[128]    = "";  // TMDB v3 API key, optional
 char g_romsDir[512]    = "";  // Default ROMs/ISOs root, expanded as $ROMS_DIR in launch templates
 char g_plexToken[256]   = "";  // PIN-flow token
 char g_plexClientId[64] = "";  // UUID, stable per install
+char g_jellyfinUrl[512]      = "";
+char g_jellyfinToken[256]    = "";
+char g_jellyfinUserId[64]    = "";
+char g_jellyfinClientId[64]  = "";
+char g_jellyfinUserName[128] = "";
 int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
 bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
 bool g_bShowBootAnimation   = true;   // play xbox_boot.mp4 once at startup before the dashboard
@@ -475,6 +480,26 @@ void LoadDesktopSettings() {
         else if (strncmp(line, "PlexClientId=", 13) == 0) {
             strncpy(g_plexClientId, line + 13, sizeof(g_plexClientId) - 1);
             g_plexClientId[sizeof(g_plexClientId) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinUrl=", 12) == 0) {
+            strncpy(g_jellyfinUrl, line + 12, sizeof(g_jellyfinUrl) - 1);
+            g_jellyfinUrl[sizeof(g_jellyfinUrl) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinToken=", 14) == 0) {
+            strncpy(g_jellyfinToken, line + 14, sizeof(g_jellyfinToken) - 1);
+            g_jellyfinToken[sizeof(g_jellyfinToken) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinUserId=", 15) == 0) {
+            strncpy(g_jellyfinUserId, line + 15, sizeof(g_jellyfinUserId) - 1);
+            g_jellyfinUserId[sizeof(g_jellyfinUserId) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinClientId=", 17) == 0) {
+            strncpy(g_jellyfinClientId, line + 17, sizeof(g_jellyfinClientId) - 1);
+            g_jellyfinClientId[sizeof(g_jellyfinClientId) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinUserName=", 17) == 0) {
+            strncpy(g_jellyfinUserName, line + 17, sizeof(g_jellyfinUserName) - 1);
+            g_jellyfinUserName[sizeof(g_jellyfinUserName) - 1] = 0;
         }
         else if (strncmp(line, "RomsDir=", 8) == 0)
             strncpy(g_romsDir, line + 8, sizeof(g_romsDir) - 1);
@@ -592,6 +617,11 @@ void SaveDesktopSettings() {
     fprintf(fp, "RomsDir=%s\n", g_romsDir);
     fprintf(fp, "PlexToken=%s\n",    g_plexToken);
     fprintf(fp, "PlexClientId=%s\n", g_plexClientId);
+    fprintf(fp, "JellyfinUrl=%s\n",      g_jellyfinUrl);
+    fprintf(fp, "JellyfinToken=%s\n",    g_jellyfinToken);
+    fprintf(fp, "JellyfinUserId=%s\n",   g_jellyfinUserId);
+    fprintf(fp, "JellyfinClientId=%s\n", g_jellyfinClientId);
+    fprintf(fp, "JellyfinUserName=%s\n", g_jellyfinUserName);
     // Legacy Q:\System\config.ini sections (aliased to this file by xboxfs.h).
     fprintf(fp, "\n[Progressive]\n");
     fprintf(fp, "Use 720p=%s\n",        g_use720p);
@@ -1112,6 +1142,8 @@ int main(int argc, char* argv[]) {
     MediaDB_LoadCache();
     extern void Plex_StartSync();
     Plex_StartSync();
+    extern void Jellyfin_StartSync();
+    Jellyfin_StartSync();
 
     // GL build wraps an OpenGL drawable into the window. BGFX leaves it
     // plain so the backend layer (CAMetalLayer / Vulkan) can attach.

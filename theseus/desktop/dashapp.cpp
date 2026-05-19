@@ -810,6 +810,8 @@ void CleanupApp()
 
 	extern void Plex_Shutdown();
 	Plex_Shutdown();
+	extern void Jellyfin_Shutdown();
+	Jellyfin_Shutdown();
 
 	delete[] g_szAppDir;
 	g_szAppDir = NULL;

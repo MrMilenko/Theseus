@@ -11,7 +11,7 @@ static void EnsureGlobalInit() {
 static void ApplyCommonOpts(CURL* h, const char* url) {
     curl_easy_setopt(h, CURLOPT_URL, url);
     curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(h, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(h, CURLOPT_TIMEOUT, 60L);
     curl_easy_setopt(h, CURLOPT_USERAGENT, "Theseus-Dashboard/1.0");
 }
 
