@@ -22,7 +22,7 @@
 var nCurMediaItem;
 var nMediaItemCount;
 var bInCategoryView;
-var nCurCategory;          // 0 = Movies, 1 = TV Shows, 2 = Playlists
+var nCurCategory;          // 0 = Movies, 1 = TV Shows, 2 = Playlists, 3 = Plex (launches standalone scene)
 var rgCategoryName;
 var nMediaListScroll;      // scroll offset into the (huge) movie/show list
 var nMediaListVisible;     // visible row count (8)
@@ -51,6 +51,7 @@ function initialize()
 	rgCategoryName[0] = "Movies";
 	rgCategoryName[1] = "TV Shows";
 	rgCategoryName[2] = "Playlists";
+	rgCategoryName[3] = "Plex";   // picking this row routes to GoToPlex()
 
 	bInPlaylistItemView   = 0;
 	nPlaylistCursorBackup = 0;
@@ -69,7 +70,7 @@ function BindActiveList()
 {
 	if (bInCategoryView)
 	{
-		nMediaItemCount = 3;
+		nMediaItemCount = 4;
 	}
 	else if (nCurCategory == 0)
 	{
@@ -79,13 +80,12 @@ function BindActiveList()
 	{
 		nMediaItemCount = theMediaCollection.GetShowCount();
 	}
-	else if (bInPlaylistItemView)
-	{
-		nMediaItemCount = thePlaylistCollection.GetItemCount();
-	}
 	else
 	{
-		nMediaItemCount = thePlaylistCollection.GetCount();
+		if (bInPlaylistItemView)
+			nMediaItemCount = thePlaylistCollection.GetItemCount();
+		else
+			nMediaItemCount = thePlaylistCollection.GetCount();
 	}
 }
 
@@ -167,15 +167,18 @@ function UpdateMediaList()
 		c.MediaHeaderText.text = "MEDIA / TV SHOWS";
 		c.MusicCountText.text  = nMediaItemCount + " SHOWS";
 	}
-	else if (bInPlaylistItemView)
-	{
-		c.MediaHeaderText.text = "MEDIA / PLAYLISTS";
-		c.MusicCountText.text  = nMediaItemCount + " ITEMS";
-	}
 	else
 	{
-		c.MediaHeaderText.text = "MEDIA / PLAYLISTS";
-		c.MusicCountText.text  = nMediaItemCount + " PLAYLISTS";
+		if (bInPlaylistItemView)
+		{
+			c.MediaHeaderText.text = "MEDIA / PLAYLISTS";
+			c.MusicCountText.text  = nMediaItemCount + " ITEMS";
+		}
+		else
+		{
+			c.MediaHeaderText.text = "MEDIA / PLAYLISTS";
+			c.MusicCountText.text  = nMediaItemCount + " PLAYLISTS";
+		}
 	}
 }
 
@@ -253,7 +256,12 @@ DEF theMediaMenu Level
 			PlaySoundA();
 			if (bInCategoryView)
 			{
-				// Drill into the selected category's item list.
+				if (nCurMediaItem == 3)
+				{
+					GoToPlex();
+					return;
+				}
+
 				nCurCategory     = nCurMediaItem;
 				bInCategoryView  = 0;
 				nCurMediaItem    = 0;

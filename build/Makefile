@@ -698,6 +698,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/milkdrop_window.cpp \
 	$(THESEUS_SRC)/desktop/tmdb.cpp \
 	$(THESEUS_SRC)/desktop/http_util.cpp \
+	$(THESEUS_SRC)/desktop/plex_client.cpp \
 	$(THESEUS_SRC)/desktop/xiso.cpp
 
 # ImGui sources. imgui_impl_opengl3 is the GL renderer backend used by

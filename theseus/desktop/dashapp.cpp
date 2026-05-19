@@ -808,6 +808,9 @@ void CleanupApp()
 	CdAudio_Shutdown();
 	DashAudio_Shutdown();
 
+	extern void Plex_Shutdown();
+	Plex_Shutdown();
+
 	delete[] g_szAppDir;
 	g_szAppDir = NULL;
 
