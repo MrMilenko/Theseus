@@ -7,6 +7,7 @@
 #include "title_maker.h"
 #include "hdd_browser.h"
 #include "audio_sdl.h"
+#include "skin_editor.h"
 #include "imgui.h"
 #include "plex_client.h"
 #include "jellyfin_client.h"
@@ -169,6 +170,9 @@ void RenderMainMenuBar() {
         extern bool g_playlistMakerOpen;
         if (ImGui::MenuItem("Playlist Maker", "F6", g_playlistMakerOpen)) {
             g_playlistMakerOpen = !g_playlistMakerOpen;
+        }
+        if (ImGui::MenuItem("Skin Editor", NULL, g_skinEditorOpen)) {
+            g_skinEditorOpen = !g_skinEditorOpen;
         }
         ImGui::EndMenu();
     }

@@ -685,6 +685,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/inspector.cpp \
 	$(THESEUS_SRC)/desktop/menu_bar.cpp \
 	$(THESEUS_SRC)/desktop/xap_editor.cpp \
+	$(THESEUS_SRC)/desktop/skin_editor.cpp \
 	$(THESEUS_SRC)/desktop/TextEditor.cpp \
 	$(THESEUS_SRC)/desktop/hdd_browser.cpp \
 	$(THESEUS_SRC)/desktop/xbox_hdd.cpp \

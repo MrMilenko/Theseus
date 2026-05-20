@@ -54,11 +54,22 @@ public:
 
     const TCHAR *m_name;
     DWORD m_flags;
+
+    // Frame number of the most recent CMaxMaterial::Render() that bound this
+    // CMatInfo. -1 = never used. Read by the Skin Editor to highlight which
+    // materials are currently on screen.
+    int m_lastUsedFrame = -1;
 };
 
 extern int g_nMatInfoCount;
 extern CMatInfo* g_rgMatInfo[240];
 extern TCHAR g_szLastLoadedSkin[MAX_PATH];
+
+// Color introspection / live edit for the Skin Editor. Returns 1 or 2 colors
+// per material (or 0 for types without editable colors). D3DCOLOR is ARGB.
+int      MatInfo_ColorCount(CMatInfo* p);
+DWORD    MatInfo_GetColor(CMatInfo* p, int idx);
+void     MatInfo_SetColor(CMatInfo* p, int idx, DWORD c);
 
 class CObject;
 class CClass;

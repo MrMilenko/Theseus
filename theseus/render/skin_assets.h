@@ -84,6 +84,36 @@ static inline int SkinCandidatesFor(const char *name, const char **out, int max)
 // active skin is allowed to override. Case-insensitive on basename.
 // Members of an equivalence group all hit through their canonical
 // entry. only one name per group needs to be in the list below.
+inline const char *const kSkinnableAssets[] = {
+	// Textures (.xbx after extension forcing in LoadTexture).
+	"cellwall.xbx",      // shell.xbx aliases here
+	"dvd_button.xbx",
+	"DVD_paneltex.xbx",
+	"dvdaudio.xbx",
+	"dvdempty.xbx",
+	"dvdstop.xbx",
+	"dvdstopw.xbx",
+	"dvdtitle.xbx",
+	"dvdunknown.xbx",
+	"dvdvideo.xbx",
+	"GameHilite_01.xbx", // menu_hilite / menu_hilight alias here
+	"menu_hilite.xbx",
+	"menu_hilight.xbx",
+	"outline.xbx",
+	"screenshot.xbx",
+	"shell.xbx",
+	"status_gauge.xbx",
+	"xbox4.xbx",
+	"xboxlogo.xbx",
+	"xboxlogo64.xbx",
+	"xboxlogo128.xbx",
+	"xboxlogow.xbx",
+	// Meshes.
+	"cellwall.xm",       // Inner_cell-FACES.xm aliases here
+	"Inner_cell-FACES.xm",
+	0
+};
+
 static inline bool IsSkinnableAsset(const char *path)
 {
 	if (!path || !*path) return false;
@@ -93,38 +123,8 @@ static inline bool IsSkinnableAsset(const char *path)
 		if (*p == '/' || *p == '\\') base = p + 1;
 	}
 
-	static const char *const kSkinnable[] = {
-		// Textures (.xbx after extension forcing in LoadTexture).
-		"cellwall.xbx",      // shell.xbx aliases here
-		"dvd_button.xbx",
-		"DVD_paneltex.xbx",
-		"dvdaudio.xbx",
-		"dvdempty.xbx",
-		"dvdstop.xbx",
-		"dvdstopw.xbx",
-		"dvdtitle.xbx",
-		"dvdunknown.xbx",
-		"dvdvideo.xbx",
-		"GameHilite_01.xbx", // menu_hilite / menu_hilight alias here
-		"menu_hilite.xbx",
-		"menu_hilight.xbx",
-		"outline.xbx",
-		"screenshot.xbx",
-		"shell.xbx",
-		"status_gauge.xbx",
-		"xbox4.xbx",
-		"xboxlogo.xbx",
-		"xboxlogo64.xbx",
-		"xboxlogo128.xbx",
-		"xboxlogow.xbx",
-		// Meshes.
-		"cellwall.xm",       // Inner_cell-FACES.xm aliases here
-		"Inner_cell-FACES.xm",
-		0
-	};
-
-	for (int i = 0; kSkinnable[i]; i++) {
-		if (_stricmp(base, kSkinnable[i]) == 0) return true;
+	for (int i = 0; kSkinnableAssets[i]; i++) {
+		if (_stricmp(base, kSkinnableAssets[i]) == 0) return true;
 	}
 	return false;
 }

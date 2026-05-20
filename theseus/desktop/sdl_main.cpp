@@ -563,9 +563,6 @@ static void RereadLegacyFromDisk() {
         } else if (strncmp(line, "Use Progressive=", 16) == 0) {
             strncpy(g_useProgressive, line + 16, sizeof(g_useProgressive) - 1);
             g_useProgressive[sizeof(g_useProgressive) - 1] = 0;
-        } else if (strncmp(line, "Current Skin=", 13) == 0) {
-            strncpy(g_currentSkin, line + 13, sizeof(g_currentSkin) - 1);
-            g_currentSkin[sizeof(g_currentSkin) - 1] = 0;
         }
     }
     fclose(fp);
@@ -800,6 +797,10 @@ static void PreSwapOverlays() {
 
     // XAP Editor (F2); floating ImGui window
     RenderXAPEditor();
+
+    // Skin Editor (Tools menu); floating ImGui window
+    extern void RenderSkinEditor();
+    RenderSkinEditor();
 
     // Launch overlay (fade-to-black + Xbox logo). Drawn last so it sits
     // above every other overlay.
