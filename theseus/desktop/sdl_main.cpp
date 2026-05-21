@@ -9,6 +9,8 @@
 #include "shape_render.h"
 #include "asset_loader.h"
 #include "audio_sdl.h"
+#include "joystick.h"
+#include "milkdrop_window.h"
 #include "xiso.h"
 #include "hdd_browser.h"
 #include "title_maker.h"
@@ -346,13 +348,19 @@ static bool   s_softRestartPending = false; // reinit after game exits
 
 // Audio mute state (Ctrl+M toggle, auto-muted during game launch)
 bool g_audioMuted = false;       // user choice (Ctrl+M)
+float g_masterVolume = 1.0f;     // 0.0 - 1.0, applied to mixer + libmpv
+bool g_useMilkdropViz = false;   // opt-in: replace legacy orb viz with projectM
 bool g_windowFocused = true;     // SDL focus state
 // Mute ambient (SDL_mixer) when: user pressed Ctrl+M, window unfocused, or
 // media is playing. mpv runs through its own audio out, unaffected by this.
+// Skip the focus check while the projectM visualizer is open so it can keep
+// reacting to dashboard audio when the user clicks into its window.
 static void ApplyEffectiveMute()
 {
     extern bool g_mediaFullscreen;
-    bool shouldMute = g_audioMuted || !g_windowFocused || g_mediaFullscreen;
+    extern bool MilkdropWindow_IsOpen();
+    bool focusLost = !g_windowFocused && !MilkdropWindow_IsOpen();
+    bool shouldMute = g_audioMuted || focusLost || g_mediaFullscreen;
     if (shouldMute) DashAudio_MuteAll();
     else            DashAudio_UnmuteAll();
 }
@@ -383,6 +391,13 @@ char g_moviesRoot[512] = "";
 char g_tvRoot[512]     = "";
 char g_tmdbKey[128]    = "";  // TMDB v3 API key, optional
 char g_romsDir[512]    = "";  // Default ROMs/ISOs root, expanded as $ROMS_DIR in launch templates
+char g_plexToken[256]   = "";  // PIN-flow token
+char g_plexClientId[64] = "";  // UUID, stable per install
+char g_jellyfinUrl[512]      = "";
+char g_jellyfinToken[256]    = "";
+char g_jellyfinUserId[64]    = "";
+char g_jellyfinClientId[64]  = "";
+char g_jellyfinUserName[128] = "";
 int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
 bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
 bool g_bShowBootAnimation   = true;   // play xbox_boot.mp4 once at startup before the dashboard
@@ -464,6 +479,34 @@ void LoadDesktopSettings() {
             strncpy(g_tvRoot, line + 7, sizeof(g_tvRoot) - 1);
         else if (strncmp(line, "TMDBKey=", 8) == 0)
             strncpy(g_tmdbKey, line + 8, sizeof(g_tmdbKey) - 1);
+        else if (strncmp(line, "PlexToken=", 10) == 0) {
+            strncpy(g_plexToken, line + 10, sizeof(g_plexToken) - 1);
+            g_plexToken[sizeof(g_plexToken) - 1] = 0;
+        }
+        else if (strncmp(line, "PlexClientId=", 13) == 0) {
+            strncpy(g_plexClientId, line + 13, sizeof(g_plexClientId) - 1);
+            g_plexClientId[sizeof(g_plexClientId) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinUrl=", 12) == 0) {
+            strncpy(g_jellyfinUrl, line + 12, sizeof(g_jellyfinUrl) - 1);
+            g_jellyfinUrl[sizeof(g_jellyfinUrl) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinToken=", 14) == 0) {
+            strncpy(g_jellyfinToken, line + 14, sizeof(g_jellyfinToken) - 1);
+            g_jellyfinToken[sizeof(g_jellyfinToken) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinUserId=", 15) == 0) {
+            strncpy(g_jellyfinUserId, line + 15, sizeof(g_jellyfinUserId) - 1);
+            g_jellyfinUserId[sizeof(g_jellyfinUserId) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinClientId=", 17) == 0) {
+            strncpy(g_jellyfinClientId, line + 17, sizeof(g_jellyfinClientId) - 1);
+            g_jellyfinClientId[sizeof(g_jellyfinClientId) - 1] = 0;
+        }
+        else if (strncmp(line, "JellyfinUserName=", 17) == 0) {
+            strncpy(g_jellyfinUserName, line + 17, sizeof(g_jellyfinUserName) - 1);
+            g_jellyfinUserName[sizeof(g_jellyfinUserName) - 1] = 0;
+        }
         else if (strncmp(line, "RomsDir=", 8) == 0)
             strncpy(g_romsDir, line + 8, sizeof(g_romsDir) - 1);
         else if (strncmp(line, "MSAA=", 5) == 0) {
@@ -481,6 +524,13 @@ void LoadDesktopSettings() {
         }
         else if (strncmp(line, "Hwdec=", 6) == 0)
             g_hwdec = atoi(line + 6) != 0;
+        else if (strncmp(line, "MasterVolume=", 13) == 0) {
+            float v = (float)atof(line + 13);
+            if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
+            g_masterVolume = v;
+        }
+        else if (strncmp(line, "UseMilkdropViz=", 15) == 0)
+            g_useMilkdropViz = atoi(line + 15) != 0;
         else if (strncmp(line, "Renderer=", 9) == 0) {
             const char* v = line + 9;
             // Order matters: opengles before opengl, metal before "" prefix.
@@ -520,9 +570,6 @@ static void RereadLegacyFromDisk() {
         } else if (strncmp(line, "Use Progressive=", 16) == 0) {
             strncpy(g_useProgressive, line + 16, sizeof(g_useProgressive) - 1);
             g_useProgressive[sizeof(g_useProgressive) - 1] = 0;
-        } else if (strncmp(line, "Current Skin=", 13) == 0) {
-            strncpy(g_currentSkin, line + 13, sizeof(g_currentSkin) - 1);
-            g_currentSkin[sizeof(g_currentSkin) - 1] = 0;
         }
     }
     fclose(fp);
@@ -551,6 +598,8 @@ void SaveDesktopSettings() {
     fprintf(fp, "Vsync=%d\n",               g_vsyncMode);
     fprintf(fp, "FpsCap=%d\n",              g_fpsCap);
     fprintf(fp, "Hwdec=%d\n",               g_hwdec ? 1 : 0);
+    fprintf(fp, "MasterVolume=%.3f\n",      g_masterVolume);
+    fprintf(fp, "UseMilkdropViz=%d\n",      g_useMilkdropViz ? 1 : 0);
     {
         const char* rname = (g_rendererPref == 1) ? "d3d11"
                           : (g_rendererPref == 2) ? "vulkan"
@@ -578,6 +627,13 @@ void SaveDesktopSettings() {
     fprintf(fp, "TvRoot=%s\n", g_tvRoot);
     fprintf(fp, "TMDBKey=%s\n", g_tmdbKey);
     fprintf(fp, "RomsDir=%s\n", g_romsDir);
+    fprintf(fp, "PlexToken=%s\n",    g_plexToken);
+    fprintf(fp, "PlexClientId=%s\n", g_plexClientId);
+    fprintf(fp, "JellyfinUrl=%s\n",      g_jellyfinUrl);
+    fprintf(fp, "JellyfinToken=%s\n",    g_jellyfinToken);
+    fprintf(fp, "JellyfinUserId=%s\n",   g_jellyfinUserId);
+    fprintf(fp, "JellyfinClientId=%s\n", g_jellyfinClientId);
+    fprintf(fp, "JellyfinUserName=%s\n", g_jellyfinUserName);
     // Legacy Q:\System\config.ini sections (aliased to this file by xboxfs.h).
     fprintf(fp, "\n[Progressive]\n");
     fprintf(fp, "Use 720p=%s\n",        g_use720p);
@@ -749,6 +805,44 @@ static void PreSwapOverlays() {
 
     // XAP Editor (F2); floating ImGui window
     RenderXAPEditor();
+
+    // Skin Editor (Tools menu); floating ImGui window
+    extern void RenderSkinEditor();
+    RenderSkinEditor();
+
+    // projectM configuration panel (Settings -> Audio -> Configure projectM...)
+    extern void RenderProjectMConfig();
+    RenderProjectMConfig();
+
+    // projectM fullscreen hijack. Toggle gates whether projectM runs at
+    // all; X+Y starts the session. Overlay fades in over half a second
+    // so it doesn't snap on top of the dashboard. Suppressed while
+    // Settings / Configure projectM are open so the user can see the
+    // panels they're adjusting.
+    extern bool g_settingsOpen;
+    extern bool g_projectMConfigOpen;
+    bool suppressOverlay = g_settingsOpen || g_projectMConfigOpen;
+    if (g_useMilkdropViz && !suppressOverlay) {
+        extern unsigned short MilkdropWindow_GetBgfxTexId();
+        unsigned short pmTex = MilkdropWindow_GetBgfxTexId();
+        static Uint32 s_fadeStart = 0;
+        if (pmTex == 0xFFFF) {
+            s_fadeStart = 0; // session not running — reset for next start
+        } else {
+            if (s_fadeStart == 0) s_fadeStart = SDL_GetTicks();
+            const float kFadeMs = 500.0f;
+            float t = (float)(SDL_GetTicks() - s_fadeStart) / kFadeMs;
+            if (t > 1.0f) t = 1.0f;
+            int alpha = (int)(t * 235.0f);
+            int winW = 0, winH = 0;
+            SDL_GetWindowSize(g_pSDLWindow, &winW, &winH);
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            ImU32 tint = IM_COL32(255, 255, 255, alpha);
+            dl->AddImage((ImTextureID)(intptr_t)pmTex,
+                ImVec2(0, 0), ImVec2((float)winW, (float)winH),
+                ImVec2(0, 0), ImVec2(1, 1), tint);
+        }
+    }
 
     // Launch overlay (fade-to-black + Xbox logo). Drawn last so it sits
     // above every other overlay.
@@ -1096,6 +1190,10 @@ int main(int argc, char* argv[]) {
     extern void Playlist_LoadAll();
     Playlist_LoadAll();
     MediaDB_LoadCache();
+    extern void Plex_StartSync();
+    Plex_StartSync();
+    extern void Jellyfin_StartSync();
+    Jellyfin_StartSync();
 
     // GL build wraps an OpenGL drawable into the window. BGFX leaves it
     // plain so the backend layer (CAMetalLayer / Vulkan) can attach.
@@ -1747,13 +1845,24 @@ int main(int argc, char* argv[]) {
                     if (event.key.keysym.sym == SDLK_F10) {
                         g_showMenuBar = !g_showMenuBar;
                     }
-                    if (event.key.keysym.sym == SDLK_F11) {
-                        // F11: toggle between windowed and exclusive fullscreen
-                        // through the unified display state so the value persists
-                        // and the in-dashboard Settings reflects it.
-                        g_windowMode = (g_windowMode == 2) ? 0 : 2;
-                        g_displayChangeRequested = true;
-                        SaveDesktopSettings();
+                    {
+                        extern unsigned int MilkdropWindow_GetWindowID();
+                        extern void MilkdropWindow_ToggleFullscreen();
+                        unsigned int mdId = MilkdropWindow_GetWindowID();
+                        bool onProjectM = (mdId != 0 && event.key.windowID == mdId);
+
+                        if (onProjectM &&
+                            (event.key.keysym.sym == SDLK_f ||
+                             event.key.keysym.sym == SDLK_F11)) {
+                            MilkdropWindow_ToggleFullscreen();
+                        }
+                        else if (!onProjectM && event.key.keysym.sym == SDLK_F11) {
+                            // F11 on the main window: persist via the unified
+                            // display state so Settings reflects it.
+                            g_windowMode = (g_windowMode == 2) ? 0 : 2;
+                            g_displayChangeRequested = true;
+                            SaveDesktopSettings();
+                        }
                     }
                     if (event.key.keysym.sym == SDLK_F12) {
                         // F12: toggle borderless windowed (no title bar /
@@ -1916,6 +2025,32 @@ int main(int argc, char* argv[]) {
             fpsCapPrev = SDL_GetPerformanceCounter();
         }
 
+        // X+Y combo (keyboard or controller) toggles the MilkDrop window.
+        // Original Xbox music visualizer used the same combo to fullscreen
+        // the orb viz; we repurpose it to spawn / dismiss the libprojectM
+        // overlay window.
+        {
+            const Uint8* keys = SDL_GetKeyboardState(NULL);
+            bool kbXY = keys[SDL_SCANCODE_X] && keys[SDL_SCANCODE_Y];
+            bool padXY = false;
+            if (CJoystick::c_controller) {
+                padXY = SDL_GameControllerGetButton(CJoystick::c_controller, SDL_CONTROLLER_BUTTON_X)
+                     && SDL_GameControllerGetButton(CJoystick::c_controller, SDL_CONTROLLER_BUTTON_Y);
+            }
+            static bool s_prevXY = false;
+            bool xy = kbXY || padXY;
+            if (xy && !s_prevXY && g_useMilkdropViz)
+                MilkdropWindow_Toggle();
+            s_prevXY = xy;
+        }
+        // Force projectM shutdown if the user just unchecked the toggle.
+        static bool s_prevToggle = false;
+        if (s_prevToggle && !g_useMilkdropViz && MilkdropWindow_IsOpen())
+            MilkdropWindow_Shutdown();
+        s_prevToggle = g_useMilkdropViz;
+
+        MilkdropWindow_Tick();
+
         // Swap
         Uint64 tSwap0 = SDL_GetPerformanceCounter();
 #ifndef THESEUS_USE_BGFX
@@ -2044,6 +2179,7 @@ int main(int argc, char* argv[]) {
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
 
+    MilkdropWindow_Shutdown();
     CleanupApp();
 #ifndef THESEUS_USE_BGFX
     SDL_GL_DeleteContext(g_pGLContext);

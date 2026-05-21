@@ -1021,6 +1021,60 @@ static void UpdateFalloffColor(CMatInfo *p, D3DCOLOR colorSide, D3DCOLOR colorFr
 	pMat->m_colorFront = colorFront;
 }
 
+// Public introspection / live edit API used by the Skin Editor.
+int MatInfo_ColorCount(CMatInfo* p)
+{
+	if (!p) return 0;
+	// Two-color types (falloff + everything that inherits it) first; some
+	// of these are also CInnerWall etc., which are independent two-color
+	// types, so check those separately.
+	if (dynamic_cast<CInnerWallMatInfo*>(p)) return 2;
+	if (dynamic_cast<CFalloffMatInfo*>(p))   return 2;
+	if (dynamic_cast<CSolidMatInfo*>(p))     return 1;
+	if (dynamic_cast<CBackingMatInfo*>(p))   return 1;
+	if (dynamic_cast<CModulateTextureMatInfo*>(p)) return 1;
+	return 0;
+}
+
+DWORD MatInfo_GetColor(CMatInfo* p, int idx)
+{
+	if (!p) return 0;
+	if (CSolidMatInfo* m = dynamic_cast<CSolidMatInfo*>(p))
+		return D3DCOLOR_RGBA(m->m_r, m->m_g, m->m_b, m->m_a);
+	if (CBackingMatInfo* m = dynamic_cast<CBackingMatInfo*>(p))
+		return D3DCOLOR_RGBA(m->m_r, m->m_g, m->m_b, m->m_a);
+	if (CModulateTextureMatInfo* m = dynamic_cast<CModulateTextureMatInfo*>(p))
+		return D3DCOLOR_RGBA(m->m_r, m->m_g, m->m_b, m->m_a);
+	if (CInnerWallMatInfo* m = dynamic_cast<CInnerWallMatInfo*>(p))
+		return (idx == 0) ? m->m_colorSide : m->m_colorFront;
+	if (CFalloffMatInfo* m = dynamic_cast<CFalloffMatInfo*>(p))
+		return (idx == 0) ? m->m_colorSide : m->m_colorFront;
+	return 0;
+}
+
+void MatInfo_SetColor(CMatInfo* p, int idx, DWORD c)
+{
+	if (!p) return;
+	BYTE a = (BYTE)((c >> 24) & 0xFF);
+	BYTE r = (BYTE)((c >> 16) & 0xFF);
+	BYTE g = (BYTE)((c >>  8) & 0xFF);
+	BYTE b = (BYTE)( c        & 0xFF);
+	if (CSolidMatInfo* m = dynamic_cast<CSolidMatInfo*>(p))
+		{ m->m_r=r; m->m_g=g; m->m_b=b; m->m_a=a; return; }
+	if (CBackingMatInfo* m = dynamic_cast<CBackingMatInfo*>(p))
+		{ m->m_r=r; m->m_g=g; m->m_b=b; m->m_a=a; return; }
+	if (CModulateTextureMatInfo* m = dynamic_cast<CModulateTextureMatInfo*>(p))
+		{ m->m_r=r; m->m_g=g; m->m_b=b; m->m_a=a; return; }
+	if (CInnerWallMatInfo* m = dynamic_cast<CInnerWallMatInfo*>(p)) {
+		if (idx == 0) m->m_colorSide = c; else m->m_colorFront = c;
+		return;
+	}
+	if (CFalloffMatInfo* m = dynamic_cast<CFalloffMatInfo*>(p)) {
+		if (idx == 0) m->m_colorSide = c; else m->m_colorFront = c;
+		return;
+	}
+}
+
 // Reads a single-color material from the skin file and updates in place
 static void ReloadSolidMat(CSettingsFile &SkinXBX, const TCHAR *szSection, CustomColor *tmp)
 {

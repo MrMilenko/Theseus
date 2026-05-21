@@ -10,6 +10,7 @@
 #include "audio_sdl.h"
 #include "imgui.h"
 #include "playlist.h"
+#include "d3d8_sdl.h"  // for g_bgfxProgBlit / g_bgfxSamplerBlit on bgfx path
 
 #include <string>
 #include <vector>
@@ -222,10 +223,68 @@ void MediaUI_DrawFullscreenVideo()
         }
     }
 #else
-    // CRT post-process is gated under BGFX (chunk 5d-3+ work). The
-    // fullscreen video display happens via MediaPlayer_RenderToScreen
-    // from CDVDPlayer::Render. nothing for us to do here.
-    (void)boundFBO; (void)ww; (void)wh;
+    // Submit the mpv frame as an aspect-fit quad on view 0. View 0 is
+    // pointed at the CRT capture FBO (when CRT is on) or the backbuffer
+    // (when off) by sdl_main.cpp's caller, so this lands exactly where
+    // the CRT pass on view 1 will pick it up. View 0's clear paints the
+    // letterbox region; without it the previous frame's pixels show
+    // through outside the aspect-fit rect.
+    (void)boundFBO;
+
+    int vw = 0, vh = 0;
+    unsigned int texIdx = MediaPlayer_GetVideoTexture(&vw, &vh);
+    if (!bgfx::isValid(g_bgfxProgBlit) || texIdx == 0 || vw <= 0 || vh <= 0) return;
+    bgfx::TextureHandle vidTex; vidTex.idx = (uint16_t)texIdx;
+    if (!bgfx::isValid(vidTex)) return;
+
+    int dw = (ww > 0) ? ww : 1;
+    int dh = (wh > 0) ? wh : 1;
+
+    bgfx::setViewRect(0, 0, 0, (uint16_t)dw, (uint16_t)dh);
+    bgfx::setViewClear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 1.0f, 0);
+
+    float vAspect = (float)vw / (float)vh;
+    float wAspect = (float)dw / (float)dh;
+    float qw, qh; // half-extents in NDC
+    if (vAspect > wAspect) { qw = 1.0f; qh = wAspect / vAspect; }
+    else                   { qh = 1.0f; qw = vAspect / wAspect; }
+
+    bgfx::VertexLayout layout;
+    layout.begin()
+        .add(bgfx::Attrib::Position,  3, bgfx::AttribType::Float)
+        .add(bgfx::Attrib::Normal,    3, bgfx::AttribType::Float)
+        .add(bgfx::Attrib::Color0,    4, bgfx::AttribType::Uint8, true)
+        .add(bgfx::Attrib::Color1,    4, bgfx::AttribType::Uint8, true)
+        .add(bgfx::Attrib::TexCoord0, 2, bgfx::AttribType::Float)
+        .end();
+
+    struct V { float px, py, pz, nx, ny, nz; uint32_t c0, c1; float u, v; };
+    // Texture is written top-down (row 0 = visual top). NDC +1 Y = top
+    // of screen, so the top edge of the quad samples V=0. Matches the
+    // boot_anim blit's mapping.
+    V verts[4] = {
+        { -qw, -qh, 0.f, 0,0,0, 0,0, 0.f, 1.f },
+        {  qw, -qh, 0.f, 0,0,0, 0,0, 1.f, 1.f },
+        {  qw,  qh, 0.f, 0,0,0, 0,0, 1.f, 0.f },
+        { -qw,  qh, 0.f, 0,0,0, 0,0, 0.f, 0.f },
+    };
+    const uint16_t idx[6] = { 0, 1, 2, 0, 2, 3 };
+
+    bgfx::TransientVertexBuffer tvb;
+    bgfx::TransientIndexBuffer  tib;
+    if (bgfx::getAvailTransientVertexBuffer(4, layout) < 4) return;
+    if (bgfx::getAvailTransientIndexBuffer(6)            < 6) return;
+    bgfx::allocTransientVertexBuffer(&tvb, 4, layout);
+    memcpy(tvb.data, verts, sizeof(verts));
+    bgfx::allocTransientIndexBuffer(&tib, 6);
+    memcpy(tib.data, idx, sizeof(idx));
+
+    bgfx::setState(BGFX_STATE_WRITE_RGB | BGFX_STATE_WRITE_A);
+    bgfx::setTexture(0, g_bgfxSamplerBlit, vidTex);
+    bgfx::setVertexBuffer(0, &tvb, 0, 4);
+    bgfx::setIndexBuffer(&tib, 0, 6);
+    bgfx::submit(0, g_bgfxProgBlit);
+    s_videoBlittedToFBO = true;
 #endif
 }
 
@@ -343,7 +402,7 @@ void MediaUI_RenderOSD()
     // Top gradient, Xbox green tint, fades to transparent.
     {
         const float h = 96.0f;
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
         ImU32 top    = RGBA(0.02f, 0.10f, 0.04f, 0.85f * alpha);
         ImU32 bottom = RGBA(0.02f, 0.10f, 0.04f, 0.00f);
         dl->AddRectFilledMultiColor(
@@ -369,7 +428,7 @@ void MediaUI_RenderOSD()
     // Bottom gradient, fades up from black; transport sits on it.
     {
         const float h = 110.0f;
-        ImDrawList* dl = ImGui::GetForegroundDrawList();
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
         ImU32 top    = RGBA(0.02f, 0.10f, 0.04f, 0.00f);
         ImU32 bottom = RGBA(0.02f, 0.10f, 0.04f, 0.85f * alpha);
         float y0 = (float)wh - h;

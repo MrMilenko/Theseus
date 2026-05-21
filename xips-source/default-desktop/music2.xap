@@ -2176,11 +2176,22 @@ DEF theMusicPlayMenu Level
 		{
 			if (theMusicPlayer.transportMode == 1)
 			{
-				SetVisualizerAlpha(0);
-				visualizerViewpoint.isBound = true;
-				theMusicPlayJoystick.enableSecretKey = false; // turn checking off
-				theScreenSaver.enabled = false;
-				g_bFullVis = true;
+				if (Math.projectMEnabled())
+				{
+					// C++ owns the visual via a fullscreen projectM overlay,
+					// so skip the in-XAP viewpoint switch entirely.
+					theMusicPlayJoystick.enableSecretKey = false;
+					theScreenSaver.enabled = false;
+					g_bFullVis = true;
+				}
+				else
+				{
+					SetVisualizerAlpha(0);
+					visualizerViewpoint.isBound = true;
+					theMusicPlayJoystick.enableSecretKey = false;
+					theScreenSaver.enabled = false;
+					g_bFullVis = true;
+				}
 			}
 		}
 	}

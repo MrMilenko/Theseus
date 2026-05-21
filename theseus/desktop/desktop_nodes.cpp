@@ -601,12 +601,13 @@ static void VizSetPixel2(CSurfx* pSurfx, int x, int y, BYTE color)
 
 void CAudioVisualizer::RenderDynamicTexture(CSurfx* pSurfx)
 {
-	// On desktop, check if source audio clip is playing
-	CAudioClip* pAudioClip = (CAudioClip*)m_source;
-	if (pAudioClip == NULL || pAudioClip->GetNodeClass() != NODE_CLASS(CAudioClip) || pAudioClip->m_transportMode != TRANSPORT_PLAY)
-		return;
-
-	// Desktop: pull PCM from the Mix_SetPostMix ring buffer
+	// Desktop music playback goes through Mix_PlayMusic (CMP3Pump /
+	// CMusicCollection), not the CAudioClip API the Xbox path uses, so the
+	// scene's m_source CAudioClip never enters TRANSPORT_PLAY. The
+	// Mix_SetPostMix ring captures every mixed channel anyway; just pull
+	// from it whenever the visualizer ticks. Silence reads as zeros and
+	// draws a flat scope, which is the right behaviour when nothing is
+	// playing.
 	DashAudio_GetPCMSamples(m_pcmLeft, m_pcmRight, 256);
 
 	int nSamples = 256;
@@ -4602,6 +4603,906 @@ START_NODE_FUN(CPlaylistCollection, CNode)
 	NODE_FUN_IV(GetItemCount)
 	NODE_FUN_SI(GetItemTitle)
 	NODE_FUN_VI(PlayFromIndex)
+END_NODE_FUN()
+
+
+// ============================================================================
+// CPlexLibrary, XAP-callable view over the user's Plex server. Reads from
+// the pre-stage cache in plex_client.cpp; multi-server selection is a
+// future feature, the first reachable server wins.
+// ============================================================================
+
+#include "plex_client.h"
+
+class CPlexLibrary : public CNode
+{
+public:
+	CPlexLibrary()
+		: m_currentLib(-1), m_currentShow(-1), m_currentSeason(-1) {}
+
+	DECLARE_NODE(CPlexLibrary, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
+
+	int  m_currentLib;
+	int  m_currentShow;
+	int  m_currentSeason;
+	std::string m_serverUri;
+
+	void EnsureLibrariesPending()
+	{
+		if (!Plex_HasToken()) return;
+		Plex_StartSync();
+		if (m_serverUri.empty() && Plex_ServersReady()) {
+			std::vector<PlexServer> srv = Plex_GetServers();
+			if (!srv.empty()) m_serverUri = srv[0].uri;
+		}
+	}
+
+	int GetCount()
+	{
+		EnsureLibrariesPending();
+		return (int)Plex_Cache_GetLibraries().size();
+	}
+
+	CStrObject* GetName(int i)
+	{
+		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		return new CStrObject(_T(libs[i].title.c_str()));
+	}
+
+	CStrObject* GetMeta(int i)
+	{
+		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		const char* t = libs[i].type.c_str();
+		return new CStrObject(_T(t));
+	}
+
+	void SetCurrent(int i)
+	{
+		if (i == m_currentLib) return;
+		m_currentLib    = i;
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+	}
+
+	CStrObject* GetServerName()
+	{
+		EnsureLibrariesPending();
+		return new CStrObject(_T(Plex_GetActiveServerName().c_str()));
+	}
+
+	int         IsSyncReady()    { EnsureLibrariesPending(); return Plex_SyncReady() ? 1 : 0; }
+	CStrObject* GetSyncPhase()   { return new CStrObject(_T(Plex_SyncPhase().c_str())); }
+	int         GetSyncProgress(){ return Plex_SyncProgress(); }
+
+	std::vector<PlexItem> CurrentItems()
+	{
+		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
+		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		return Plex_Cache_GetItems(libs[m_currentLib].sectionKey);
+	}
+
+	CStrObject* GetItemType(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		return new CStrObject(_T(items[i].type.c_str()));
+	}
+
+	// Subtitle per view: 1="MOVIE / SHOW (year)", 2="SEASON N", 3="SxEy".
+	CStrObject* GetSubtitle(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string s;
+
+		if (view == 1) {
+			std::vector<PlexItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			const PlexItem& it = items[i];
+			s = it.type;
+			for (auto& c : s) c = (char)toupper((unsigned char)c);
+			if (!it.year.empty()) { s += "  \xE2\x80\xA2  "; s += it.year; }
+			return new CStrObject(_T(s.c_str()));
+		}
+		if (view == 2) {
+			std::vector<PlexSeason> seasons;
+			Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
+			if (i >= (int)seasons.size()) return new CStrObject;
+			s = "SEASON ";
+			s += seasons[i].index;
+			return new CStrObject(_T(s.c_str()));
+		}
+		if (view == 3) {
+			std::vector<PlexEpisode> eps;
+			Plex_Cache_GetEpisodes(CurrentSeasonKey(), eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			s = "S";
+			std::vector<PlexSeason> seasons;
+			Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
+			if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size())
+				s += seasons[m_currentSeason].index;
+			if (!eps[i].index.empty()) { s += "E"; s += eps[i].index; }
+			return new CStrObject(_T(s.c_str()));
+		}
+		return new CStrObject;
+	}
+
+	// Y-button modal text: title + full plot. Seasons inherit the show plot.
+	CStrObject* GetInfoText(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string body;
+
+		if (view == 1) {
+			std::vector<PlexItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			const PlexItem& it = items[i];
+			body = it.title;
+			if (!it.year.empty()) { body += "  ("; body += it.year; body += ")"; }
+			if (!it.summary.empty()) { body += "\n\n"; body += it.summary; }
+		}
+		else if (view == 2) {
+			// Seasons have no summary -- surface the show's plot.
+			std::vector<PlexItem> items = CurrentItems();
+			if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return new CStrObject;
+			const PlexItem& sh = items[m_currentShow];
+			std::vector<PlexSeason> seasons;
+			Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
+			body = sh.title;
+			if (i < (int)seasons.size()) { body += "  -  "; body += seasons[i].title; }
+			if (!sh.summary.empty()) { body += "\n\n"; body += sh.summary; }
+		}
+		else if (view == 3) {
+			std::vector<PlexEpisode> eps;
+			Plex_Cache_GetEpisodes(CurrentSeasonKey(), eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			const PlexEpisode& e = eps[i];
+			body = "";
+			if (!e.index.empty()) { body += e.index; body += ".  "; }
+			body += e.title;
+			if (!e.summary.empty()) { body += "\n\n"; body += e.summary; }
+		}
+		const size_t kMax = 1200;
+		if (body.size() > kMax) {
+			body.resize(kMax - 1);
+			body += "\xE2\x80\xA6";
+		}
+		return new CStrObject(_T(body.c_str()));
+	}
+
+	// Truncated plot blurb for inline display. Items + episodes only.
+	CStrObject* GetSummary(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string s;
+		if (view == 1) {
+			std::vector<PlexItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			s = items[i].summary;
+		} else if (view == 3) {
+			std::vector<PlexEpisode> eps;
+			Plex_Cache_GetEpisodes(CurrentSeasonKey(), eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			s = eps[i].summary;
+		} else {
+			return new CStrObject;
+		}
+		const size_t kMax = 140;
+		if (s.size() > kMax) {
+			s.resize(kMax - 1);
+			s += "\xE2\x80\xA6";   // ellipsis
+		}
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	int GetItemCount() { return (int)CurrentItems().size(); }
+
+	CStrObject* GetItemTitle(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		const PlexItem& it = items[i];
+		std::string s = it.title;
+		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	void QueueItemArt(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		const PlexItem& it = items[i];
+		if (!it.thumbUrl.empty()) Plex_QueueArtDownload(it.ratingKey, it.thumbUrl);
+	}
+
+	CStrObject* GetItemArtPath(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		return new CStrObject(_T(Plex_ArtCachePath(items[i].ratingKey).c_str()));
+	}
+
+	void QueueSeasonArt(int i)
+	{
+		std::vector<PlexSeason> seasons;
+		std::string showKey = CurrentShowKey();
+		if (showKey.empty()) return;
+		Plex_Cache_GetSeasons(showKey, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return;
+		const PlexSeason& s = seasons[i];
+		if (!s.thumbUrl.empty()) Plex_QueueArtDownload(s.ratingKey, s.thumbUrl);
+	}
+
+	CStrObject* GetSeasonArtPath(int i)
+	{
+		std::vector<PlexSeason> seasons;
+		std::string showKey = CurrentShowKey();
+		if (showKey.empty()) return new CStrObject;
+		Plex_Cache_GetSeasons(showKey, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
+		return new CStrObject(_T(Plex_ArtCachePath(seasons[i].ratingKey).c_str()));
+	}
+
+	void QueueEpisodeArt(int i)
+	{
+		std::vector<PlexEpisode> eps;
+		std::string seasonKey = CurrentSeasonKey();
+		if (seasonKey.empty()) return;
+		Plex_Cache_GetEpisodes(seasonKey, eps);
+		if (i < 0 || i >= (int)eps.size()) return;
+		const PlexEpisode& e = eps[i];
+		if (!e.thumbUrl.empty()) Plex_QueueArtDownload(e.ratingKey, e.thumbUrl);
+	}
+
+	CStrObject* GetEpisodeArtPath(int i)
+	{
+		std::vector<PlexEpisode> eps;
+		std::string seasonKey = CurrentSeasonKey();
+		if (seasonKey.empty()) return new CStrObject;
+		Plex_Cache_GetEpisodes(seasonKey, eps);
+		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
+		return new CStrObject(_T(Plex_ArtCachePath(eps[i].ratingKey).c_str()));
+	}
+
+	void PlayRatingKey(const std::string& ratingKey,
+	                   const std::string& title,
+	                   const std::string& subtitle)
+	{
+		if (m_serverUri.empty() || ratingKey.empty()) return;
+		std::string url = Plex_ResolveStreamUrl(m_serverUri, ratingKey);
+		if (url.empty()) {
+			fprintf(stderr, "[Plex] stream URL resolve failed for %s\n",
+				ratingKey.c_str());
+			return;
+		}
+		if (!MediaPlayer_Open(url.c_str())) {
+			fprintf(stderr, "[Plex] MediaPlayer_Open failed for %s\n",
+				url.c_str());
+			return;
+		}
+		extern bool g_mediaFullscreen;
+		extern char g_mediaFullscreenTitle[256];
+		extern char g_mediaFullscreenSubtitle[256];
+		extern void ApplyEffectiveMute_Public();
+		g_mediaFullscreen = true;
+		ApplyEffectiveMute_Public();
+		strncpy(g_mediaFullscreenTitle, title.c_str(),
+			sizeof(g_mediaFullscreenTitle) - 1);
+		g_mediaFullscreenTitle[sizeof(g_mediaFullscreenTitle) - 1] = 0;
+		strncpy(g_mediaFullscreenSubtitle, subtitle.c_str(),
+			sizeof(g_mediaFullscreenSubtitle) - 1);
+		g_mediaFullscreenSubtitle[sizeof(g_mediaFullscreenSubtitle) - 1] = 0;
+	}
+
+	void PlayItem(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		const PlexItem& it = items[i];
+		std::string sub = "Plex";
+		if (!it.year.empty()) { sub += "  •  "; sub += it.year; }
+		PlayRatingKey(it.ratingKey, it.title, sub);
+	}
+
+	// ----- TV drill: show -> seasons -> episodes -----
+
+	std::string CurrentShowKey()
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return "";
+		return items[m_currentShow].ratingKey;
+	}
+
+	std::string CurrentSeasonKey()
+	{
+		std::vector<PlexSeason> seasons;
+		std::string showKey = CurrentShowKey();
+		if (showKey.empty()) return "";
+		Plex_Cache_GetSeasons(showKey, seasons);
+		if (m_currentSeason < 0 || m_currentSeason >= (int)seasons.size()) return "";
+		return seasons[m_currentSeason].ratingKey;
+	}
+
+	void DrillIntoShow(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		const PlexItem& it = items[i];
+		if (it.type != "show") return;
+		m_currentShow   = i;
+		m_currentSeason = -1;
+		std::vector<PlexSeason> dummy;
+		(void)Plex_Cache_GetSeasons(it.ratingKey, dummy);
+	}
+
+	int GetSeasonCount()
+	{
+		std::vector<PlexSeason> seasons;
+		std::string showKey = CurrentShowKey();
+		if (showKey.empty()) return 0;
+		Plex_Cache_GetSeasons(showKey, seasons);
+		return (int)seasons.size();
+	}
+
+	CStrObject* GetSeasonTitle(int i)
+	{
+		std::vector<PlexSeason> seasons;
+		std::string showKey = CurrentShowKey();
+		if (showKey.empty()) return new CStrObject;
+		Plex_Cache_GetSeasons(showKey, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
+		return new CStrObject(_T(seasons[i].title.c_str()));
+	}
+
+	void DrillIntoSeason(int i)
+	{
+		std::vector<PlexSeason> seasons;
+		std::string showKey = CurrentShowKey();
+		if (showKey.empty()) return;
+		Plex_Cache_GetSeasons(showKey, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return;
+		m_currentSeason = i;
+		std::vector<PlexEpisode> dummy;
+		(void)Plex_Cache_GetEpisodes(seasons[i].ratingKey, dummy);
+	}
+
+	int GetEpisodeCount()
+	{
+		std::vector<PlexEpisode> eps;
+		std::string seasonKey = CurrentSeasonKey();
+		if (seasonKey.empty()) return 0;
+		Plex_Cache_GetEpisodes(seasonKey, eps);
+		return (int)eps.size();
+	}
+
+	CStrObject* GetEpisodeTitle(int i)
+	{
+		std::vector<PlexEpisode> eps;
+		std::string seasonKey = CurrentSeasonKey();
+		if (seasonKey.empty()) return new CStrObject;
+		Plex_Cache_GetEpisodes(seasonKey, eps);
+		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
+		const PlexEpisode& e = eps[i];
+		std::string s;
+		if (!e.index.empty()) { s += e.index; s += ". "; }
+		s += e.title;
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	void PlayEpisode(int i)
+	{
+		std::vector<PlexEpisode> eps;
+		std::string seasonKey = CurrentSeasonKey();
+		if (seasonKey.empty()) return;
+		Plex_Cache_GetEpisodes(seasonKey, eps);
+		if (i < 0 || i >= (int)eps.size()) return;
+		const PlexEpisode& e = eps[i];
+		std::string sub;
+		std::vector<PlexItem>   items = CurrentItems();
+		std::vector<PlexSeason> seasons;
+		std::string showKey = CurrentShowKey();
+		if (!showKey.empty()) Plex_Cache_GetSeasons(showKey, seasons);
+		if (m_currentShow >= 0 && m_currentShow < (int)items.size())
+			sub = items[m_currentShow].title;
+		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size()) {
+			sub += "  •  S";
+			sub += seasons[m_currentSeason].index;
+			if (!e.index.empty()) { sub += "E"; sub += e.index; }
+		}
+		PlayRatingKey(e.ratingKey, e.title, sub);
+	}
+
+	int IsSignedIn() { return Plex_HasToken() ? 1 : 0; }
+};
+
+IMPLEMENT_NODE("PlexLibrary", CPlexLibrary, CNode)
+
+START_NODE_PROPS(CPlexLibrary, CNode)
+END_NODE_PROPS()
+
+#undef _FND_CLASS
+#define _FND_CLASS CPlexLibrary
+START_NODE_FUN(CPlexLibrary, CNode)
+	NODE_FUN_IV(GetCount)
+	NODE_FUN_SI(GetName)
+	NODE_FUN_SI(GetMeta)
+	NODE_FUN_VI(SetCurrent)
+	NODE_FUN_SV(GetServerName)
+	NODE_FUN_IV(IsSyncReady)
+	NODE_FUN_SV(GetSyncPhase)
+	NODE_FUN_IV(GetSyncProgress)
+	NODE_FUN_IV(GetItemCount)
+	NODE_FUN_SI(GetItemTitle)
+	NODE_FUN_SI(GetItemType)
+	NODE_FUN_VI(QueueItemArt)
+	NODE_FUN_SI(GetItemArtPath)
+	NODE_FUN_VI(PlayItem)
+	NODE_FUN_SII(GetSubtitle)
+	NODE_FUN_SII(GetSummary)
+	NODE_FUN_SII(GetInfoText)
+	NODE_FUN_VI(DrillIntoShow)
+	NODE_FUN_IV(GetSeasonCount)
+	NODE_FUN_SI(GetSeasonTitle)
+	NODE_FUN_VI(DrillIntoSeason)
+	NODE_FUN_VI(QueueSeasonArt)
+	NODE_FUN_SI(GetSeasonArtPath)
+	NODE_FUN_IV(GetEpisodeCount)
+	NODE_FUN_SI(GetEpisodeTitle)
+	NODE_FUN_VI(PlayEpisode)
+	NODE_FUN_VI(QueueEpisodeArt)
+	NODE_FUN_SI(GetEpisodeArtPath)
+	NODE_FUN_IV(IsSignedIn)
+END_NODE_FUN()
+
+
+// ============================================================================
+// CJellyfinLibrary -- mirror of CPlexLibrary over Jellyfin's API surface.
+// ============================================================================
+
+#include "jellyfin_client.h"
+
+class CJellyfinLibrary : public CNode
+{
+public:
+	CJellyfinLibrary()
+		: m_currentLib(-1), m_currentShow(-1), m_currentSeason(-1) {}
+
+	DECLARE_NODE(CJellyfinLibrary, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
+
+	int  m_currentLib;
+	int  m_currentShow;
+	int  m_currentSeason;
+
+	void EnsureLibrariesPending()
+	{
+		if (!Jellyfin_HasToken()) return;
+		Jellyfin_StartSync();
+	}
+
+	int GetCount()
+	{
+		EnsureLibrariesPending();
+		return (int)Jellyfin_Cache_GetLibraries().size();
+	}
+
+	CStrObject* GetName(int i)
+	{
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		return new CStrObject(_T(libs[i].name.c_str()));
+	}
+
+	CStrObject* GetMeta(int i)
+	{
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		return new CStrObject(_T(libs[i].type.c_str()));
+	}
+
+	void SetCurrent(int i)
+	{
+		if (i == m_currentLib) return;
+		m_currentLib    = i;
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+	}
+
+	CStrObject* GetServerName()
+	{
+		EnsureLibrariesPending();
+		// Jellyfin doesn't surface a friendly name in /Views; use the
+		// signed-in user's name as the breadcrumb anchor.
+		return new CStrObject(_T(Jellyfin_GetUserName().c_str()));
+	}
+
+	int         IsSyncReady()    { EnsureLibrariesPending(); return Jellyfin_SyncReady() ? 1 : 0; }
+	CStrObject* GetSyncPhase()   { return new CStrObject(_T(Jellyfin_SyncPhase().c_str())); }
+	int         GetSyncProgress(){ return Jellyfin_SyncProgress(); }
+
+	std::vector<JellyfinItem> CurrentItems()
+	{
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		return Jellyfin_Cache_GetItems(libs[m_currentLib].id);
+	}
+
+	int GetItemCount() { return (int)CurrentItems().size(); }
+
+	CStrObject* GetItemTitle(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		const JellyfinItem& it = items[i];
+		std::string s = it.name;
+		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	CStrObject* GetItemType(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		// Map Jellyfin type to the lowercase "show" the wrapper checks for.
+		std::string t = items[i].type;
+		if (t == "Series") return new CStrObject(_T("show"));
+		if (t == "Movie")  return new CStrObject(_T("movie"));
+		std::string lc = t;
+		for (auto& c : lc) c = (char)tolower((unsigned char)c);
+		return new CStrObject(_T(lc.c_str()));
+	}
+
+	void QueueItemArt(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		Jellyfin_QueueArtDownload(items[i].id, items[i].primaryTag);
+	}
+
+	CStrObject* GetItemArtPath(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		return new CStrObject(_T(Jellyfin_ArtCachePath(items[i].id).c_str()));
+	}
+
+	std::string CurrentShowId()
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return "";
+		return items[m_currentShow].id;
+	}
+
+	std::string CurrentSeasonId()
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return "";
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (m_currentSeason < 0 || m_currentSeason >= (int)seasons.size()) return "";
+		return seasons[m_currentSeason].id;
+	}
+
+	void PlayRatingKey(const std::string& itemId,
+	                   const std::string& title,
+	                   const std::string& subtitle)
+	{
+		std::string url = Jellyfin_StreamUrl(itemId);
+		if (url.empty()) {
+			fprintf(stderr, "[Jellyfin] stream URL build failed for %s\n", itemId.c_str());
+			return;
+		}
+		if (!MediaPlayer_Open(url.c_str())) {
+			fprintf(stderr, "[Jellyfin] MediaPlayer_Open failed\n");
+			return;
+		}
+		extern bool g_mediaFullscreen;
+		extern char g_mediaFullscreenTitle[256];
+		extern char g_mediaFullscreenSubtitle[256];
+		extern void ApplyEffectiveMute_Public();
+		g_mediaFullscreen = true;
+		ApplyEffectiveMute_Public();
+		strncpy(g_mediaFullscreenTitle, title.c_str(),
+			sizeof(g_mediaFullscreenTitle) - 1);
+		g_mediaFullscreenTitle[sizeof(g_mediaFullscreenTitle) - 1] = 0;
+		strncpy(g_mediaFullscreenSubtitle, subtitle.c_str(),
+			sizeof(g_mediaFullscreenSubtitle) - 1);
+		g_mediaFullscreenSubtitle[sizeof(g_mediaFullscreenSubtitle) - 1] = 0;
+	}
+
+	void PlayItem(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		const JellyfinItem& it = items[i];
+		std::string sub = "Jellyfin";
+		if (!it.year.empty()) { sub += "  \xE2\x80\xA2  "; sub += it.year; }
+		PlayRatingKey(it.id, it.name, sub);
+	}
+
+	void DrillIntoShow(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return;
+		const JellyfinItem& it = items[i];
+		if (it.type != "Series") return;
+		m_currentShow   = i;
+		m_currentSeason = -1;
+		std::vector<JellyfinSeason> dummy;
+		(void)Jellyfin_Cache_GetSeasons(it.id, dummy);
+	}
+
+	int GetSeasonCount()
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return 0;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		return (int)seasons.size();
+	}
+
+	CStrObject* GetSeasonTitle(int i)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return new CStrObject;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
+		return new CStrObject(_T(seasons[i].name.c_str()));
+	}
+
+	void DrillIntoSeason(int i)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return;
+		m_currentSeason = i;
+		std::vector<JellyfinEpisode> dummy;
+		(void)Jellyfin_Cache_GetEpisodes(seasons[i].id, dummy);
+	}
+
+	void QueueSeasonArt(int i)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return;
+		Jellyfin_QueueArtDownload(seasons[i].id, seasons[i].primaryTag);
+	}
+
+	CStrObject* GetSeasonArtPath(int i)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (showId.empty()) return new CStrObject;
+		Jellyfin_Cache_GetSeasons(showId, seasons);
+		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
+		return new CStrObject(_T(Jellyfin_ArtCachePath(seasons[i].id).c_str()));
+	}
+
+	int GetEpisodeCount()
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return 0;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		return (int)eps.size();
+	}
+
+	CStrObject* GetEpisodeTitle(int i)
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return new CStrObject;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
+		const JellyfinEpisode& e = eps[i];
+		std::string s;
+		if (!e.index.empty()) { s += e.index; s += ". "; }
+		s += e.name;
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	void PlayEpisode(int i)
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		if (i < 0 || i >= (int)eps.size()) return;
+		const JellyfinEpisode& e = eps[i];
+		std::vector<JellyfinItem>   items = CurrentItems();
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (!showId.empty()) Jellyfin_Cache_GetSeasons(showId, seasons);
+		std::string sub;
+		if (m_currentShow >= 0 && m_currentShow < (int)items.size())
+			sub = items[m_currentShow].name;
+		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size()) {
+			sub += "  \xE2\x80\xA2  S";
+			sub += seasons[m_currentSeason].index;
+			if (!e.index.empty()) { sub += "E"; sub += e.index; }
+		}
+		PlayRatingKey(e.id, e.name, sub);
+	}
+
+	void QueueEpisodeArt(int i)
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		if (i < 0 || i >= (int)eps.size()) return;
+		Jellyfin_QueueArtDownload(eps[i].id, eps[i].primaryTag);
+	}
+
+	CStrObject* GetEpisodeArtPath(int i)
+	{
+		std::vector<JellyfinEpisode> eps;
+		std::string seasonId = CurrentSeasonId();
+		if (seasonId.empty()) return new CStrObject;
+		Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
+		return new CStrObject(_T(Jellyfin_ArtCachePath(eps[i].id).c_str()));
+	}
+
+	CStrObject* GetSubtitle(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string s;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			const JellyfinItem& it = items[i];
+			std::string t = it.type;
+			for (auto& c : t) c = (char)toupper((unsigned char)c);
+			s = t;
+			if (!it.year.empty()) { s += "  \xE2\x80\xA2  "; s += it.year; }
+			return new CStrObject(_T(s.c_str()));
+		}
+		if (view == 2) {
+			std::vector<JellyfinSeason> seasons;
+			std::string showId = CurrentShowId();
+			if (showId.empty()) return new CStrObject;
+			Jellyfin_Cache_GetSeasons(showId, seasons);
+			if (i >= (int)seasons.size()) return new CStrObject;
+			s = "SEASON ";
+			s += seasons[i].index;
+			return new CStrObject(_T(s.c_str()));
+		}
+		if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return new CStrObject;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			s = "S";
+			std::vector<JellyfinSeason> seasons;
+			std::string showId = CurrentShowId();
+			if (!showId.empty()) Jellyfin_Cache_GetSeasons(showId, seasons);
+			if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size())
+				s += seasons[m_currentSeason].index;
+			if (!eps[i].index.empty()) { s += "E"; s += eps[i].index; }
+			return new CStrObject(_T(s.c_str()));
+		}
+		return new CStrObject;
+	}
+
+	CStrObject* GetSummary(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string s;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			s = items[i].overview;
+		} else if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return new CStrObject;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			s = eps[i].overview;
+		} else {
+			return new CStrObject;
+		}
+		const size_t kMax = 140;
+		if (s.size() > kMax) {
+			s.resize(kMax - 1);
+			s += "\xE2\x80\xA6";
+		}
+		return new CStrObject(_T(s.c_str()));
+	}
+
+	CStrObject* GetInfoText(int view, int i)
+	{
+		if (i < 0) return new CStrObject;
+		std::string body;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size()) return new CStrObject;
+			const JellyfinItem& it = items[i];
+			body = it.name;
+			if (!it.year.empty()) { body += "  ("; body += it.year; body += ")"; }
+			if (!it.overview.empty()) { body += "\n\n"; body += it.overview; }
+		}
+		else if (view == 2) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return new CStrObject;
+			const JellyfinItem& sh = items[m_currentShow];
+			std::vector<JellyfinSeason> seasons;
+			Jellyfin_Cache_GetSeasons(sh.id, seasons);
+			body = sh.name;
+			if (i < (int)seasons.size()) { body += "  -  "; body += seasons[i].name; }
+			if (!sh.overview.empty()) { body += "\n\n"; body += sh.overview; }
+		}
+		else if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return new CStrObject;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			if (i >= (int)eps.size()) return new CStrObject;
+			const JellyfinEpisode& e = eps[i];
+			body = "";
+			if (!e.index.empty()) { body += e.index; body += ".  "; }
+			body += e.name;
+			if (!e.overview.empty()) { body += "\n\n"; body += e.overview; }
+		}
+		const size_t kMax = 1200;
+		if (body.size() > kMax) {
+			body.resize(kMax - 1);
+			body += "\xE2\x80\xA6";
+		}
+		return new CStrObject(_T(body.c_str()));
+	}
+
+	int IsSignedIn() { return Jellyfin_HasToken() ? 1 : 0; }
+};
+
+IMPLEMENT_NODE("JellyfinLibrary", CJellyfinLibrary, CNode)
+
+START_NODE_PROPS(CJellyfinLibrary, CNode)
+END_NODE_PROPS()
+
+#undef _FND_CLASS
+#define _FND_CLASS CJellyfinLibrary
+START_NODE_FUN(CJellyfinLibrary, CNode)
+	NODE_FUN_IV(GetCount)
+	NODE_FUN_SI(GetName)
+	NODE_FUN_SI(GetMeta)
+	NODE_FUN_VI(SetCurrent)
+	NODE_FUN_SV(GetServerName)
+	NODE_FUN_IV(IsSyncReady)
+	NODE_FUN_SV(GetSyncPhase)
+	NODE_FUN_IV(GetSyncProgress)
+	NODE_FUN_IV(GetItemCount)
+	NODE_FUN_SI(GetItemTitle)
+	NODE_FUN_SI(GetItemType)
+	NODE_FUN_VI(QueueItemArt)
+	NODE_FUN_SI(GetItemArtPath)
+	NODE_FUN_VI(PlayItem)
+	NODE_FUN_SII(GetSubtitle)
+	NODE_FUN_SII(GetSummary)
+	NODE_FUN_SII(GetInfoText)
+	NODE_FUN_VI(DrillIntoShow)
+	NODE_FUN_IV(GetSeasonCount)
+	NODE_FUN_SI(GetSeasonTitle)
+	NODE_FUN_VI(DrillIntoSeason)
+	NODE_FUN_VI(QueueSeasonArt)
+	NODE_FUN_SI(GetSeasonArtPath)
+	NODE_FUN_IV(GetEpisodeCount)
+	NODE_FUN_SI(GetEpisodeTitle)
+	NODE_FUN_VI(PlayEpisode)
+	NODE_FUN_VI(QueueEpisodeArt)
+	NODE_FUN_SI(GetEpisodeArtPath)
+	NODE_FUN_IV(IsSignedIn)
 END_NODE_FUN()
 
 

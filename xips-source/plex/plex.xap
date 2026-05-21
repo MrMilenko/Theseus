@@ -1,0 +1,450 @@
+// plex.xap: Plex Media Server browser scene (desktop only).
+// nPlexView -- 0=libraries, 1=items, 2=seasons, 3=episodes. A descends, B
+// ascends. Reads from CPlexLibrary's cache; sync on sign-in.
+
+
+// ----- state -----
+
+var nPlexView;            // 0=libs, 1=items, 2=seasons, 3=episodes
+var nPlexCursor;          // selected row, absolute (0..count-1)
+var nPlexScroll;          // scroll offset into the list
+var nPlexVisible;         // visible row count (matches MenuButtons size)
+var nPlexCount;           // total rows in the current view
+var nPlexLastCount;       // last count we actually drew; behavior re-renders on mismatch
+var nPlexCursorBackup0;   // saved cursor when drilling lib -> items
+var nPlexCursorBackup1;   // saved cursor when drilling item -> seasons
+var nPlexCursorBackup2;   // saved cursor when drilling season -> episodes
+
+
+function initialize()
+{
+	nPlexView           = 0;
+	nPlexCursor         = 0;
+	nPlexScroll         = 0;
+	nPlexVisible        = 8;
+	nPlexCount          = 0;
+	nPlexLastCount      = -1;
+	nPlexCursorBackup0  = 0;
+	nPlexCursorBackup1  = 0;
+	nPlexCursorBackup2  = 0;
+}
+
+
+// Recompute nPlexCount from the cache slice for the current view.
+function BindActiveList()
+{
+	if (nPlexView == 0)
+		nPlexCount = thePlexLibrary.GetCount();
+	else if (nPlexView == 1)
+		nPlexCount = thePlexLibrary.GetItemCount();
+	else if (nPlexView == 2)
+		nPlexCount = thePlexLibrary.GetSeasonCount();
+	else
+		nPlexCount = thePlexLibrary.GetEpisodeCount();
+}
+
+
+function GetActiveTitle(absIdx)
+{
+	if (nPlexView == 0)
+		return thePlexLibrary.GetName(absIdx);
+	if (nPlexView == 1)
+		return thePlexLibrary.GetItemTitle(absIdx);
+	if (nPlexView == 2)
+		return thePlexLibrary.GetSeasonTitle(absIdx);
+	return thePlexLibrary.GetEpisodeTitle(absIdx);
+}
+
+
+// Breadcrumb header. Server -> library -> show -> season as user drills.
+function GetHeaderText()
+{
+	var server = thePlexLibrary.GetServerName();
+	if (server == "")
+		server = "PLEX";
+	if (nPlexView == 0)
+		return server;
+	if (nPlexView == 1)
+		return server + " / " + thePlexLibrary.GetName(nPlexCursorBackup0);
+	var showTitle = thePlexLibrary.GetItemTitle(nPlexCursorBackup1);
+	if (nPlexView == 2)
+		return showTitle;
+	return showTitle + " / " + thePlexLibrary.GetSeasonTitle(nPlexCursorBackup2);
+}
+
+
+function GetCountText()
+{
+	if (nPlexView == 0)
+	{
+		if (nPlexCount == 1) return "1 LIBRARY";
+		return nPlexCount + " LIBRARIES";
+	}
+	if (nPlexView == 1)
+	{
+		if (nPlexCount == 1) return "1 ITEM";
+		return nPlexCount + " ITEMS";
+	}
+	if (nPlexView == 2)
+	{
+		if (nPlexCount == 1) return "1 SEASON";
+		return nPlexCount + " SEASONS";
+	}
+	if (nPlexCount == 1) return "1 EPISODE";
+	return nPlexCount + " EPISODES";
+}
+
+
+function StartPlexLevel()
+{
+	var c = thePlexMenu.children[0].children[0];
+	// Hide CDs 2-5; only MU_cd_01 is repurposed as the poster surface.
+	c.MU_cd_02.visible = false;
+	c.MU_cd_03.visible = false;
+	c.MU_cd_04.visible = false;
+	c.MU_cd_05.visible = false;
+
+	BindActiveList();
+	UpdatePlexList();
+}
+
+
+function UpdatePlexList()
+{
+	var c = thePlexMenu.children[0].children[0];
+
+	if (nPlexCursor < nPlexScroll)
+		nPlexScroll = nPlexCursor;
+	else if (nPlexCursor >= nPlexScroll + nPlexVisible)
+		nPlexScroll = nPlexCursor - (nPlexVisible - 1);
+
+	for (var i = 0; i < nPlexVisible; i = i + 1)
+	{
+		var absIdx = nPlexScroll + i;
+		if (absIdx < nPlexCount)
+		{
+			c.MenuButtons.children[i].visible = true;
+			c.MenuButtons.children[i].children[1].children[0].geometry.text = GetActiveTitle(absIdx);
+			c.MenuButtons.children[i].children[0].children[0].appearance.material.name = "GameHilite";
+
+			if (absIdx == nPlexCursor)
+			{
+				c.MenuButtons.children[i].children[0].children[0].appearance.texture.url = "GameHilite_01.bmp";
+				c.MenuButtons.children[i].children[1].children[0].appearance.name = "HilightedType";
+				c.MenuButtons.children[i].children[1].children[0].geometry.scrollRate  = 0.1;
+				c.MenuButtons.children[i].children[1].children[0].geometry.scrollDelay = 1;
+			}
+			else
+			{
+				c.MenuButtons.children[i].children[0].children[0].appearance.texture.url = "outline.tga";
+				c.MenuButtons.children[i].children[1].children[0].appearance.name = "NavType";
+				c.MenuButtons.children[i].children[1].children[0].geometry.scrollRate  = 0;
+				c.MenuButtons.children[i].children[1].children[0].geometry.scrollDelay = 0;
+			}
+		}
+		else
+		{
+			c.MenuButtons.children[i].visible = false;
+		}
+	}
+
+	c.MediaHeaderText.text = GetHeaderText();
+	c.MusicCountText.text  = GetCountText();
+
+	c.MusicType.text = "";
+	c.TimeNum.text   = "";
+	c.TrackNum.text  = "";
+
+	UpdatePoster(c);
+
+	nPlexLastCount = nPlexCount;
+}
+
+
+// Retexture the orb's top CD (MU_cd_01) with the cursor item's poster.
+function UpdatePoster(c)
+{
+	if (nPlexView == 1)
+	{
+		thePlexLibrary.QueueItemArt(nPlexCursor);
+		c.MU_cd_01.children[0].children[0].appearance.texture.url = thePlexLibrary.GetItemArtPath(nPlexCursor);
+	}
+	else if (nPlexView == 2)
+	{
+		thePlexLibrary.QueueSeasonArt(nPlexCursor);
+		c.MU_cd_01.children[0].children[0].appearance.texture.url = thePlexLibrary.GetSeasonArtPath(nPlexCursor);
+	}
+	else if (nPlexView == 3)
+	{
+		thePlexLibrary.QueueEpisodeArt(nPlexCursor);
+		c.MU_cd_01.children[0].children[0].appearance.texture.url = thePlexLibrary.GetEpisodeArtPath(nPlexCursor);
+	}
+	else
+	{
+		c.MU_cd_01.children[0].children[0].appearance.texture.url = "E:\\Plex\\plex_logo.png";
+	}
+}
+
+
+function EnterLibrary()
+{
+	thePlexLibrary.SetCurrent(nPlexCursor);
+	nPlexCursorBackup0 = nPlexCursor;
+	nPlexView          = 1;
+	nPlexCursor        = 0;
+	nPlexScroll        = 0;
+	BindActiveList();
+	UpdatePlexList();
+}
+
+
+// Movies/tracks play immediately; TV shows drill into seasons.
+function EnterItem()
+{
+	var type = thePlexLibrary.GetItemType(nPlexCursor);
+	if (type == "show")
+	{
+		thePlexLibrary.DrillIntoShow(nPlexCursor);
+		nPlexCursorBackup1 = nPlexCursor;
+		nPlexView          = 2;
+		nPlexCursor        = 0;
+		nPlexScroll        = 0;
+		BindActiveList();
+		UpdatePlexList();
+	}
+	else
+	{
+		thePlexLibrary.PlayItem(nPlexCursor);
+	}
+}
+
+
+function EnterSeason()
+{
+	thePlexLibrary.DrillIntoSeason(nPlexCursor);
+	nPlexCursorBackup2 = nPlexCursor;
+	nPlexView          = 3;
+	nPlexCursor        = 0;
+	nPlexScroll        = 0;
+	BindActiveList();
+	UpdatePlexList();
+}
+
+
+function PlayCurrentEpisode()
+{
+	thePlexLibrary.PlayEpisode(nPlexCursor);
+}
+
+
+// B: pop to parent view (restoring its cursor) or out to main menu.
+function GoBackOne()
+{
+	if (nPlexView == 3)
+	{
+		nPlexView   = 2;
+		nPlexCursor = nPlexCursorBackup2;
+		nPlexScroll = 0;
+		BindActiveList();
+		UpdatePlexList();
+	}
+	else if (nPlexView == 2)
+	{
+		nPlexView   = 1;
+		nPlexCursor = nPlexCursorBackup1;
+		nPlexScroll = 0;
+		BindActiveList();
+		UpdatePlexList();
+	}
+	else if (nPlexView == 1)
+	{
+		nPlexView   = 0;
+		nPlexCursor = nPlexCursorBackup0;
+		nPlexScroll = 0;
+		BindActiveList();
+		UpdatePlexList();
+	}
+	else
+	{
+		theMainMenu.GoBackTo();
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////
+// thePlexMenu Level. Uses plex.xip (clone of mediaplayer chrome).
+////////////////////////////////////////////////////////////////////////////
+
+DEF thePlexMenu Level
+{
+	archive "plex.xip"
+	children
+	[
+		Inline
+		{
+			url "plex/default.xap"
+
+			function onLoad()
+			{
+				StartPlexLevel();
+			}
+		}
+	]
+
+	shell Transform
+	{
+		scale 21.504 21.504 21.504
+		translation -44.599998 54.270000 -186.500000
+		children
+		[
+			DEF thePlexMenuWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_01" }
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh { url "Inner_cell-FACES.xm" }
+					}
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_02" }
+						}
+						geometry Sphere { radius 1 }
+					}
+				]
+			}
+		]
+	}
+
+	path DEF thePlexViewpoint Viewpoint
+	{
+		fieldOfView 1.287000
+		orientation 0.015660 0.999900 0.001474 -0.187700
+		position -47.840000 53.889999 -172.199997
+		jump false
+	}
+
+	control Joystick
+	{
+		function OnADown()
+		{
+			PlaySoundA();
+
+			if (thePlexLibrary.IsSyncReady() == 0)
+			{
+				return;
+			}
+
+			if (nPlexCount <= 0)
+				return;
+
+			if (nPlexView == 0)
+				EnterLibrary();
+			else if (nPlexView == 1)
+				EnterItem();
+			else if (nPlexView == 2)
+				EnterSeason();
+			else
+				PlayCurrentEpisode();
+		}
+
+		function OnBDown()
+		{
+			PlaySoundB();
+			GoBackOne();
+		}
+
+		function OnMoveUp()
+		{
+			BindActiveList();
+
+			if (nPlexCursor <= 0)
+			{
+				UpdatePlexList();
+				return;
+			}
+
+			PlaySoundMenuChange();
+			nPlexCursor = nPlexCursor - 1;
+			UpdatePlexList();
+		}
+
+		function OnMoveDown()
+		{
+			BindActiveList();
+
+			if (nPlexCursor >= nPlexCount - 1)
+			{
+				UpdatePlexList();
+				return;
+			}
+
+			PlaySoundMenuChange();
+			nPlexCursor = nPlexCursor + 1;
+			UpdatePlexList();
+		}
+
+		function OnXDown()    { PlaySoundError(); }
+		function OnYDown()
+		{
+			// Y: modal info with full plot. No-op at library view.
+			if (nPlexView == 0)
+			{
+				PlaySoundError();
+				return;
+			}
+			PlaySoundA();
+			var info = thePlexLibrary.GetInfoText(nPlexView, nPlexCursor);
+			if (info == "")
+				info = "No additional information.";
+			TellUser(info, "");
+			// Marquee MessageText if the plot overflows -- height must
+			// be non-zero for the scroll multiplier to kick in.
+			var mc = theMessageInline.children[0];
+			mc.MessageText.height       = 6.0;
+			mc.MessageText.scrollRate   = 0.15;
+			mc.MessageText.scrollDelay  = 2;
+		}
+		function OnWhiteDown(){ PlaySoundError(); }
+		function OnBlackDown(){ PlaySoundError(); }
+	}
+
+	function OnArrival()
+	{
+		EnableInput(true);
+	}
+
+	function OnActivate()
+	{
+		CurrentViewpoint = thePlexViewpoint;
+	}
+
+	// Watchdog: async drill data can land after the scene is shown.
+	// Poll at 2.5Hz, redraw only on count change.
+	behavior
+	{
+		sleep .4;
+		BindActiveList();
+		if (nPlexCount != nPlexLastCount)
+		{
+			UpdatePlexList();
+		}
+	}
+}
+
+
+DEF thePlexLibrary PlexLibrary
+{
+}

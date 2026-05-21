@@ -1,7 +1,5 @@
-// menu_bar.cpp: desktop top-level ImGui menu bar. Drives the
-// Settings, About, and Shortcuts windows. Features (Title Maker,
-// HDD Browser, Media) are always accessible; dev tools (Inspector,
-// XAP Editor) only appear in Development Mode. Desktop-only.
+// menu_bar.cpp: desktop top-level ImGui menu bar + Settings/About/Shortcuts
+// windows. The Development menu only renders in Development Mode.
 
 #include "std.h"
 #include "dashapp.h"
@@ -9,9 +7,15 @@
 #include "title_maker.h"
 #include "hdd_browser.h"
 #include "audio_sdl.h"
+#include "skin_editor.h"
 #include "imgui.h"
+#include "plex_client.h"
+#include "jellyfin_client.h"
+#include "media_player.h"
+#include "milkdrop_window.h"
 
-extern bool g_bWireframe;
+extern bool  g_bWireframe;
+extern float g_masterVolume;
 
 #include <cstdio>
 #include <cstring>
@@ -41,16 +45,17 @@ extern char g_tmdbKey[128];
 // Internal State
 // ============================================================================
 
-static bool s_settingsOpen = false;
+bool g_settingsOpen = false;
 static bool s_aboutOpen = false;
 static bool s_shortcutsOpen = false;
+bool g_projectMConfigOpen = false;
 
 // Old "Open Media..." file-browser removed. Playback now flows through
 // the Media Library (CMediaCollection.PlayMovie/PlayEpisode -> MediaUI
 // fullscreen). The legacy CDVDPlayer XAP scene was painful to wire up
 // and is no longer the desktop's playback path.
 
-void ToggleSettingsWindow() { s_settingsOpen = !s_settingsOpen; }
+void ToggleSettingsWindow() { g_settingsOpen = !g_settingsOpen; }
 
 // ============================================================================
 // CRT Presets
@@ -141,7 +146,7 @@ void RenderMainMenuBar() {
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Settings...", "F4")) {
-            s_settingsOpen = true;
+            g_settingsOpen = true;
         }
         extern bool g_showMenuBar;
         if (ImGui::MenuItem("Hide Menu Bar", "F10")) {
@@ -156,7 +161,7 @@ void RenderMainMenuBar() {
         ImGui::EndMenu();
     }
 
-    // ---- Tools (features always visible, dev tools gated) ----
+    // ---- Tools (shipping tools only; dev tools live under Development) ----
     if (ImGui::BeginMenu("Tools")) {
         if (ImGui::MenuItem("Title Maker", "F3", g_titleMakerOpen)) {
             g_titleMakerOpen = !g_titleMakerOpen;
@@ -168,11 +173,63 @@ void RenderMainMenuBar() {
         if (ImGui::MenuItem("Playlist Maker", "F6", g_playlistMakerOpen)) {
             g_playlistMakerOpen = !g_playlistMakerOpen;
         }
+        if (ImGui::MenuItem("Skin Editor", NULL, g_skinEditorOpen)) {
+            g_skinEditorOpen = !g_skinEditorOpen;
+        }
+        ImGui::EndMenu();
+    }
 
-        // Dev tools only in Development Mode
-        if (g_startupMode == 2 || g_extractedMode) {
-            ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 0.7f), "Development");
+    // ---- View (display only) ----
+    if (ImGui::BeginMenu("View")) {
+        if (ImGui::MenuItem("CRT Effect", NULL, g_crt.enabled)) {
+            g_crt.enabled = !g_crt.enabled;
+            SaveDesktopSettings();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Wireframe", NULL, g_bWireframe)) {
+            g_bWireframe = !g_bWireframe;
+        }
+        if (ImGui::BeginMenu("MSAA")) {
+            for (int i = 0; i < s_msaaCount; i++) {
+                if (ImGui::MenuItem(s_msaaLabels[i], NULL, g_msaaSamples == s_msaaValues[i])) {
+                    g_msaaSamples = s_msaaValues[i];
+                    g_msaaChangeRequested = true;
+                }
+            }
+            ImGui::EndMenu();
+        }
+        ImGui::EndMenu();
+    }
+
+    // ---- Audio ----
+    if (ImGui::BeginMenu("Audio")) {
+        if (ImGui::MenuItem("Mute", "Ctrl+M", g_audioMuted)) {
+            g_audioMuted = !g_audioMuted;
+            if (g_audioMuted) DashAudio_MuteAll();
+            else DashAudio_UnmuteAll();
+            g_muteOverlayTimer = 2.0f;
+        }
+        ImGui::Separator();
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("Volume");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(180.0f);
+        float volPct = g_masterVolume * 100.0f;
+        if (ImGui::SliderFloat("##mastervol", &volPct, 0.0f, 100.0f, "%.0f%%",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+            float v = volPct / 100.0f;
+            DashAudio_SetMasterVolume(v);
+            MediaPlayer_SetMasterVolume(v);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            SaveDesktopSettings();
+        }
+        ImGui::EndMenu();
+    }
+
+    // ---- Development (dev-mode only) ----
+    if (g_startupMode == 2 || g_extractedMode) {
+        if (ImGui::BeginMenu("Development")) {
             if (ImGui::MenuItem("Inspector", "F1", g_debugMode)) {
                 g_debugMode = !g_debugMode;
                 g_inspectorOpen = g_debugMode;
@@ -197,37 +254,8 @@ void RenderMainMenuBar() {
                 else
                     DestroyXapEditorWindow();
             }
-        }
-        ImGui::EndMenu();
-    }
-
-    // ---- View ----
-    if (ImGui::BeginMenu("View")) {
-        if (ImGui::MenuItem("CRT Effect", NULL, g_crt.enabled)) {
-            g_crt.enabled = !g_crt.enabled;
-            SaveDesktopSettings();
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Mute Audio", "Ctrl+M", g_audioMuted)) {
-            g_audioMuted = !g_audioMuted;
-            if (g_audioMuted) DashAudio_MuteAll();
-            else DashAudio_UnmuteAll();
-            g_muteOverlayTimer = 2.0f;
-        }
-        ImGui::Separator();
-        if (ImGui::MenuItem("Wireframe", NULL, g_bWireframe)) {
-            g_bWireframe = !g_bWireframe;
-        }
-        if (ImGui::BeginMenu("MSAA")) {
-            for (int i = 0; i < s_msaaCount; i++) {
-                if (ImGui::MenuItem(s_msaaLabels[i], NULL, g_msaaSamples == s_msaaValues[i])) {
-                    g_msaaSamples = s_msaaValues[i];
-                    g_msaaChangeRequested = true;
-                }
-            }
             ImGui::EndMenu();
         }
-        ImGui::EndMenu();
     }
 
     // ---- Help ----
@@ -250,12 +278,12 @@ void RenderMainMenuBar() {
 // ============================================================================
 
 void RenderSettingsWindow() {
-    if (!s_settingsOpen) return;
+    if (!g_settingsOpen) return;
 
     ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Appearing);
     ImGui::SetNextWindowSizeConstraints(ImVec2(540, 0), ImVec2(540, 800));
     ImGuiWindowFlags settingsFlags = ImGuiWindowFlags_AlwaysAutoResize;
-    if (!ImGui::Begin("Settings", &s_settingsOpen, settingsFlags)) {
+    if (!ImGui::Begin("Settings", &g_settingsOpen, settingsFlags)) {
         ImGui::End();
         return;
     }
@@ -436,8 +464,70 @@ void RenderSettingsWindow() {
             ImGui::EndTabItem();
         }
 
+        // ---- Audio ----
+        if (ImGui::BeginTabItem("Audio")) {
+            ImGui::Spacing();
+
+            if (ImGui::Checkbox("Mute", &g_audioMuted)) {
+                if (g_audioMuted) DashAudio_MuteAll();
+                else DashAudio_UnmuteAll();
+                g_muteOverlayTimer = 2.0f;
+                SaveDesktopSettings();
+            }
+
+            ImGui::Spacing();
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("Master Volume");
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(220.0f);
+            float volPct = g_masterVolume * 100.0f;
+            if (ImGui::SliderFloat("##settingsmastervol", &volPct,
+                                   0.0f, 100.0f, "%.0f%%",
+                                   ImGuiSliderFlags_AlwaysClamp)) {
+                float v = volPct / 100.0f;
+                DashAudio_SetMasterVolume(v);
+                MediaPlayer_SetMasterVolume(v);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Scales dashboard sounds, music, and media\n"
+                                  "playback. Mute overrides this until cleared.");
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            extern bool g_useMilkdropViz;
+            if (ImGui::Checkbox("Use projectM visualizer (experimental)",
+                                &g_useMilkdropViz)) {
+                SaveDesktopSettings();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Replace the legacy music-scene visualizer with the\n"
+                    "projectM (MilkDrop) renderer. X+Y on the music scene\n"
+                    "fullscreens it once enabled.");
+            }
+
+            extern bool g_projectMConfigOpen;
+            if (ImGui::Button("Configure projectM...")) {
+                g_projectMConfigOpen = true;
+            }
+
+            ImGui::EndTabItem();
+        }
+
         // ---- Media Library ----
-        if (ImGui::BeginTabItem("Media Library")) {
+        if (ImGui::BeginTabItem("Media")) {
+            ImGui::Spacing();
+
+            if (ImGui::CollapsingHeader("Local Library", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Spacing();
             ImGui::TextWrapped("Configure where the dashboard scans for media. Empty values fall back to the bundled defaults shown in placeholder text.");
             ImGui::Spacing();
@@ -535,6 +625,162 @@ void RenderSettingsWindow() {
 
             if (ImGui::Button("Save Library Paths"))
                 SaveDesktopSettings();
+            } // Local Library header
+
+            if (ImGui::CollapsingHeader("Plex")) {
+            ImGui::Spacing();
+            ImGui::TextWrapped(
+                "Sign in to your Plex account to browse your libraries from the "
+                "Media -> Plex scene.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            if (Plex_HasToken()) {
+                Plex_StartSync();
+
+                ImGui::TextColored(ImVec4(0.55f, 1.0f, 0.55f, 1.0f),
+                    "Signed in.");
+                ImGui::Spacing();
+
+                if (!Plex_SyncReady()) {
+                    ImGui::Text("%s", Plex_SyncPhase().c_str());
+                    float frac = Plex_SyncProgress() / 1000.0f;
+                    ImGui::ProgressBar(frac, ImVec2(-1, 6.0f), "");
+                    ImGui::Spacing();
+                } else {
+                    ImGui::TextDisabled("Library ready (%d libraries).",
+                        (int)Plex_Cache_GetLibraries().size());
+                    ImGui::Spacing();
+                }
+
+                if (ImGui::Button("Sign out")) {
+                    Plex_SignOut();
+                    SaveDesktopSettings();
+                }
+            } else if (Plex_PinAuthInFlight()) {
+                std::string code = Plex_GetPinCode();
+                if (code.empty()) {
+                    ImGui::Text("Requesting code...");
+                } else {
+                    ImGui::Text("1. Open");
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f),
+                        "plex.tv/link");
+                    ImGui::SameLine();
+                    ImGui::Text("on any device.");
+                    ImGui::Text("2. Enter this code:");
+                    ImGui::Spacing();
+
+                    // Big, centered code display.
+                    ImFont* font = ImGui::GetFont();
+                    float old = font->Scale;
+                    font->Scale = 3.0f;
+                    ImGui::PushFont(font);
+                    ImVec2 sz = ImGui::CalcTextSize(code.c_str());
+                    float avail = ImGui::GetContentRegionAvail().x;
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                        (avail - sz.x) * 0.5f);
+                    ImGui::TextColored(ImVec4(0.85f, 1.0f, 0.85f, 1.0f),
+                        "%s", code.c_str());
+                    ImGui::PopFont();
+                    font->Scale = old;
+                }
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                if (ImGui::Button("Cancel")) Plex_CancelPinAuth();
+            } else {
+                ImGui::TextDisabled("Not signed in.");
+                ImGui::Spacing();
+                if (ImGui::Button("Sign in to Plex")) Plex_StartPinAuth();
+            }
+            } // Plex header
+
+            if (ImGui::CollapsingHeader("Jellyfin")) {
+            ImGui::Spacing();
+            ImGui::TextWrapped(
+                "Sign in to your Jellyfin server. Enter the server URL, then "
+                "use Quick Connect to approve the 6-letter code on the server's "
+                "web UI.");
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            static char s_urlBuf[512];
+            static bool s_urlInit = false;
+            if (!s_urlInit) {
+                std::string cur = Jellyfin_GetServerUrl();
+                strncpy(s_urlBuf, cur.c_str(), sizeof(s_urlBuf) - 1);
+                s_urlBuf[sizeof(s_urlBuf) - 1] = 0;
+                s_urlInit = true;
+            }
+            ImGui::Text("Server URL");
+            ImGui::PushItemWidth(-1);
+            if (ImGui::InputText("##jellyurl", s_urlBuf, sizeof(s_urlBuf))) {
+                Jellyfin_SetServerUrl(s_urlBuf);
+            }
+            ImGui::PopItemWidth();
+            ImGui::Spacing();
+
+            if (Jellyfin_HasToken()) {
+                Jellyfin_StartSync();
+                ImGui::TextColored(ImVec4(0.55f, 1.0f, 0.55f, 1.0f),
+                    "Signed in as %s.", Jellyfin_GetUserName().c_str());
+                ImGui::Spacing();
+
+                if (!Jellyfin_SyncReady()) {
+                    ImGui::Text("%s", Jellyfin_SyncPhase().c_str());
+                    float frac = Jellyfin_SyncProgress() / 1000.0f;
+                    ImGui::ProgressBar(frac, ImVec2(-1, 6.0f), "");
+                    ImGui::Spacing();
+                } else {
+                    ImGui::TextDisabled("Library ready (%d libraries).",
+                        (int)Jellyfin_Cache_GetLibraries().size());
+                    ImGui::Spacing();
+                }
+
+                if (ImGui::Button("Sign out")) {
+                    Jellyfin_SignOut();
+                    SaveDesktopSettings();
+                }
+            } else if (Jellyfin_QuickConnectInFlight()) {
+                std::string code = Jellyfin_GetQuickConnectCode();
+                if (code.empty()) {
+                    ImGui::Text("Requesting code...");
+                } else {
+                    ImGui::Text("1. Open the Jellyfin web UI on any device.");
+                    ImGui::Text("2. Go to your account -> Quick Connect.");
+                    ImGui::Text("3. Enter this code:");
+                    ImGui::Spacing();
+
+                    ImFont* font = ImGui::GetFont();
+                    float old = font->Scale;
+                    font->Scale = 3.0f;
+                    ImGui::PushFont(font);
+                    ImVec2 sz = ImGui::CalcTextSize(code.c_str());
+                    float avail = ImGui::GetContentRegionAvail().x;
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                        (avail - sz.x) * 0.5f);
+                    ImGui::TextColored(ImVec4(0.85f, 1.0f, 0.85f, 1.0f),
+                        "%s", code.c_str());
+                    ImGui::PopFont();
+                    font->Scale = old;
+                }
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Spacing();
+                if (ImGui::Button("Cancel")) Jellyfin_CancelQuickConnect();
+            } else {
+                ImGui::TextDisabled("Not signed in.");
+                ImGui::Spacing();
+                if (s_urlBuf[0] == 0) {
+                    ImGui::TextDisabled("Set a server URL first.");
+                } else if (ImGui::Button("Sign in with Quick Connect")) {
+                    Jellyfin_StartQuickConnect();
+                }
+            }
+            } // Jellyfin header
 
             ImGui::EndTabItem();
         }
@@ -675,3 +921,190 @@ void RenderShortcutsWindow() {
 // No floating panel. Keep this stub so sdl_main.cpp's PreSwap call is a no-op.
 bool s_scanPanelVisible = false;
 void RenderScanProgressModal() {}
+
+// ============================================================================
+// projectM Configuration Window
+// ============================================================================
+
+void RenderProjectMConfig() {
+    extern bool g_useMilkdropViz;
+    static bool s_previewOn = false;
+    if (!g_projectMConfigOpen) {
+        if (s_previewOn) {
+            MilkdropWindow_SetPreviewVisible(false);
+            s_previewOn = false;
+        }
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_Always);
+    if (!ImGui::Begin("Configure projectM", &g_projectMConfigOpen,
+                      ImGuiWindowFlags_AlwaysAutoResize |
+                      ImGuiWindowFlags_NoResize)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!g_useMilkdropViz) {
+        ImGui::TextWrapped(
+            "projectM is disabled. Enable it in the Audio tab first.");
+        ImGui::End();
+        return;
+    }
+
+    // Session controls: lets the user spin projectM up / down without
+    // hunting for the X+Y combo.
+    if (MilkdropWindow_IsOpen()) {
+        if (ImGui::Button("Stop session", ImVec2(120, 0)))
+            MilkdropWindow_Toggle();
+    } else {
+        if (ImGui::Button("Start session", ImVec2(120, 0)))
+            MilkdropWindow_Toggle();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(or hit X+Y)");
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (!MilkdropWindow_IsOpen()) ImGui::BeginDisabled();
+
+    if (ImGui::Button("< Prev", ImVec2(80, 0)))
+        MilkdropWindow_PreviousPreset();
+    ImGui::SameLine();
+    if (ImGui::Button("Next >", ImVec2(80, 0)))
+        MilkdropWindow_NextPreset();
+    ImGui::SameLine();
+    bool locked = MilkdropWindow_GetPresetLocked();
+    if (ImGui::Checkbox("Lock", &locked))
+        MilkdropWindow_SetPresetLocked(locked);
+
+    ImGui::Spacing();
+    int presetCount = MilkdropWindow_GetPresetCount();
+    int curPreset   = MilkdropWindow_GetCurrentPresetIndex();
+    const char* curName = (curPreset >= 0 && curPreset < presetCount)
+        ? MilkdropWindow_GetPresetName(curPreset) : "";
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##presetpicker", curName)) {
+        // Filter
+        static char s_presetFilter[64] = "";
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##presetfilter", "Filter...",
+                                 s_presetFilter, sizeof(s_presetFilter));
+
+        ImGui::BeginChild("PresetList", ImVec2(0, 240), false);
+        for (int i = 0; i < presetCount; i++) {
+            const char* nm = MilkdropWindow_GetPresetName(i);
+            if (!nm || !*nm) continue;
+            if (s_presetFilter[0]) {
+                bool match = false;
+                for (const char* p = nm; *p; p++) {
+                    const char* a = p; const char* b = s_presetFilter;
+                    while (*a && *b && (tolower(*a) == tolower(*b))) { a++; b++; }
+                    if (!*b) { match = true; break; }
+                }
+                if (!match) continue;
+            }
+            bool sel = (i == curPreset);
+            char label[256];
+            snprintf(label, sizeof(label), "%s##p%d", nm, i);
+            if (ImGui::Selectable(label, sel))
+                MilkdropWindow_SetPresetIndex(i);
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndChild();
+        ImGui::EndCombo();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    const float kLabelX = 130.0f;
+    const float kSliderW = 200.0f;
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Beat sensitivity");
+    ImGui::SameLine(kLabelX);
+    ImGui::SetNextItemWidth(kSliderW);
+    float sens = MilkdropWindow_GetBeatSensitivity();
+    if (ImGui::SliderFloat("##sens", &sens, 0.0f, 2.0f, "%.2f"))
+        MilkdropWindow_SetBeatSensitivity(sens);
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Preset duration");
+    ImGui::SameLine(kLabelX);
+    ImGui::SetNextItemWidth(kSliderW);
+    float durf = (float)MilkdropWindow_GetPresetDuration();
+    if (ImGui::SliderFloat("##dur", &durf, 1.0f, 60.0f, "%.0fs"))
+        MilkdropWindow_SetPresetDuration((double)durf);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Checkbox("Show preview window", &s_previewOn))
+        MilkdropWindow_SetPreviewVisible(s_previewOn);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Separate window showing the raw projectM render.\n"
+            "Independent from the fullscreen overlay in the dashboard.");
+    }
+
+    if (!MilkdropWindow_IsOpen()) ImGui::EndDisabled();
+
+    // ---------- Track picker for previewing without the music scene ----------
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Text("Test audio");
+
+    int stCount = DashMusic_GetSoundtrackCount();
+    static int s_stIdx = 0;
+    if (s_stIdx >= stCount) s_stIdx = 0;
+    const char* stName = (stCount > 0) ? DashMusic_GetSoundtrackName(s_stIdx) : "(none)";
+
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##soundtrack", stName ? stName : "(none)")) {
+        for (int i = 0; i < stCount; i++) {
+            const char* nm = DashMusic_GetSoundtrackName(i);
+            bool sel = (i == s_stIdx);
+            if (ImGui::Selectable(nm ? nm : "(?)", sel)) s_stIdx = i;
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    int songCount = (stCount > 0) ? DashMusic_GetSongCount(s_stIdx) : 0;
+    static int s_songIdx = 0;
+    if (s_songIdx >= songCount) s_songIdx = 0;
+
+    ImGui::BeginChild("ProjectMSongs", ImVec2(0, 140), true);
+    for (int i = 0; i < songCount; i++) {
+        const char* nm = DashMusic_GetSongName(s_stIdx, i);
+        bool sel = (i == s_songIdx);
+        char label[128];
+        snprintf(label, sizeof(label), "%s##s%d", nm ? nm : "(?)", i);
+        if (ImGui::Selectable(label, sel))
+            s_songIdx = i;
+    }
+    ImGui::EndChild();
+
+    bool playing = DashAudio_IsMusicPlaying() != 0;
+    if (ImGui::Button(playing ? "Stop" : "Play", ImVec2(80, 0))) {
+        if (playing) {
+            DashAudio_StopMusic(0);
+        } else if (songCount > 0) {
+            const char* path = DashMusic_GetSongPath(s_stIdx, s_songIdx);
+            if (path && *path) {
+                if (DashAudio_LoadMusic(path) == 0)
+                    DashAudio_PlayMusic(0, 0);
+            }
+        }
+    }
+
+    ImGui::End();
+}

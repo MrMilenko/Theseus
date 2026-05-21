@@ -7,3 +7,6 @@
 [submodule "theseus/third-party/bgfx"]
 	path = theseus/third-party/bgfx
 	url = https://github.com/bkaradzic/bgfx.git
+[submodule "theseus/third-party/projectm"]
+	path = theseus/third-party/projectm
+	url = https://github.com/projectM-visualizer/projectm.git
