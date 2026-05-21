@@ -513,10 +513,17 @@ MSYS2 `pacman -S mingw-w64-x86_64-mpv`)
 `brew install curl`; Debian/Ubuntu `sudo apt install libcurl4-openssl-dev`; \
 MSYS2 `pacman -S mingw-w64-x86_64-curl`)
   endif
-  # libprojectM is optional; without it the milkdrop window compiles to stubs.
-  ifeq ($(shell pkg-config --exists libprojectM 2>/dev/null && echo yes),yes)
-    PROJECTM_CFLAGS  := $(shell pkg-config --cflags libprojectM) -DTHESEUS_HAS_MILKDROP=1
-    PROJECTM_LDFLAGS := $(shell pkg-config --libs libprojectM)
+  # libprojectM is vendored as a git submodule under
+  # theseus/third-party/projectm and built into a local prefix by the
+  # `projectm-deps` target below. projectM-4's .pc file declares an
+  # `opengl` pkg-config dep that doesn't exist on macOS (GL is a system
+  # framework), so we look for the install by header presence and use
+  # direct -I/-L flags instead.
+  PROJECTM_PREFIX := $(THESEUS_SRC)/third-party/projectm/install
+  ifneq ($(wildcard $(PROJECTM_PREFIX)/include/projectM-4/projectM.h),)
+    PROJECTM_CFLAGS  := -I$(PROJECTM_PREFIX)/include -DTHESEUS_HAS_MILKDROP=1
+    PROJECTM_LDFLAGS := -L$(PROJECTM_PREFIX)/lib -lprojectM-4 -lprojectM-4-playlist \
+                        -Wl,-rpath,$(PROJECTM_PREFIX)/lib
   else
     PROJECTM_CFLAGS  :=
     PROJECTM_LDFLAGS :=
@@ -870,8 +877,36 @@ shaders-bgfx-dx11:
 	@echo "=== bgfx shaders compiled to $(SHADERS_OUT_DIR)/dx11/ ==="
 
 
-desktop: $(DESKTOP_TARGET)
+desktop: projectm-deps $(DESKTOP_TARGET)
 	@echo "=== desktop build complete: $(DESKTOP_TARGET) ==="
+
+# Build the vendored libprojectM (4.x) into a local prefix the first time
+# it's needed. Absolute path so cmake stores it correctly in its cache and
+# `cmake --install` resolves the prefix from the project root, not the
+# build subdir.
+PROJECTM_SRC    := $(abspath $(THESEUS_SRC)/third-party/projectm)
+PROJECTM_MARKER := $(PROJECTM_SRC)/install/include/projectM-4/projectM.h
+
+.PHONY: projectm-deps projectm-clean
+projectm-deps: $(PROJECTM_MARKER)
+
+$(PROJECTM_MARKER):
+	@if [ ! -f $(PROJECTM_SRC)/CMakeLists.txt ]; then \
+		echo "projectM submodule not initialized; running git submodule update..." ; \
+		(cd $(THESEUS_SRC)/.. && git submodule update --init --recursive --depth 1 $(PROJECTM_SRC)) ; \
+	fi
+	@echo "=== Building libprojectM 4.x (one-time) ==="
+	cd $(PROJECTM_SRC) && cmake -S . -B build \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=$(PROJECTM_SRC)/install \
+		-DENABLE_PLAYLIST=ON \
+		-DENABLE_SDL_UI=OFF \
+		-DENABLE_TESTING=OFF
+	cd $(PROJECTM_SRC) && cmake --build build -j$$(sysctl -n hw.ncpu 2>/dev/null || nproc)
+	cd $(PROJECTM_SRC) && cmake --install build
+
+projectm-clean:
+	rm -rf $(PROJECTM_SRC)/build $(PROJECTM_SRC)/install
 
 $(DESKTOP_TARGET): $(DESKTOP_OBJS)
 	@mkdir -p $(DESKTOP_DIR)
@@ -1030,7 +1065,7 @@ WIN64_LDFLAGS = \
 	$(if $(BGFX),,-lglew32) \
 	-lmpv -lcurl \
 	$(if $(BGFX),,-lopengl32) -lgdi32 -limm32 -lole32 -loleaut32 -lsetupapi -lversion -lwinmm -luuid \
-	-lws2_32 -ldbghelp -lavrt -ldwmapi
+	-lws2_32 -ldbghelp -lavrt -ldwmapi -lcomdlg32
 
 # BGFX=1 on Windows: link Vulkan via bgfx, drop the OpenGL backend.
 # bgfx libs were built from the macOS host with:

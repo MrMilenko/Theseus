@@ -17,6 +17,9 @@
 #include "asset_loader.h"
 #include "audio.h"
 #include "tmap_system.h"
+#ifndef _XBOX
+#include "milkdrop_window.h"
+#endif
 #define FFT_BUFFER_SIZE_LOG 8
 #define FFT_BUFFER_SIZE (1 << FFT_BUFFER_SIZE_LOG)
 typedef short int sound_sample;
@@ -1220,13 +1223,83 @@ void CDynamicTexture::Update()
 #else
 		D3DLOCKED_RECT lr;
 		VERIFYHR(m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD));
-		uint32_t* pDest = (uint32_t*)lr.pBits;
-		uint8_t* pbSrc = (uint8_t*)m_pSurfx->m_pels;
-		int nPels = m_size * m_size;
-		for (int i2 = 0; i2 < nPels; i2 += 1)
+		uint32_t* pBase = (uint32_t*)lr.pBits;
+		// Texture is m_nImageWidth wide but we only fill m_size; respect
+		// the row stride or the data ends up smeared diagonally.
+		int dstStridePx = (lr.Pitch > 0) ? (lr.Pitch / 4) : m_nImageWidth;
+
+		extern bool g_useMilkdropViz;
+		bool hasAudioViz = false;
+		if (g_useMilkdropViz) {
+			int nChildCount2 = m_children.GetLength();
+			for (int ci = 0; ci < nChildCount2; ci++) {
+				CNode* c = m_children.GetNode(ci);
+				if (!c) continue;
+				CNodeClass* nc = c->GetNodeClass();
+				if (nc && nc->m_className &&
+					strcmp(nc->m_className, "AudioVisualizer") == 0)
+				{
+					hasAudioViz = true;
+					break;
+				}
+			}
+		}
+
+		int pmW = 0, pmH = 0;
+		const unsigned char* pmSrc = hasAudioViz
+			? MilkdropWindow_GetReadbackRGBA(&pmW, &pmH) : NULL;
+
+		// FRAME-DEBUG: when projectM toggle is on but window not open, cycle a
+		// solid color tied to TheseusGetNow() so we can SEE per-frame uploads.
+		if (g_useMilkdropViz && hasAudioViz)
 		{
-			uint8_t b = *pbSrc++;
-			*pDest++ = 0xff000000 | rgpe[b];
+			if (pmSrc && pmW > 0 && pmH > 0) {
+				for (int dy = 0; dy < m_size; dy++) {
+					int sy = (dy * pmH) / m_size;
+					const unsigned char* row = pmSrc + sy * pmW * 4;
+					uint32_t* dstRow = pBase + dy * dstStridePx;
+					for (int dx = 0; dx < m_size; dx++) {
+						int sx = (dx * pmW) / m_size;
+						const unsigned char* p = row + sx * 4;
+						dstRow[dx] =  (uint32_t)p[0]
+						           | ((uint32_t)p[1] <<  8)
+						           | ((uint32_t)p[2] << 16)
+						           | 0xff000000u;
+					}
+				}
+			} else {
+				// FRAME-DEBUG: cycle the texture's solid color so we can
+				// see whether per-frame uploads actually reach the GPU.
+				// Toggle should be ON but projectM window NOT open to hit this.
+				extern double TheseusGetNow();
+				float t = (float)TheseusGetNow();
+				uint8_t r = (uint8_t)(127.5f + 127.5f * sinf(t * 2.0f));
+				uint8_t g = (uint8_t)(127.5f + 127.5f * sinf(t * 2.0f + 2.094f));
+				uint8_t b = (uint8_t)(127.5f + 127.5f * sinf(t * 2.0f + 4.188f));
+				uint32_t v = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | 0xff000000u;
+				for (int dy = 0; dy < m_size; dy++) {
+					uint32_t* dstRow = pBase + dy * dstStridePx;
+					for (int dx = 0; dx < m_size; dx++)
+						dstRow[dx] = v;
+				}
+			}
+		}
+		else
+		{
+			uint8_t* pbSrc = (uint8_t*)m_pSurfx->m_pels;
+			for (int dy = 0; dy < m_size; dy++) {
+				uint32_t* dstRow = pBase + dy * dstStridePx;
+				for (int dx = 0; dx < m_size; dx++) {
+					uint8_t b = *pbSrc++;
+					// rgpe[] is D3DCOLOR_ARGB (0xAARRGGBB); convert to
+					// RGBA byte order for the bgfx-backed texture.
+					DWORD argb = rgpe[b];
+					dstRow[dx] = ((argb >> 16) & 0xff)
+					           | (((argb >> 8) & 0xff) <<  8)
+					           | (( argb       & 0xff) << 16)
+					           | 0xff000000u;
+				}
+			}
 		}
 		VERIFYHR(m_surface->UnlockRect(0));
 #endif

@@ -415,6 +415,7 @@ public:
 	float sin(float number);
 	float sqrt(float number);
 	float tan(float number);
+	float projectMEnabled(); // returns 1.0 if desktop has g_useMilkdropViz set
 	CStrObject* itoa(int number);
 
 	float m_E;

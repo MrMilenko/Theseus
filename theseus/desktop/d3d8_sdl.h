@@ -2611,14 +2611,20 @@ public:
         if (tex->m_width == 0 || tex->m_height == 0) return;
         UINT sz = tex->m_width * tex->m_height * 4;
         if (!bgfx::isValid(tex->m_bgfxTex)) {
+            // BLIT_DST on Metal selects shared-storage mode that allows
+            // CPU-side updates via updateTexture2D. Without it bgfx may
+            // place the texture in private GPU memory and silently drop
+            // subsequent CPU writes — dynamic textures (audio visualizer,
+            // any async asset upload) freeze on the first frame.
             tex->m_bgfxTex = bgfx::createTexture2D(
                 (uint16_t)tex->m_width, (uint16_t)tex->m_height,
                 false, 1,
                 bgfx::TextureFormat::RGBA8,
-                BGFX_TEXTURE_NONE,
-                bgfx::copy(tex->m_pixels, sz));
-            tex->m_bgfxDirty = false;
-        } else if (tex->m_bgfxDirty) {
+                BGFX_TEXTURE_BLIT_DST,
+                nullptr);
+            tex->m_bgfxDirty = true;
+        }
+        if (bgfx::isValid(tex->m_bgfxTex) && tex->m_bgfxDirty) {
             bgfx::updateTexture2D(tex->m_bgfxTex, 0, 0, 0, 0,
                 (uint16_t)tex->m_width, (uint16_t)tex->m_height,
                 bgfx::copy(tex->m_pixels, sz));

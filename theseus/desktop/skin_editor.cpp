@@ -26,6 +26,11 @@ extern void ReloadSkin();
 static bool IsStockReadOnly();
 
 // Native OS file picker. Returns empty string on cancel / unsupported.
+#if defined(_WIN32)
+#  include <windows.h>
+#  include <commdlg.h>
+#endif
+
 static std::string PickFile() {
 #if defined(__APPLE__)
     FILE* p = popen(
@@ -38,6 +43,16 @@ static std::string PickFile() {
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r'))
         out.pop_back();
     return out;
+#elif defined(_WIN32)
+    OPENFILENAMEA ofn = {};
+    char path[MAX_PATH] = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFile   = path;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.lpstrTitle  = "Select a replacement asset";
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameA(&ofn)) return std::string(path);
+    return "";
 #elif defined(__linux__)
     FILE* p = popen("zenity --file-selection --title=\"Select a replacement asset\" 2>/dev/null", "r");
     if (!p) return "";

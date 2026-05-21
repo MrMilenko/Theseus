@@ -12,6 +12,7 @@
 #include "plex_client.h"
 #include "jellyfin_client.h"
 #include "media_player.h"
+#include "milkdrop_window.h"
 
 extern bool  g_bWireframe;
 extern float g_masterVolume;
@@ -44,16 +45,17 @@ extern char g_tmdbKey[128];
 // Internal State
 // ============================================================================
 
-static bool s_settingsOpen = false;
+bool g_settingsOpen = false;
 static bool s_aboutOpen = false;
 static bool s_shortcutsOpen = false;
+bool g_projectMConfigOpen = false;
 
 // Old "Open Media..." file-browser removed. Playback now flows through
 // the Media Library (CMediaCollection.PlayMovie/PlayEpisode -> MediaUI
 // fullscreen). The legacy CDVDPlayer XAP scene was painful to wire up
 // and is no longer the desktop's playback path.
 
-void ToggleSettingsWindow() { s_settingsOpen = !s_settingsOpen; }
+void ToggleSettingsWindow() { g_settingsOpen = !g_settingsOpen; }
 
 // ============================================================================
 // CRT Presets
@@ -144,7 +146,7 @@ void RenderMainMenuBar() {
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Settings...", "F4")) {
-            s_settingsOpen = true;
+            g_settingsOpen = true;
         }
         extern bool g_showMenuBar;
         if (ImGui::MenuItem("Hide Menu Bar", "F10")) {
@@ -276,12 +278,12 @@ void RenderMainMenuBar() {
 // ============================================================================
 
 void RenderSettingsWindow() {
-    if (!s_settingsOpen) return;
+    if (!g_settingsOpen) return;
 
     ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Appearing);
     ImGui::SetNextWindowSizeConstraints(ImVec2(540, 0), ImVec2(540, 800));
     ImGuiWindowFlags settingsFlags = ImGuiWindowFlags_AlwaysAutoResize;
-    if (!ImGui::Begin("Settings", &s_settingsOpen, settingsFlags)) {
+    if (!ImGui::Begin("Settings", &g_settingsOpen, settingsFlags)) {
         ImGui::End();
         return;
     }
@@ -493,6 +495,29 @@ void RenderSettingsWindow() {
             if (ImGui::IsItemHovered()) {
                 ImGui::SetTooltip("Scales dashboard sounds, music, and media\n"
                                   "playback. Mute overrides this until cleared.");
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+
+            extern bool g_useMilkdropViz;
+            if (ImGui::Checkbox("Use projectM visualizer (experimental)",
+                                &g_useMilkdropViz)) {
+                SaveDesktopSettings();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "Replace the legacy music-scene visualizer with the\n"
+                    "projectM (MilkDrop) renderer. X+Y on the music scene\n"
+                    "fullscreens it once enabled.");
+            }
+
+            extern bool g_projectMConfigOpen;
+            if (ImGui::Button("Configure projectM...")) {
+                g_projectMConfigOpen = true;
             }
 
             ImGui::EndTabItem();
@@ -896,3 +921,190 @@ void RenderShortcutsWindow() {
 // No floating panel. Keep this stub so sdl_main.cpp's PreSwap call is a no-op.
 bool s_scanPanelVisible = false;
 void RenderScanProgressModal() {}
+
+// ============================================================================
+// projectM Configuration Window
+// ============================================================================
+
+void RenderProjectMConfig() {
+    extern bool g_useMilkdropViz;
+    static bool s_previewOn = false;
+    if (!g_projectMConfigOpen) {
+        if (s_previewOn) {
+            MilkdropWindow_SetPreviewVisible(false);
+            s_previewOn = false;
+        }
+        return;
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(360, 0), ImGuiCond_Always);
+    if (!ImGui::Begin("Configure projectM", &g_projectMConfigOpen,
+                      ImGuiWindowFlags_AlwaysAutoResize |
+                      ImGuiWindowFlags_NoResize)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!g_useMilkdropViz) {
+        ImGui::TextWrapped(
+            "projectM is disabled. Enable it in the Audio tab first.");
+        ImGui::End();
+        return;
+    }
+
+    // Session controls: lets the user spin projectM up / down without
+    // hunting for the X+Y combo.
+    if (MilkdropWindow_IsOpen()) {
+        if (ImGui::Button("Stop session", ImVec2(120, 0)))
+            MilkdropWindow_Toggle();
+    } else {
+        if (ImGui::Button("Start session", ImVec2(120, 0)))
+            MilkdropWindow_Toggle();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(or hit X+Y)");
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (!MilkdropWindow_IsOpen()) ImGui::BeginDisabled();
+
+    if (ImGui::Button("< Prev", ImVec2(80, 0)))
+        MilkdropWindow_PreviousPreset();
+    ImGui::SameLine();
+    if (ImGui::Button("Next >", ImVec2(80, 0)))
+        MilkdropWindow_NextPreset();
+    ImGui::SameLine();
+    bool locked = MilkdropWindow_GetPresetLocked();
+    if (ImGui::Checkbox("Lock", &locked))
+        MilkdropWindow_SetPresetLocked(locked);
+
+    ImGui::Spacing();
+    int presetCount = MilkdropWindow_GetPresetCount();
+    int curPreset   = MilkdropWindow_GetCurrentPresetIndex();
+    const char* curName = (curPreset >= 0 && curPreset < presetCount)
+        ? MilkdropWindow_GetPresetName(curPreset) : "";
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##presetpicker", curName)) {
+        // Filter
+        static char s_presetFilter[64] = "";
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##presetfilter", "Filter...",
+                                 s_presetFilter, sizeof(s_presetFilter));
+
+        ImGui::BeginChild("PresetList", ImVec2(0, 240), false);
+        for (int i = 0; i < presetCount; i++) {
+            const char* nm = MilkdropWindow_GetPresetName(i);
+            if (!nm || !*nm) continue;
+            if (s_presetFilter[0]) {
+                bool match = false;
+                for (const char* p = nm; *p; p++) {
+                    const char* a = p; const char* b = s_presetFilter;
+                    while (*a && *b && (tolower(*a) == tolower(*b))) { a++; b++; }
+                    if (!*b) { match = true; break; }
+                }
+                if (!match) continue;
+            }
+            bool sel = (i == curPreset);
+            char label[256];
+            snprintf(label, sizeof(label), "%s##p%d", nm, i);
+            if (ImGui::Selectable(label, sel))
+                MilkdropWindow_SetPresetIndex(i);
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndChild();
+        ImGui::EndCombo();
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    const float kLabelX = 130.0f;
+    const float kSliderW = 200.0f;
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Beat sensitivity");
+    ImGui::SameLine(kLabelX);
+    ImGui::SetNextItemWidth(kSliderW);
+    float sens = MilkdropWindow_GetBeatSensitivity();
+    if (ImGui::SliderFloat("##sens", &sens, 0.0f, 2.0f, "%.2f"))
+        MilkdropWindow_SetBeatSensitivity(sens);
+
+    ImGui::AlignTextToFramePadding();
+    ImGui::Text("Preset duration");
+    ImGui::SameLine(kLabelX);
+    ImGui::SetNextItemWidth(kSliderW);
+    float durf = (float)MilkdropWindow_GetPresetDuration();
+    if (ImGui::SliderFloat("##dur", &durf, 1.0f, 60.0f, "%.0fs"))
+        MilkdropWindow_SetPresetDuration((double)durf);
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    if (ImGui::Checkbox("Show preview window", &s_previewOn))
+        MilkdropWindow_SetPreviewVisible(s_previewOn);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Separate window showing the raw projectM render.\n"
+            "Independent from the fullscreen overlay in the dashboard.");
+    }
+
+    if (!MilkdropWindow_IsOpen()) ImGui::EndDisabled();
+
+    // ---------- Track picker for previewing without the music scene ----------
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Text("Test audio");
+
+    int stCount = DashMusic_GetSoundtrackCount();
+    static int s_stIdx = 0;
+    if (s_stIdx >= stCount) s_stIdx = 0;
+    const char* stName = (stCount > 0) ? DashMusic_GetSoundtrackName(s_stIdx) : "(none)";
+
+    ImGui::SetNextItemWidth(-1);
+    if (ImGui::BeginCombo("##soundtrack", stName ? stName : "(none)")) {
+        for (int i = 0; i < stCount; i++) {
+            const char* nm = DashMusic_GetSoundtrackName(i);
+            bool sel = (i == s_stIdx);
+            if (ImGui::Selectable(nm ? nm : "(?)", sel)) s_stIdx = i;
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    int songCount = (stCount > 0) ? DashMusic_GetSongCount(s_stIdx) : 0;
+    static int s_songIdx = 0;
+    if (s_songIdx >= songCount) s_songIdx = 0;
+
+    ImGui::BeginChild("ProjectMSongs", ImVec2(0, 140), true);
+    for (int i = 0; i < songCount; i++) {
+        const char* nm = DashMusic_GetSongName(s_stIdx, i);
+        bool sel = (i == s_songIdx);
+        char label[128];
+        snprintf(label, sizeof(label), "%s##s%d", nm ? nm : "(?)", i);
+        if (ImGui::Selectable(label, sel))
+            s_songIdx = i;
+    }
+    ImGui::EndChild();
+
+    bool playing = DashAudio_IsMusicPlaying() != 0;
+    if (ImGui::Button(playing ? "Stop" : "Play", ImVec2(80, 0))) {
+        if (playing) {
+            DashAudio_StopMusic(0);
+        } else if (songCount > 0) {
+            const char* path = DashMusic_GetSongPath(s_stIdx, s_songIdx);
+            if (path && *path) {
+                if (DashAudio_LoadMusic(path) == 0)
+                    DashAudio_PlayMusic(0, 0);
+            }
+        }
+    }
+
+    ImGui::End();
+}

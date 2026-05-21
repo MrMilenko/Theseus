@@ -32,6 +32,7 @@ START_NODE_FUN(CMathClass, CNodeClass)
 	NODE_FUN_NN(sin)
 	NODE_FUN_NN(sqrt)
 	NODE_FUN_NN(tan)
+	NODE_FUN_NV(projectMEnabled)
 	NODE_FUN_SI(itoa)
 END_NODE_FUN()
 #undef _FND_CLASS
@@ -78,6 +79,14 @@ float CMathClass::min(float a, float b) { return (a < b) ? a : b; }
 
 float CMathClass::random() { return (float)rand() / (float)RAND_MAX; }
 float CMathClass::round(float n) { return (float)((int)(n + 0.5f)); }
+
+// Desktop-only feature flag readable from XAP scripts so the music scene
+// can defer to the projectM overlay rather than running its own fullscreen
+// viewpoint switch. Xbox defines g_useMilkdropViz as a constant false.
+float CMathClass::projectMEnabled() {
+	extern bool g_useMilkdropViz;
+	return g_useMilkdropViz ? 1.0f : 0.0f;
+}
 
 // =========================================================================
 // Integer to string conversion for XAP scripts
