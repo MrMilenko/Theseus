@@ -526,8 +526,13 @@ MSYS2 `pacman -S mingw-w64-x86_64-curl`)
   # a clean checkout to silently ship a no-milkdrop binary.)
   PROJECTM_PREFIX := $(THESEUS_SRC)/third-party/projectm/install
   PROJECTM_CFLAGS  := -I$(PROJECTM_PREFIX)/include -DTHESEUS_HAS_MILKDROP=1
+  ifeq ($(UNAME_S),Darwin)
+    PROJECTM_RPATH := -Wl,-rpath,@loader_path/lib
+  else
+    PROJECTM_RPATH := '-Wl,-rpath,$$ORIGIN/lib'
+  endif
   PROJECTM_LDFLAGS := -L$(PROJECTM_PREFIX)/lib -lprojectM-4 -lprojectM-4-playlist \
-                      -Wl,-rpath,$(PROJECTM_PREFIX)/lib
+                      $(PROJECTM_RPATH)
 endif
 CDAUDIO_CFLAGS  := $(MPV_CFLAGS)
 CDAUDIO_LDFLAGS :=
@@ -909,8 +914,14 @@ projectm-clean:
 	rm -rf $(PROJECTM_SRC)/build $(PROJECTM_SRC)/install
 
 $(DESKTOP_TARGET): $(DESKTOP_OBJS)
-	@mkdir -p $(DESKTOP_DIR)
+	@mkdir -p $(DESKTOP_DIR) $(DESKTOP_DIR)/lib
 	$(DESKTOP_CXX) -o $@ $(DESKTOP_OBJS) $(DESKTOP_LDFLAGS)
+	@# Bundle projectM shared libs next to the binary so @loader_path/lib
+	@# (macOS) and $ORIGIN/lib (Linux) resolve at runtime regardless of cwd.
+	@for f in $(PROJECTM_PREFIX)/lib/libprojectM-4*.dylib \
+	          $(PROJECTM_PREFIX)/lib/libprojectM-4*.so* ; do \
+		[ -e "$$f" ] && cp -a "$$f" $(DESKTOP_DIR)/lib/ || true ; \
+	done; true
 	@# Configs/, Data/, Library/ live next to the binary at runtime; the
 	@# binary CWDs into its own directory and resolves Xbox C:/Q:/E:
 	@# paths through them. Prefer rsync for fast incrementals; fall back

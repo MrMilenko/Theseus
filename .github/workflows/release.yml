@@ -47,13 +47,16 @@ jobs:
 
       - name: Package
         # macOS users are expected to have Homebrew SDL2/mpv/curl installed.
-        # We ship the binary + Configs/Data/Library + version stamp; dylibs come from brew.
+        # We ship the binary + Configs/Data/Library + version stamp; SDL/mpv/curl
+        # dylibs come from brew. projectM dylibs come bundled in lib/ next to the
+        # binary (Makefile drops them there for @loader_path/lib).
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-macos"
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
           for D in Configs Data Library; do cp -R ~/builds/theseus/desktop/$D "${DROP}/$D"; done
+          if [ -d ~/builds/theseus/desktop/lib ]; then cp -R ~/builds/theseus/desktop/lib "${DROP}/lib"; fi
           zip -r "${DROP}.zip" "${DROP}"
           echo "ARCHIVE=${DROP}.zip" >> "$GITHUB_ENV"
 
@@ -103,6 +106,7 @@ jobs:
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
           for D in Configs Data Library; do cp -R ~/builds/theseus/desktop/$D "${DROP}/$D"; done
+          if [ -d ~/builds/theseus/desktop/lib ]; then cp -R ~/builds/theseus/desktop/lib "${DROP}/lib"; fi
           tar czf "${DROP}.tar.gz" "${DROP}"
           echo "ARCHIVE=${DROP}.tar.gz" >> "$GITHUB_ENV"
 
@@ -164,6 +168,7 @@ jobs:
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
           for D in Configs Data Library; do cp -R ~/builds/theseus/desktop/$D "${DROP}/$D"; done
+          if [ -d ~/builds/theseus/desktop/lib ]; then cp -R ~/builds/theseus/desktop/lib "${DROP}/lib"; fi
           tar czf "${DROP}.tar.gz" "${DROP}"
           echo "ARCHIVE=${DROP}.tar.gz" >> "$GITHUB_ENV"
 
