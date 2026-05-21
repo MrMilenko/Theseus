@@ -517,17 +517,17 @@ MSYS2 `pacman -S mingw-w64-x86_64-curl`)
   # theseus/third-party/projectm and built into a local prefix by the
   # `projectm-deps` target below. projectM-4's .pc file declares an
   # `opengl` pkg-config dep that doesn't exist on macOS (GL is a system
-  # framework), so we look for the install by header presence and use
-  # direct -I/-L flags instead.
+  # framework), so we use direct -I/-L flags instead.
+  #
+  # No header-presence gate: `desktop` has a hard prereq on
+  # `projectm-deps`, so the prefix is guaranteed populated by the time
+  # the .cpp compile rule fires. (A previous version gated on a
+  # parse-time wildcard, which caused first-time `make desktop` runs on
+  # a clean checkout to silently ship a no-milkdrop binary.)
   PROJECTM_PREFIX := $(THESEUS_SRC)/third-party/projectm/install
-  ifneq ($(wildcard $(PROJECTM_PREFIX)/include/projectM-4/projectM.h),)
-    PROJECTM_CFLAGS  := -I$(PROJECTM_PREFIX)/include -DTHESEUS_HAS_MILKDROP=1
-    PROJECTM_LDFLAGS := -L$(PROJECTM_PREFIX)/lib -lprojectM-4 -lprojectM-4-playlist \
-                        -Wl,-rpath,$(PROJECTM_PREFIX)/lib
-  else
-    PROJECTM_CFLAGS  :=
-    PROJECTM_LDFLAGS :=
-  endif
+  PROJECTM_CFLAGS  := -I$(PROJECTM_PREFIX)/include -DTHESEUS_HAS_MILKDROP=1
+  PROJECTM_LDFLAGS := -L$(PROJECTM_PREFIX)/lib -lprojectM-4 -lprojectM-4-playlist \
+                      -Wl,-rpath,$(PROJECTM_PREFIX)/lib
 endif
 CDAUDIO_CFLAGS  := $(MPV_CFLAGS)
 CDAUDIO_LDFLAGS :=
@@ -1007,6 +1007,18 @@ MPV_MINGW_LIB    = $(MPV_MINGW_DIR)
 CURL_MINGW_INC   = $(CURL_MINGW_DIR)/include
 CURL_MINGW_LIB   = $(CURL_MINGW_DIR)/lib
 
+# libprojectM 4.x for Windows cross. Built by the `projectm-deps-win64`
+# target below into a separate install-win64/ prefix (kept apart from
+# the native install/ prefix so both can coexist). Unlike the native
+# desktop branch, we don't gate on header presence: desktop-win64 has
+# a hard prereq on projectm-deps-win64, so the prefix is guaranteed
+# populated by the time .cpp compilation fires. -I is silently ignored
+# for missing dirs at parse time, so this is safe even on clean checkout.
+PROJECTM_WIN64_PREFIX := $(abspath $(THESEUS_SRC)/third-party/projectm/install-win64)
+PROJECTM_WIN64_CFLAGS  := -I$(PROJECTM_WIN64_PREFIX)/include -DTHESEUS_HAS_MILKDROP=1
+PROJECTM_WIN64_LDFLAGS := -L$(PROJECTM_WIN64_PREFIX)/lib \
+                          -lprojectM-4 -lprojectM-4-playlist
+
 # DESKTOP_CFLAGS but with the mingw SDL2 / mpv / curl paths instead of
 # the macOS ones, and SDL_MAIN_HANDLED so SDL2 doesn't try to substitute
 # its own main().
@@ -1033,6 +1045,7 @@ WIN64_CFLAGS = \
 	-I$(THESEUS_SRC)/shared \
 	-I$(THESEUS_SRC)/engine \
 	-I$(THESEUS_SRC)/render \
+	$(PROJECTM_WIN64_CFLAGS) \
 	-Wno-write-strings \
 	-Wno-deprecated-declarations \
 	-Wno-reorder \
@@ -1064,7 +1077,8 @@ WIN64_LDFLAGS = \
 	-lmingw32 -lSDL2main -lSDL2 -lSDL2_mixer \
 	$(if $(BGFX),,-lglew32) \
 	-lmpv -lcurl \
-	$(if $(BGFX),,-lopengl32) -lgdi32 -limm32 -lole32 -loleaut32 -lsetupapi -lversion -lwinmm -luuid \
+	$(PROJECTM_WIN64_LDFLAGS) \
+	-lopengl32 -lgdi32 -limm32 -lole32 -loleaut32 -lsetupapi -lversion -lwinmm -luuid \
 	-lws2_32 -ldbghelp -lavrt -ldwmapi -lcomdlg32
 
 # BGFX=1 on Windows: link Vulkan via bgfx, drop the OpenGL backend.
@@ -1107,10 +1121,40 @@ WIN64_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(WIN64_DIR)/%.o,$(WIN64_SRCS))
 WIN64_DEPS = $(WIN64_OBJS:.o=.d)
 -include $(WIN64_DEPS)
 
-.PHONY: desktop-win64 desktop-win64-clean
+.PHONY: desktop-win64 desktop-win64-clean projectm-deps-win64 projectm-win64-clean
 
-desktop-win64: $(WIN64_TARGET)
+desktop-win64: projectm-deps-win64 $(WIN64_TARGET)
 	@echo "=== windows cross-compile complete: $(WIN64_TARGET) ==="
+
+# Cross-build libprojectM 4.x for Windows via mingw-w64. Uses the cmake
+# toolchain file in build/cmake-toolchains/ and installs into a
+# Windows-specific prefix so it doesn't collide with the native install
+# (which the host's `desktop` target reads).
+PROJECTM_WIN64_MARKER := $(PROJECTM_WIN64_PREFIX)/include/projectM-4/projectM.h
+PROJECTM_WIN64_TOOLCHAIN := $(abspath $(THESEUS_SRC)/../build/cmake-toolchains/mingw-w64-x86_64.cmake)
+
+projectm-deps-win64: $(PROJECTM_WIN64_MARKER)
+
+$(PROJECTM_WIN64_MARKER):
+	@if [ ! -f $(PROJECTM_SRC)/CMakeLists.txt ]; then \
+		echo "projectM submodule not initialized; running git submodule update..." ; \
+		(cd $(THESEUS_SRC)/.. && git submodule update --init --recursive --depth 1 $(PROJECTM_SRC)) ; \
+	fi
+	@echo "=== Cross-building libprojectM 4.x for Windows x64 (one-time) ==="
+	cd $(PROJECTM_SRC) && cmake -S . -B build-win64 \
+		-DCMAKE_TOOLCHAIN_FILE=$(PROJECTM_WIN64_TOOLCHAIN) \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=$(PROJECTM_WIN64_PREFIX) \
+		-DBUILD_SHARED_LIBS=ON \
+		-DENABLE_PLAYLIST=ON \
+		-DENABLE_SDL_UI=OFF \
+		-DENABLE_TESTING=OFF
+	cd $(PROJECTM_SRC) && cmake --build build-win64 \
+		-j$$(sysctl -n hw.ncpu 2>/dev/null || nproc)
+	cd $(PROJECTM_SRC) && cmake --install build-win64
+
+projectm-win64-clean:
+	rm -rf $(PROJECTM_SRC)/build-win64 $(PROJECTM_WIN64_PREFIX)
 
 $(WIN64_TARGET): $(WIN64_OBJS)
 	@mkdir -p $(WIN64_DIR)
@@ -1118,13 +1162,21 @@ $(WIN64_TARGET): $(WIN64_OBJS)
 	@# Bundle every DLL the exe needs so the build directory is a self-
 	@# contained Windows drop. -static-libgcc -static-libstdc++ folds the
 	@# core runtime in; SDL2 / SDL2_mixer / libmpv / libcurl / libwinpthread
-	@# are dynamic and have to ship alongside.
+	@# / libprojectM are dynamic and have to ship alongside.
 	@cp $(SDL2_MINGW_BIN)/SDL2.dll $(WIN64_DIR)/
 	@cp $(MIXER_MINGW_BIN)/SDL2_mixer.dll $(WIN64_DIR)/
 	@cp $(WIN64_PTHREAD_DLL) $(WIN64_DIR)/
 	@if [ -f $(MPV_MINGW_DIR)/libmpv-2.dll ]; then cp $(MPV_MINGW_DIR)/libmpv-2.dll $(WIN64_DIR)/; fi
 	@for f in $(CURL_MINGW_DIR)/bin/libcurl*.dll $(CURL_MINGW_DIR)/libcurl*.dll; do \
 		[ -f "$$f" ] && cp "$$f" $(WIN64_DIR)/ || true ; \
+	done; true
+	@# projectM cmake puts shared libs in install/bin on mingw and in
+	@# install/lib on UNIX-style sysroots; copy from whichever exists.
+	@for D in $(PROJECTM_WIN64_PREFIX)/bin $(PROJECTM_WIN64_PREFIX)/lib; do \
+		[ -d "$$D" ] || continue ; \
+		for f in $$D/libprojectM-4*.dll $$D/projectM-4*.dll; do \
+			[ -f "$$f" ] && cp "$$f" $(WIN64_DIR)/ || true ; \
+		done ; \
 	done; true
 	@for D in Configs Data Library; do \
 		if command -v rsync >/dev/null 2>&1; then \
@@ -1147,7 +1199,7 @@ $(WIN64_DIR)/%.o: $(THESEUS_SRC)/%.cpp
 	@mkdir -p $(dir $@)
 	$(WIN64_CXX) $(WIN64_CFLAGS) -c -o $@ $<
 
-desktop-win64-clean:
+desktop-win64-clean: projectm-win64-clean
 	rm -rf $(WIN64_DIR)
 
 # ============================================================
@@ -1194,6 +1246,17 @@ LINUX_ARM64_MPV_LDFLAGS := $(shell $(LINUX_ARM64_PKG_CONFIG) --libs mpv 2>/dev/n
 LINUX_ARM64_CURL_CFLAGS := $(shell $(LINUX_ARM64_PKG_CONFIG) --cflags libcurl 2>/dev/null)
 LINUX_ARM64_CURL_LDFLAGS:= $(shell $(LINUX_ARM64_PKG_CONFIG) --libs libcurl 2>/dev/null)
 
+# libprojectM 4.x for the Linux ARM64 cross. Built by the
+# `projectm-deps-linux-arm64` target below into install-linux-arm64/.
+# CI runs Linux ARM64 on a native ARM runner via the regular `desktop`
+# target, so this prefix is only ever populated when someone is
+# cross-compiling locally from an x86_64 Linux host.
+PROJECTM_LINUX_ARM64_PREFIX := $(abspath $(THESEUS_SRC)/third-party/projectm/install-linux-arm64)
+PROJECTM_LINUX_ARM64_CFLAGS  := -I$(PROJECTM_LINUX_ARM64_PREFIX)/include -DTHESEUS_HAS_MILKDROP=1
+PROJECTM_LINUX_ARM64_LDFLAGS := -L$(PROJECTM_LINUX_ARM64_PREFIX)/lib \
+                                -lprojectM-4 -lprojectM-4-playlist \
+                                '-Wl,-rpath,$$ORIGIN/lib'
+
 LINUX_ARM64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
@@ -1213,6 +1276,7 @@ LINUX_ARM64_CFLAGS = \
 	-I$(THESEUS_SRC)/render \
 	$(LINUX_ARM64_MPV_CFLAGS) \
 	$(LINUX_ARM64_CURL_CFLAGS) \
+	$(PROJECTM_LINUX_ARM64_CFLAGS) \
 	-Wno-write-strings \
 	-Wno-deprecated-declarations \
 	-Wno-reorder \
@@ -1232,6 +1296,7 @@ LINUX_ARM64_LDFLAGS = \
 	-lGL \
 	$(LINUX_ARM64_MPV_LDFLAGS) \
 	$(LINUX_ARM64_CURL_LDFLAGS) \
+	$(PROJECTM_LINUX_ARM64_LDFLAGS) \
 	-lm -ldl -lpthread
 
 # Same source list as desktop. the compiler reads the same files.
@@ -1239,10 +1304,39 @@ LINUX_ARM64_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(LINUX_ARM64_DIR)/%.o,$(DESK
 LINUX_ARM64_DEPS = $(LINUX_ARM64_OBJS:.o=.d)
 -include $(LINUX_ARM64_DEPS)
 
-.PHONY: desktop-linux-arm64 desktop-linux-arm64-clean
+.PHONY: desktop-linux-arm64 desktop-linux-arm64-clean projectm-deps-linux-arm64 projectm-linux-arm64-clean
 
-desktop-linux-arm64: $(LINUX_ARM64_TARGET)
+desktop-linux-arm64: projectm-deps-linux-arm64 $(LINUX_ARM64_TARGET)
 	@echo "=== linux arm64 cross-compile complete: $(LINUX_ARM64_TARGET) ==="
+
+# Cross-build libprojectM 4.x for Linux ARM64 via aarch64-linux-gnu-{gcc,g++}.
+# Same shape as the Win64 path; install prefix kept separate so x86_64
+# host and aarch64 target sysroots don't collide.
+PROJECTM_LINUX_ARM64_MARKER    := $(PROJECTM_LINUX_ARM64_PREFIX)/include/projectM-4/projectM.h
+PROJECTM_LINUX_ARM64_TOOLCHAIN := $(abspath $(THESEUS_SRC)/../build/cmake-toolchains/aarch64-linux-gnu.cmake)
+
+projectm-deps-linux-arm64: $(PROJECTM_LINUX_ARM64_MARKER)
+
+$(PROJECTM_LINUX_ARM64_MARKER):
+	@if [ ! -f $(PROJECTM_SRC)/CMakeLists.txt ]; then \
+		echo "projectM submodule not initialized; running git submodule update..." ; \
+		(cd $(THESEUS_SRC)/.. && git submodule update --init --recursive --depth 1 $(PROJECTM_SRC)) ; \
+	fi
+	@echo "=== Cross-building libprojectM 4.x for Linux ARM64 (one-time) ==="
+	cd $(PROJECTM_SRC) && cmake -S . -B build-linux-arm64 \
+		-DCMAKE_TOOLCHAIN_FILE=$(PROJECTM_LINUX_ARM64_TOOLCHAIN) \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX=$(PROJECTM_LINUX_ARM64_PREFIX) \
+		-DBUILD_SHARED_LIBS=ON \
+		-DENABLE_PLAYLIST=ON \
+		-DENABLE_SDL_UI=OFF \
+		-DENABLE_TESTING=OFF
+	cd $(PROJECTM_SRC) && cmake --build build-linux-arm64 \
+		-j$$(sysctl -n hw.ncpu 2>/dev/null || nproc)
+	cd $(PROJECTM_SRC) && cmake --install build-linux-arm64
+
+projectm-linux-arm64-clean:
+	rm -rf $(PROJECTM_SRC)/build-linux-arm64 $(PROJECTM_LINUX_ARM64_PREFIX)
 
 $(LINUX_ARM64_TARGET): $(LINUX_ARM64_OBJS)
 	@mkdir -p $(LINUX_ARM64_DIR)
@@ -1256,11 +1350,17 @@ $(LINUX_ARM64_TARGET): $(LINUX_ARM64_OBJS)
 			cp -R $(THESEUS_SRC)/../$$D/. $(LINUX_ARM64_DIR)/$$D/; \
 		fi; \
 	done
-	@echo "    (synced Configs/Data/Library -> $(LINUX_ARM64_DIR))"
+	@# Bundle projectM .so files next to the binary under lib/ so the
+	@# $ORIGIN/lib rpath in PROJECTM_LINUX_ARM64_LDFLAGS resolves at runtime.
+	@mkdir -p $(LINUX_ARM64_DIR)/lib
+	@for f in $(PROJECTM_LINUX_ARM64_PREFIX)/lib/libprojectM-4*.so* ; do \
+		[ -e "$$f" ] && cp -a "$$f" $(LINUX_ARM64_DIR)/lib/ || true ; \
+	done; true
+	@echo "    (synced Configs/Data/Library + projectM .so -> $(LINUX_ARM64_DIR))"
 
 $(LINUX_ARM64_DIR)/%.o: $(THESEUS_SRC)/%.cpp
 	@mkdir -p $(dir $@)
 	$(LINUX_ARM64_CXX) $(LINUX_ARM64_CFLAGS) -c -o $@ $<
 
-desktop-linux-arm64-clean:
+desktop-linux-arm64-clean: projectm-linux-arm64-clean
 	rm -rf $(LINUX_ARM64_DIR)

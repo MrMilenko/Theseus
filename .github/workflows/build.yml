@@ -63,11 +63,14 @@ jobs:
           submodules: recursive
 
       - name: Install deps
+        # libgl-dev: needed by projectM's cmake FindOpenGL probe even
+        # though the running binary uses bgfx/Vulkan.
+        # cmake: GitHub runners preinstall it, but make it explicit.
         run: |
           sudo apt update
-          sudo apt install -y build-essential pkg-config \
+          sudo apt install -y build-essential pkg-config cmake \
                               libsdl2-dev libsdl2-mixer-dev \
-                              libvulkan-dev libx11-dev \
+                              libvulkan-dev libx11-dev libgl-dev \
                               libmpv-dev libcurl4-openssl-dev
 
       - name: Stub Configs/Data/Library
@@ -102,11 +105,13 @@ jobs:
           submodules: recursive
 
       - name: Install deps
+        # libgl-dev: needed by projectM's cmake FindOpenGL probe.
+        # cmake: GitHub runners preinstall it, but make it explicit.
         run: |
           sudo apt update
-          sudo apt install -y build-essential pkg-config \
+          sudo apt install -y build-essential pkg-config cmake \
                               libsdl2-dev libsdl2-mixer-dev \
-                              libvulkan-dev libx11-dev \
+                              libvulkan-dev libx11-dev libgl-dev \
                               libmpv-dev libcurl4-openssl-dev
 
       - name: Stub Configs/Data/Library

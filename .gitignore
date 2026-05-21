@@ -55,9 +55,9 @@ MediaDB.cache
 # xiptool extract scratch dirs. Source-of-truth for xap files lives in
 # xips-source/; Data/Xips/<name>/ only exists as a pack staging area
 # (xiptool names .xip after its input folder) or as leftover from
-# `xiptool extract`.
-Data/Xips/default/
-Data/Xips/default-xbox/
+# `xiptool extract`. Tracked .xip artifacts (Data/Xips/*.xip) still
+# commit normally — only the unpacked subdirectories are ignored.
+Data/Xips/*/
 
 # bgfx build artifacts (Phase 2 of D3D audit). Submodule sources live
 # at theseus/third-party/{bx,bimg,bgfx}/; their .build/ output is
