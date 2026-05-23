@@ -58,6 +58,7 @@ extern float g_nEffectAlpha;
 bool g_bWireframe = false;
 bool g_bMovingScreen = true;
 bool g_useMilkdropViz = false; // desktop-only; constant false on Xbox
+bool g_showAlbumCover = false; // desktop-only; constant false on Xbox
 
 // DVD Closed Captioning stubs (not used).
 extern "C" void __stdcall D3DDevice_EnableCC(int) {}

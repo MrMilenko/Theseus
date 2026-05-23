@@ -21,9 +21,12 @@
 #endif
 #else
 #include <dirent.h>
+#include <unistd.h>
 #endif
 
 #include "audio_sdl.h"
+#include "stb_image.h"
+#include <mpv/client.h>
 
 // ---------------------------------------------------------------------------
 // Xbox IMA ADPCM decoder (format tag 0x0069)
@@ -303,19 +306,60 @@ static bool   s_musicPaused     = false;
 // Music collection database
 // ---------------------------------------------------------------------------
 struct Song {
-    std::string name;     // display name (filename without extension)
-    std::string path;     // full filesystem path
-    int         duration; // seconds, 0 if unknown
+    std::string name;
+    std::string path;
+    int         duration = 0;
+    std::string title;
+    std::string artist;
+    std::string album;
+    int         trackNumber = 0;
+    long long   mtime = 0;
+    bool        probed = false;
 };
 
 struct Soundtrack {
     int                 id;
     std::string         name;
     std::vector<Song>   songs;
+    std::string         albumPath;
+    int                 albumW = 0;
+    int                 albumH = 0;
+    std::vector<unsigned char> albumRGBA;
 };
 
 static std::vector<Soundtrack> s_soundtracks;
-static char s_fmtBuf[32]; // for FormatTime
+static int  s_currentSoundtrackIdx = -1;
+static char s_fmtBuf[32];
+static std::vector<char> s_displayBuf;
+
+static bool IsAlbumArtFile(const char* name)
+{
+    if (!name) return false;
+    if (!(  (name[0]=='a'||name[0]=='A')
+         && (name[1]=='l'||name[1]=='L')
+         && (name[2]=='b'||name[2]=='B')
+         && (name[3]=='u'||name[3]=='U')
+         && (name[4]=='m'||name[4]=='M')
+         && name[5]=='.')) return false;
+    const char* ext = name + 6;
+    char low[8] = {};
+    for (int i = 0; i < 7 && ext[i]; i++)
+        low[i] = (char)tolower((unsigned char)ext[i]);
+    return strcmp(low,"png")==0 || strcmp(low,"jpg")==0 ||
+           strcmp(low,"jpeg")==0 || strcmp(low,"bmp")==0 ||
+           strcmp(low,"tga")==0 || strcmp(low,"gif")==0;
+}
+
+static bool IsGenericImageFile(const char* name)
+{
+    if (!name) return false;
+    const char* dot = strrchr(name, '.');
+    if (!dot) return false;
+    char low[8] = {};
+    for (int i = 0; i < 7 && dot[1+i]; i++)
+        low[i] = (char)tolower((unsigned char)dot[1+i]);
+    return strcmp(low,"jpg")==0 || strcmp(low,"jpeg")==0 || strcmp(low,"png")==0;
+}
 
 // Helper: check if a filename has an audio extension
 static bool IsAudioFile(const char* name)
@@ -601,6 +645,16 @@ int DashAudio_LoadMusic(const char* path)
     if (!s_initialized || !path) return -1;
 
     DashAudio_FreeMusic();
+    s_currentSoundtrackIdx = -1;
+    for (size_t i = 0; i < s_soundtracks.size(); i++) {
+        for (size_t j = 0; j < s_soundtracks[i].songs.size(); j++) {
+            if (s_soundtracks[i].songs[j].path == path) {
+                s_currentSoundtrackIdx = (int)i;
+                break;
+            }
+        }
+        if (s_currentSoundtrackIdx >= 0) break;
+    }
     s_music = Mix_LoadMUS(path);
     if (!s_music) {
         fprintf(stderr, "[Audio] Failed to load music '%s': %s\n", path, Mix_GetError());
@@ -699,16 +753,306 @@ double DashAudio_GetMusicDuration(void)
 }
 
 // ---------------------------------------------------------------------------
+// mpv tag probe. Sequential one-file-at-a-time, intended to run on a
+// background thread. Caller owns lifetime of the mpv handle.
+
+static mpv_handle* ProbeMpv_Create()
+{
+    mpv_handle* h = mpv_create();
+    if (!h) return NULL;
+    mpv_set_option_string(h, "vo",            "null");
+    mpv_set_option_string(h, "ao",            "null");
+    mpv_set_option_string(h, "pause",         "yes");
+    mpv_set_option_string(h, "idle",          "yes");
+    mpv_set_option_string(h, "audio-display", "no");
+    mpv_set_option_string(h, "quiet",         "yes");
+    mpv_set_option_string(h, "msg-level",     "all=no");
+    if (mpv_initialize(h) < 0) { mpv_destroy(h); return NULL; }
+    return h;
+}
+
+static void ProbeMpv_Destroy(mpv_handle* h)
+{
+    if (h) mpv_destroy(h);
+}
+
+static std::string MpvGetString(mpv_handle* h, const char* prop)
+{
+    char* s = mpv_get_property_string(h, prop);
+    if (!s) return std::string();
+    std::string out(s);
+    mpv_free(s);
+    return out;
+}
+
+static int MetadataLookup(mpv_node* meta, const char* key, std::string* out)
+{
+    if (!meta || meta->format != MPV_FORMAT_NODE_MAP) return 0;
+    for (int i = 0; i < meta->u.list->num; i++) {
+        const char* k = meta->u.list->keys[i];
+        if (!k) continue;
+        if (strcasecmp(k, key) != 0) continue;
+        mpv_node* v = &meta->u.list->values[i];
+        if (v->format == MPV_FORMAT_STRING && v->u.string) {
+            *out = v->u.string;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static bool ProbeSong(mpv_handle* h, const std::string& path, Song& out)
+{
+    if (!h) return false;
+    const char* cmd[] = { "loadfile", path.c_str(), "replace", NULL };
+    if (mpv_command(h, cmd) < 0) return false;
+
+    // Wait for FILE_LOADED or END_FILE (the latter on probe failure).
+    for (;;) {
+        mpv_event* ev = mpv_wait_event(h, 5.0);
+        if (!ev) break;
+        if (ev->event_id == MPV_EVENT_FILE_LOADED) break;
+        if (ev->event_id == MPV_EVENT_END_FILE)   return false;
+        if (ev->event_id == MPV_EVENT_SHUTDOWN)   return false;
+        if (ev->event_id == MPV_EVENT_NONE)       return false;
+    }
+
+    double dur = 0;
+    mpv_get_property(h, "duration", MPV_FORMAT_DOUBLE, &dur);
+    if (dur > 0) out.duration = (int)(dur + 0.5);
+
+    mpv_node meta;
+    memset(&meta, 0, sizeof(meta));
+    if (mpv_get_property(h, "metadata", MPV_FORMAT_NODE, &meta) == 0) {
+        std::string tmp;
+        if (MetadataLookup(&meta, "title", &tmp))  out.title  = tmp;
+        if (MetadataLookup(&meta, "artist", &tmp)) out.artist = tmp;
+        if (MetadataLookup(&meta, "album", &tmp))  out.album  = tmp;
+        if (MetadataLookup(&meta, "track", &tmp)) {
+            int n = atoi(tmp.c_str());
+            if (n > 0) out.trackNumber = n;
+        }
+        mpv_free_node_contents(&meta);
+    }
+
+    if (out.title.empty()) {
+        std::string mt = MpvGetString(h, "media-title");
+        if (!mt.empty()) out.title = mt;
+    }
+
+    out.probed = true;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Music DB cache (Library/musicdb.bin). Keyed by path relative to musicRoot.
+// Avoids re-probing unchanged files on every launch.
+
+struct DBEntry {
+    long long   mtime = 0;
+    int         duration = 0;
+    int         trackNumber = 0;
+    std::string title;
+    std::string artist;
+    std::string album;
+};
+
+typedef std::map<std::string, DBEntry> DBMap;
+
+static const uint32_t kMusicDBMagic   = 0x42444D54; // 'TMDB'
+static const uint32_t kMusicDBVersion = 2;
+
+static void DB_WriteU32(FILE* fp, uint32_t v) { fwrite(&v, 4, 1, fp); }
+static void DB_WriteI32(FILE* fp, int32_t  v) { fwrite(&v, 4, 1, fp); }
+static void DB_WriteI64(FILE* fp, int64_t  v) { fwrite(&v, 8, 1, fp); }
+static void DB_WriteU8 (FILE* fp, uint8_t  v) { fwrite(&v, 1, 1, fp); }
+static void DB_WriteStr(FILE* fp, const std::string& s)
+{
+    uint32_t n = (uint32_t)s.size();
+    DB_WriteU32(fp, n);
+    if (n) fwrite(s.data(), 1, n, fp);
+}
+
+static int  DB_ReadU32(FILE* fp, uint32_t* v) { return (int)fread(v, 4, 1, fp); }
+static int  DB_ReadI32(FILE* fp, int32_t*  v) { return (int)fread(v, 4, 1, fp); }
+static int  DB_ReadI64(FILE* fp, int64_t*  v) { return (int)fread(v, 8, 1, fp); }
+static int  DB_ReadU8 (FILE* fp, uint8_t*  v) { return (int)fread(v, 1, 1, fp); }
+static int  DB_ReadStr(FILE* fp, std::string* out)
+{
+    uint32_t n = 0;
+    if (DB_ReadU32(fp, &n) != 1) return 0;
+    if (n > 16*1024) return 0;
+    out->resize(n);
+    return n == 0 ? 1 : (int)fread(&(*out)[0], 1, n, fp) == (int)n;
+}
+
+static bool DB_Load(const char* dbPath, DBMap& out)
+{
+    FILE* fp = fopen(dbPath, "rb");
+    if (!fp) return false;
+    uint32_t magic = 0, version = 0, count = 0;
+    if (DB_ReadU32(fp, &magic) != 1 || magic != kMusicDBMagic ||
+        DB_ReadU32(fp, &version) != 1 || version != kMusicDBVersion ||
+        DB_ReadU32(fp, &count) != 1) { fclose(fp); return false; }
+    for (uint32_t i = 0; i < count; i++) {
+        std::string key;
+        DBEntry e;
+        int64_t mtime = 0;
+        int32_t dur = 0, track = 0;
+        if (!DB_ReadStr(fp, &key))         break;
+        if (DB_ReadI64(fp, &mtime) != 1)   break;
+        if (DB_ReadI32(fp, &dur)   != 1)   break;
+        if (DB_ReadI32(fp, &track) != 1)   break;
+        if (!DB_ReadStr(fp, &e.title))     break;
+        if (!DB_ReadStr(fp, &e.artist))    break;
+        if (!DB_ReadStr(fp, &e.album))     break;
+        e.mtime = mtime;
+        e.duration = dur;
+        e.trackNumber = track;
+        out[key] = e;
+    }
+    fclose(fp);
+    return true;
+}
+
+static bool DB_Save(const char* dbPath, const DBMap& in)
+{
+    FILE* fp = fopen(dbPath, "wb");
+    if (!fp) return false;
+    DB_WriteU32(fp, kMusicDBMagic);
+    DB_WriteU32(fp, kMusicDBVersion);
+    DB_WriteU32(fp, (uint32_t)in.size());
+    for (DBMap::const_iterator it = in.begin(); it != in.end(); ++it) {
+        DB_WriteStr(fp, it->first);
+        DB_WriteI64(fp, (int64_t)it->second.mtime);
+        DB_WriteI32(fp, it->second.duration);
+        DB_WriteI32(fp, it->second.trackNumber);
+        DB_WriteStr(fp, it->second.title);
+        DB_WriteStr(fp, it->second.artist);
+        DB_WriteStr(fp, it->second.album);
+    }
+    fclose(fp);
+    return true;
+}
+
+static std::string DB_GetPath()
+{
+    return std::string("Library/musicdb.bin");
+}
+
+// ---------------------------------------------------------------------------
 // Music collection scanner
 // ---------------------------------------------------------------------------
+static bool IsM3UFile(const char* name)
+{
+    const char* dot = strrchr(name, '.');
+    if (!dot) return false;
+    char ext[8] = {};
+    for (int i = 0; i < 7 && dot[1+i]; i++)
+        ext[i] = (char)tolower((unsigned char)dot[1+i]);
+    return strcmp(ext, "m3u") == 0 || strcmp(ext, "m3u8") == 0;
+}
+
+static long long FileMTime(const char* path)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+#ifdef __APPLE__
+    return (long long)st.st_mtimespec.tv_sec;
+#else
+    return (long long)st.st_mtime;
+#endif
+}
+
+static void ApplyDBToSong(const DBEntry& e, Song& s)
+{
+    s.mtime       = e.mtime;
+    s.duration    = e.duration;
+    s.trackNumber = e.trackNumber;
+    s.title       = e.title;
+    s.artist      = e.artist;
+    s.album       = e.album;
+    s.probed      = true;
+}
+
+static void SongToDB(const Song& s, DBEntry& e)
+{
+    e.mtime       = s.mtime;
+    e.duration    = s.duration;
+    e.trackNumber = s.trackNumber;
+    e.title       = s.title;
+    e.artist      = s.artist;
+    e.album       = s.album;
+}
+
+static void SortSoundtrackSongs(Soundtrack& st)
+{
+    std::sort(st.songs.begin(), st.songs.end(), [](const Song& a, const Song& b) {
+        int an = a.trackNumber > 0 ? a.trackNumber : 0x7fffffff;
+        int bn = b.trackNumber > 0 ? b.trackNumber : 0x7fffffff;
+        if (an != bn) return an < bn;
+        const std::string& aname = !a.title.empty() ? a.title : a.name;
+        const std::string& bname = !b.title.empty() ? b.title : b.name;
+        return aname < bname;
+    });
+}
+
+static void LoadM3UEntries(const std::string& m3uPath, std::vector<std::string>& out)
+{
+    FILE* fp = fopen(m3uPath.c_str(), "r");
+    if (!fp) return;
+    char line[2048];
+    std::string dir = m3uPath.substr(0, m3uPath.find_last_of("/\\"));
+    while (fgets(line, sizeof(line), fp)) {
+        char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        size_t n = strlen(p);
+        while (n > 0 && (p[n-1] == '\n' || p[n-1] == '\r' || p[n-1] == ' ')) p[--n] = 0;
+        if (n == 0 || p[0] == '#') continue;
+        std::string entry(p);
+        bool absolute = (entry.size() > 0 && (entry[0] == '/' || entry[0] == '\\'))
+                     || (entry.size() > 1 && entry[1] == ':');
+        std::string full = absolute ? entry : (dir + "/" + entry);
+        out.push_back(full);
+    }
+    fclose(fp);
+}
+
 int DashMusic_Scan(const char* musicRoot)
 {
     s_soundtracks.clear();
-
     if (!musicRoot) return 0;
 
-    // Process a single soundtrack directory
+    DBMap db;
+    DB_Load(DB_GetPath().c_str(), db);
+    DBMap newDb;
+    mpv_handle* probeMpv = NULL;
+    int probedCount = 0;
+    int cachedCount = 0;
+
+    auto BuildSong = [&](const std::string& fullPath, const std::string& displayName) -> Song {
+        Song song;
+        song.name = displayName;
+        song.path = fullPath;
+        song.mtime = FileMTime(fullPath.c_str());
+
+        DBMap::iterator it = db.find(fullPath);
+        if (it != db.end() && it->second.mtime == song.mtime) {
+            ApplyDBToSong(it->second, song);
+            cachedCount++;
+        } else {
+            if (!probeMpv) probeMpv = ProbeMpv_Create();
+            if (probeMpv && ProbeSong(probeMpv, fullPath, song))
+                probedCount++;
+        }
+        DBEntry e;
+        SongToDB(song, e);
+        newDb[fullPath] = e;
+        return song;
+    };
+
     int nextID = 1;
+
     auto ProcessSoundtrackDir = [&](const char* dirName) {
         if (dirName[0] == '.') return;
         std::string stPath = std::string(musicRoot) + "/" + dirName;
@@ -719,21 +1063,21 @@ int DashMusic_Scan(const char* musicRoot)
         soundtrack.id = nextID++;
         soundtrack.name = dirName;
 
-        // Scan for songs within this soundtrack directory
+        std::string fallbackArt;
         auto ProcessSongFile = [&](const char* songName) {
             if (songName[0] == '.') return;
-            if (!IsAudioFile(songName)) return;
-            Song song;
-            song.name = StripExtension(songName);
-            song.path = stPath + "/" + songName;
-            song.duration = 0;
-            Mix_Music* probe = Mix_LoadMUS(song.path.c_str());
-            if (probe) {
-                double d = Mix_MusicDuration(probe);
-                if (d > 0.0) song.duration = (int)(d + 0.5);
-                Mix_FreeMusic(probe);
+            if (IsAlbumArtFile(songName)) {
+                soundtrack.albumPath = stPath + "/" + songName;
+                return;
             }
-            soundtrack.songs.push_back(song);
+            if (IsGenericImageFile(songName)) {
+                if (fallbackArt.empty())
+                    fallbackArt = stPath + "/" + songName;
+                return;
+            }
+            if (!IsAudioFile(songName)) return;
+            std::string full = stPath + "/" + songName;
+            soundtrack.songs.push_back(BuildSong(full, StripExtension(songName)));
         };
 
 #ifdef _WIN32
@@ -754,11 +1098,56 @@ int DashMusic_Scan(const char* musicRoot)
         }
 #endif
 
-        std::sort(soundtrack.songs.begin(), soundtrack.songs.end(),
-            [](const Song& a, const Song& b) { return a.name < b.name; });
         if (!soundtrack.songs.empty()) {
+            if (soundtrack.albumPath.empty() && !fallbackArt.empty())
+                soundtrack.albumPath = fallbackArt;
+            std::string sharedAlbum;
+            bool sameAlbum = true;
+            for (size_t i = 0; i < soundtrack.songs.size(); i++) {
+                const std::string& a = soundtrack.songs[i].album;
+                if (a.empty()) { sameAlbum = false; break; }
+                if (i == 0) sharedAlbum = a;
+                else if (a != sharedAlbum) { sameAlbum = false; break; }
+            }
+            if (sameAlbum && !sharedAlbum.empty())
+                soundtrack.name = sharedAlbum;
+            SortSoundtrackSongs(soundtrack);
             s_soundtracks.push_back(soundtrack);
         }
+    };
+
+    auto ProcessM3UFile = [&](const char* fileName) {
+        std::string m3uPath = std::string(musicRoot) + "/" + fileName;
+        std::vector<std::string> entries;
+        LoadM3UEntries(m3uPath, entries);
+        if (entries.empty()) return;
+
+        Soundtrack soundtrack;
+        soundtrack.id = nextID++;
+        soundtrack.name = StripExtension(fileName);
+        for (size_t i = 0; i < entries.size(); i++) {
+            const char* slash = strrchr(entries[i].c_str(), '/');
+            const char* nm = slash ? slash + 1 : entries[i].c_str();
+            soundtrack.songs.push_back(BuildSong(entries[i], StripExtension(nm)));
+        }
+        SortSoundtrackSongs(soundtrack);
+        s_soundtracks.push_back(soundtrack);
+    };
+
+    Soundtrack looseMusic;
+    looseMusic.id = 0;
+    looseMusic.name = "Music";
+
+    auto ProcessLooseFile = [&](const char* fileName) {
+        if (fileName[0] == '.') return;
+        if (IsAlbumArtFile(fileName)) {
+            if (looseMusic.albumPath.empty())
+                looseMusic.albumPath = std::string(musicRoot) + "/" + fileName;
+            return;
+        }
+        if (!IsAudioFile(fileName)) return;
+        std::string full = std::string(musicRoot) + "/" + fileName;
+        looseMusic.songs.push_back(BuildSong(full, StripExtension(fileName)));
     };
 
 #ifdef _WIN32
@@ -770,7 +1159,15 @@ int DashMusic_Scan(const char* musicRoot)
         fprintf(stderr, "[Audio] Music directory '%s' not found (this is OK if no music installed)\n", musicRoot);
         return 0;
     }
-    do { ProcessSoundtrackDir(fd.name); } while (_findnext(hFind, &fd) == 0);
+    do {
+        std::string entryPath = std::string(musicRoot) + "/" + fd.name;
+        struct stat est;
+        if (stat(entryPath.c_str(), &est) == 0) {
+            if (S_ISDIR(est.st_mode))      ProcessSoundtrackDir(fd.name);
+            else if (IsM3UFile(fd.name))   ProcessM3UFile(fd.name);
+            else                           ProcessLooseFile(fd.name);
+        }
+    } while (_findnext(hFind, &fd) == 0);
     _findclose(hFind);
 #else
     DIR* rootDir = opendir(musicRoot);
@@ -779,16 +1176,48 @@ int DashMusic_Scan(const char* musicRoot)
         return 0;
     }
     struct dirent* entry;
-    while ((entry = readdir(rootDir)) != NULL) ProcessSoundtrackDir(entry->d_name);
+    while ((entry = readdir(rootDir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        std::string entryPath = std::string(musicRoot) + "/" + entry->d_name;
+        struct stat est;
+        if (stat(entryPath.c_str(), &est) != 0) continue;
+        if (S_ISDIR(est.st_mode))             ProcessSoundtrackDir(entry->d_name);
+        else if (IsM3UFile(entry->d_name))    ProcessM3UFile(entry->d_name);
+        else                                  ProcessLooseFile(entry->d_name);
+    }
     closedir(rootDir);
 #endif
 
-    // Sort soundtracks alphabetically
+    if (!looseMusic.songs.empty()) {
+        bool merged = false;
+        for (size_t i = 0; i < s_soundtracks.size(); i++) {
+            if (s_soundtracks[i].name == "Music") {
+                for (size_t j = 0; j < looseMusic.songs.size(); j++)
+                    s_soundtracks[i].songs.push_back(looseMusic.songs[j]);
+                if (s_soundtracks[i].albumPath.empty())
+                    s_soundtracks[i].albumPath = looseMusic.albumPath;
+                SortSoundtrackSongs(s_soundtracks[i]);
+                merged = true;
+                break;
+            }
+        }
+        if (!merged) {
+            looseMusic.id = nextID++;
+            SortSoundtrackSongs(looseMusic);
+            s_soundtracks.push_back(looseMusic);
+        }
+    }
+
+    if (probeMpv) ProbeMpv_Destroy(probeMpv);
+
+    DB_Save(DB_GetPath().c_str(), newDb);
+
     std::sort(s_soundtracks.begin(), s_soundtracks.end(),
         [](const Soundtrack& a, const Soundtrack& b) { return a.name < b.name; });
 
     if (s_soundtracks.size() > 0)
-        fprintf(stderr, "[Audio] %zu soundtracks loaded\n", s_soundtracks.size());
+        fprintf(stderr, "[Audio] %zu soundtracks loaded (%d cached, %d probed)\n",
+            s_soundtracks.size(), cachedCount, probedCount);
     return (int)s_soundtracks.size();
 }
 
@@ -832,7 +1261,8 @@ const char* DashMusic_GetSongName(int stIndex, int songIndex)
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return "";
     auto& songs = s_soundtracks[stIndex].songs;
     if (songIndex < 0 || songIndex >= (int)songs.size()) return "";
-    return songs[songIndex].name.c_str();
+    Song& s = songs[songIndex];
+    return !s.title.empty() ? s.title.c_str() : s.name.c_str();
 }
 
 const char* DashMusic_GetSongPath(int stIndex, int songIndex)
@@ -860,6 +1290,45 @@ const char* DashMusic_GetSongPathByID(int songID)
     if (stIndex < 0) return NULL;
     const char* p = DashMusic_GetSongPath(stIndex, songIdx);
     return (p && *p) ? p : NULL;
+}
+
+int DashMusic_GetCurrentSoundtrackIdx()
+{
+    return s_currentSoundtrackIdx;
+}
+
+const char* DashMusic_GetSoundtrackAlbumPath(int stIndex)
+{
+    if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return NULL;
+    const std::string& p = s_soundtracks[stIndex].albumPath;
+    return p.empty() ? NULL : p.c_str();
+}
+
+const unsigned char* DashMusic_GetAlbumRGBA(int stIndex, int* outW, int* outH)
+{
+    if (outW) *outW = 0;
+    if (outH) *outH = 0;
+    if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return NULL;
+    Soundtrack& st = s_soundtracks[stIndex];
+    if (st.albumW < 0) return NULL;
+    if (st.albumPath.empty()) return NULL;
+
+    if (st.albumRGBA.empty()) {
+        int w = 0, h = 0, ch = 0;
+        unsigned char* px = stbi_load(st.albumPath.c_str(), &w, &h, &ch, 4);
+        if (!px || w <= 0 || h <= 0) {
+            if (px) stbi_image_free(px);
+            st.albumW = -1;
+            return NULL;
+        }
+        st.albumW = w;
+        st.albumH = h;
+        st.albumRGBA.assign(px, px + (size_t)w * h * 4);
+        stbi_image_free(px);
+    }
+    if (outW) *outW = st.albumW;
+    if (outH) *outH = st.albumH;
+    return st.albumRGBA.data();
 }
 
 const char* DashMusic_FormatTime(int totalSeconds)

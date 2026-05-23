@@ -68,6 +68,10 @@ const char* DashMusic_GetSongPathByID(int songID);
 // Format time as "M:SS"
 const char* DashMusic_FormatTime(int totalSeconds);
 
+int DashMusic_GetCurrentSoundtrackIdx(void);
+const char* DashMusic_GetSoundtrackAlbumPath(int stIndex);
+const unsigned char* DashMusic_GetAlbumRGBA(int stIndex, int* outW, int* outH);
+
 // Mute/unmute all audio; used for game launch and Ctrl+M toggle
 void DashAudio_MuteAll(void);
 void DashAudio_UnmuteAll(void);

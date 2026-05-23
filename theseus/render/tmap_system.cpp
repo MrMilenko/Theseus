@@ -19,6 +19,8 @@
 #include "tmap_system.h"
 #ifndef _XBOX
 #include "milkdrop_window.h"
+extern "C" int DashMusic_GetCurrentSoundtrackIdx(void);
+extern "C" const unsigned char* DashMusic_GetAlbumRGBA(int, int*, int*);
 #endif
 #define FFT_BUFFER_SIZE_LOG 8
 #define FFT_BUFFER_SIZE (1 << FFT_BUFFER_SIZE_LOG)
@@ -1229,8 +1231,9 @@ void CDynamicTexture::Update()
 		int dstStridePx = (lr.Pitch > 0) ? (lr.Pitch / 4) : m_nImageWidth;
 
 		extern bool g_useMilkdropViz;
+		extern bool g_showAlbumCover;
 		bool hasAudioViz = false;
-		if (g_useMilkdropViz) {
+		if (g_useMilkdropViz || g_showAlbumCover) {
 			int nChildCount2 = m_children.GetLength();
 			for (int ci = 0; ci < nChildCount2; ci++) {
 				CNode* c = m_children.GetNode(ci);
@@ -1246,11 +1249,17 @@ void CDynamicTexture::Update()
 		}
 
 		int pmW = 0, pmH = 0;
-		const unsigned char* pmSrc = hasAudioViz
+		const unsigned char* pmSrc = (hasAudioViz && g_useMilkdropViz)
 			? MilkdropWindow_GetReadbackRGBA(&pmW, &pmH) : NULL;
 
-		// FRAME-DEBUG: when projectM toggle is on but window not open, cycle a
-		// solid color tied to TheseusGetNow() so we can SEE per-frame uploads.
+		const unsigned char* albumPx = NULL;
+		int albumW = 0, albumH = 0;
+		if (g_showAlbumCover && hasAudioViz && !g_useMilkdropViz) {
+			int idx = DashMusic_GetCurrentSoundtrackIdx();
+			if (idx >= 0)
+				albumPx = DashMusic_GetAlbumRGBA(idx, &albumW, &albumH);
+		}
+
 		if (g_useMilkdropViz && hasAudioViz)
 		{
 			if (pmSrc && pmW > 0 && pmH > 0) {
@@ -1281,6 +1290,22 @@ void CDynamicTexture::Update()
 					uint32_t* dstRow = pBase + dy * dstStridePx;
 					for (int dx = 0; dx < m_size; dx++)
 						dstRow[dx] = v;
+				}
+			}
+		}
+		else if (albumPx && albumW > 0 && albumH > 0)
+		{
+			for (int dy = 0; dy < m_size; dy++) {
+				int sy = (dy * albumH) / m_size;
+				const unsigned char* row = albumPx + sy * albumW * 4;
+				uint32_t* dstRow = pBase + dy * dstStridePx;
+				for (int dx = 0; dx < m_size; dx++) {
+					int sx = (dx * albumW) / m_size;
+					const unsigned char* p = row + sx * 4;
+					dstRow[dx] =  (uint32_t)p[0]
+					           | ((uint32_t)p[1] <<  8)
+					           | ((uint32_t)p[2] << 16)
+					           | 0xff000000u;
 				}
 			}
 		}

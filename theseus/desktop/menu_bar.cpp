@@ -515,6 +515,20 @@ void RenderSettingsWindow() {
                     "fullscreens it once enabled.");
             }
 
+            extern bool g_showAlbumCover;
+            if (ImGui::Checkbox("Show album cover in orb",
+                                &g_showAlbumCover)) {
+                SaveDesktopSettings();
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip(
+                    "When a soundtrack folder contains album.png, album.jpg,\n"
+                    "or similar, show it in the orb instead of the visualizer\n"
+                    "during playback.");
+            }
+
             extern bool g_projectMConfigOpen;
             if (ImGui::Button("Configure projectM...")) {
                 g_projectMConfigOpen = true;

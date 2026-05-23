@@ -350,6 +350,7 @@ static bool   s_softRestartPending = false; // reinit after game exits
 bool g_audioMuted = false;       // user choice (Ctrl+M)
 float g_masterVolume = 1.0f;     // 0.0 - 1.0, applied to mixer + libmpv
 bool g_useMilkdropViz = false;   // opt-in: replace legacy orb viz with projectM
+bool g_showAlbumCover = false;   // when set + album.* present, replace orb viz with cover
 bool g_windowFocused = true;     // SDL focus state
 // Mute ambient (SDL_mixer) when: user pressed Ctrl+M, window unfocused, or
 // media is playing. mpv runs through its own audio out, unaffected by this.
@@ -531,6 +532,8 @@ void LoadDesktopSettings() {
         }
         else if (strncmp(line, "UseMilkdropViz=", 15) == 0)
             g_useMilkdropViz = atoi(line + 15) != 0;
+        else if (strncmp(line, "ShowAlbumCover=", 15) == 0)
+            g_showAlbumCover = atoi(line + 15) != 0;
         else if (strncmp(line, "Renderer=", 9) == 0) {
             const char* v = line + 9;
             // Order matters: opengles before opengl, metal before "" prefix.
@@ -600,6 +603,7 @@ void SaveDesktopSettings() {
     fprintf(fp, "Hwdec=%d\n",               g_hwdec ? 1 : 0);
     fprintf(fp, "MasterVolume=%.3f\n",      g_masterVolume);
     fprintf(fp, "UseMilkdropViz=%d\n",      g_useMilkdropViz ? 1 : 0);
+    fprintf(fp, "ShowAlbumCover=%d\n",      g_showAlbumCover ? 1 : 0);
     {
         const char* rname = (g_rendererPref == 1) ? "d3d11"
                           : (g_rendererPref == 2) ? "vulkan"
