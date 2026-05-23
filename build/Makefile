@@ -977,21 +977,14 @@ WIN64_DIR     = $(BUILDS_ROOT)/desktop-win64
 WIN64_TARGET  = $(WIN64_DIR)/theseus.exe
 WIN64_CXX     = x86_64-w64-mingw32-g++
 
-# mingw runtime DLLs. The Theseus exe is -static-libgcc -static-libstdc++,
-# but libprojectM-4.dll (cross-built without those flags) drags libgcc_s_seh
-# and libstdc++-6 in at load time. Ship all three alongside the exe.
-# On macOS/Homebrew these live in x86_64-w64-mingw32/bin/; on Linux/APT they
-# live in x86_64-w64-mingw32/lib/. Try bin/ first, fall back to lib/.
-define find_mingw_dll
-$(shell \
+# libwinpthread-1.dll: still a runtime dep even with -static-libgcc/stdc++
+# because mingw-w64's posix thread model links winpthread dynamically.
+# macOS/Homebrew puts it in x86_64-w64-mingw32/bin/; Linux/APT in lib/.
+WIN64_PTHREAD_DLL := $(shell \
   BASE=$$(dirname $$(dirname $$(realpath $$(which x86_64-w64-mingw32-gcc 2>/dev/null)))) ; \
-  BIN=$$BASE/x86_64-w64-mingw32/bin/$(1) ; \
-  LIB=$$BASE/x86_64-w64-mingw32/lib/$(1) ; \
+  BIN=$$BASE/x86_64-w64-mingw32/bin/libwinpthread-1.dll ; \
+  LIB=$$BASE/x86_64-w64-mingw32/lib/libwinpthread-1.dll ; \
   if [ -f "$$BIN" ]; then echo $$BIN ; elif [ -f "$$LIB" ]; then echo $$LIB ; fi)
-endef
-WIN64_PTHREAD_DLL := $(call find_mingw_dll,libwinpthread-1.dll)
-WIN64_GCC_DLL     := $(call find_mingw_dll,libgcc_s_seh-1.dll)
-WIN64_STDCPP_DLL  := $(call find_mingw_dll,libstdc++-6.dll)
 
 SDL2_MINGW_DIR    ?= $(HOME)/cross/sdl2-mingw
 SDL2_MINGW_INC    = $(SDL2_MINGW_DIR)/SDL2-2.32.10/x86_64-w64-mingw32/include
@@ -1184,8 +1177,6 @@ $(WIN64_TARGET): $(WIN64_OBJS)
 	@cp $(SDL2_MINGW_BIN)/SDL2.dll $(WIN64_DIR)/
 	@cp $(MIXER_MINGW_BIN)/SDL2_mixer.dll $(WIN64_DIR)/
 	@cp $(WIN64_PTHREAD_DLL) $(WIN64_DIR)/
-	@if [ -n "$(WIN64_GCC_DLL)"    ]; then cp $(WIN64_GCC_DLL)    $(WIN64_DIR)/ ; fi
-	@if [ -n "$(WIN64_STDCPP_DLL)" ]; then cp $(WIN64_STDCPP_DLL) $(WIN64_DIR)/ ; fi
 	@if [ -f $(MPV_MINGW_DIR)/libmpv-2.dll ]; then cp $(MPV_MINGW_DIR)/libmpv-2.dll $(WIN64_DIR)/; fi
 	@for f in $(CURL_MINGW_DIR)/bin/libcurl*.dll $(CURL_MINGW_DIR)/libcurl*.dll; do \
 		[ -f "$$f" ] && cp "$$f" $(WIN64_DIR)/ || true ; \
