@@ -24,6 +24,8 @@
 #include "panel_shared.h"
 #include "launch.h"
 #include <signal.h>
+#include <cstdlib>
+#include <sys/stat.h>
 
 #ifdef THESEUS_USE_BGFX
 #include <SDL_syswm.h>
@@ -31,7 +33,6 @@
 #include <bgfx/platform.h>
 #include <cstring>
 #include <cstdio>
-#include <cstdlib>
 
 // Loads Data/shaders/<backend>/<name>.bin. Picks subdir from the active renderer.
 bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
@@ -1129,7 +1130,9 @@ int main(int argc, char* argv[]) {
 
     // Change working directory to the executable's directory so that
     // relative paths (xboxfs/, etc.) work when launched from Finder/Explorer.
+    // Additionally check for xdg paths to use instead if running on Linux.
     {
+	const char* xdgdir = std::getenv("XDG_DATA_HOME");
         char exeDir[1024];
 #ifdef _WIN32
         // GetModuleFileName + strip filename
@@ -1147,13 +1150,103 @@ int main(int argc, char* argv[]) {
             chdir(exeDir);
         }
 #else
+	// Try to use XDG path on linux. Should be $HOME/.local/share  Fails over to default working dir behaviour if not set.
+	if (xdgdir != nullptr) {
         ssize_t len = readlink("/proc/self/exe", exeDir, sizeof(exeDir) - 1);
-        if (len > 0) {
-            exeDir[len] = '\0';
-            char* last = strrchr(exeDir, '/');
-            if (last) *last = '\0';
-            chdir(exeDir);
-        }
+                if (len > 0) {
+                   		exeDir[len] = '\0';
+		                char* last = strrchr(exeDir, '/');
+                   	 	if (last) *last = '\0';
+	            }
+		fprintf(stdout, "Using XDG directory: %s\n", xdgdir);
+		char* theseusdir = "/Theseus";
+		char* configdir = "/Configs";
+		char* configini = "/Configs/games.ini";
+		char* datadir = "/Data";
+		char* librarydir = "/Library";
+		char* theseusworkdir = (char *) malloc(1+strlen(xdgdir) + strlen(theseusdir) );
+		strcpy(theseusworkdir, xdgdir);
+		strcat(theseusworkdir, theseusdir);
+		// Make sure we know the main paths. This is used to ensure these paths exist in this location before trying to copy.
+		// We skip the config dir as it, and any files within, get generated at runtime.
+		char* execonfig = (char *) malloc(1+strlen(exeDir) + strlen(configdir) );
+		char* exedata = (char *) malloc(1+strlen(exeDir) + strlen(datadir) );
+		char* exelib = (char *) malloc(1+strlen(exeDir) + strlen(librarydir) );
+		char* theseusconfigdir = (char *) malloc(1+strlen(theseusworkdir) + strlen(configdir) );
+		char* theseusdatadir = (char *) malloc(1+strlen(theseusworkdir) + strlen(datadir) );
+		char* theseuslibrarydir = (char *) malloc(1+strlen(theseusworkdir) + strlen(librarydir) );
+
+		// Copy contents of theseus work directory to each of the three main data paths
+		strcpy(execonfig, exeDir);
+		strcpy(exedata, exeDir);
+		strcpy(exelib, exeDir);
+		strcpy(theseusconfigdir, theseusworkdir);
+		strcpy(theseusdatadir, theseusworkdir);
+		strcpy(theseuslibrarydir, theseusworkdir);
+		// And concatonate the specific folders we are looking for
+		strcat(execonfig, configdir);
+		strcat(exedata, datadir);
+		strcat(exelib, librarydir);
+		strcat(theseusconfigdir, configdir);
+		strcat(theseusdatadir, datadir);
+		strcat(theseuslibrarydir, librarydir);
+		if (std::filesystem::is_directory(theseusworkdir) && std::filesystem::exists(theseusconfigdir) && std::filesystem::is_directory(theseusdatadir) && std::filesystem::is_directory(theseuslibrarydir)) {
+			fprintf(stdout, "All required directories exist in: %s\n", theseusworkdir);
+			chdir(theseusworkdir);
+		}
+		else {
+			fprintf(stdout, "XDG path missing files.. running self test\n");
+			if (std::filesystem::is_directory(theseusworkdir)) {
+				fprintf(stdout, "Working dir exists... %s\n", theseusworkdir);
+			}
+			else {
+				fprintf(stdout, "Working dir missing in XDG Path.. Trying to create");
+				std::filesystem::create_directory(theseusworkdir);
+				if(std::filesystem::is_directory(theseusworkdir)) {
+					fprintf(stdout, "XDG Working directory created... Copying data files.");
+					std::filesystem::copy(execonfig, theseusconfigdir, std::filesystem::copy_options::recursive);
+					std::filesystem::copy(exedata, theseusdatadir, std::filesystem::copy_options::recursive);
+					std::filesystem::copy(exelib, theseuslibrarydir, std::filesystem::copy_options::recursive);
+				}
+			}
+			if (std::filesystem::exists(theseusconfigdir)) {
+				fprintf(stdout, "Config files exist: %s\n", theseusconfigdir);
+			}
+			else {
+				fprintf(stdout, "Config files missing... Trying to copy to xdg path\n");
+                std::filesystem::copy(execonfig, theseusconfigdir, std::filesystem::copy_options::recursive);
+			}
+			if (std::filesystem::is_directory(theseusdatadir)) {
+				fprintf(stdout, "Data dir exists: %s\n", theseusdatadir);
+			}
+			else {
+				fprintf(stdout, "Data dir missing... Trying to copy to xdg path\n");
+                std::filesystem::copy(exedata, theseusdatadir, std::filesystem::copy_options::recursive);
+			}
+			if (std::filesystem::is_directory(theseuslibrarydir)) {
+				fprintf(stdout, "Library dir exists: %s\n", theseuslibrarydir);
+			}
+			else {
+				fprintf(stdout, "Library dir missing...  Trying to copy to xdg path\n");
+                std::filesystem::copy(exelib, theseuslibrarydir, std::filesystem::copy_options::recursive);
+			}
+            if (std::filesystem::is_directory(theseusworkdir) && std::filesystem::exists(theseusconfigdir) && std::filesystem::is_directory(theseusdatadir) && std::filesystem::is_directory(theseuslibrarydir)) {
+			    fprintf(stdout, "XDG setup complete... All required directories exist in: %s\n", theseusworkdir);
+			    chdir(theseusworkdir);
+		    }
+            else {
+			    fprintf(stdout, "Attempted XDG setup failed... Failing over to default behaviour\n");
+			    ssize_t len = readlink("/proc/self/exe", exeDir, sizeof(exeDir) - 1);
+                if (len > 0) {
+                   		exeDir[len] = '\0';
+		                char* last = strrchr(exeDir, '/');
+                   	 	if (last) *last = '\0';
+                    		chdir(exeDir);
+	            	     }
+			}
+		}
+	}
+
 #endif
     }
 
