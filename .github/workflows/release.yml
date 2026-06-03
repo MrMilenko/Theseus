@@ -117,6 +117,142 @@ jobs:
           files: ${{ env.ARCHIVE }}
           fail_on_unmatched_files: true
 
+  release-linux-appimage:
+    name: Release / Linux X64 AppImage
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: 'Theseus'
+      - uses: actions/checkout@v4
+        with:
+          repository: 'mpv-player/mpv'
+          ref: 'release/0.41'
+          path: 'mpv'
+      - name: Install deps
+        # libgl-dev: needed by projectM's cmake FindOpenGL probe even
+        # though the running binary uses bgfx/Vulkan.
+        # cmake: GitHub runners preinstall it, but make it explicit.
+        run: |
+          sudo apt update
+          sudo apt install -y wayland-protocols \
+          libwayland-client0 libavfilter-dev \
+          libplacebo-dev libass-dev \
+          libcdio-dev libcdio-paranoia-dev \
+          libdvdnav-dev libarchive-dev \
+          libopenal-dev libpipewire-0.3-dev \
+          libpulse-dev libdrm-dev \
+          libdisplay-info-dev libgbm-dev \
+          libwayland-dev libx11-dev \
+          xscreensaver libxext-dev \
+          libxpresent-dev libxrandr-dev \
+          libxkbcommon-dev libxss-dev \
+          libegl-dev libva-dev \
+          libavformat-dev libswscale-dev \
+          build-essential pkg-config \
+          cmake libsdl2-dev \
+          libsdl2-mixer-dev libvulkan-dev \
+          libgl-dev libcurl4-openssl-dev \
+          meson
+
+      - name: Build minimal mpv
+        run: |
+          meson setup build \
+          --auto-features disabled \
+          -Dgpl='true' \
+          -Dlibmpv='true' \
+          -Dcdda=enabled \
+          -Ddvbin=enabled \
+          -Ddvdnav=enabled \
+          -Dlibarchive=enabled \
+          -Dopenal=enabled \
+          -Degl='enabled' \
+          -Ddrm='enabled' \
+          -Dgbm='enabled' \
+          -Degl-x11='enabled' \
+          -Degl-wayland='enabled' \
+          -Degl-drm='enabled' \
+          -Dalsa='enabled' \
+          -Dpulse='enabled' \
+          -Dx11='enabled' \
+          -Dvaapi='enabled' \
+          -Dvaapi-drm='enabled' \
+          -Dvaapi-wayland='enabled' \
+          -Dvaapi-x11='enabled' \
+          -Dpipewire='enabled' \
+          -Dlibavdevice='disabled' \
+          -Ddmabuf-wayland='enabled' \
+          -Dwayland='enabled'
+
+          meson compile -C build
+
+          meson install -C build
+
+      - name: Stub Configs/Data/Library
+        run: |
+          cd ~/Theseus
+          mkdir -p Configs Data Library
+
+      - name: Build bgfx libs
+        run: |
+          cd theseus/third-party/bgfx
+          ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
+          make -C .build/projects/gmake-linux-gcc -j$(nproc) \
+               bx bimg bgfx config=release64
+
+      - name: Build
+        run: | 
+          make -C build desktop BGFX=1
+
+          echo "Manually installing libprojectm"
+          cp -r ~/Theseus/theseus/third-party/projectm/install /usr
+
+      - name: Package AppImage
+        run: |
+          cd ~/
+          mkdir -p AppImage/AppDir/usr/bin
+          mkdir -p AppImage/AppDir/usr/lib
+          mkdir -p AppImage/AppDir/usr/share
+          cd ./AppImage
+          cp -r ~/builds/theseus/desktop/* ./AppDir/usr/bin
+          echo "Install Appimage builder"
+          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-x86_64.AppImage
+          wget https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-appimage-x86_64.AppImage
+          chmod +x ./linuxdeploy-x86_64.AppImage
+          chmod +x ./linuxdeploy-plugin-appimage-x86_64.AppImage
+          echo "Get Icon and write UIX-Desktop.desktop"
+
+          wget 'https://avatars.githubusercontent.com/u/39630670'
+
+          cat > UIX-Desktop.desktop << 'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=UIX Desktop
+          GenericName=Theseus
+          Comment=UIX Desktop - A Reverse Engineered Xbox Dashboard, now on PC!
+          Exec=theseus
+          Icon=theseus
+          Categories=Utility;Game;
+          Terminal=false
+          EOF
+
+          apt install -y ffmpeg
+          mv ./39630670 ./ico.jpeg
+          ffmpeg -i ico.jpeg -vf scale=256:256 theseus.png
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          DROP="Theseus-${TAG}-linux-x64"
+          echo "Building Appimage"
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir -d ./UIX-Desktop.desktop -i ./theseus.png --output appimage
+          mv UIX_Desktop.AppImage ${DROP}.AppImage
+          echo "APPIMG=${DROP}.AppImage" >> "$GITHUB_ENV"
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ env.APPIMG }}
+          fail_on_unmatched_files: true
+
   release-linux-arm64:
     name: Release / Linux ARM64
     runs-on: ubuntu-24.04-arm
