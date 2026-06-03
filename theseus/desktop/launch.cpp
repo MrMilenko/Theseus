@@ -57,8 +57,13 @@ static void ExecLaunch(const char* spec)
 		// macOS: system handler works fine for steam://
 		execlp("open", "open", spec, (char*)NULL);
 #else
+		if (std::getenv("FLATPAK") != NULL) {
+			execlp("flatpak-spawn", "flatpak-spawn", "--host", "/usr/bin/steam", spec, (char*)NULL);
+		}
+		else {
 		// Linux: bypass xdg-open/KIO; steam binary takes the URL directly.
 		execlp("steam", "steam", spec, (char*)NULL);
+		}
 #endif
 	}
 	else if (IsUrl(spec))
@@ -66,7 +71,12 @@ static void ExecLaunch(const char* spec)
 #ifdef __APPLE__
 		execlp("open", "open", spec, (char*)NULL);
 #else
-		execlp("xdg-open", "xdg-open", spec, (char*)NULL);
+		if (std::getenv("FLATPAK") != NULL) {
+			execlp("flatpak-spawn", "flatpak-spawn", "--host", "/bin/sh", spec, (char*)NULL);
+		}
+		else {
+			execlp("xdg-open", "xdg-open", spec, (char*)NULL);
+		}
 #endif
 	}
 	else
