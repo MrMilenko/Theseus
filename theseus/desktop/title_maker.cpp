@@ -11,6 +11,8 @@
 #include "xiso.h"
 #include "launchers/steam.h"
 #include "launchers/retroarch.h"
+#include "launchers/emulators.h"
+#include "launchers/sgdb.h"
 #include "imgui.h"
 #include "imfilebrowser.h"
 #include "stb_image.h"
@@ -631,6 +633,118 @@ static void TM_ImportSteamLibrary(const char* steamPath,
     if (outIcons)   *outIcons   = iconsDl;
 }
 
+// Emulators tab helpers
+
+// Build the shell command for an emulator entry: quoted binary, whichever
+// option flags are toggled on (table order), the rom flag if the emulator
+// wants one (e.g. Dolphin's "-e"), then the quoted rom/eboot path. This is
+// a fully-resolved command, same as the xemu ISO path above and Launcher_
+// Build's steam:// output - not a custom scheme, so it needs zero changes
+// to launch.cpp's dispatch rules.
+static void TM_EmuBuildCommand(const EmulatorConfig* conf, const char* binaryPath,
+                               const bool* optionOn, const char* romPath,
+                               char* out, size_t outSize) {
+    char buf[2048];
+    size_t len = 0;
+    len += snprintf(buf + len, sizeof(buf) - len, "\"%s\"", binaryPath);
+    for (int o = 0; o < conf->optionCount && len < sizeof(buf); o++) {
+        if (optionOn[o])
+            len += snprintf(buf + len, sizeof(buf) - len, " %s", conf->options[o].flag);
+    }
+    if (conf->romFlag[0] && len < sizeof(buf))
+        len += snprintf(buf + len, sizeof(buf) - len, " %s", conf->romFlag);
+    if (len < sizeof(buf))
+        len += snprintf(buf + len, sizeof(buf) - len, " \"%s\"", romPath);
+    strncpy(out, buf, outSize - 1);
+    out[outSize - 1] = 0;
+}
+
+// Add one game file for the given emulator config. Dedupes by sanitized
+// name, same rule the RetroArch/Steam importers use. Returns true if a new
+// entry was created.
+static bool TM_EmuAddGame(const EmulatorConfig* conf, const char* filePath,
+                          const char* binaryPath, const bool* optionOn) {
+    char title[256];
+    TM_DeriveRomTitle(filePath, title, sizeof(title));
+
+    extern int Title_SanitizeName(const char*, char*, size_t);
+    char cleanName[128];
+    Title_SanitizeName(title, cleanName, sizeof(cleanName));
+    if (!cleanName[0]) return false;
+    if (VGames_FindByName(cleanName) >= 0) return false;
+
+    char launch[2048];
+    TM_EmuBuildCommand(conf, binaryPath, optionOn, filePath, launch, sizeof(launch));
+
+    char genID[16];
+    snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL) + (unsigned)rand());
+    VGames_Add(cleanName, genID, launch, "E", "Emulators");
+    TM_RegisterIcon(cleanName, genID);
+    return true;
+}
+
+// Add a detected RPCS3 game. Locates EBOOT.BIN inside the game folder
+// (digital pkg layout or disc-dump layout) and builds the launch command
+// from that, not the folder itself - RPCS3 wants the eboot path.
+static bool TM_EmuAddRpcs3(const RPCS3GameEntry& g, const char* binaryPath, const bool* optionOn) {
+    char eboot[700];
+    if (!RPCS3_LocateEboot(g.folderPath, eboot, sizeof(eboot))) return false;
+
+    const char* rawName = g.displayName[0] ? g.displayName : g.gameId;
+    extern int Title_SanitizeName(const char*, char*, size_t);
+    char cleanName[128];
+    Title_SanitizeName(rawName, cleanName, sizeof(cleanName));
+    if (!cleanName[0]) return false;
+    if (VGames_FindByName(cleanName) >= 0) return false;
+
+    const EmulatorConfig* conf = Emulator_FindConfig("rpcs3");
+    char launch[2048];
+    TM_EmuBuildCommand(conf, binaryPath, optionOn, eboot, launch, sizeof(launch));
+
+    char genID[16];
+    snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL) + (unsigned)rand());
+    VGames_Add(cleanName, genID, launch, "E", "Emulators");
+    TM_RegisterIcon(cleanName, genID);
+    return true;
+}
+
+// Depth-limited recursive scan of a folder for files matching conf's
+// extension list. Depth cap guards against symlink loops / accidentally
+// pointing this at something huge like a whole drive root.
+static void TM_EmuScanFolder(const char* dir, const EmulatorConfig* conf,
+                             std::vector<std::string>& out, int depth) {
+    if (depth > 6) return;
+#ifdef _WIN32
+    char searchBuf[600];
+    snprintf(searchBuf, sizeof(searchBuf), "%s\\*", dir);
+    struct _finddata_t fd;
+    intptr_t hFind = _findfirst(searchBuf, &fd);
+    if (hFind == -1) return;
+    do {
+        if (fd.name[0] == '.') continue;
+        char full[600];
+        snprintf(full, sizeof(full), "%s\\%s", dir, fd.name);
+        if (fd.attrib & _A_SUBDIR) TM_EmuScanFolder(full, conf, out, depth + 1);
+        else if (Emulator_ExtensionMatches(conf, fd.name)) out.push_back(full);
+    } while (_findnext(hFind, &fd) == 0);
+    _findclose(hFind);
+#else
+    DIR* d = opendir(dir);
+    if (!d) return;
+    struct dirent* ent;
+    while ((ent = readdir(d)) != NULL) {
+        if (ent->d_name[0] == '.') continue;
+        char full[600];
+        snprintf(full, sizeof(full), "%s/%s", dir, ent->d_name);
+        struct stat st;
+        if (stat(full, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) TM_EmuScanFolder(full, conf, out, depth + 1);
+        else if (Emulator_ExtensionMatches(conf, ent->d_name)) out.push_back(full);
+    }
+    closedir(d);
+#endif
+}
+
 // ============================================================================
 // Title Maker Panel
 // ============================================================================
@@ -670,6 +784,87 @@ void RenderTitleMaker() {
     static const char* s_categories[] = { "Games", "Applications", "Homebrew", "Emulators", "Dashboards" };
     static const int s_categoryCount = 5;
     static int s_filterCategoryIdx = -1; // -1 = show all
+
+    // Main-tab bulk selection: separate from s_selectedIdx (the single-item
+    // editor selection) so checking boxes for a bulk action doesn't clobber
+    // whatever's currently open in the editor panel. Keyed by vgIndex since
+    // that's stable across a re-sort/re-filter of s_entries.
+    static bool s_bulkChecked[TM_MAX_ENTRIES];
+    static int  s_selectAnchor = -1; // s_entries index last touched by a plain/ctrl click; shift-click ranges from here
+    static int  s_bulkCategoryIdx = 0;
+
+    // Emulators tab: sub-tab per kEmulatorConfigs entry, RetroArch-style.
+    // TODO: g_showEmulatorsTab currently lives here as a local static, so
+    // it won't persist across restarts or survive SaveDesktopSettings().
+    // For parity with g_showSteamTab / g_showRetroArchTab, add a matching
+    // bool to panel_shared.h and Save/LoadDesktopSettings and swap this for
+    // that extern.
+    static bool s_showEmulatorsTab = true;
+    static int  s_emuActiveTab = 0;
+    static char s_emuBinaryPaths[kEmulatorConfigCount][512];
+    static bool s_emuPathsLoaded = false;
+    static bool s_emuOptionOn[kEmulatorConfigCount][8]; // matches EmulatorConfig::options
+    static bool s_emuOptionsInit = false;
+    static ImGui::FileBrowser s_emuFileBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
+    static ImGui::FileBrowser s_emuBinBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
+    static ImGui::FileBrowser s_emuFolderBrowser(
+        ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_SelectDirectory);
+    static bool s_emuBrowsersInit = false;
+    static int  s_emuBrowserTarget = -1; // which sub-tab s_emuFileBrowser/s_emuBinBrowser/s_emuFolderBrowser is for
+
+    // RPCS3 "Detect Installed Games" dialog state
+    static RPCS3GameEntry s_rpcs3Detected[256];
+    static int  s_rpcs3DetectedCount = 0;
+    static bool s_rpcs3CheckedIdx[256];
+    static bool s_showRpcs3DetectDialog = false;
+
+    // SteamGridDB: settings + the Next/Prev icon-picker session
+    static SGDBSettings s_sgdb;
+    static bool s_sgdbLoaded = false;
+    static bool s_sgdbShowKey = false;
+
+    static bool s_sgdbDialogOpen = false;
+    static int  s_sgdbSessionVg[TM_MAX_ENTRIES]; // vgIndex of each game in this picker session
+    static int  s_sgdbSessionCount = 0;
+    static int  s_sgdbSessionPos = 0;
+    static SGDBGameMatch s_sgdbMatches[16];
+    static int  s_sgdbMatchCount = 0;
+    static int  s_sgdbMatchIdx = -1;
+    static int  s_sgdbStage = 0; // 0 = confirm match, 1 = pick icon
+    static SGDBAsset s_sgdbAssets[5];
+    static int  s_sgdbAssetCount = 0;
+    static GuiTexture* s_sgdbThumbTex[5] = { NULL, NULL, NULL, NULL, NULL };
+    static char s_sgdbThumbPath[5][300];
+    static char s_sgdbStatus[256] = "";
+
+    if (!s_sgdbLoaded) {
+        SGDB_LoadSettings(&s_sgdb);
+        s_sgdbLoaded = true;
+    }
+
+    if (!s_emuPathsLoaded) {
+        Emulator_LoadPaths(s_emuBinaryPaths, kEmulatorConfigCount);
+        for (int e = 0; e < kEmulatorConfigCount; e++) {
+            if (s_emuBinaryPaths[e][0]) continue;
+            char found[512];
+            if (Emulator_FindBinary(&kEmulatorConfigs[e], found, sizeof(found))) {
+                strncpy(s_emuBinaryPaths[e], found, sizeof(s_emuBinaryPaths[e]) - 1);
+            }
+        }
+        s_emuPathsLoaded = true;
+    }
+    if (!s_emuOptionsInit) {
+        for (int e = 0; e < kEmulatorConfigCount; e++)
+            for (int o = 0; o < kEmulatorConfigs[e].optionCount && o < 8; o++)
+                s_emuOptionOn[e][o] = kEmulatorConfigs[e].options[o].defaultOn;
+        s_emuOptionsInit = true;
+    }
+    if (!s_emuBrowsersInit) {
+        s_emuFileBrowser.SetTitle("Select game file");
+        s_emuBinBrowser.SetTitle("Select emulator binary");
+        s_emuFolderBrowser.SetTitle("Select folder to scan for games");
+        s_emuBrowsersInit = true;
+    }
 
     // File browsers
     static ImGui::FileBrowser s_iconBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
@@ -752,6 +947,92 @@ void RenderTitleMaker() {
 
     if (s_needsScan) { DoScan(); s_needsScan = false; }
 
+    // SteamGridDB: search for whichever game is current in the picker
+    // session and land on the confirm stage - deliberately does NOT fetch
+    // assets yet, so a wrong top match doesn't cost an extra API call /
+    // image downloads before the user gets a chance to correct it.
+    auto SgdbSearchCurrent = [&]() {
+        for (int t = 0; t < 5; t++) { GuiTextureDestroy(&s_sgdbThumbTex[t]); s_sgdbThumbPath[t][0] = 0; }
+        s_sgdbAssetCount = 0;
+        s_sgdbMatchCount = 0;
+        s_sgdbMatchIdx = -1;
+        s_sgdbStatus[0] = 0;
+        s_sgdbStage = 0; // confirm
+
+        if (s_sgdbSessionPos >= s_sgdbSessionCount) return;
+        int vgIndex = s_sgdbSessionVg[s_sgdbSessionPos];
+        if (vgIndex < 0 || vgIndex >= g_vgames.count || !g_vgames.games[vgIndex].valid) return;
+        const char* name = g_vgames.games[vgIndex].name;
+
+        long searchStatus = 0;
+        s_sgdbMatchCount = SGDB_Search(s_sgdb.apiKey, name, s_sgdbMatches, 16, &searchStatus);
+        if (s_sgdbMatchCount == 0) {
+            if (searchStatus != 200)
+                snprintf(s_sgdbStatus, sizeof(s_sgdbStatus),
+                         "SteamGridDB search failed (HTTP %ld) - check your API key", searchStatus);
+            else
+                snprintf(s_sgdbStatus, sizeof(s_sgdbStatus), "No SteamGridDB match for \"%s\"", name);
+            return;
+        }
+        s_sgdbMatchIdx = 0; // SGDB's autocomplete is already relevance-ranked
+    };
+
+    // Confirm step's "Yes" action: fetch + download thumbnails for the
+    // chosen match and move to the pick stage.
+    auto SgdbFetchAssetsForMatch = [&](int matchIdx) {
+        for (int t = 0; t < 5; t++) { GuiTextureDestroy(&s_sgdbThumbTex[t]); s_sgdbThumbPath[t][0] = 0; }
+        s_sgdbMatchIdx = matchIdx;
+        s_sgdbStatus[0] = 0;
+        s_sgdbStage = 1; // pick
+
+        int want = (s_sgdb.optionCount > 0 && s_sgdb.optionCount <= 5) ? s_sgdb.optionCount : 5;
+        long assetStatus = 0;
+        s_sgdbAssetCount = SGDB_GetAssets(s_sgdb.apiKey, s_sgdbMatches[matchIdx].id, s_sgdb.assetType,
+                                          s_sgdbAssets, want, &assetStatus);
+        if (s_sgdbAssetCount == 0) {
+            if (assetStatus != 200)
+                snprintf(s_sgdbStatus, sizeof(s_sgdbStatus),
+                         "SteamGridDB %s request failed (HTTP %ld)",
+                         s_sgdb.assetType == 1 ? "grids" : "icons", assetStatus);
+            else
+                snprintf(s_sgdbStatus, sizeof(s_sgdbStatus),
+                         "No %s uploaded for \"%s\" on SteamGridDB - try Grids in Settings",
+                         s_sgdb.assetType == 1 ? "grids" : "icons", s_sgdbMatches[matchIdx].name);
+            return;
+        }
+        TM_EnsureDir(VGAMES_ICONS);
+        int decoded = 0;
+        for (int t = 0; t < s_sgdbAssetCount; t++) {
+            char tmpPath[300];
+            snprintf(tmpPath, sizeof(tmpPath), "%s/sgdb_tmp_%d.png", VGAMES_ICONS, t);
+            if (!Http_GetToFile(s_sgdbAssets[t].thumbUrl, tmpPath)) continue;
+            int w, h, ch;
+            unsigned char* pixels = stbi_load(tmpPath, &w, &h, &ch, 4);
+            if (pixels) {
+                s_sgdbThumbTex[t] = GuiTextureCreate(w, h, pixels);
+                stbi_image_free(pixels);
+                decoded++;
+            }
+            strncpy(s_sgdbThumbPath[t], tmpPath, sizeof(s_sgdbThumbPath[t]) - 1);
+        }
+        if (decoded == 0) {
+            snprintf(s_sgdbStatus, sizeof(s_sgdbStatus),
+                     "Found %d image%s but couldn't display any (download or decode failed)",
+                     s_sgdbAssetCount, s_sgdbAssetCount == 1 ? "" : "s");
+        }
+    };
+
+    // Open the picker for an arbitrary list of games (1 for the single-item
+    // editor's button, N for the bulk panel's) and kick off the first search.
+    auto SgdbStartSession = [&](const int* vgList, int count) {
+        s_sgdbSessionCount = 0;
+        for (int i = 0; i < count && s_sgdbSessionCount < TM_MAX_ENTRIES; i++)
+            s_sgdbSessionVg[s_sgdbSessionCount++] = vgList[i];
+        s_sgdbSessionPos = 0;
+        s_sgdbDialogOpen = true;
+        SgdbSearchCurrent();
+    };
+
     // Header
     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "UIX Title Maker");
     ImGui::SameLine(ImGui::GetWindowWidth() - 100);
@@ -764,6 +1045,7 @@ void RenderTitleMaker() {
     if (ImGui::CollapsingHeader("Optional Tabs")) {
         if (ImGui::Checkbox("Steam",     &g_showSteamTab))     SaveDesktopSettings();
         if (ImGui::Checkbox("RetroArch", &g_showRetroArchTab)) SaveDesktopSettings();
+        ImGui::Checkbox("Emulators", &s_showEmulatorsTab); // not yet persisted, see TODO above
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
             "Hiding a tab only hides its authoring UI. Existing entries stay listed in Main.");
     }
@@ -841,18 +1123,50 @@ void RenderTitleMaker() {
     }
     ImGui::Separator();
 
-    // Split view: title list on left, editor on right
-    float listWidth = 260.0f;
-    ImGui::BeginChild("TitleList", ImVec2(listWidth, -ImGui::GetFrameHeightWithSpacing() * 1.6f), true);
+    // Compute the currently visible (search + category filtered) rows once,
+    // so shift-click range-select operates on what's actually on screen
+    // rather than raw array index (which would include filtered-out rows).
+    int visIdx[TM_MAX_ENTRIES];
+    int visCount = 0;
     for (int i = 0; i < s_entryCount; i++) {
         TmEntry& e = s_entries[i];
+        if (s_searchFilter[0] && !CaseStrStr(e.name, s_searchFilter)) continue;
+        if (s_filterCategoryIdx >= 0 && strcasecmp(e.category, s_categories[s_filterCategoryIdx]) != 0) continue;
+        visIdx[visCount++] = i;
+    }
 
-        // Apply search filter
-        if (s_searchFilter[0] && !CaseStrStr(e.name, s_searchFilter))
-            continue;
-        // Apply category filter
-        if (s_filterCategoryIdx >= 0 && strcasecmp(e.category, s_categories[s_filterCategoryIdx]) != 0)
-            continue;
+    int bulkCheckedCount = 0;
+    for (int i = 0; i < g_vgames.count; i++)
+        if (g_vgames.games[i].valid && s_bulkChecked[i]) bulkCheckedCount++;
+
+    // Small convenience row above the list - always available, no separate
+    // "select mode" to toggle. Selection itself is driven by click / ctrl+
+    // click / shift+click on the rows below, same as a file manager.
+    {
+        if (ImGui::SmallButton("Select All (filtered)")) {
+            for (int v = 0; v < visCount; v++) s_bulkChecked[s_entries[visIdx[v]].vgIndex] = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear Selection")) {
+            memset(s_bulkChecked, 0, sizeof(s_bulkChecked));
+            s_selectAnchor = -1;
+        }
+        ImGui::SameLine();
+        if (bulkCheckedCount > 0)
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                "(%d selected - shift/ctrl+click to adjust)", bulkCheckedCount);
+        else
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                "(click a title; shift/ctrl+click to multi-select)");
+    }
+    ImGui::Separator();
+
+    // Split view: title list on left, editor / bulk panel on right
+    float listWidth = 260.0f;
+    ImGui::BeginChild("TitleList", ImVec2(listWidth, -ImGui::GetFrameHeightWithSpacing() * 1.6f), true);
+    for (int vp = 0; vp < visCount; vp++) {
+        int i = visIdx[vp];
+        TmEntry& e = s_entries[i];
 
         bool hasLaunch = e.launch[0] != 0;
         if (hasLaunch)
@@ -860,22 +1174,62 @@ void RenderTitleMaker() {
         else
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
 
-        bool selected = (s_selectedIdx == i);
+        bool checked = s_bulkChecked[e.vgIndex];
         char listLabel[256];
         snprintf(listLabel, sizeof(listLabel), "%s  [%s]", e.name, e.category);
-        if (ImGui::Selectable(listLabel, selected)) {
-            s_selectedIdx = i;
-            // Populate editor fields from VGames entry
-            VirtualGame& vg = g_vgames.games[e.vgIndex];
-            strncpy(s_editName, vg.name, sizeof(s_editName) - 1);
-            strncpy(s_editLaunch, vg.launch, sizeof(s_editLaunch) - 1);
-            strncpy(s_editTitleID, vg.titleID, sizeof(s_editTitleID) - 1);
-            s_editCategoryIdx = 0;
-            for (int c = 0; c < s_categoryCount; c++) {
-                if (strcasecmp(vg.category, s_categories[c]) == 0) { s_editCategoryIdx = c; break; }
+        ImGui::PushID(i);
+        if (ImGui::Selectable(listLabel, checked)) {
+            ImGuiIO& io = ImGui::GetIO();
+            bool ctrl  = io.KeyCtrl || io.KeySuper; // KeySuper so Cmd+click works on macOS
+            bool shift = io.KeyShift;
+
+            if (shift && s_selectAnchor >= 0) {
+                int anchorPos = vp;
+                for (int k = 0; k < visCount; k++)
+                    if (visIdx[k] == s_selectAnchor) { anchorPos = k; break; }
+                int lo = (anchorPos < vp) ? anchorPos : vp;
+                int hi = (anchorPos < vp) ? vp : anchorPos;
+                if (!ctrl) memset(s_bulkChecked, 0, sizeof(s_bulkChecked));
+                for (int k = lo; k <= hi; k++) s_bulkChecked[s_entries[visIdx[k]].vgIndex] = true;
+            } else if (ctrl) {
+                s_bulkChecked[e.vgIndex] = !s_bulkChecked[e.vgIndex];
+                s_selectAnchor = i;
+            } else {
+                memset(s_bulkChecked, 0, sizeof(s_bulkChecked));
+                s_bulkChecked[e.vgIndex] = true;
+                s_selectAnchor = i;
             }
-            s_iconTexIdx = -1; // force icon reload
+
+            // Re-derive the editor's single-item selection: only populate
+            // it when exactly one row is checked overall (not just within
+            // the current filter), so a multi-select doesn't leave stale
+            // single-item edit fields showing.
+            int newCount = 0, onlyVgIndex = -1;
+            for (int gi = 0; gi < g_vgames.count; gi++) {
+                if (!g_vgames.games[gi].valid || !s_bulkChecked[gi]) continue;
+                newCount++;
+                onlyVgIndex = gi;
+            }
+
+            if (newCount == 1) {
+                s_selectedIdx = -1;
+                for (int k = 0; k < s_entryCount; k++) {
+                    if (s_entries[k].vgIndex == onlyVgIndex) { s_selectedIdx = k; break; }
+                }
+                VirtualGame& vg = g_vgames.games[onlyVgIndex];
+                strncpy(s_editName, vg.name, sizeof(s_editName) - 1);
+                strncpy(s_editLaunch, vg.launch, sizeof(s_editLaunch) - 1);
+                strncpy(s_editTitleID, vg.titleID, sizeof(s_editTitleID) - 1);
+                s_editCategoryIdx = 0;
+                for (int c = 0; c < s_categoryCount; c++) {
+                    if (strcasecmp(vg.category, s_categories[c]) == 0) { s_editCategoryIdx = c; break; }
+                }
+                s_iconTexIdx = -1; // force icon reload
+            } else {
+                s_selectedIdx = -1;
+            }
         }
+        ImGui::PopID();
         ImGui::PopStyleColor();
 
         if (ImGui::IsItemHovered()) {
@@ -922,6 +1276,13 @@ void RenderTitleMaker() {
         }
         if (ImGui::SmallButton("Browse Icon..")) {
             s_iconBrowser.Open();
+        }
+        if (s_sgdb.apiKey[0] && s_sgdb.optionCount > 0) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("SteamGridDB..")) {
+                int one[1] = { sel.vgIndex };
+                SgdbStartSession(one, 1);
+            }
         }
         ImGui::Spacing();
 
@@ -1053,6 +1414,103 @@ void RenderTitleMaker() {
                 snprintf(s_statusMsg, sizeof(s_statusMsg), "Deleted: %s", delName);
                 s_statusTime = 3.0f;
                 s_needsScan = true;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
+    } else if (bulkCheckedCount > 1) {
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "%d titles selected", bulkCheckedCount);
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "shift/ctrl+click in the list to adjust");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::Text("Category:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(160);
+        if (ImGui::BeginCombo("##bulkcat", s_categories[s_bulkCategoryIdx])) {
+            for (int c = 0; c < s_categoryCount; c++)
+                if (ImGui::Selectable(s_categories[c], s_bulkCategoryIdx == c))
+                    s_bulkCategoryIdx = c;
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Apply to Selected")) {
+            int changed = 0;
+            for (int i = 0; i < g_vgames.count; i++) {
+                if (!g_vgames.games[i].valid || !s_bulkChecked[i]) continue;
+                VGames_Update(i, g_vgames.games[i].name, g_vgames.games[i].titleID,
+                              g_vgames.games[i].launch, g_vgames.games[i].drive,
+                              s_categories[s_bulkCategoryIdx]);
+                changed++;
+            }
+            if (changed > 0) { VGames_Save(); UDataSynth_RebuildAll(); s_needsScan = true; }
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "Recategorized %d title%s",
+                     changed, changed == 1 ? "" : "s");
+            s_statusTime = 3.0f;
+        }
+
+        ImGui::Spacing();
+        if (s_sgdb.apiKey[0] && s_sgdb.optionCount > 0) {
+            if (ImGui::Button("SteamGridDB Icons for Selected...")) {
+                static int vgList[TM_MAX_ENTRIES];
+                int n = 0;
+                for (int i = 0; i < g_vgames.count && n < TM_MAX_ENTRIES; i++)
+                    if (g_vgames.games[i].valid && s_bulkChecked[i]) vgList[n++] = i;
+                SgdbStartSession(vgList, n);
+            }
+        } else {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+                "Set an API key under Settings to fetch icons from SteamGridDB.");
+        }
+
+        ImGui::Spacing();
+        if (ImGui::Button("Clear Icons for Selected")) {
+            int changed = 0;
+            for (int i = 0; i < g_vgames.count; i++) {
+                if (!g_vgames.games[i].valid || !s_bulkChecked[i]) continue;
+                char pngPath[600], jpgPath[600];
+                snprintf(pngPath, sizeof(pngPath), "%s/%s.png", VGAMES_ICONS, g_vgames.games[i].titleID);
+                snprintf(jpgPath, sizeof(jpgPath), "%s/%s.jpg", VGAMES_ICONS, g_vgames.games[i].titleID);
+                if (remove(pngPath) == 0) changed++;
+                if (remove(jpgPath) == 0) changed++;
+            }
+            s_iconTexIdx = -1;
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "Cleared icons for selected titles");
+            s_statusTime = 3.0f;
+        }
+
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.1f, 0.1f, 1.0f));
+        if (ImGui::Button("Delete Selected")) ImGui::OpenPopup("ConfirmBulkDelete");
+        ImGui::PopStyleColor();
+
+        if (ImGui::BeginPopup("ConfirmBulkDelete")) {
+            ImGui::Text("Delete %d title%s from library? This can't be undone.",
+                        bulkCheckedCount, bulkCheckedCount == 1 ? "" : "s");
+            if (ImGui::Button("Yes, Delete")) {
+                // Snapshot names first: VGames_DeleteByName compacts the
+                // array, so deleting by live index while iterating would
+                // skip entries / shift indices out from under s_bulkChecked
+                // mid-loop.
+                static char toDelete[TM_MAX_ENTRIES][128];
+                int delCount = 0;
+                for (int i = 0; i < g_vgames.count && delCount < TM_MAX_ENTRIES; i++) {
+                    if (!g_vgames.games[i].valid || !s_bulkChecked[i]) continue;
+                    strncpy(toDelete[delCount], g_vgames.games[i].name, 127);
+                    toDelete[delCount][127] = 0;
+                    delCount++;
+                }
+                for (int i = 0; i < delCount; i++) VGames_DeleteByName(toDelete[i]);
+                VGames_Save(); UDataSynth_RebuildAll();
+                memset(s_bulkChecked, 0, sizeof(s_bulkChecked));
+                s_selectAnchor = -1;
+                s_needsScan = true;
+                snprintf(s_statusMsg, sizeof(s_statusMsg), "Deleted %d title%s",
+                         delCount, delCount == 1 ? "" : "s");
+                s_statusTime = 3.0f;
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
@@ -2092,7 +2550,427 @@ void RenderTitleMaker() {
         ImGui::EndTabItem();
     } // RetroArch tab
 
+    if (s_showEmulatorsTab && ImGui::BeginTabItem("Emulators")) {
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+            "Per-emulator binary path, launch options, and game import.");
+        ImGui::Separator();
+
+        if (ImGui::BeginTabBar("EmuSubTabs")) {
+            for (int e = 0; e < kEmulatorConfigCount; e++) {
+                const EmulatorConfig& conf = kEmulatorConfigs[e];
+                if (!ImGui::BeginTabItem(conf.displayName)) continue;
+
+                ImGui::PushID(e);
+
+                // Binary path
+                ImGui::Text("Binary:");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 150);
+                if (ImGui::InputText("##emubin", s_emuBinaryPaths[e], sizeof(s_emuBinaryPaths[e])))
+                    Emulator_SavePaths(s_emuBinaryPaths, kEmulatorConfigCount);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Find")) {
+                    char found[512];
+                    if (Emulator_FindBinary(&conf, found, sizeof(found))) {
+                        strncpy(s_emuBinaryPaths[e], found, sizeof(s_emuBinaryPaths[e]) - 1);
+                        s_emuBinaryPaths[e][sizeof(s_emuBinaryPaths[e]) - 1] = 0;
+                        Emulator_SavePaths(s_emuBinaryPaths, kEmulatorConfigCount);
+                    } else {
+                        snprintf(s_statusMsg, sizeof(s_statusMsg),
+                                 "%s not found in common locations", conf.displayName);
+                        s_statusTime = 3.0f;
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Browse")) {
+                    s_emuBrowserTarget = e;
+                    s_emuBinBrowser.Open();
+                }
+                if (!s_emuBinaryPaths[e][0])
+                    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f),
+                        "Set the %s binary to enable adding games", conf.displayName);
+
+                // Launch options
+                if (conf.optionCount > 0) {
+                    ImGui::Spacing();
+                    ImGui::Text("Launch options:");
+                    for (int o = 0; o < conf.optionCount; o++)
+                        ImGui::Checkbox(conf.options[o].label, &s_emuOptionOn[e][o]);
+                }
+
+                ImGui::Spacing();
+                ImGui::Separator();
+
+                // Import
+                bool haveBinary = s_emuBinaryPaths[e][0] != 0;
+                if (!haveBinary) ImGui::BeginDisabled();
+
+                if (ImGui::Button("Add Game File...")) {
+                    s_emuBrowserTarget = e;
+                    std::vector<std::string> filters;
+                    for (int x = 0; conf.extensions[x]; x++)
+                        filters.push_back(std::string(".") + conf.extensions[x]);
+                    s_emuFileBrowser.SetTypeFilters(filters);
+                    s_emuFileBrowser.Open();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Add Folder (scan)...")) {
+                    s_emuBrowserTarget = e;
+                    s_emuFolderBrowser.Open();
+                }
+                if (conf.detectInstalled) {
+                    ImGui::SameLine();
+                    if (ImGui::Button("Detect Installed Games...")) {
+                        char configDir[600];
+                        RPCS3_DefaultConfigDir(s_emuBinaryPaths[e], configDir, sizeof(configDir));
+                        char gamesYml[700], hddDir[700];
+                        snprintf(gamesYml, sizeof(gamesYml), "%s/games.yml", configDir);
+                        snprintf(hddDir, sizeof(hddDir), "%s/dev_hdd0/game", configDir);
+
+                        s_rpcs3DetectedCount = RPCS3_DetectInstalled(gamesYml, hddDir, s_rpcs3Detected, 256);
+                        for (int i = 0; i < s_rpcs3DetectedCount; i++) {
+                            RPCS3_FriendlyName(s_rpcs3Detected[i].gameId, s_rpcs3Detected[i].folderPath,
+                                                s_rpcs3Detected[i].displayName,
+                                                sizeof(s_rpcs3Detected[i].displayName));
+                            s_rpcs3CheckedIdx[i] = true;
+                        }
+                        if (s_rpcs3DetectedCount == 0) {
+                            snprintf(s_statusMsg, sizeof(s_statusMsg),
+                                     "No RPCS3 games found under %s", configDir);
+                            s_statusTime = 4.0f;
+                        } else {
+                            s_showRpcs3DetectDialog = true;
+                        }
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Reads games.yml and scans dev_hdd0/game/\n"
+                                          "under RPCS3's config directory.");
+                }
+                if (!haveBinary) ImGui::EndDisabled();
+
+                ImGui::Spacing();
+
+                // Per-emulator library list. Entries are matched by whether
+                // their launch command starts with this emulator's quoted
+                // binary path, the same "look at what's already in games.ini"
+                // approach the Steam/RetroArch tabs use with their scheme
+                // prefixes - just keyed on binary instead of a URL scheme,
+                // since these entries are plain shell commands.
+                {
+                    int matchIdx[TM_MAX_ENTRIES];
+                    int matchCount = 0;
+                    if (s_emuBinaryPaths[e][0]) {
+                        char quotedBin[560];
+                        snprintf(quotedBin, sizeof(quotedBin), "\"%s\"", s_emuBinaryPaths[e]);
+                        size_t qlen = strlen(quotedBin);
+                        for (int i = 0; i < g_vgames.count && matchCount < TM_MAX_ENTRIES; i++) {
+                            if (!g_vgames.games[i].valid) continue;
+                            if (strncmp(g_vgames.games[i].launch, quotedBin, qlen) != 0) continue;
+                            matchIdx[matchCount++] = i;
+                        }
+                    }
+
+                    ImGui::Text("%s Library (%d)", conf.displayName, matchCount);
+                    ImGuiTableFlags tflags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                             ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable;
+                    if (ImGui::BeginTable("##emulib", 2, tflags, ImVec2(0, 160))) {
+                        ImGui::TableSetupColumn("Title", ImGuiTableColumnFlags_WidthStretch, 0.88f);
+                        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 28.0f);
+                        ImGui::TableHeadersRow();
+
+                        int pendingDelete = -1;
+                        for (int r = 0; r < matchCount; r++) {
+                            int vi = matchIdx[r];
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
+                            ImGui::AlignTextToFramePadding();
+                            ImGui::TextUnformatted(g_vgames.games[vi].name);
+                            ImGui::TableSetColumnIndex(1);
+                            ImGui::PushID(vi);
+                            if (ImGui::SmallButton("X")) pendingDelete = vi;
+                            if (ImGui::IsItemHovered())
+                                ImGui::SetTooltip("Remove %s", g_vgames.games[vi].name);
+                            ImGui::PopID();
+                        }
+                        ImGui::EndTable();
+
+                        if (pendingDelete >= 0) {
+                            char name[128];
+                            strncpy(name, g_vgames.games[pendingDelete].name, sizeof(name) - 1);
+                            name[sizeof(name) - 1] = 0;
+                            VGames_DeleteByName(name);
+                            VGames_Save(); UDataSynth_RebuildAll();
+                            s_needsScan = true;
+                            snprintf(s_statusMsg, sizeof(s_statusMsg), "Removed: %s", name);
+                            s_statusTime = 3.0f;
+                        }
+                    }
+                }
+
+                ImGui::PopID();
+                ImGui::EndTabItem();
+            }
+            ImGui::EndTabBar();
+        }
+
+        // Browser callbacks, shared across sub-tabs via s_emuBrowserTarget
+        s_emuBinBrowser.Display();
+        if (s_emuBinBrowser.HasSelected() && s_emuBrowserTarget >= 0) {
+            std::string sel = s_emuBinBrowser.GetSelected().string();
+            s_emuBinBrowser.ClearSelected();
+            strncpy(s_emuBinaryPaths[s_emuBrowserTarget], sel.c_str(),
+                    sizeof(s_emuBinaryPaths[0]) - 1);
+            s_emuBinaryPaths[s_emuBrowserTarget][sizeof(s_emuBinaryPaths[0]) - 1] = 0;
+            Emulator_SavePaths(s_emuBinaryPaths, kEmulatorConfigCount);
+        }
+
+        s_emuFileBrowser.Display();
+        if (s_emuFileBrowser.HasSelected() && s_emuBrowserTarget >= 0) {
+            std::string sel = s_emuFileBrowser.GetSelected().string();
+            s_emuFileBrowser.ClearSelected();
+            int e = s_emuBrowserTarget;
+            bool ok = TM_EmuAddGame(&kEmulatorConfigs[e], sel.c_str(),
+                                    s_emuBinaryPaths[e], s_emuOptionOn[e]);
+            if (ok) {
+                VGames_Save(); UDataSynth_RebuildAll();
+                s_needsScan = true;
+                snprintf(s_statusMsg, sizeof(s_statusMsg), "Added: %s", sel.c_str());
+            } else {
+                snprintf(s_statusMsg, sizeof(s_statusMsg), "Skipped (already in library)");
+            }
+            s_statusTime = 3.0f;
+        }
+
+        s_emuFolderBrowser.Display();
+        if (s_emuFolderBrowser.HasSelected() && s_emuBrowserTarget >= 0) {
+            std::string sel = s_emuFolderBrowser.GetSelected().string();
+            s_emuFolderBrowser.ClearSelected();
+            int e = s_emuBrowserTarget;
+            std::vector<std::string> found;
+            TM_EmuScanFolder(sel.c_str(), &kEmulatorConfigs[e], found, 0);
+            int added = 0, skipped = 0;
+            for (size_t i = 0; i < found.size(); i++) {
+                if (TM_EmuAddGame(&kEmulatorConfigs[e], found[i].c_str(),
+                                  s_emuBinaryPaths[e], s_emuOptionOn[e]))
+                    added++;
+                else
+                    skipped++;
+            }
+            if (added > 0) { VGames_Save(); UDataSynth_RebuildAll(); s_needsScan = true; }
+            snprintf(s_statusMsg, sizeof(s_statusMsg),
+                     "Folder scan: added %d, skipped %d", added, skipped);
+            s_statusTime = 4.0f;
+        }
+
+        // RPCS3 detected-games confirmation dialog
+        if (s_showRpcs3DetectDialog) {
+            ImGui::SetNextWindowSize(ImVec2(520, 420), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin("RPCS3: Detected Games", &s_showRpcs3DetectDialog)) {
+                ImGui::Text("Found %d game(s). Uncheck any you don't want added.",
+                            s_rpcs3DetectedCount);
+                ImGui::Separator();
+                ImGui::BeginChild("rpcs3list", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), true);
+                for (int i = 0; i < s_rpcs3DetectedCount; i++) {
+                    ImGui::PushID(i);
+                    ImGui::Checkbox("##chk", &s_rpcs3CheckedIdx[i]);
+                    ImGui::SameLine();
+                    ImGui::Text("%s  [%s]", s_rpcs3Detected[i].displayName, s_rpcs3Detected[i].gameId);
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+
+                int rpcs3Idx = 0;
+                for (int i = 0; i < kEmulatorConfigCount; i++)
+                    if (strcmp(kEmulatorConfigs[i].key, "rpcs3") == 0) { rpcs3Idx = i; break; }
+
+                if (ImGui::Button("Add Checked", ImVec2(140, 0))) {
+                    int added = 0, skipped = 0;
+                    for (int i = 0; i < s_rpcs3DetectedCount; i++) {
+                        if (!s_rpcs3CheckedIdx[i]) continue;
+                        if (TM_EmuAddRpcs3(s_rpcs3Detected[i], s_emuBinaryPaths[rpcs3Idx],
+                                           s_emuOptionOn[rpcs3Idx]))
+                            added++;
+                        else
+                            skipped++;
+                    }
+                    if (added > 0) { VGames_Save(); UDataSynth_RebuildAll(); s_needsScan = true; }
+                    snprintf(s_statusMsg, sizeof(s_statusMsg),
+                             "RPCS3: added %d, skipped %d (no EBOOT.BIN or already present)",
+                             added, skipped);
+                    s_statusTime = 4.0f;
+                    s_showRpcs3DetectDialog = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(100, 0))) s_showRpcs3DetectDialog = false;
+            }
+            ImGui::End();
+        }
+
+        ImGui::EndTabItem();
+    } // Emulators tab
+
+    if (ImGui::BeginTabItem("Settings")) {
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "SteamGridDB");
+        ImGui::Separator();
+
+        ImGui::Text("API Key:");
+        ImGui::SameLine();
+        ImGuiInputTextFlags keyFlags = s_sgdbShowKey ? 0 : ImGuiInputTextFlags_Password;
+        ImGui::SetNextItemWidth(320);
+        ImGui::InputText("##sgdbkey", s_sgdb.apiKey, sizeof(s_sgdb.apiKey), keyFlags);
+        ImGui::SameLine();
+        ImGui::Checkbox("Show", &s_sgdbShowKey);
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+            "Free key: steamgriddb.com -> Preferences -> API");
+
+        ImGui::Spacing();
+        ImGui::Text("Default Icon Source:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(180);
+        static const char* s_sgdbSourceNames[] = { "Icons (square)", "Grids (boxart)" };
+        if (ImGui::BeginCombo("##sgdbsrc", s_sgdbSourceNames[s_sgdb.assetType])) {
+            for (int i = 0; i < 2; i++)
+                if (ImGui::Selectable(s_sgdbSourceNames[i], s_sgdb.assetType == i))
+                    s_sgdb.assetType = i;
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Icons are square and match the dashboard tile look.\n"
+                              "Grids are taller boxart-style images.");
+
+        ImGui::Spacing();
+        ImGui::Text("Option Count:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(180);
+        ImGui::SliderInt("##sgdbcount", &s_sgdb.optionCount, 0, 5,
+                         s_sgdb.optionCount == 0 ? "Disabled" : "%d");
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f),
+            "How many thumbnails the picker fetches per game. 0 hides the SteamGridDB\n"
+            "buttons everywhere - Main and Emulators fall back to local icons only.");
+
+        ImGui::Spacing();
+        if (ImGui::Button("Save Settings")) {
+            SGDB_SaveSettings(&s_sgdb);
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "SteamGridDB settings saved");
+            s_statusTime = 3.0f;
+        }
+
+        ImGui::EndTabItem();
+    } // Settings tab
+
     ImGui::EndTabBar();
+
+    // SteamGridDB icon picker - a floating dialog so it stays open no
+    // matter which tab is active (the bulk panel that launched it lives on
+    // Main; Emulators library rows might want the same button later).
+    if (s_sgdbDialogOpen) {
+        ImGui::SetNextWindowSize(ImVec2(560, 420), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("SteamGridDB Icons", &s_sgdbDialogOpen)) {
+            int vgIndex = (s_sgdbSessionPos < s_sgdbSessionCount) ? s_sgdbSessionVg[s_sgdbSessionPos] : -1;
+            const char* curName = (vgIndex >= 0 && vgIndex < g_vgames.count && g_vgames.games[vgIndex].valid)
+                ? g_vgames.games[vgIndex].name : "(removed)";
+            ImGui::Text("%d / %d", s_sgdbSessionPos + 1, s_sgdbSessionCount);
+            ImGui::Separator();
+
+            if (s_sgdbStage == 0) {
+                // Confirm stage: nothing's been fetched yet on purpose - a
+                // wrong top match shouldn't cost an API call and image
+                // downloads before the user gets to correct it.
+                ImGui::Spacing();
+                if (s_sgdbMatchCount > 0) {
+                    ImGui::Text("Is this the right game for \"%s\"?", curName);
+                    ImGui::Spacing();
+                    ImGui::SetNextItemWidth(320);
+                    if (ImGui::BeginCombo("##sgdbmatch", s_sgdbMatches[s_sgdbMatchIdx].name)) {
+                        for (int m = 0; m < s_sgdbMatchCount; m++)
+                            if (ImGui::Selectable(s_sgdbMatches[m].name, m == s_sgdbMatchIdx))
+                                s_sgdbMatchIdx = m;
+                        ImGui::EndCombo();
+                    }
+                    ImGui::Spacing();
+                    if (ImGui::Button("Yes, Show Icons", ImVec2(160, 0)))
+                        SgdbFetchAssetsForMatch(s_sgdbMatchIdx);
+                } else {
+                    if (s_sgdbStatus[0])
+                        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "%s", s_sgdbStatus);
+                    else
+                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No match found for \"%s\".", curName);
+                }
+            } else {
+                // Pick stage: thumbnails arranged horizontally, click one
+                // to apply it.
+                if (ImGui::SmallButton("<- Back")) {
+                    for (int t = 0; t < 5; t++) GuiTextureDestroy(&s_sgdbThumbTex[t]);
+                    s_sgdbAssetCount = 0;
+                    s_sgdbStage = 0;
+                } else {
+                    ImGui::SameLine();
+                    ImGui::Text("Icons for: %s", s_sgdbMatches[s_sgdbMatchIdx].name);
+                    ImGui::Spacing();
+
+                    if (s_sgdbStatus[0])
+                        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "%s", s_sgdbStatus);
+
+                    for (int t = 0; t < s_sgdbAssetCount; t++) {
+                        ImGui::PushID(t);
+                        bool clicked = false;
+                        if (s_sgdbThumbTex[t]) {
+                            clicked = ImGui::ImageButton("##thumb",
+                                (ImTextureID)(intptr_t)GuiTextureImId(s_sgdbThumbTex[t]), ImVec2(96, 96));
+                        } else {
+                            ImGui::Dummy(ImVec2(96, 96));
+                        }
+                        ImGui::PopID();
+                        if (t + 1 < s_sgdbAssetCount) ImGui::SameLine();
+
+                        if (clicked && vgIndex >= 0 && g_vgames.games[vgIndex].valid) {
+                            TM_EnsureDir(VGAMES_ICONS);
+                            char dst[600], other[600];
+                            snprintf(dst, sizeof(dst), "%s/%s.png", VGAMES_ICONS, g_vgames.games[vgIndex].titleID);
+                            snprintf(other, sizeof(other), "%s/%s.jpg", VGAMES_ICONS, g_vgames.games[vgIndex].titleID);
+                            TM_CopyFile(s_sgdbThumbPath[t], dst);
+                            remove(other); // in case an older import left a .jpg for this title, don't leave two
+                            s_iconTexIdx = -1;
+                            snprintf(s_statusMsg, sizeof(s_statusMsg), "Icon set: %s", g_vgames.games[vgIndex].name);
+                            s_statusTime = 3.0f;
+
+                            // Advance to the next game automatically -
+                            // picking is the common case, so this keeps a
+                            // multi-game session moving without an extra
+                            // click per title.
+                            s_sgdbSessionPos++;
+                            if (s_sgdbSessionPos < s_sgdbSessionCount) SgdbSearchCurrent();
+                            else s_sgdbDialogOpen = false;
+                        }
+                    }
+                }
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+            bool atStart = (s_sgdbSessionPos <= 0);
+            if (atStart) ImGui::BeginDisabled();
+            if (ImGui::Button("Prev")) { s_sgdbSessionPos--; SgdbSearchCurrent(); }
+            if (atStart) ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            if (ImGui::Button("Skip")) {
+                s_sgdbSessionPos++;
+                if (s_sgdbSessionPos < s_sgdbSessionCount) SgdbSearchCurrent();
+                else s_sgdbDialogOpen = false;
+            }
+
+            ImGui::SameLine();
+            bool atEnd = (s_sgdbSessionPos + 1 >= s_sgdbSessionCount);
+            if (atEnd) ImGui::BeginDisabled();
+            if (ImGui::Button("Next")) { s_sgdbSessionPos++; SgdbSearchCurrent(); }
+            if (atEnd) ImGui::EndDisabled();
+
+            ImGui::SameLine();
+            if (ImGui::Button("Close")) s_sgdbDialogOpen = false;
+        }
+        ImGui::End();
+    }
 
     // Status message
     if (s_statusTime > 0.0f) {
