@@ -13,6 +13,10 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <functional>
+#include <thread>
+#include <mutex>
+#include <atomic>
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <io.h>
@@ -328,10 +332,34 @@ struct Soundtrack {
     std::vector<unsigned char> albumRGBA;
 };
 
-static std::vector<Soundtrack> s_soundtracks;
+// two methods to group songs- per album and per artist
+enum MusicOrganizeMode {
+    MUSIC_ORGANIZE_BY_ALBUM  = 0,
+    MUSIC_ORGANIZE_BY_ARTIST = 1,
+};
+
+// it tries to scan the songs *while* you use the program, rather than pausing it all until finished.
+//very good if you have very huge music libraries
+static std::mutex              s_musicMutex;
+static std::vector<Soundtrack> s_albumSoundtracks;   // one entry per album folder / playlist / loose-music bucket
+static std::vector<Soundtrack> s_artistSoundtracks;  // one entry per top-level artist folder
+static std::vector<Soundtrack> s_soundtracks;        // published "active" view (copy of one of the above), what the UI reads
+static MusicOrganizeMode       s_organizeMode = MUSIC_ORGANIZE_BY_ARTIST;
 static int  s_currentSoundtrackIdx = -1;
 static char s_fmtBuf[32];
 static std::vector<char> s_displayBuf;
+
+static std::thread       s_scanThread;
+static std::atomic<bool> s_scanThreadRunning{false};
+static std::atomic<bool> s_scanCancelRequested{false};
+
+// "must be called with s_musicMutex already held.
+static void RebuildActiveView_Locked()
+{
+    s_soundtracks = (s_organizeMode == MUSIC_ORGANIZE_BY_ARTIST) ? s_artistSoundtracks : s_albumSoundtracks;
+    std::sort(s_soundtracks.begin(), s_soundtracks.end(),
+        [](const Soundtrack& a, const Soundtrack& b) { return a.name < b.name; });
+}
 
 static bool IsAlbumArtFile(const char* name)
 {
@@ -449,7 +477,10 @@ int DashAudio_Init(void)
 
     // Auto-scan music collection. Root is configurable via desktop.ini
     // [Library] MusicRoot=...; falls back to Data/Music for legacy
-    // installs. Declared in audio_sdl.h.
+    // installs. Declared in audio_sdl.h. Runs on a background thread and
+    // publishes soundtracks as it finds them -- this call returns
+    // immediately, it does not block startup. Use DashMusic_IsScanning()
+    // if the UI wants to show a "still finding music..." indicator.
     DashMusic_Scan(DashMusic_GetConfiguredRoot());
 
     return 0;
@@ -496,6 +527,10 @@ void DashAudio_Shutdown(void)
 {
     if (!s_initialized) return;
 
+    s_scanCancelRequested = true;
+    if (s_scanThread.joinable()) s_scanThread.join();
+    s_scanThreadRunning = false;
+
     // Free all loaded sounds
     for (int i = 0; i < MAX_SOUNDS; i++) {
         if (s_sounds[i]) {
@@ -508,7 +543,12 @@ void DashAudio_Shutdown(void)
     // Free music
     DashAudio_FreeMusic();
 
-    s_soundtracks.clear();
+    {
+        std::lock_guard<std::mutex> lock(s_musicMutex);
+        s_soundtracks.clear();
+        s_albumSoundtracks.clear();
+        s_artistSoundtracks.clear();
+    }
 
     Mix_CloseAudio();
     Mix_Quit();
@@ -647,14 +687,17 @@ int DashAudio_LoadMusic(const char* path)
 
     DashAudio_FreeMusic();
     s_currentSoundtrackIdx = -1;
-    for (size_t i = 0; i < s_soundtracks.size(); i++) {
-        for (size_t j = 0; j < s_soundtracks[i].songs.size(); j++) {
-            if (s_soundtracks[i].songs[j].path == path) {
-                s_currentSoundtrackIdx = (int)i;
-                break;
+    {
+        std::lock_guard<std::mutex> lock(s_musicMutex);
+        for (size_t i = 0; i < s_soundtracks.size(); i++) {
+            for (size_t j = 0; j < s_soundtracks[i].songs.size(); j++) {
+                if (s_soundtracks[i].songs[j].path == path) {
+                    s_currentSoundtrackIdx = (int)i;
+                    break;
+                }
             }
+            if (s_currentSoundtrackIdx >= 0) break;
         }
-        if (s_currentSoundtrackIdx >= 0) break;
     }
     s_music = Mix_LoadMUS(path);
     if (!s_music) {
@@ -805,21 +848,44 @@ static int MetadataLookup(mpv_node* meta, const char* key, std::string* out)
 static bool ProbeSong(mpv_handle* h, const std::string& path, Song& out)
 {
     if (!h) return false;
+
+    // drop any leftover observation from a previous probe on this handle
+    // before we start a new one
+    mpv_unobserve_property(h, 0);
+
     const char* cmd[] = { "loadfile", path.c_str(), "replace", NULL };
     if (mpv_command(h, cmd) < 0) return false;
+    mpv_observe_property(h, 0, "duration", MPV_FORMAT_DOUBLE);
 
-    // Wait for FILE_LOADED or END_FILE (the latter on probe failure).
-    for (;;) {
-        mpv_event* ev = mpv_wait_event(h, 5.0);
-        if (!ev) break;
-        if (ev->event_id == MPV_EVENT_FILE_LOADED) break;
-        if (ev->event_id == MPV_EVENT_END_FILE)   return false;
-        if (ev->event_id == MPV_EVENT_SHUTDOWN)   return false;
-        if (ev->event_id == MPV_EVENT_NONE)       return false;
-    }
-
+    // Wait for FILE_LOADED, then keep pumping events for a short settle
+    // window so mpv finishes parsing tags/duration before we read them.
+    // Reading "metadata"/"duration" immediately on FILE_LOADED can race,
+    // especially on FLAC with large embedded cover art: the properties
+    // aren't populated yet and mpv_get_property silently returns whatever
+    // was left over from the *previous* probed file on this handle. That
+    // showed up as blank tags, zero durations, or metadata bleeding across
+    // songs in the on-disk cache.
+    bool loaded = false;
     double dur = 0;
-    mpv_get_property(h, "duration", MPV_FORMAT_DOUBLE, &dur);
+    for (int i = 0; i < 100; i++) {
+        mpv_event* ev = mpv_wait_event(h, loaded ? 0.05 : 5.0);
+        if (!ev || ev->event_id == MPV_EVENT_NONE) {
+            if (loaded) break; // settle window elapsed, use what we have
+            return false;
+        }
+        if (ev->event_id == MPV_EVENT_END_FILE)   return loaded;
+        if (ev->event_id == MPV_EVENT_SHUTDOWN)   return loaded;
+        if (ev->event_id == MPV_EVENT_FILE_LOADED) loaded = true;
+        if (loaded && ev->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+            mpv_event_property* prop = (mpv_event_property*)ev->data;
+            if (prop && prop->format == MPV_FORMAT_DOUBLE && prop->data)
+                dur = *(double*)prop->data;
+            if (dur > 0) break;
+        }
+    }
+    if (!loaded) return false;
+
+    if (dur <= 0) mpv_get_property(h, "duration", MPV_FORMAT_DOUBLE, &dur);
     if (dur > 0) out.duration = (int)(dur + 0.5);
 
     mpv_node meta;
@@ -1019,17 +1085,47 @@ static void LoadM3UEntries(const std::string& m3uPath, std::vector<std::string>&
     fclose(fp);
 }
 
-int DashMusic_Scan(const char* musicRoot)
+// Runs entirely on the background scan thread. Walks musicRoot, and for
+// every album folder / playlist / loose-music bucket it finishes, locks
+// s_musicMutex just long enough to publish that one piece into both the
+// album view and the artist view and re-sort. This means the music menu
+// starts filling in almost immediately (cached/unchanged songs need no
+// I/O beyond a stat() call and show up right away) while genuinely new
+// or changed files are probed with mpv one at a time in the background,
+// without ever blocking the rest of the dashboard.
+static void MusicScanWorker(std::string musicRootStr)
 {
-    s_soundtracks.clear();
-    if (!musicRoot) return 0;
+    const char* musicRoot = musicRootStr.c_str();
 
+    {
+        std::lock_guard<std::mutex> lock(s_musicMutex);
+        s_albumSoundtracks.clear();
+        s_artistSoundtracks.clear();
+        RebuildActiveView_Locked();
+    }
+
+    if (musicRootStr.empty()) { s_scanThreadRunning = false; return; }
+
+    // Mutated in place and saved at the end (success *or* cancellation) so
+    // a rescan that gets interrupted never throws away tags that were
+    // already known from a previous run.
     DBMap db;
     DB_Load(DB_GetPath().c_str(), db);
-    DBMap newDb;
     mpv_handle* probeMpv = NULL;
     int probedCount = 0;
     int cachedCount = 0;
+    int nextAlbumID = 1;
+    int nextArtistID = 1;
+    std::map<std::string, int> artistIndexByName; // artist name -> index in s_artistSoundtracks
+
+    // Per-file/per-album scan progress logging is opt-in - a library scan
+    // can touch thousands of files, and printing a line for each one on
+    // every (re)scan floods the console. Default off; set
+    // THESEUS_AUDIO_VERBOSE=1 for the play-by-play. The one-line "scan
+    // complete" summary at the end of MusicScanWorker stays unconditional
+    // either way, so you still get a useful result without the spam.
+    const char* verboseEnv = getenv("THESEUS_AUDIO_VERBOSE");
+    bool verboseLog = verboseEnv && *verboseEnv && strcmp(verboseEnv, "0") != 0;
 
     auto BuildSong = [&](const std::string& fullPath, const std::string& displayName) -> Song {
         Song song;
@@ -1039,46 +1135,122 @@ int DashMusic_Scan(const char* musicRoot)
 
         DBMap::iterator it = db.find(fullPath);
         if (it != db.end() && it->second.mtime == song.mtime) {
+            // Unchanged since last scan -- use the cached tags immediately,
+            // no mpv probe, no wait.
             ApplyDBToSong(it->second, song);
             cachedCount++;
-        } else {
-            if (!probeMpv) probeMpv = ProbeMpv_Create();
-            if (probeMpv && ProbeSong(probeMpv, fullPath, song))
-                probedCount++;
+            return song;
         }
-        DBEntry e;
-        SongToDB(song, e);
-        newDb[fullPath] = e;
+
+        if (s_scanCancelRequested.load()) return song;
+
+        if (verboseLog) fprintf(stderr, "[Audio] Reading tags: %s\n", displayName.c_str());
+        if (!probeMpv) probeMpv = ProbeMpv_Create();
+        bool ok = probeMpv && ProbeSong(probeMpv, fullPath, song);
+        if (ok) {
+            probedCount++;
+            DBEntry e;
+            SongToDB(song, e);
+            db[fullPath] = e;
+        } else {
+            // Leave the DB entry as-is (or absent) so the next scan
+            // retries this file instead of silently treating it as done.
+            if (verboseLog)
+                fprintf(stderr, "[Audio] Probe failed, will retry next scan: '%s'\n", fullPath.c_str());
+        }
         return song;
     };
 
-    int nextID = 1;
+    // Publishes one finished album folder: adds it to the album view, and
+    // folds its songs into the bucket for `artistName` (the top-level
+    // folder directly under musicRoot) in the artist view.
+    auto PublishAlbum = [&](Soundtrack&& album, const std::string& artistName) {
+        std::lock_guard<std::mutex> lock(s_musicMutex);
+        album.id = nextAlbumID++;
+        s_albumSoundtracks.push_back(album);
 
-    auto ProcessSoundtrackDir = [&](const char* dirName) {
-        if (dirName[0] == '.') return;
-        std::string stPath = std::string(musicRoot) + "/" + dirName;
-        struct stat st;
-        if (stat(stPath.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return;
+        int idx;
+        std::map<std::string, int>::iterator ai = artistIndexByName.find(artistName);
+        if (ai == artistIndexByName.end()) {
+            Soundtrack artistSt;
+            artistSt.id = nextArtistID++;
+            artistSt.name = artistName;
+            s_artistSoundtracks.push_back(artistSt);
+            idx = (int)s_artistSoundtracks.size() - 1;
+            artistIndexByName[artistName] = idx;
+        } else {
+            idx = ai->second;
+        }
+        Soundtrack& artistSt = s_artistSoundtracks[idx];
+        for (size_t i = 0; i < album.songs.size(); i++)
+            artistSt.songs.push_back(album.songs[i]);
+        if (artistSt.albumPath.empty() && !album.albumPath.empty())
+            artistSt.albumPath = album.albumPath;
+        SortSoundtrackSongs(artistSt);
+
+        RebuildActiveView_Locked();
+        if (verboseLog)
+            fprintf(stderr, "[Audio] Found '%s' (%zu songs, artist '%s') -- %zu soundtracks so far\n",
+                album.name.c_str(), album.songs.size(), artistName.c_str(), s_soundtracks.size());
+    };
+
+    // Publishes a playlist or the loose-music bucket identically into
+    // both views (these aren't grouped by folder, so there's no artist
+    // to merge them into).
+    auto PublishStandalone = [&](Soundtrack st) {
+        std::lock_guard<std::mutex> lock(s_musicMutex);
+        Soundtrack forAlbumView = st;
+        forAlbumView.id = nextAlbumID++;
+        s_albumSoundtracks.push_back(forAlbumView);
+
+        st.id = nextArtistID++;
+        s_artistSoundtracks.push_back(st);
+
+        RebuildActiveView_Locked();
+        if (verboseLog)
+            fprintf(stderr, "[Audio] Found '%s' (%zu songs) -- %zu soundtracks so far\n",
+                st.name.c_str(), st.songs.size(), s_soundtracks.size());
+    };
+
+    // Recursively walk a directory looking for folders that contain audio
+    // files directly -- those become "albums". Folders that only contain
+    // more folders (Music/<Artist>/<Album>/track.flac, box sets with a
+    // disc-per-folder layout, etc.) get recursed into instead of being
+    // silently dropped like the old single-level scanner did. Depth is
+    // capped to keep a symlink loop or a truly pathological tree bounded.
+    // `artistName` is fixed at the top-level folder name and passed down
+    // unchanged, however deep the recursion goes, so every album under
+    // Music/<Artist>/... ends up in the same artist bucket.
+    const int kMaxScanDepth = 6;
+
+    std::function<void(const std::string&, const std::string&, const std::string&, int)> ProcessSoundtrackDir;
+    ProcessSoundtrackDir = [&](const std::string& stPath, const std::string& label,
+                                const std::string& artistName, int depth) {
+        if (s_scanCancelRequested.load()) return;
+        struct stat dst;
+        if (stat(stPath.c_str(), &dst) != 0 || !S_ISDIR(dst.st_mode)) return;
 
         Soundtrack soundtrack;
-        soundtrack.id = nextID++;
-        soundtrack.name = dirName;
+        soundtrack.name = label;
 
         std::string fallbackArt;
-        auto ProcessSongFile = [&](const char* songName) {
-            if (songName[0] == '.') return;
-            if (IsAlbumArtFile(songName)) {
-                soundtrack.albumPath = stPath + "/" + songName;
+        std::vector<std::string> subdirs;
+
+        auto ProcessEntry = [&](const char* name, bool isDir) {
+            if (name[0] == '.') return;
+            if (isDir) { subdirs.push_back(name); return; }
+            if (IsAlbumArtFile(name)) {
+                soundtrack.albumPath = stPath + "/" + name;
                 return;
             }
-            if (IsGenericImageFile(songName)) {
+            if (IsGenericImageFile(name)) {
                 if (fallbackArt.empty())
-                    fallbackArt = stPath + "/" + songName;
+                    fallbackArt = stPath + "/" + name;
                 return;
             }
-            if (!IsAudioFile(songName)) return;
-            std::string full = stPath + "/" + songName;
-            soundtrack.songs.push_back(BuildSong(full, StripExtension(songName)));
+            if (!IsAudioFile(name)) return;
+            std::string full = stPath + "/" + name;
+            soundtrack.songs.push_back(BuildSong(full, StripExtension(name)));
         };
 
 #ifdef _WIN32
@@ -1087,21 +1259,77 @@ int DashMusic_Scan(const char* musicRoot)
         struct _finddata_t fd;
         intptr_t hFind = _findfirst(searchBuf, &fd);
         if (hFind != -1) {
-            do { ProcessSongFile(fd.name); } while (_findnext(hFind, &fd) == 0);
+            do {
+                if (s_scanCancelRequested.load()) break;
+                ProcessEntry(fd.name, (fd.attrib & _A_SUBDIR) != 0);
+            } while (_findnext(hFind, &fd) == 0);
             _findclose(hFind);
         }
 #else
-        DIR* stDir = opendir(stPath.c_str());
-        if (stDir) {
-            struct dirent* songEntry;
-            while ((songEntry = readdir(stDir)) != NULL) ProcessSongFile(songEntry->d_name);
-            closedir(stDir);
+        DIR* dir = opendir(stPath.c_str());
+        if (dir) {
+            struct dirent* entry;
+            while ((entry = readdir(dir)) != NULL) {
+                if (s_scanCancelRequested.load()) break;
+                std::string entryPath = stPath + "/" + entry->d_name;
+                struct stat est;
+                bool isDir = (stat(entryPath.c_str(), &est) == 0) && S_ISDIR(est.st_mode);
+                ProcessEntry(entry->d_name, isDir);
+            }
+            closedir(dir);
         }
 #endif
 
+        if (s_scanCancelRequested.load()) return;
+
+        // Audio directly in this folder: it's an album.
         if (!soundtrack.songs.empty()) {
             if (soundtrack.albumPath.empty() && !fallbackArt.empty())
                 soundtrack.albumPath = fallbackArt;
+
+            // Scene-style rips often keep art in a sibling folder instead
+            // of next to the tracks (e.g. .../Album Name/Images/cover.jpg).
+            // Fall back to the first image found in a conventionally named
+            // subfolder before giving up on art entirely.
+            if (soundtrack.albumPath.empty()) {
+                static const char* kArtDirNames[] = {
+                    "Images", "images", "Scans", "scans",
+                    "Artwork", "artwork", "Cover", "cover" };
+                for (size_t i = 0; i < sizeof(kArtDirNames)/sizeof(kArtDirNames[0])
+                                 && soundtrack.albumPath.empty(); i++) {
+                    std::string artDir = stPath + "/" + kArtDirNames[i];
+                    struct stat ast;
+                    if (stat(artDir.c_str(), &ast) != 0 || !S_ISDIR(ast.st_mode)) continue;
+#ifdef _WIN32
+                    char artBuf[512];
+                    snprintf(artBuf, sizeof(artBuf), "%s\\*", artDir.c_str());
+                    struct _finddata_t afd;
+                    intptr_t ah = _findfirst(artBuf, &afd);
+                    if (ah != -1) {
+                        do {
+                            if (IsGenericImageFile(afd.name) || IsAlbumArtFile(afd.name)) {
+                                soundtrack.albumPath = artDir + "/" + afd.name;
+                                break;
+                            }
+                        } while (_findnext(ah, &afd) == 0);
+                        _findclose(ah);
+                    }
+#else
+                    DIR* artDh = opendir(artDir.c_str());
+                    if (artDh) {
+                        struct dirent* ae;
+                        while ((ae = readdir(artDh)) != NULL) {
+                            if (IsGenericImageFile(ae->d_name) || IsAlbumArtFile(ae->d_name)) {
+                                soundtrack.albumPath = artDir + "/" + ae->d_name;
+                                break;
+                            }
+                        }
+                        closedir(artDh);
+                    }
+#endif
+                }
+            }
+
             std::string sharedAlbum;
             bool sameAlbum = true;
             for (size_t i = 0; i < soundtrack.songs.size(); i++) {
@@ -1113,7 +1341,19 @@ int DashMusic_Scan(const char* musicRoot)
             if (sameAlbum && !sharedAlbum.empty())
                 soundtrack.name = sharedAlbum;
             SortSoundtrackSongs(soundtrack);
-            s_soundtracks.push_back(soundtrack);
+            PublishAlbum(std::move(soundtrack), artistName);
+        }
+
+        // Recurse regardless of whether this folder had audio directly in
+        // it -- an Artist folder full of Album folders won't, but a folder
+        // can also validly have both loose songs *and* subfolders (e.g. a
+        // bonus-disc folder alongside the main album files).
+        if (depth < kMaxScanDepth) {
+            for (size_t i = 0; i < subdirs.size(); i++) {
+                if (s_scanCancelRequested.load()) break;
+                std::string childLabel = label + " - " + subdirs[i];
+                ProcessSoundtrackDir(stPath + "/" + subdirs[i], childLabel, artistName, depth + 1);
+            }
         }
     };
 
@@ -1124,19 +1364,18 @@ int DashMusic_Scan(const char* musicRoot)
         if (entries.empty()) return;
 
         Soundtrack soundtrack;
-        soundtrack.id = nextID++;
         soundtrack.name = StripExtension(fileName);
         for (size_t i = 0; i < entries.size(); i++) {
+            if (s_scanCancelRequested.load()) break;
             const char* slash = strrchr(entries[i].c_str(), '/');
             const char* nm = slash ? slash + 1 : entries[i].c_str();
             soundtrack.songs.push_back(BuildSong(entries[i], StripExtension(nm)));
         }
         SortSoundtrackSongs(soundtrack);
-        s_soundtracks.push_back(soundtrack);
+        PublishStandalone(soundtrack);
     };
 
     Soundtrack looseMusic;
-    looseMusic.id = 0;
     looseMusic.name = "Music";
 
     auto ProcessLooseFile = [&](const char* fileName) {
@@ -1158,13 +1397,16 @@ int DashMusic_Scan(const char* musicRoot)
     intptr_t hFind = _findfirst(searchBuf, &fd);
     if (hFind == -1) {
         fprintf(stderr, "[Audio] Music directory '%s' not found (this is OK if no music installed)\n", musicRoot);
-        return 0;
+        s_scanThreadRunning = false;
+        return;
     }
     do {
+        if (s_scanCancelRequested.load()) break;
+        if (fd.name[0] == '.') continue;
         std::string entryPath = std::string(musicRoot) + "/" + fd.name;
         struct stat est;
         if (stat(entryPath.c_str(), &est) == 0) {
-            if (S_ISDIR(est.st_mode))      ProcessSoundtrackDir(fd.name);
+            if (S_ISDIR(est.st_mode))      ProcessSoundtrackDir(entryPath, fd.name, fd.name, 0);
             else if (IsM3UFile(fd.name))   ProcessM3UFile(fd.name);
             else                           ProcessLooseFile(fd.name);
         }
@@ -1174,64 +1416,130 @@ int DashMusic_Scan(const char* musicRoot)
     DIR* rootDir = opendir(musicRoot);
     if (!rootDir) {
         fprintf(stderr, "[Audio] Music directory '%s' not found (this is OK if no music installed)\n", musicRoot);
-        return 0;
+        s_scanThreadRunning = false;
+        return;
     }
     struct dirent* entry;
     while ((entry = readdir(rootDir)) != NULL) {
+        if (s_scanCancelRequested.load()) break;
         if (entry->d_name[0] == '.') continue;
         std::string entryPath = std::string(musicRoot) + "/" + entry->d_name;
         struct stat est;
         if (stat(entryPath.c_str(), &est) != 0) continue;
-        if (S_ISDIR(est.st_mode))             ProcessSoundtrackDir(entry->d_name);
+        if (S_ISDIR(est.st_mode))             ProcessSoundtrackDir(entryPath, entry->d_name, entry->d_name, 0);
         else if (IsM3UFile(entry->d_name))    ProcessM3UFile(entry->d_name);
         else                                  ProcessLooseFile(entry->d_name);
     }
     closedir(rootDir);
 #endif
 
-    if (!looseMusic.songs.empty()) {
-        bool merged = false;
-        for (size_t i = 0; i < s_soundtracks.size(); i++) {
-            if (s_soundtracks[i].name == "Music") {
-                for (size_t j = 0; j < looseMusic.songs.size(); j++)
-                    s_soundtracks[i].songs.push_back(looseMusic.songs[j]);
-                if (s_soundtracks[i].albumPath.empty())
-                    s_soundtracks[i].albumPath = looseMusic.albumPath;
-                SortSoundtrackSongs(s_soundtracks[i]);
-                merged = true;
-                break;
-            }
-        }
-        if (!merged) {
-            looseMusic.id = nextID++;
-            SortSoundtrackSongs(looseMusic);
-            s_soundtracks.push_back(looseMusic);
-        }
-    }
+    if (!looseMusic.songs.empty())
+        PublishStandalone(looseMusic);
 
     if (probeMpv) ProbeMpv_Destroy(probeMpv);
 
-    DB_Save(DB_GetPath().c_str(), newDb);
+    // Save whatever we learned even if the scan was cancelled partway
+    // through -- db was updated in place per-file, so this is always a
+    // strict improvement over what was on disk before.
+    DB_Save(DB_GetPath().c_str(), db);
 
-    std::sort(s_soundtracks.begin(), s_soundtracks.end(),
-        [](const Soundtrack& a, const Soundtrack& b) { return a.name < b.name; });
+    size_t finalCount;
+    {
+        std::lock_guard<std::mutex> lock(s_musicMutex);
+        finalCount = s_soundtracks.size();
+    }
+    if (finalCount > 0)
+        fprintf(stderr, "[Audio] Scan %s: %zu soundtracks (%d cached, %d newly read)\n",
+            s_scanCancelRequested.load() ? "cancelled" : "complete",
+            finalCount, cachedCount, probedCount);
 
-    if (s_soundtracks.size() > 0)
-        fprintf(stderr, "[Audio] %zu soundtracks loaded (%d cached, %d probed)\n",
-            s_soundtracks.size(), cachedCount, probedCount);
+    s_scanThreadRunning = false;
+}
+
+// Starts (or restarts) a background scan of musicRoot. Returns
+// immediately -- soundtracks appear in the library as the scan thread
+// finds them, so the count returned here reflects whatever was already
+// published at the moment of the call, not the eventual total. Use
+// DashMusic_IsScanning() to check whether a scan is still in flight.
+int DashMusic_Scan(const char* musicRoot)
+{
+    // If a previous scan is still running, ask it to stop and wait for it
+    // before starting a new one -- two scan threads writing to the same
+    // DB file / soundtrack vectors at once would race.
+    if (s_scanThread.joinable()) {
+        s_scanCancelRequested = true;
+        s_scanThread.join();
+    }
+
+    if (!musicRoot) {
+        std::lock_guard<std::mutex> lock(s_musicMutex);
+        return (int)s_soundtracks.size();
+    }
+
+    s_scanCancelRequested = false;
+    s_scanThreadRunning = true;
+    s_scanThread = std::thread(MusicScanWorker, std::string(musicRoot));
+
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     return (int)s_soundtracks.size();
 }
 
-int DashMusic_GetSoundtrackCount(void) { return (int)s_soundtracks.size(); }
+int DashMusic_IsScanning(void)
+{
+    return s_scanThreadRunning.load() ? 1 : 0;
+}
+
+// Switches between grouping the library by album (one entry per album
+// folder / playlist) and by artist (one entry per top-level artist
+// folder, with every album underneath merged together). Both views are
+// built during the scan, so this just swaps which one is published --
+// no rescan needed. Note: switching modes reshuffles soundtrack/song
+// indices and IDs, so callers should re-fetch by path (as
+// DashAudio_LoadMusic does) rather than holding onto an ID or index
+// across a mode change.
+void DashMusic_SetOrganizeMode(int mode)
+{
+    MusicOrganizeMode m = (mode == MUSIC_ORGANIZE_BY_ALBUM) ? MUSIC_ORGANIZE_BY_ALBUM : MUSIC_ORGANIZE_BY_ARTIST;
+    std::lock_guard<std::mutex> lock(s_musicMutex);
+    if (s_organizeMode == m) return;
+    s_organizeMode = m;
+    RebuildActiveView_Locked();
+    s_currentSoundtrackIdx = -1;
+    fprintf(stderr, "[Audio] Music library view: %s\n",
+        m == MUSIC_ORGANIZE_BY_ARTIST ? "by artist" : "by album");
+}
+
+int DashMusic_GetOrganizeMode(void)
+{
+    std::lock_guard<std::mutex> lock(s_musicMutex);
+    return (int)s_organizeMode;
+}
+
+// NOTE ON STRING LIFETIME: while a scan is running (DashMusic_IsScanning()
+// returns 1), the soundtrack list can be republished at any time from the
+// background thread, which invalidates any const char* previously handed
+// out by the functions below. This isn't new -- the old synchronous
+// scanner had the same contract across a rescan -- but it can now happen
+// much more often (every few files instead of once at boot). Callers
+// should copy the returned string into their own buffer immediately
+// rather than holding onto the pointer across frames.
+
+int DashMusic_GetSoundtrackCount(void)
+{
+    std::lock_guard<std::mutex> lock(s_musicMutex);
+    return (int)s_soundtracks.size();
+}
 
 int DashMusic_GetSoundtrackID(int index)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (index < 0 || index >= (int)s_soundtracks.size()) return -1;
     return s_soundtracks[index].id;
 }
 
 int DashMusic_GetSoundtrackIndexFromID(int id)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     for (int i = 0; i < (int)s_soundtracks.size(); i++)
         if (s_soundtracks[i].id == id) return i;
     return -1;
@@ -1239,26 +1547,32 @@ int DashMusic_GetSoundtrackIndexFromID(int id)
 
 const char* DashMusic_GetSoundtrackName(int stIndex)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return "";
     return s_soundtracks[stIndex].name.c_str();
 }
 
 int DashMusic_GetSongCount(int stIndex)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return 0;
     return (int)s_soundtracks[stIndex].songs.size();
 }
 
 int DashMusic_GetSongID(int stIndex, int songIndex)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return -1;
     if (songIndex < 0 || songIndex >= (int)s_soundtracks[stIndex].songs.size()) return -1;
-    // Simple ID scheme: soundtrack_id * 1000 + song_index
-    return s_soundtracks[stIndex].id * 1000 + songIndex;
+    // ID scheme: soundtrack_id * 100000 + song_index. Widened from *1000
+    // because an artist-grouped soundtrack merges every album by that
+    // artist, which can easily be more than 1000 songs for a prolific one.
+    return s_soundtracks[stIndex].id * 100000 + songIndex;
 }
 
 const char* DashMusic_GetSongName(int stIndex, int songIndex)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return "";
     auto& songs = s_soundtracks[stIndex].songs;
     if (songIndex < 0 || songIndex >= (int)songs.size()) return "";
@@ -1268,6 +1582,7 @@ const char* DashMusic_GetSongName(int stIndex, int songIndex)
 
 const char* DashMusic_GetSongPath(int stIndex, int songIndex)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return "";
     auto& songs = s_soundtracks[stIndex].songs;
     if (songIndex < 0 || songIndex >= (int)songs.size()) return "";
@@ -1276,6 +1591,7 @@ const char* DashMusic_GetSongPath(int stIndex, int songIndex)
 
 int DashMusic_GetSongDuration(int stIndex, int songIndex)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return 0;
     auto& songs = s_soundtracks[stIndex].songs;
     if (songIndex < 0 || songIndex >= (int)songs.size()) return 0;
@@ -1284,9 +1600,9 @@ int DashMusic_GetSongDuration(int stIndex, int songIndex)
 
 const char* DashMusic_GetSongPathByID(int songID)
 {
-    // Song ID format: soundtrack_id * 1000 + song_index
-    int stID = songID / 1000;
-    int songIdx = songID % 1000;
+    // Song ID format: soundtrack_id * 100000 + song_index
+    int stID = songID / 100000;
+    int songIdx = songID % 100000;
     int stIndex = DashMusic_GetSoundtrackIndexFromID(stID);
     if (stIndex < 0) return NULL;
     const char* p = DashMusic_GetSongPath(stIndex, songIdx);
@@ -1300,6 +1616,7 @@ int DashMusic_GetCurrentSoundtrackIdx()
 
 const char* DashMusic_GetSoundtrackAlbumPath(int stIndex)
 {
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return NULL;
     const std::string& p = s_soundtracks[stIndex].albumPath;
     return p.empty() ? NULL : p.c_str();
@@ -1309,6 +1626,7 @@ const unsigned char* DashMusic_GetAlbumRGBA(int stIndex, int* outW, int* outH)
 {
     if (outW) *outW = 0;
     if (outH) *outH = 0;
+    std::lock_guard<std::mutex> lock(s_musicMutex);
     if (stIndex < 0 || stIndex >= (int)s_soundtracks.size()) return NULL;
     Soundtrack& st = s_soundtracks[stIndex];
     if (st.albumW < 0) return NULL;
