@@ -134,8 +134,6 @@ float CGroup::GetRadius()
 
 void CGroup::Render()
 {
-    extern int g_nodeVisitsThisFrame;
-    extern int g_nodeSkipsThisFrame;
 
     int nChildCount = m_children.GetLength();
 
@@ -143,11 +141,11 @@ void CGroup::Render()
     for (i = 0; i < nChildCount; i += 1)
     {
         CNode* pNode = m_children.GetNode(i);
-        g_nodeVisitsThisFrame++;
+        Frame_Count(FC_NODE_VISITS);
         if (pNode->m_visible)
             pNode->Render();
         else
-            g_nodeSkipsThisFrame++;
+            Frame_Count(FC_NODE_SKIPS);
     }
 }
 
@@ -497,8 +495,7 @@ void CTransform::Render()
         // Whole subtree skipped due to zero alpha. Counts as one
         // skip event regardless of subtree size since we don't
         // descend to know how big it is.
-        extern int g_nodeSkipsThisFrame;
-        g_nodeSkipsThisFrame++;
+        Frame_Count(FC_NODE_SKIPS);
     }
 
     g_nEffectAlpha = nEffectAlphaSave;
@@ -619,6 +616,8 @@ void CInline::FinishLoad()
     TRACE(_T("FinishLoad: (0x%08x) %s\n"), this, m_url);
     ASSERT(!m_bClassLoaded);
 
+    // Compile plus initialize/onLoad lands inside one frame; that's the hitch.
+    long long loadStart = Frame_Now();
     if (m_class.LoadAbsURL(m_szAbsURL))
     {
         CNode* pNode = m_class.CreateNode();
@@ -630,6 +629,7 @@ void CInline::FinishLoad()
     }
     m_bFirstLoad = false;
     m_bClassLoaded = true;
+    Frame_NoteLoad(Frame_Ms(Frame_Now() - loadStart));
 }
 
 void CInline::Render()
@@ -865,8 +865,6 @@ CLayout::CLayout() :
 
 void CLayout::Render()
 {
-    extern int g_nodeVisitsThisFrame;
-    extern int g_nodeSkipsThisFrame;
 
     int nChildren = m_children.GetLength();
     if (nChildren == 0)
@@ -885,10 +883,10 @@ void CLayout::Render()
             TheseusPushWorld();
 
             CNode* pNode = m_children.GetNode(i);
-            g_nodeVisitsThisFrame++;
+            Frame_Count(FC_NODE_VISITS);
             if (!pNode->m_visible)
             {
-                g_nodeSkipsThisFrame++;
+                Frame_Count(FC_NODE_SKIPS);
                 continue;
             }
 
@@ -922,10 +920,10 @@ void CLayout::Render()
     for (i = 0; i < nChildren; i += 1)
     {
         CNode* pNode = m_children.GetNode(i);
-        g_nodeVisitsThisFrame++;
+        Frame_Count(FC_NODE_VISITS);
         if (!pNode->m_visible)
         {
-            g_nodeSkipsThisFrame++;
+            Frame_Count(FC_NODE_SKIPS);
             continue;
         }
 
@@ -1034,17 +1032,15 @@ CSwitch::~CSwitch()
 
 void CSwitch::Render()
 {
-    extern int g_nodeVisitsThisFrame;
-    extern int g_nodeSkipsThisFrame;
 
     if (m_whichChoice >= 0 && m_whichChoice < m_choice.GetLength())
     {
         CNode* pNode = m_choice.GetNode(m_whichChoice);
-        g_nodeVisitsThisFrame++;
+        Frame_Count(FC_NODE_VISITS);
         if (pNode->m_visible)
             pNode->Render();
         else
-            g_nodeSkipsThisFrame++;
+            Frame_Count(FC_NODE_SKIPS);
     }
 }
 

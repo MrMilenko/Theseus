@@ -104,8 +104,6 @@ DWORD             g_dwMainThreadId = 0;
 // Desktop-only state (was in CDashApp class, now standalone globals).
 int               g_nVertPerFrame = 0;
 int               g_nTriPerFrame = 0;
-int               g_nodeVisitsThisFrame = 0;
-int               g_nodeSkipsThisFrame = 0;
 char*             g_szAppTitle = NULL;
 
 D3DXMATRIX g_matView;
@@ -495,6 +493,7 @@ struct COLORVERTEX
 
 void Draw()
 {
+	Frame_PhaseBegin(FP_SCENE_SETUP);
 	// Setup projection transform
 	if (g_bProjectionDirty)
 	{
@@ -714,6 +713,8 @@ void Draw()
 	}
 
 	// Draw the world
+	Frame_PhaseEnd(FP_SCENE_SETUP);
+	Frame_PhaseBegin(FP_SCENE_TREE);
 	{
 		// Clear active-keyboard tracker before scene render; visible CKeyboards
 		// will re-set it via their Render() override. Hidden ones never run, so
@@ -727,8 +728,11 @@ void Draw()
 		g_pObject->Render();
 		TheseusPopWorld();
 	}
+	Frame_PhaseEnd(FP_SCENE_TREE);
 
+	Frame_PhaseBegin(FP_SCENE_END);
 	TheseusEndScene();
+	Frame_PhaseEnd(FP_SCENE_END);
 	TheseusSetRenderState(D3DRS_SWATHWIDTH, D3DSWATH_OFF);
 
 	TheseusPresent();

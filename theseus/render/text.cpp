@@ -1062,8 +1062,7 @@ float OverlayFontDraw(const TCHAR* text, float screenX, float screenY, float pix
 			nIndices + shape->m_nIndexCount > MAX_OVL_INDICES)
 		{
 			dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
-			{ extern int g_drawCallsThisFrame, g_drawCallsTextFrame;
-		  g_drawCallsThisFrame++; g_drawCallsTextFrame++; }
+			Frame_Count(FC_DRAW_TEXT);
 		dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, nVerts, nIndices / 3,
 				s_ovlIndices, D3DFMT_INDEX16, s_ovlVerts, sizeof(OverlayTextVert));
 			nVerts = 0;
@@ -1091,8 +1090,7 @@ float OverlayFontDraw(const TCHAR* text, float screenX, float screenY, float pix
 	// Final flush
 	if (nIndices > 0)
 	{
-		{ extern int g_drawCallsThisFrame, g_drawCallsTextFrame;
-		  g_drawCallsThisFrame++; g_drawCallsTextFrame++; }
+		Frame_Count(FC_DRAW_TEXT);
 		dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 		dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, nVerts, nIndices / 3,
 			s_ovlIndices, D3DFMT_INDEX16, s_ovlVerts, sizeof(OverlayTextVert));
@@ -1385,6 +1383,7 @@ void CTextNode::Render()
 		TheseusUpdateWorld();
 
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+		Frame_Count(FC_DRAW_SUBSET);
 		m_mesh->DrawSubset(0);
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
 

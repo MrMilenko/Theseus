@@ -230,6 +230,37 @@ static float s_crtTime = 0.0f;
 // pair, so skip under BGFX to avoid the dup-symbol link error.
 #endif
 
+// --graphics-debug also leaves a perf trail testers can attach to a report:
+// one line every 5 seconds in theseus_perf.log in the user data dir.
+static void WritePerfLogLine()
+{
+    static FILE* s_log = NULL;
+    static Uint32 s_last = 0;
+    Uint32 now = SDL_GetTicks();
+    if (s_last && now - s_last < 5000) return;
+    s_last = now;
+
+    if (!s_log) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/theseus_perf.log", Plat_UserDataDir());
+        s_log = fopen(path, "w");
+        if (!s_log) return;
+        fprintf(s_log, "# sec fps frame_ms gpu_ms render_wait_incl_vsync events advance scene imgui ticks present "
+                       "draws_scene draws_bgfx nodes world state repeats disk load_max\n");
+    }
+    FrameSnapshot f;
+    Frame_Read(&f);
+    fprintf(s_log, "%u %.1f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.0f %.0f %.0f %.0f %.0f %.0f %.1f %.0f\n",
+            now / 1000, f.fps, f.frameMs, f.gpuMs, f.phaseMs[FP_GPU_WAIT],
+            f.phaseMs[FP_EVENTS], f.phaseMs[FP_ADVANCE],
+            f.phaseMs[FP_SCENE_SETUP] + f.phaseMs[FP_SCENE_TREE] + f.phaseMs[FP_SCENE_END],
+            f.phaseMs[FP_IMGUI], f.phaseMs[FP_TICKS], f.phaseMs[FP_PRESENT],
+            f.count[FC_DRAW_SCENE] + f.count[FC_DRAW_SUBSET], f.hostDraws, f.count[FC_NODE_VISITS],
+            f.count[FC_UPDATE_WORLD], f.count[FC_STATE_CALLS], f.count[FC_STATE_REPEATS],
+            f.count[FC_DISK_QUERIES], f.maxLoadMs);
+    fflush(s_log);
+}
+
 // `--graphics-debug` dumper. Writes GPU / driver / vsync / MSAA / display info
 // to stderr and theseus_graphics.log in the user data dir.
 static void DumpGraphicsInfo()
@@ -327,7 +358,6 @@ static void ApplyEffectiveMute()
 void ApplyEffectiveMute_Public() { ApplyEffectiveMute(); }
 bool g_startMinimized = false;
 bool g_graphicsDebug = false;
-extern double g_perfDrawMs, g_perfImguiMs, g_perfSwapMs, g_perfFrameMs, g_perfFps;
 float g_muteOverlayTimer = 0.0f; // seconds remaining to show the overlay toast
 
 // Instance lists for recreating GPU resources on device reset.
@@ -984,12 +1014,28 @@ static void PreSwapOverlays() {
         ImGui::SetNextWindowBgAlpha(0.6f);
         ImGui::SetNextWindowPos(ImVec2(8, 30), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("##perf", nullptr, fl)) {
-            ImGui::Text("FPS:    %.1f", g_perfFps);
-            ImGui::Text("Frame:  %.2f ms", g_perfFrameMs);
+            FrameSnapshot f;
+            Frame_Read(&f);
+            ImGui::Text("FPS:     %.1f   (%.2f ms)", f.fps, f.frameMs);
+            ImGui::Text("GPU:     %.2f ms   render wait %.2f ms (incl. vsync)", f.gpuMs, f.phaseMs[FP_GPU_WAIT]);
             ImGui::Separator();
-            ImGui::Text("Draw:   %.2f ms", g_perfDrawMs);
-            ImGui::Text("ImGui:  %.2f ms", g_perfImguiMs);
-            ImGui::Text("Swap:   %.2f ms", g_perfSwapMs);
+            ImGui::Text("Events:  %.2f ms", f.phaseMs[FP_EVENTS]);
+            ImGui::Text("Advance: %.2f ms", f.phaseMs[FP_ADVANCE]);
+            ImGui::Text("Scene:   %.2f  (setup %.2f, tree %.2f)",
+                        f.phaseMs[FP_SCENE_SETUP] + f.phaseMs[FP_SCENE_TREE] + f.phaseMs[FP_SCENE_END],
+                        f.phaseMs[FP_SCENE_SETUP], f.phaseMs[FP_SCENE_TREE]);
+            ImGui::Text("ImGui:   %.2f ms", f.phaseMs[FP_IMGUI]);
+            ImGui::Text("Ticks:   %.2f ms", f.phaseMs[FP_TICKS]);
+            ImGui::Text("Present: %.2f ms", f.phaseMs[FP_PRESENT]);
+            ImGui::Separator();
+            ImGui::Text("Draws:   scene %.0f+%.0f   bgfx %.0f",
+                        f.count[FC_DRAW_SCENE], f.count[FC_DRAW_SUBSET], f.hostDraws);
+            ImGui::Text("Nodes:   %.0f visit / %.0f skip", f.count[FC_NODE_VISITS], f.count[FC_NODE_SKIPS]);
+            ImGui::Text("World:   %.0f   State: %.0f / %.0f repeat",
+                        f.count[FC_UPDATE_WORLD], f.count[FC_STATE_CALLS], f.count[FC_STATE_REPEATS]);
+            ImGui::Text("Transient: vb %.0f KB  ib %.0f KB", f.transientVbKB, f.transientIbKB);
+            ImGui::Text("Disk: %.1f/frame   Load: %.0f ms (max %.0f)",
+                        f.count[FC_DISK_QUERIES], f.lastLoadMs, f.maxLoadMs);
         }
         ImGui::End();
     }
@@ -1028,14 +1074,6 @@ int  g_windowResolution = 720;
 // Display mode. 0=windowed, 1=borderless desktop, 2=exclusive fullscreen.
 int  g_windowMode = 0;
 bool g_displayChangeRequested = false;
-
-// Per-pass timings populated each frame in the main loop. Read by the
-// --graphics-debug overlay. Single-frame ms; FPS is EMA-smoothed.
-double g_perfDrawMs  = 0.0;
-double g_perfImguiMs = 0.0;
-double g_perfSwapMs  = 0.0;
-double g_perfFrameMs = 0.0;
-double g_perfFps     = 0.0;
 
 // bgfx reset flags from g_vsyncMode + g_msaaSamples. bgfx has no adaptive
 // vsync, so only an explicit "off" (mode 2) disables it; the default and
@@ -1866,6 +1904,8 @@ int main(int argc, char* argv[]) {
     Uint64 fpsCapPrev = SDL_GetPerformanceCounter();
     Uint64 perfFreq = SDL_GetPerformanceFrequency();
     while (running) {
+        Frame_Begin();
+        Frame_PhaseBegin(FP_EVENTS);
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             // Let ImGui handle events first
@@ -2085,6 +2125,7 @@ int main(int argc, char* argv[]) {
                     break;
             }
         }
+        Frame_PhaseEnd(FP_EVENTS);
 
         // All panels are floating ImGui windows in the main window now.
         {
@@ -2189,7 +2230,10 @@ int main(int argc, char* argv[]) {
             ApplyEffectiveMute();
         }
 
-        if (!g_mediaFullscreen && !g_xcloudFullscreen) Advance();
+        if (!g_mediaFullscreen && !g_xcloudFullscreen) {
+            FramePhaseScope advance(FP_ADVANCE);
+            Advance();
+        }
 
         // Same idea under bgfx: allocate / resize the offscreen FB to
         // window size, point view 0 at it so the scene draws there
@@ -2206,7 +2250,6 @@ int main(int argc, char* argv[]) {
         }
 
         // Render 3D scene (viewport set to left portion; Present() skips swap when inspector is open)
-        Uint64 tDraw0 = SDL_GetPerformanceCounter();
         if (g_mediaFullscreen) {
             extern void MediaUI_DrawFullscreenVideo();
             MediaUI_DrawFullscreenVideo();
@@ -2215,7 +2258,6 @@ int main(int argc, char* argv[]) {
         } else {
             Draw();
         }
-        Uint64 tDraw1 = SDL_GetPerformanceCounter();
 
         // Force fill before ImGui so overlays render solid. Must go through
         // the wrapper, otherwise the wrapper cache stays at WIREFRAME and
@@ -2229,9 +2271,9 @@ int main(int argc, char* argv[]) {
         }
 
         // Overlays (menu bar, inspector, Title Maker, etc.); always render
-        Uint64 tImgui0 = SDL_GetPerformanceCounter();
+        Frame_PhaseBegin(FP_IMGUI);
         if (IDirect3DDevice8::s_preSwapCB) IDirect3DDevice8::s_preSwapCB();
-        Uint64 tImgui1 = SDL_GetPerformanceCounter();
+        Frame_PhaseEnd(FP_IMGUI);
 
         // FPS cap: sleep until budget elapsed. 0 = unlimited.
         if (g_fpsCap > 0) {
@@ -2269,28 +2311,32 @@ int main(int argc, char* argv[]) {
             MilkdropWindow_Shutdown();
         s_prevToggle = g_useMilkdropViz;
 
+        Frame_PhaseBegin(FP_TICKS);
         MilkdropWindow_Tick();
 
         // Drive the xCloud->VGDB injection state machine (main-thread only).
         extern void XcloudVGames_Tick();
         XcloudVGames_Tick();
+        Frame_PhaseEnd(FP_TICKS);
 
-        // Swap
-        Uint64 tSwap0 = SDL_GetPerformanceCounter();
         // bgfx owns presentation; its backend layer is the visible surface.
         // No GL drawable, so no SDL_GL_SwapWindow.
+        Frame_PhaseBegin(FP_PRESENT);
         bgfx::frame();
-        Uint64 tSwap1 = SDL_GetPerformanceCounter();
+        Frame_PhaseEnd(FP_PRESENT);
 
         if (g_graphicsDebug) {
-            double freq = (double)perfFreq;
-            g_perfDrawMs  = (tDraw1 - tDraw0)   * 1000.0 / freq;
-            g_perfImguiMs = (tImgui1 - tImgui0) * 1000.0 / freq;
-            g_perfSwapMs  = (tSwap1 - tSwap0)   * 1000.0 / freq;
-            g_perfFrameMs = (tSwap1 - tDraw0)   * 1000.0 / freq;
-            double instFps = (g_perfFrameMs > 0.0) ? 1000.0 / g_perfFrameMs : 0.0;
-            g_perfFps = (g_perfFps == 0.0) ? instFps : 0.9 * g_perfFps + 0.1 * instFps;
+            Frame_RequestGpuTiming();
+            const bgfx::Stats* st = bgfx::getStats();
+            float gpuMs = 0.0f, waitMs = 0.0f;
+            if (st->gpuTimerFreq > 0)
+                gpuMs = (float)((double)(st->gpuTimeEnd - st->gpuTimeBegin) * 1000.0 / (double)st->gpuTimerFreq);
+            if (st->cpuTimerFreq > 0)
+                waitMs = (float)((double)st->waitRender * 1000.0 / (double)st->cpuTimerFreq);
+            Frame_AddHostStats(gpuMs, waitMs, (int)st->numDraw, st->transientVbUsed, st->transientIbUsed);
         }
+        Frame_End();
+        if (g_graphicsDebug) WritePerfLogLine();
 
         // (Old code re-applied Mix_Volume(-1, 0) every frame while muted.
         //  Removed: rapid per-frame volume writes on playing channels were

@@ -7,6 +7,7 @@
 #define THESEUS_H
 
 #include "platform.h"
+#include "frame_profiler.h"
 
 #ifndef _XBOX
 #include <errno.h>
@@ -226,6 +227,11 @@ void* TheseusD3D_AllocNoncontiguousMemory(DWORD Size);
 #ifdef _XBOX // cache eliminates GetRenderState round-trips on Xbox
 extern DWORD theseus_rgdwRenderStateCache [256];
 extern bool theseus_rgbRenderStateCache [256];
+// Shadows for the profiler's repeat count. Nothing is skipped on Xbox.
+extern DWORD theseus_xbox_tss_shadow [8 * 32];
+extern bool theseus_xbox_tss_seen [8 * 32];
+extern LPDIRECT3DTEXTURE8 theseus_xbox_tex_shadow [8];
+extern bool theseus_xbox_tex_seen [8];
 #endif
 
 inline LPDIRECT3DDEVICE8 TheseusGetD3DDev()
@@ -295,16 +301,22 @@ inline void TheseusInvalidateWrapperCaches()
 
 inline void TheseusSetRenderState(D3DRENDERSTATETYPE dwRenderStateType, DWORD dwRenderState)
 {
+	Frame_Count(FC_STATE_CALLS);
 #ifdef _XBOX // cache eliminates GetRenderState round-trips on Xbox
 	ASSERT((UINT)dwRenderStateType < countof (theseus_rgdwRenderStateCache));
+	if (theseus_rgbRenderStateCache[(UINT)dwRenderStateType] &&
+	    theseus_rgdwRenderStateCache[(UINT)dwRenderStateType] == dwRenderState)
+		Frame_Count(FC_STATE_REPEATS);   // counted, still sent
 	theseus_rgdwRenderStateCache[(UINT)dwRenderStateType] = dwRenderState;
 	theseus_rgbRenderStateCache[(UINT)dwRenderStateType] = true;
 #else
 	// Wrapper-level dedup. Skip the virtual call if value unchanged.
 	if ((UINT)dwRenderStateType < 256) {
 		if (theseus_desktop_rs_valid[dwRenderStateType] &&
-		    theseus_desktop_rs_cache[dwRenderStateType] == dwRenderState)
+		    theseus_desktop_rs_cache[dwRenderStateType] == dwRenderState) {
+			Frame_Count(FC_STATE_REPEATS);
 			return;
+		}
 		theseus_desktop_rs_cache[dwRenderStateType] = dwRenderState;
 		theseus_desktop_rs_valid[dwRenderStateType] = true;
 	}
@@ -332,15 +344,27 @@ inline void TheseusGetRenderState(D3DRENDERSTATETYPE dwRenderStateType, LPDWORD 
 
 inline void TheseusSetTextureStageState(DWORD dwStage, D3DTEXTURESTAGESTATETYPE dwState, DWORD dwValue)
 {
-#ifndef _XBOX
+	Frame_Count(FC_STATE_CALLS);
+#ifdef _XBOX
+	// Shadow copy for the repeat count only; every call still goes through.
+	if (dwStage < 8 && (DWORD)dwState < 32) {
+		int idx = (int)dwStage * 32 + (int)dwState;
+		if (theseus_xbox_tss_seen[idx] && theseus_xbox_tss_shadow[idx] == dwValue)
+			Frame_Count(FC_STATE_REPEATS);
+		theseus_xbox_tss_shadow[idx] = dwValue;
+		theseus_xbox_tss_seen[idx] = true;
+	}
+#else
 	// Wrapper-level dedup for the per-stage texture state cluster.
 	// Sweep 2 trace showed this is where most of the redundancy lives
 	// (>388K wasted calls per session on COLOROP / ALPHAOP alone).
 	if (dwStage < 8 && (DWORD)dwState < 32) {
 		int idx = (int)dwStage * 32 + (int)dwState;
 		if (theseus_desktop_tss_valid[idx] &&
-		    theseus_desktop_tss_cache[idx] == dwValue)
+		    theseus_desktop_tss_cache[idx] == dwValue) {
+			Frame_Count(FC_STATE_REPEATS);
 			return;
+		}
 		theseus_desktop_tss_cache[idx] = dwValue;
 		theseus_desktop_tss_valid[idx] = true;
 	}
@@ -364,11 +388,21 @@ inline void TheseusGetTextureStageState(DWORD dwStage, D3DTEXTURESTAGESTATETYPE 
 
 inline void TheseusSetTexture(DWORD dwStage, LPDIRECT3DTEXTURE8 lpTexture)
 {
-#ifndef _XBOX
+	Frame_Count(FC_STATE_CALLS);
+#ifdef _XBOX
+	if (dwStage < 8) {
+		if (theseus_xbox_tex_seen[dwStage] && theseus_xbox_tex_shadow[dwStage] == lpTexture)
+			Frame_Count(FC_STATE_REPEATS);
+		theseus_xbox_tex_shadow[dwStage] = lpTexture;
+		theseus_xbox_tex_seen[dwStage] = true;
+	}
+#else
 	if (dwStage < 8) {
 		if (theseus_desktop_tex_valid[dwStage] &&
-		    theseus_desktop_tex_cache[dwStage] == lpTexture)
+		    theseus_desktop_tex_cache[dwStage] == lpTexture) {
+			Frame_Count(FC_STATE_REPEATS);
 			return;
+		}
 		theseus_desktop_tex_cache[dwStage] = lpTexture;
 		theseus_desktop_tex_valid[dwStage] = true;
 	}
@@ -579,6 +613,7 @@ extern void SetFalloffShaderFrameValues();
 inline void TheseusUpdateWorld()
 {
 	ASSERT(g_worldStack != NULL);
+	Frame_Count(FC_UPDATE_WORLD);
 	TheseusSetTransform(D3DTS_WORLD, TheseusGetWorld());
 	SetFalloffShaderFrameValues();
 }
@@ -727,7 +762,7 @@ inline BOOL TheseusRemoveDirectory(LPCSTR path) { return RemoveDirectory(path); 
 inline BOOL TheseusSetFileAttributes(LPCSTR path, DWORD attr) { return SetFileAttributes(path, attr); }
 inline DWORD TheseusGetFileAttributes(LPCSTR path) { return GetFileAttributes(path); }
 inline BOOL TheseusGetFileAttributesEx(LPCSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID info) { return GetFileAttributesEx(path, level, info); }
-inline BOOL TheseusGetDiskFreeSpaceEx(LPCSTR path, ULARGE_INTEGER* pFree, ULARGE_INTEGER* pTotal, ULARGE_INTEGER* pTotalFree) { return GetDiskFreeSpaceEx(path, pFree, pTotal, pTotalFree); }
+inline BOOL TheseusGetDiskFreeSpaceEx(LPCSTR path, ULARGE_INTEGER* pFree, ULARGE_INTEGER* pTotal, ULARGE_INTEGER* pTotalFree) { Frame_Count(FC_DISK_QUERIES); return GetDiskFreeSpaceEx(path, pFree, pTotal, pTotalFree); }
 inline HANDLE TheseusFindFirstFile(LPCSTR path, WIN32_FIND_DATAA* fd) { return FindFirstFile(path, fd); }
 inline BOOL TheseusFindNextFile(HANDLE h, WIN32_FIND_DATAA* fd) { return FindNextFile(h, fd); }
 inline BOOL TheseusFindClose(HANDLE h) { return FindClose(h); }

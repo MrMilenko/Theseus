@@ -381,8 +381,6 @@ static void DrawAlertPopup(int sw, int sh)
 static int g_sysScrollOffset = 0;
 static int g_sysLineCount = 0;
 
-extern float g_fps; // computed in main.cpp render loop
-
 static void DrawSystemPage(int cx, int cy, int cw, int ch)
 {
     static bool bInfoInit = false;
@@ -438,7 +436,9 @@ static void DrawSystemPage(int cx, int cy, int cw, int ch)
     // Performance
     _tcscpy(lines[n].text, _T("Performance")); lines[n].color = hdr; lines[n].isSeparator = false; n++;
 
-    _stprintf(lines[n].text, _T("  FPS: %.1f"), g_fps); lines[n].color = clr; lines[n].isSeparator = false; n++;
+    FrameSnapshot fs;
+    Frame_Read(&fs);
+    _stprintf(lines[n].text, _T("  FPS: %.1f"), fs.fps); lines[n].color = clr; lines[n].isSeparator = false; n++;
 
     DWORD usedMB = 0, freeMB = 0;
     GetMemoryUsage(usedMB, freeMB);

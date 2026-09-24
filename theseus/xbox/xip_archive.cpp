@@ -800,10 +800,7 @@ void CMeshRef::Render(bool bSetFVF)
 
 	TheseusSetStreamSource(0, pBuf->m_vertexBuffer, pBuf->m_vertexStride);
 	TheseusSetIndices(pBuf->m_indexBuffer, 0);
-	extern int g_drawCallsThisFrame;
-	extern int g_drawCallsSceneFrame;
-	g_drawCallsThisFrame++;
-	g_drawCallsSceneFrame++;
+	Frame_Count(FC_DRAW_SCENE);
 	TheseusDrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, pBuf->m_vertexCount, m_firstIndex, m_primitiveCount);
 }
 

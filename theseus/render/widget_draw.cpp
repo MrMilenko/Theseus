@@ -20,10 +20,7 @@ void DrawSolidRect(int x, int y, int width, int height, D3DCOLOR color)
 
     IDirect3DDevice8 *dev = g_pD3DDev;
     if (!dev) return;
-    extern int g_drawCallsThisFrame;
-    extern int g_drawCallsSolidFrame;
-    g_drawCallsThisFrame++;
-    g_drawCallsSolidFrame++;
+    Frame_Count(FC_DRAW_SOLID);
     dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
     dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(Vertex));
 }
@@ -49,10 +46,7 @@ void DrawTexturedRect(IDirect3DTexture8* tex, float x, float y, float width, flo
         {x + width, y + height, 0.0f, 1.0f, 0xFFFFFFFF, 1.0f, 1.0f},
     };
 
-    extern int g_drawCallsThisFrame;
-    extern int g_drawCallsSolidFrame;
-    g_drawCallsThisFrame++;
-    g_drawCallsSolidFrame++;
+    Frame_Count(FC_DRAW_SOLID);
     dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(TVert));
 
     // Restore diffuse-only stage state so subsequent DrawSolidRect /

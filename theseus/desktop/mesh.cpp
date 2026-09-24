@@ -172,6 +172,7 @@ void CMesh::Render(bool bSetFVF)
 
 	TheseusSetStreamSource(0, m_vertexBuffer, m_nVertexStride);
 	TheseusSetIndices(m_indexBuffer, 0);
+	Frame_Count(FC_DRAW_SCENE);
 	TheseusDrawIndexedPrimitive(m_primitiveType, 0, m_nVertexCount, 0, m_nFaceCount);
 
 	g_nVertPerFrame += m_nVertexCount;

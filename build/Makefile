@@ -312,6 +312,7 @@ SRCS_SHARED = \
 	shared/timezone.cpp \
 	shared/title_collection.cpp \
 	shared/util.cpp \
+	shared/frame_profiler.cpp \
 	shared/xap_vm.cpp \
 	shared/xbe.cpp
 
@@ -784,6 +785,7 @@ DESKTOP_SRCS_ENGINE = \
 	$(THESEUS_SRC)/engine/xap_compile.cpp \
 	$(THESEUS_SRC)/render/node_system.cpp \
 	$(THESEUS_SRC)/shared/util.cpp \
+	$(THESEUS_SRC)/shared/frame_profiler.cpp \
 	$(THESEUS_SRC)/engine/array.cpp \
 	$(THESEUS_SRC)/shared/string_util.cpp \
 	$(THESEUS_SRC)/engine/math_node.cpp \

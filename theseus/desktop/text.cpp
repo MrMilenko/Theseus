@@ -1332,6 +1332,7 @@ void CTextNode::Render()
 		// brightness, while vertex alpha controls clipping.
 		TheseusSetVertexAlphaMul(TRUE);
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+		Frame_Count(FC_DRAW_SUBSET);
 		m_pMesh->DrawSubset(0);
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
 		TheseusSetVertexAlphaMul(FALSE);

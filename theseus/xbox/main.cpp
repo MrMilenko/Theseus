@@ -89,61 +89,8 @@ DWORD g_dwStartTick = 0;
 DWORD g_dwFrameTick = 0;
 XTIME g_now = 0.0;
 
-// Frame-rate counters, updated once per frame at the bottom of the
-// render loop. Smoothed over a 250ms window so the readout doesn't
-// jitter around at 60fps. Read by the System overlay page and the
-// FPS widget.
-float g_fps         = 0.0f;
-float g_frameTimeMs = 0.0f;
-
-// Per-phase frame timings in milliseconds, EMA-smoothed alongside g_fps.
-// Read by the perf widget to show where the frame budget actually goes.
-float g_phaseAdvanceMs    = 0.0f;
-float g_phaseSceneMs      = 0.0f;
-float g_phaseSceneSetupMs = 0.0f; // lights/state/backdrop, before recursive Render()
-float g_phaseSceneTreeMs  = 0.0f; // g_pObject->Render() recursion only
-float g_phaseWidgetsMs    = 0.0f;
-float g_phaseOverlayMs    = 0.0f;
-float g_phasePresentMs    = 0.0f;
-
-// Per-frame draw-call counters split by category so we can see whether
-// the budget is going to scene geometry or 2D UI. Reset at the start
-// of each Draw(); averaged over the 250ms FPS window for display.
-int   g_drawCallsThisFrame   = 0; // total
-int   g_drawCallsSceneFrame  = 0; // CMesh + CMeshRef
-int   g_drawCallsSolidFrame  = 0; // DrawSolidRect
-int   g_drawCallsTextFrame   = 0; // OverlayFontDraw flushes
-float g_drawCallsAvg         = 0.0f;
-float g_drawCallsSceneAvg    = 0.0f;
-float g_drawCallsSolidAvg    = 0.0f;
-float g_drawCallsTextAvg     = 0.0f;
-
-// Scene-graph traversal stats. Lets us see how much of the cost is
-// "lots of nodes" vs "lots of draws," and whether the visibility flag
-// is doing real work.
-int   g_nodeVisitsThisFrame  = 0; // children iterated in Group/Layout/Switch::Render
-int   g_nodeSkipsThisFrame   = 0; // skipped due to !m_visible (or zero alpha)
-float g_nodeVisitsAvg        = 0.0f;
-float g_nodeSkipsAvg         = 0.0f;
-
-// Mutable scratch updated each frame; the public g_phase* values are
-// resampled from these in the 250ms tick at the bottom of the render
-// loop.
-static LONGLONG s_qpcFreq      = 0;
-static LONGLONG s_phaseAdv     = 0;
-static LONGLONG s_phaseScn     = 0;
-static LONGLONG s_phaseScnSet  = 0;
-static LONGLONG s_phaseScnTree = 0;
-static LONGLONG s_phaseWid     = 0;
-static LONGLONG s_phaseOvl     = 0;
-static LONGLONG s_phasePrs     = 0;
-static int      s_phaseFrames     = 0;
-static int      s_drawCallSum     = 0;
-static int      s_drawSceneSum    = 0;
-static int      s_drawSolidSum    = 0;
-static int      s_drawTextSum     = 0;
-static int      s_nodeVisitSum    = 0;
-static int      s_nodeSkipSum     = 0;
+// Boot timing only. Frame timing lives in frame_profiler.
+static LONGLONG s_qpcFreq = 0;
 
 static inline LONGLONG QpcNow()
 {
@@ -619,13 +566,7 @@ struct COLORVERTEX
 
 void Draw()
 {
-	LONGLONG qDrawStart = QpcNow();
-	g_drawCallsThisFrame   = 0;
-	g_drawCallsSceneFrame  = 0;
-	g_drawCallsSolidFrame  = 0;
-	g_drawCallsTextFrame   = 0;
-	g_nodeVisitsThisFrame  = 0;
-	g_nodeSkipsThisFrame   = 0;
+	Frame_PhaseBegin(FP_SCENE_SETUP);
 
 	// Setup projection transform...
 	if (g_bProjectionDirty)
@@ -843,8 +784,9 @@ void Draw()
 		TheseusSetMaterial(&mat);
 	}
 
-	LONGLONG qBeforeTree = QpcNow();
+	Frame_PhaseEnd(FP_SCENE_SETUP);
 	// Draw the world...
+	Frame_PhaseBegin(FP_SCENE_TREE);
 	{
 		TheseusPushWorld();
 		TheseusIdentityWorld();
@@ -852,88 +794,24 @@ void Draw()
 		g_pObject->Render();
 		TheseusPopWorld();
 	}
-	LONGLONG qAfterTree = QpcNow();
+	Frame_PhaseEnd(FP_SCENE_TREE);
 
+	Frame_PhaseBegin(FP_SCENE_END);
 	TheseusEndScene();
-	LONGLONG qScene = QpcNow();
+	Frame_PhaseEnd(FP_SCENE_END);
+	Frame_PhaseBegin(FP_WIDGETS);
 	TheseusSetRenderState(D3DRS_SWATHWIDTH, D3DSWATH_OFF);
 	TickWidgets();
 	DrawWidgets();
-	LONGLONG qWidgets = QpcNow();
+	Frame_PhaseEnd(FP_WIDGETS);
+	Frame_PhaseBegin(FP_OVERLAY);
 	UpdateCubeOverlay();
 	DrawCubeOverlay();
-	LONGLONG qOverlay = QpcNow();
+	Frame_PhaseEnd(FP_OVERLAY);
+	Frame_PhaseBegin(FP_PRESENT);
 	TheseusPresent();
-	LONGLONG qPresent = QpcNow();
+	Frame_PhaseEnd(FP_PRESENT);
 	TheseusSetRenderState(D3DRS_SWATHWIDTH, D3DSWATH_128);
-
-	// Accumulate per-phase time (in QPC ticks) for averaging at the
-	// 250ms FPS sample boundary.
-	s_phaseScn     += (qScene      - qDrawStart);
-	s_phaseScnSet  += (qBeforeTree - qDrawStart);
-	s_phaseScnTree += (qAfterTree  - qBeforeTree);
-	s_phaseWid     += (qWidgets    - qScene);
-	s_phaseOvl     += (qOverlay    - qWidgets);
-	s_phasePrs     += (qPresent    - qOverlay);
-	s_phaseFrames++;
-	s_drawCallSum   += g_drawCallsThisFrame;
-	s_drawSceneSum  += g_drawCallsSceneFrame;
-	s_drawSolidSum  += g_drawCallsSolidFrame;
-	s_drawTextSum   += g_drawCallsTextFrame;
-	s_nodeVisitSum  += g_nodeVisitsThisFrame;
-	s_nodeSkipSum   += g_nodeSkipsThisFrame;
-
-	// Frame-rate accounting. Bump the per-frame counter; recompute the
-	// public g_fps + g_frameTimeMs every ~250ms with a light EMA so the
-	// readout is stable on a 60fps signal but still reactive to drops.
-	{
-		static DWORD frameCount    = 0;
-		static DWORD lastSampleTick = 0;
-		static float smoothedFps    = 60.0f;
-
-		DWORD now = GetTickCount();
-		frameCount++;
-
-		if (lastSampleTick == 0)
-			lastSampleTick = now;
-
-		DWORD elapsed = now - lastSampleTick;
-		if (elapsed >= 250)
-		{
-			float instFps = (float)frameCount * 1000.0f / (float)elapsed;
-			smoothedFps   = smoothedFps * 0.7f + instFps * 0.3f;
-			g_fps         = smoothedFps;
-			g_frameTimeMs = (smoothedFps > 0.01f) ? (1000.0f / smoothedFps) : 0.0f;
-
-			// Average phase time across the sample window.
-			if (s_phaseFrames > 0)
-			{
-				float inv = 1.0f / (float)s_phaseFrames;
-				g_phaseAdvanceMs    = QpcToMs(s_phaseAdv)     * inv;
-				g_phaseSceneMs      = QpcToMs(s_phaseScn)     * inv;
-				g_phaseSceneSetupMs = QpcToMs(s_phaseScnSet)  * inv;
-				g_phaseSceneTreeMs  = QpcToMs(s_phaseScnTree) * inv;
-				g_phaseWidgetsMs    = QpcToMs(s_phaseWid)     * inv;
-				g_phaseOverlayMs    = QpcToMs(s_phaseOvl)     * inv;
-				g_phasePresentMs    = QpcToMs(s_phasePrs)     * inv;
-				g_drawCallsAvg      = (float)s_drawCallSum  * inv;
-				g_drawCallsSceneAvg = (float)s_drawSceneSum * inv;
-				g_drawCallsSolidAvg = (float)s_drawSolidSum * inv;
-				g_drawCallsTextAvg  = (float)s_drawTextSum  * inv;
-				g_nodeVisitsAvg     = (float)s_nodeVisitSum * inv;
-				g_nodeSkipsAvg      = (float)s_nodeSkipSum  * inv;
-			}
-			s_phaseAdv = s_phaseScn = s_phaseScnSet = s_phaseScnTree = 0;
-			s_phaseWid = s_phaseOvl = s_phasePrs = 0;
-			s_phaseFrames  = 0;
-			s_drawCallSum  = 0;
-			s_drawSceneSum = s_drawSolidSum = s_drawTextSum = 0;
-			s_nodeVisitSum = s_nodeSkipSum = 0;
-
-			frameCount     = 0;
-			lastSampleTick = now;
-		}
-	}
 
 	g_dwFrameTick = GetTickCount();
 }
@@ -1287,12 +1165,12 @@ void Theseus()
 	bool firstFrame = true;
 	for (;;)
 	{
-		LONGLONG t0 = QpcNow();
+		Frame_Begin();
+		Frame_PhaseBegin(FP_ADVANCE);
 		Advance();
-		LONGLONG t1 = QpcNow();
+		Frame_PhaseEnd(FP_ADVANCE);
 		Draw();
-		// Draw() updates s_phaseScn/Wid/Ovl/Prs internally.
-		s_phaseAdv += (t1 - t0);
+		Frame_End();
 
 		if (firstFrame)
 		{

@@ -8,22 +8,6 @@
 #include "widget_layer.h"
 #include "widget_draw.h"
 
-extern float g_fps;
-extern float g_frameTimeMs;
-extern float g_phaseAdvanceMs;
-extern float g_phaseSceneMs;
-extern float g_phaseSceneSetupMs;
-extern float g_phaseSceneTreeMs;
-extern float g_phaseWidgetsMs;
-extern float g_phaseOverlayMs;
-extern float g_phasePresentMs;
-extern float g_drawCallsAvg;
-extern float g_drawCallsSceneAvg;
-extern float g_drawCallsSolidAvg;
-extern float g_drawCallsTextAvg;
-extern float g_nodeVisitsAvg;
-extern float g_nodeSkipsAvg;
-
 namespace {
 
 const int PERF_WIDGET_W = 220;
@@ -42,46 +26,56 @@ void perfWidgetDraw(int x, int y, DWORD argb)
     DrawSolidRect(x, y, 1, PERF_WIDGET_H, borderRGB);
     DrawSolidRect(x + PERF_WIDGET_W - 1, y, 1, PERF_WIDGET_H, borderRGB);
 
+    FrameSnapshot f;
+    Frame_Read(&f);
+    Frame_RequestGpuTiming();   // only while this widget is on screen
+
     TCHAR line[40];
-
-    _sntprintf(line, 40, _T("%.0f fps  %.1f ms"), g_fps, g_frameTimeMs);
-    line[39] = 0;
-    OverlayFontDraw(line, (float)(x + 8), (float)(y + 6), 14.0f, argb);
-
-    _sntprintf(line, 40, _T("draws %.0f  s%.0f u%.0f t%.0f"),
-               g_drawCallsAvg, g_drawCallsSceneAvg,
-               g_drawCallsSolidAvg, g_drawCallsTextAvg);
-    line[39] = 0;
-    OverlayFontDraw(line, (float)(x + 8), (float)(y + 24), 12.0f, argb);
-
-    _sntprintf(line, 40, _T("nodes %.0f visit / %.0f skip"),
-               g_nodeVisitsAvg, g_nodeSkipsAvg);
-    line[39] = 0;
-    OverlayFontDraw(line, (float)(x + 8), (float)(y + 40), 12.0f, argb);
-
-    int yy = y + 60;
+    int yy = y + 6;
     const int rowH = 16;
 
-    _sntprintf(line, 40, _T("advance    %5.2f"), g_phaseAdvanceMs);    line[39] = 0;
+    _sntprintf(line, 40, _T("%.0f fps  %.1f ms"), f.fps, f.frameMs);
+    line[39] = 0;
+    OverlayFontDraw(line, (float)(x + 8), (float)yy, 14.0f, argb); yy += 18;
+
+    // Scene and HUD kept apart so the HUD doesn't count itself as scene.
+    _sntprintf(line, 40, _T("scene %.0f+%.0f  hud %.0f+%.0f"),
+               f.count[FC_DRAW_SCENE], f.count[FC_DRAW_SUBSET],
+               f.count[FC_DRAW_SOLID], f.count[FC_DRAW_TEXT]);
+    line[39] = 0;
     OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
 
-    _sntprintf(line, 40, _T("scene      %5.2f"), g_phaseSceneMs);      line[39] = 0;
+    _sntprintf(line, 40, _T("nodes %.0f visit / %.0f skip"),
+               f.count[FC_NODE_VISITS], f.count[FC_NODE_SKIPS]);
+    line[39] = 0;
     OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
 
-    _sntprintf(line, 40, _T("  setup    %5.2f"), g_phaseSceneSetupMs); line[39] = 0;
+    _sntprintf(line, 40, _T("world %.0f  state %.0f/%.0f"),
+               f.count[FC_UPDATE_WORLD], f.count[FC_STATE_CALLS], f.count[FC_STATE_REPEATS]);
+    line[39] = 0;
     OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
 
-    _sntprintf(line, 40, _T("  tree     %5.2f"), g_phaseSceneTreeMs);  line[39] = 0;
-    OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
+    _sntprintf(line, 40, _T("disk %.1f  load %.0f/%.0f ms"),
+               f.count[FC_DISK_QUERIES], f.lastLoadMs, f.maxLoadMs);
+    line[39] = 0;
+    OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH + 4;
 
-    _sntprintf(line, 40, _T("widgets    %5.2f"), g_phaseWidgetsMs);    line[39] = 0;
-    OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
-
-    _sntprintf(line, 40, _T("overlay    %5.2f"), g_phaseOverlayMs);    line[39] = 0;
-    OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
-
-    _sntprintf(line, 40, _T("present    %5.2f"), g_phasePresentMs);    line[39] = 0;
-    OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb);
+    static const struct { FramePhase phase; const TCHAR* label; } kRows[] = {
+        { FP_ADVANCE,     _T("advance ") },
+        { FP_SCENE_SETUP, _T("setup   ") },
+        { FP_SCENE_TREE,  _T("tree    ") },
+        { FP_SCENE_END,   _T("end     ") },
+        { FP_WIDGETS,     _T("widgets ") },
+        { FP_OVERLAY,     _T("overlay ") },
+        { FP_PRESENT,     _T("present ") },
+        { FP_GPU_WAIT,    _T("gpu wait") },
+    };
+    for (int i = 0; i < (int)(sizeof(kRows) / sizeof(kRows[0])); i++)
+    {
+        _sntprintf(line, 40, _T("%s  %5.2f"), kRows[i].label, f.phaseMs[kRows[i].phase]);
+        line[39] = 0;
+        OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
+    }
 }
 
 } // namespace

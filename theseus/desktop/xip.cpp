@@ -762,6 +762,7 @@ void CMeshRef::Render(bool bSetFVF/*=true*/)
 	TheseusSetStreamSource(0, pMeshBuffer->m_pVertexBuffer, pMeshBuffer->m_nVertexStride);
 	TheseusSetIndices(pMeshBuffer->m_pIndexBuffer, 0);
 
+	Frame_Count(FC_DRAW_SCENE);
 	TheseusDrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, pMeshBuffer->m_nVertexCount, m_firstIndex, m_primitiveCount);
 }
 
