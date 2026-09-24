@@ -250,7 +250,7 @@ bool CGameCopier::CreateDirectory(const TCHAR* szDir)
 	char szDir2 [MAX_PATH];
 	Ansi(szDir2, szDir, MAX_PATH);
 
-	return ::CreateDirectory(szDir2, NULL) != FALSE;
+	return TheseusCreateDirectory(szDir2, NULL) != FALSE;
 }
 
 bool CGameCopier::CopyDirectory(const TCHAR* szSrcPath, const TCHAR* szDestPath)
@@ -265,7 +265,7 @@ bool CGameCopier::CopyDirectory(const TCHAR* szSrcPath, const TCHAR* szDestPath)
 	WIN32_FIND_DATA fd;
 	char szBufX [MAX_PATH];
 	Ansi(szBufX, szBuf, MAX_PATH);
-	HANDLE h = FindFirstFile(szBufX, &fd);
+	HANDLE h = TheseusFindFirstFile(szBufX, &fd);
 	if (h != INVALID_HANDLE_VALUE)
 	{
 		do
@@ -286,7 +286,7 @@ bool CGameCopier::CopyDirectory(const TCHAR* szSrcPath, const TCHAR* szDestPath)
 				if (!CopyDirectory(szBuf, szBuf2))
 				{
 					TRACE(_T("CopyDirectory(%s, %s) failed\n"), szBuf, szBuf2);
-					FindClose(h);
+					TheseusFindClose(h);
 					m_internalError = true;
 					return false;
 				}
@@ -296,14 +296,14 @@ bool CGameCopier::CopyDirectory(const TCHAR* szSrcPath, const TCHAR* szDestPath)
 				if (!CopyFile(szBuf, szBuf2))
 				{
 					TRACE(_T("CopyFile(%s, %s) failed\n"), szBuf, szBuf2);
-					FindClose(h);
+					TheseusFindClose(h);
 					m_internalError = true;
 					return false;
 				}
 			}
 		}
-		while (FindNextFile(h, &fd));
-		FindClose(h);
+		while (TheseusFindNextFile(h, &fd));
+		TheseusFindClose(h);
 	}
 
 	return true;
@@ -378,12 +378,8 @@ bool CGameCopier::DeleteFile(const TCHAR* szFile)
 {
 	char szFileA [MAX_PATH];
 	Ansi(szFileA, szFile, MAX_PATH);
-	SetFileAttributes(szFileA, FILE_ATTRIBUTE_NORMAL);
-#ifdef _XBOX
-	return ::DeleteFile(szFileA) != FALSE;
-#else
-	return DeleteFile(szFileA) != FALSE;
-#endif
+	TheseusSetFileAttributes(szFileA, FILE_ATTRIBUTE_NORMAL);
+	return TheseusDeleteFile(szFileA) != FALSE;
 }
 
 bool CGameCopier::DeleteDirectory(const TCHAR* szDir, bool RemoveSelf /*= true*/)
@@ -394,7 +390,7 @@ bool CGameCopier::DeleteDirectory(const TCHAR* szDir, bool RemoveSelf /*= true*/
 	WIN32_FIND_DATA fd;
 	char szBufX [MAX_PATH];
 	Ansi(szBufX, szBuf, MAX_PATH);
-	HANDLE h = FindFirstFile(szBufX, &fd);
+	HANDLE h = TheseusFindFirstFile(szBufX, &fd);
 	if (h != INVALID_HANDLE_VALUE)
 	{
 		do
@@ -411,7 +407,7 @@ bool CGameCopier::DeleteDirectory(const TCHAR* szDir, bool RemoveSelf /*= true*/
 			{
 				if (!DeleteDirectory(szBuf))
 				{
-					FindClose(h);
+					TheseusFindClose(h);
 					m_internalError = true;
 					return false;
 				}
@@ -420,14 +416,14 @@ bool CGameCopier::DeleteDirectory(const TCHAR* szDir, bool RemoveSelf /*= true*/
 			{
 				if (!DeleteFile(szBuf))
 				{
-					FindClose(h);
+					TheseusFindClose(h);
 					m_internalError = true;
 					return false;
 				}
 			}
 		}
-		while (FindNextFile(h, &fd));
-		FindClose(h);
+		while (TheseusFindNextFile(h, &fd));
+		TheseusFindClose(h);
 	}
 
 	if (!RemoveSelf)
@@ -437,7 +433,7 @@ bool CGameCopier::DeleteDirectory(const TCHAR* szDir, bool RemoveSelf /*= true*/
 
 	char szDirA [MAX_PATH];
 	Ansi(szDirA, szDir, MAX_PATH);
-	return ::RemoveDirectory(szDirA) != FALSE;
+	return TheseusRemoveDirectory(szDirA) != FALSE;
 }
 
 DWORD CGameCopier::ThreadProc()
@@ -998,7 +994,7 @@ void CFolder::Refresh(const TCHAR* szPath)
 
 	char szWildA [MAX_PATH];
 	Ansi(szWildA, szWild, MAX_PATH);
-	h = FindFirstFile(szWildA, &fd);
+	h = TheseusFindFirstFile(szWildA, &fd);
 
 	if (h == INVALID_HANDLE_VALUE)
 	{
@@ -1071,9 +1067,9 @@ void CFolder::Refresh(const TCHAR* szPath)
 			pFile->m_length = fd.nFileSizeLow;
 		}
 	}
-	while (FindNextFile(h, &fd));
+	while (TheseusFindNextFile(h, &fd));
 
-	FindClose(h);
+	TheseusFindClose(h);
 }
 
 static int __cdecl CmpName(const void* p1, const void* p2)

@@ -58,7 +58,7 @@ static void LoadXlate(const char* szXlateSection)
 		char * tempPath;
 		tempPath = (char*)malloc(MAX_PATH);
 		sprintf( tempPath, "Q:\\Language\\%s.dat", szXlateSection );
-		g_hXlate = CreateFile( tempPath, GENERIC_ALL, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, NULL );
+		g_hXlate = TheseusCreateFile( tempPath, GENERIC_ALL, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, NULL );
 	    if (g_hXlate != INVALID_HANDLE_VALUE)
         {
 			uint32_t datSize = GetFileSize( g_hXlate, NULL );

@@ -850,9 +850,9 @@ void InitFontTable()
 #if defined(_XBOX)
 	char szWildA [MAX_PATH];
 	Ansi(szWildA, szWild, MAX_PATH);
-	h = FindFirstFile(szWildA, &fd);
+	h = TheseusFindFirstFile(szWildA, &fd);
 #else
-	h = FindFirstFile(szWild, &fd);
+	h = TheseusFindFirstFile(szWild, &fd);
 #endif
 
 	if (h == INVALID_HANDLE_VALUE)
@@ -924,9 +924,9 @@ void InitFontTable()
 			CloseHandle(hFont);
 		}
 	}
-	while (FindNextFile(h, &fd));
+	while (TheseusFindNextFile(h, &fd));
 
-	FindClose(h);
+	TheseusFindClose(h);
 }
 
 CFont* GetFont(const TCHAR* szFaceName)

@@ -165,11 +165,10 @@ LPDIRECT3DTEXTURE8 LoadTexture(const char *szURL, unsigned int width, unsigned i
 		if (ext && (strcasecmp(ext, ".tga") == 0 || strcasecmp(ext, ".bmp") == 0 || strcasecmp(ext, ".dds") == 0
 			|| strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".png") == 0 || strcasecmp(ext, ".jpeg") == 0))
 		{
-			// D3DX for standard formats
-			char ansiPath[MAX_PATH];
-			Ansi(ansiPath, szURL, MAX_PATH);
+			// Decode the bytes Fetch already has; reopening by name would
+			// miss the virtual-game icon redirect.
 			LPDIRECT3DTEXTURE8 lpTexture = NULL;
-			if (SUCCEEDED(D3DXCreateTextureFromFileA(TheseusGetD3DDev(), ansiPath, &lpTexture)))
+			if (SUCCEEDED(D3DXCreateTextureFromFileInMemory(TheseusGetD3DDev(), file.GetContent(), file.GetContentLength(), &lpTexture)))
 				return lpTexture;
 		}
 		else
@@ -196,7 +195,7 @@ LPDIRECT3DTEXTURE8 LoadTextureFromXPR(const char *xprfile)
 	if (xprfile == NULL)
 		return NULL;
 
-	FILE* f = fopen(xprfile, "rb");
+	FILE* f = TheseusFOpen(xprfile, "rb");
 	if (!f) {
 		// Try drive-letter remap (C: -> Configs, Q: -> Data, E: -> Library).
 		char mapped[MAX_PATH];
@@ -352,7 +351,7 @@ HIMAGE MyLoadImage(const char *szURL)
 
 bool DecodeRAW(const char *szFileName, CTexture *pTexture)
 {
-	FILE *fp = _tfopen(szFileName, "rb");
+	FILE *fp = TheseusFOpen(szFileName, "rb");
 	if (fp == NULL)
 		return false;
 

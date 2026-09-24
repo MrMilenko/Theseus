@@ -36,8 +36,8 @@ static const char* ResolveAudioURL(const TCHAR* url)
 	// Check if it already has a drive letter (Q:\...)
 	if (url[0] && url[1] == ':') {
 		// Use XboxFS translation
-		const char* translated = XboxFS_TranslatePath(url);
-		return translated;
+		XboxPath_Translate(url, s_path, sizeof(s_path));
+		return s_path;
 	}
 
 	// Relative path; prepend Data/
@@ -1389,7 +1389,7 @@ static bool TryOpenXboxHDD();  // forward declaration
 // Defined in sdl_main.cpp, loaded from desktop.ini
 extern char g_qcowPath[512];
 
-// Called from xboxfs.h CreateFileA fallback to read files from FATX
+// Called from TheseusCreateFile (xbox_file.cpp) to read save data off FATX.
 FILE* XboxFS_FATXReadFile(const char* xboxPath) {
 	if (!s_xboxHDD.IsOpen()) {
 		if (!s_xboxHDDTried) TryOpenXboxHDD();  // forward decl below
@@ -1684,7 +1684,7 @@ static bool ParseXboxMetaValue(const char* xboxPath, const char* key, char* outB
 	outBuf[0] = 0;
 
 	// Read file through xboxfs layer
-	HANDLE hFile = CreateFile(xboxPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+	HANDLE hFile = TheseusCreateFile(xboxPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) return false;
 	unsigned char data[8192];
 	DWORD bytesRead = 0;
@@ -1826,7 +1826,7 @@ static void EnumerateTitles()
 			title.hasImage = true;
 		} else {
 			// Synthetic UDATA entries fall back to Configs/icons/<TitleID>.
-			// xboxfs.h's C: routing maps "C:\icons\..." -> "Configs/icons/...".
+			// xbox_path.h maps "C:\icons\..." to "Configs/icons/...".
 			snprintf(hostProbe, sizeof(hostProbe), "%s", AppPathf("Configs/icons/%s.jpg", entName));
 			if (access(hostProbe, F_OK) == 0) {
 				snprintf(title.imagePath, sizeof(title.imagePath),
@@ -2000,7 +2000,7 @@ static void LoadDesktopIcons()
 			if (stat(iconPath, &_ist) != 0) continue;
 		}
 
-		// Store Xbox-style path for VGames icon redirect in xboxfs.h
+		// Store the Xbox path so xbox_path.h can redirect it to the cached icon.
 		snprintf(s_iconEntries[s_iconCount].iconPath, MAX_PATH,
 			"%s:\\%s\\%s\\icon.jpg",
 			g_vgames.games[i].drive,
@@ -4415,7 +4415,7 @@ public:
 		return new CStrObject(g_vgames.games[m_slice[t]].launch);
 	}
 
-	// Returns the Xbox-style icon path. xboxfs.h intercepts the load and
+	// Returns the Xbox-style icon path. xbox_path.h intercepts the load and
 	// redirects to Configs/icons/<titleID>.{jpg,png} via VGames_GetIconPath.
 	CStrObject* GetIcon(int i)
 	{

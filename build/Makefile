@@ -640,7 +640,6 @@ DESKTOP_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_THESEUS_STD_H=1 \
 	-fpermissive \
 	-fms-extensions \
 	$(SDL2_CFLAGS) \
@@ -663,7 +662,6 @@ DESKTOP_CFLAGS = \
 	-Wno-dangling-else \
 	-Wno-format \
 	-Wno-microsoft-exception-spec \
-	-Wno-macro-redefined \
 	-Wno-microsoft \
 	-Wno-null-conversion \
 	-Wno-c++11-narrowing \
@@ -792,6 +790,7 @@ DESKTOP_SRCS_ENGINE = \
 	$(THESEUS_SRC)/shared/date_node.cpp
 
 DESKTOP_SRCS_FILE = \
+	$(THESEUS_SRC)/desktop/xbox_file.cpp \
 	$(THESEUS_SRC)/desktop/xip.cpp \
 	$(THESEUS_SRC)/shared/file_util.cpp \
 	$(THESEUS_SRC)/desktop/files.cpp \
@@ -1192,7 +1191,6 @@ WIN64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_THESEUS_STD_H=1 \
 	-DSDL_MAIN_HANDLED \
 	-DUIX_CDAUDIO=1 \
 	-fpermissive \
@@ -1455,7 +1453,6 @@ LINUX_ARM64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_THESEUS_STD_H=1 \
 	-DUIX_CDAUDIO=1 \
 	-fpermissive \
 	-I$(LINUX_ARM64_SDL2_INC) \

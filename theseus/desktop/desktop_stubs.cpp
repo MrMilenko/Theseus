@@ -108,7 +108,8 @@ int CXBExecutable::ReadFile(const char* szFileName, const bool, const bool) {
     strncpy(m_szFileName, szFileName, sizeof(m_szFileName) - 1);
 
     // Try to open the real file first
-    const char* translated = XboxFS_TranslatePath(szFileName);
+    char translated[512];
+    XboxPath_Translate(szFileName, translated, sizeof(translated));
     FILE* f = fopen(translated, "rb");
     if (f) {
         // Real XBE file exists; read header for title info.

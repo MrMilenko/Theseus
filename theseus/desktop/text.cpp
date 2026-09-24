@@ -926,7 +926,7 @@ void InitFontTable()
 	strcpy(szWild, g_sFontDir);
 	strcpy(szWild + cchAppDir, "*.xtf");
 
-	h = FindFirstFile(szWild, &fd);
+	h = TheseusFindFirstFile(szWild, &fd);
 
 	if (h == INVALID_HANDLE_VALUE)
 	{
@@ -988,9 +988,9 @@ void InitFontTable()
 			CloseHandle(hFont);
 		}
 	}
-	while (FindNextFile(h, &fd));
+	while (TheseusFindNextFile(h, &fd));
 
-	FindClose(h);
+	TheseusFindClose(h);
 }
 
 CFont* GetFont(const char* szFaceName)

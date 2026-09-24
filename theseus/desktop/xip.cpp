@@ -264,10 +264,21 @@ void* FindObjectInXIP(const char* szURL, const char* szFilename, int nType/*=-1*
 		char thePath[MAX_PATH];
 		Ansi(thePath, szBuf, MAX_PATH);
 
-		LPDIRECT3DTEXTURE8 lpTexture = NULL;
-		HRESULT hr = D3DXCreateTextureFromFileA(TheseusGetD3DDev(), thePath, &lpTexture);
-		if (hr == D3D_OK)
-			return lpTexture;
+		// The skin dir is an Xbox path, so it opens through the translator.
+		if (FILE* f = TheseusFOpen(thePath, "rb"))
+		{
+			fseek(f, 0, SEEK_END);
+			long size = ftell(f);
+			fseek(f, 0, SEEK_SET);
+			BYTE* data = size > 0 ? (BYTE*)malloc(size) : NULL;
+			bool ok = data && fread(data, 1, size, f) == (size_t)size;
+			fclose(f);
+			LPDIRECT3DTEXTURE8 lpTexture = NULL;
+			HRESULT hr = ok ? D3DXCreateTextureFromFileInMemory(TheseusGetD3DDev(), data, (UINT)size, &lpTexture) : E_FAIL;
+			free(data);
+			if (hr == D3D_OK)
+				return lpTexture;
+		}
 	}
 
 	// Search loaded XIPs (newest to oldest)

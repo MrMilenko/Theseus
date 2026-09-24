@@ -6,9 +6,8 @@
 
 #pragma once
 
-#define _THESEUS_STD_H 1 // Prevent toolbox xboxinternals.h kernel type redefs
-
 #include "xboxfs_drive.h" // XboxFS_DriveToPrefix shared helper, used by stubs below
+#include "xbox_path.h"    // the one Xbox path translator, used by stubs below
 
 #include <SDL.h>
 #ifdef __cplusplus
@@ -151,7 +150,14 @@ inline void DeleteCriticalSection(CRITICAL_SECTION*) {}
 #define lstrlen strlen
 #define lstrcpy strcpy
 #define lstrcat strcat
-#define lstrcpyn strncpy
+// Win32 semantics: copies at most n-1 chars and always terminates.
+inline char* lstrcpyn(char* dst, const char* src, int n) {
+    if (n <= 0) return dst;
+    size_t i = 0;
+    for (; i + 1 < (size_t)n && src[i]; i++) dst[i] = src[i];
+    dst[i] = '\0';
+    return dst;
+}
 
 // SYSTEMTIME stub
 typedef struct _SYSTEMTIME {
@@ -250,6 +256,7 @@ typedef struct _WIN32_FILE_ATTRIBUTE_DATA {
 #define FILE_FLAG_SEQUENTIAL_SCAN   0x08000000
 #define FILE_SHARE_DELETE           4
 #define FILE_SHARE_WRITE            2
+typedef int GET_FILEEX_INFO_LEVELS;
 #define GetFileExInfoStandard       0
 #define INVALID_FILE_ATTRIBUTES     ((DWORD)-1)
 
@@ -266,270 +273,8 @@ typedef struct _WIN32_FILE_ATTRIBUTE_DATA {
 // Virtual games database (needed by all platforms)
 #include "virtual_games.h"
 
-// FindFirstFile/FindNextFile/FindClose; POSIX implementation for non-Windows
-#ifndef _WIN32
-
-struct FindFileHandle {
-    DIR* dir;
-    char dirPath[512];
-    char pattern[256]; // filename glob pattern (e.g. "*.xtf")
-    // Virtual game injection
-    int  vgIndices[VGAMES_MAX]; // indices into g_vgames
-    int  vgCount;               // number of virtual entries for this directory
-    int  vgPos;                 // current position in virtual list
-    char vgDrive[4];            // drive letter for this search (if applicable)
-    char vgCategory[32];        // category for this search (if applicable)
-};
-inline HANDLE FindFirstFile(const char* path, WIN32_FIND_DATA* fd) {
-    if (!path || !fd) return INVALID_HANDLE_VALUE;
-
-    // Translate Xbox-style paths (e.g. "Q:\Fonts\*.xtf" -> "Data/Fonts/*.xtf").
-    char localPath[512];
-    const char* colon = strchr(path, ':');
-    if (colon && (colon[1] == '\\' || colon[1] == '/')) {
-        int driveLen = (int)(colon - path);
-        if (driveLen == 1) {
-            const char* prefix = XboxFS_DriveToPrefix(path[0]);
-            if (prefix) {
-                snprintf(localPath, sizeof(localPath), "%s/%s", prefix, colon + 2);
-            } else {
-                // Unknown drive (F:, G:, R:, ...) -- no analog on desktop.
-                // Pass through as-is so opendir below fails naturally.
-                strncpy(localPath, path, sizeof(localPath) - 1);
-                localPath[sizeof(localPath) - 1] = '\0';
-            }
-        } else {
-            strncpy(localPath, path, sizeof(localPath) - 1);
-            localPath[sizeof(localPath) - 1] = '\0';
-        }
-    } else {
-        strncpy(localPath, path, sizeof(localPath) - 1);
-        localPath[sizeof(localPath) - 1] = '\0';
-    }
-    // Convert backslashes
-    for (char* p = localPath; *p; p++) { if (*p == '\\') *p = '/'; }
-
-    // Find last / to split dir from pattern
-    char* lastSlash = strrchr(localPath, '/');
-    char dirBuf[512], patBuf[256];
-    if (lastSlash) {
-        size_t dirLen = lastSlash - localPath;
-        memcpy(dirBuf, localPath, dirLen);
-        dirBuf[dirLen] = '\0';
-        strncpy(patBuf, lastSlash + 1, sizeof(patBuf) - 1);
-        patBuf[sizeof(patBuf) - 1] = '\0';
-    } else {
-        strcpy(dirBuf, ".");
-        strncpy(patBuf, localPath, sizeof(patBuf) - 1);
-        patBuf[sizeof(patBuf) - 1] = '\0';
-    }
-
-    DIR* dir = opendir(dirBuf);
-    if (!dir) {
-        // Directory doesn't exist; but it might be a virtual game folder
-        // Check if dirBuf matches a virtual game: xboxfs/{drive}/{cat}/{name}
-        int vgIdx = VGames_MatchFolder(dirBuf);
-        if (vgIdx >= 0) {
-            // Virtual folder; check what file pattern is being requested
-            if (fnmatch("*.xbe", patBuf, FNM_CASEFOLD) == 0 ||
-                fnmatch("default.xbe", patBuf, FNM_CASEFOLD) == 0) {
-                // Return a fake default.xbe
-                memset(fd, 0, sizeof(*fd));
-                strcpy(fd->cFileName, "default.xbe");
-                fd->nFileSizeLow = 4096; // fake size
-                FindFileHandle* ffh = new FindFileHandle;
-                ffh->dir = NULL; // no real dir
-                strncpy(ffh->dirPath, dirBuf, sizeof(ffh->dirPath) - 1);
-                strncpy(ffh->pattern, patBuf, sizeof(ffh->pattern) - 1);
-                ffh->vgCount = 0; ffh->vgPos = 0;
-                ffh->vgDrive[0] = 0; ffh->vgCategory[0] = 0;
-                return (HANDLE)ffh;
-            }
-            if (fnmatch("default.uixshortcut", patBuf, FNM_CASEFOLD) == 0 ||
-                fnmatch("*.*", patBuf, FNM_CASEFOLD) == 0 ||
-                strcmp(patBuf, "*") == 0) {
-                memset(fd, 0, sizeof(*fd));
-                strcpy(fd->cFileName, "default.uixshortcut");
-                fd->nFileSizeLow = 256;
-                FindFileHandle* ffh = new FindFileHandle;
-                ffh->dir = NULL;
-                strncpy(ffh->dirPath, dirBuf, sizeof(ffh->dirPath) - 1);
-                strncpy(ffh->pattern, patBuf, sizeof(ffh->pattern) - 1);
-                ffh->vgCount = 0; ffh->vgPos = 0;
-                ffh->vgDrive[0] = 0; ffh->vgCategory[0] = 0;
-                return (HANDLE)ffh;
-            }
-        }
-        return INVALID_HANDLE_VALUE;
-    }
-
-    FindFileHandle* ffh = new FindFileHandle;
-    ffh->dir = dir;
-    strncpy(ffh->dirPath, dirBuf, sizeof(ffh->dirPath) - 1);
-    ffh->dirPath[sizeof(ffh->dirPath) - 1] = '\0';
-    // Windows compat: "*.*" matches all files including those without dots
-    if (strcmp(patBuf, "*.*") == 0)
-        strcpy(patBuf, "*");
-    strncpy(ffh->pattern, patBuf, sizeof(ffh->pattern) - 1);
-    ffh->pattern[sizeof(ffh->pattern) - 1] = '\0';
-
-    // Inject virtual games via shared VGames_ParseDir.
-    ffh->vgCount = 0;
-    ffh->vgPos = 0;
-    ffh->vgDrive[0] = 0;
-    ffh->vgCategory[0] = 0;
-    {
-        char driveBuf[4] = {0};
-        char catBuf[32] = {0};
-        if (VGames_ParseDir(dirBuf, driveBuf, catBuf, sizeof(catBuf))) {
-            strncpy(ffh->vgDrive, driveBuf, sizeof(ffh->vgDrive) - 1);
-            strncpy(ffh->vgCategory, catBuf, sizeof(ffh->vgCategory) - 1);
-            ffh->vgCount = VGames_GetForDirectory(driveBuf, catBuf, ffh->vgIndices, VGAMES_MAX);
-        }
-    }
-
-    // Find first matching entry (real filesystem)
-    struct dirent* entry;
-    while ((entry = readdir(ffh->dir)) != NULL) {
-        if (fnmatch(ffh->pattern, entry->d_name, FNM_CASEFOLD) == 0) {
-            memset(fd, 0, sizeof(*fd));
-            strncpy(fd->cFileName, entry->d_name, sizeof(fd->cFileName) - 1);
-            char fullPath[512];
-            snprintf(fullPath, sizeof(fullPath), "%s/%s", ffh->dirPath, entry->d_name);
-            struct stat st;
-            if (stat(fullPath, &st) == 0) {
-                if (S_ISDIR(st.st_mode)) fd->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-                fd->nFileSizeLow = (DWORD)st.st_size;
-            }
-            return (HANDLE)ffh;
-        }
-    }
-
-    // No real entries; try virtual game entries
-    while (ffh->vgPos < ffh->vgCount) {
-        int idx = ffh->vgIndices[ffh->vgPos++];
-        VirtualGame& vg = g_vgames.games[idx];
-        if (!vg.valid) continue;
-        if (fnmatch(ffh->pattern, vg.name, FNM_CASEFOLD) != 0) continue;
-        memset(fd, 0, sizeof(*fd));
-        strncpy(fd->cFileName, vg.name, sizeof(fd->cFileName) - 1);
-        fd->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-        return (HANDLE)ffh;
-    }
-
-    // No match found at all
-    closedir(ffh->dir);
-    delete ffh;
-    return INVALID_HANDLE_VALUE;
-}
-inline BOOL FindNextFile(HANDLE h, WIN32_FIND_DATA* fd) {
-    if (!h || h == INVALID_HANDLE_VALUE || !fd) return FALSE;
-    FindFileHandle* ffh = (FindFileHandle*)h;
-
-    // First exhaust real directory entries (if we have a real dir)
-    if (!ffh->dir) goto virtual_entries;
-    struct dirent* entry;
-    while ((entry = readdir(ffh->dir)) != NULL) {
-        if (fnmatch(ffh->pattern, entry->d_name, FNM_CASEFOLD) == 0) {
-            memset(fd, 0, sizeof(*fd));
-            strncpy(fd->cFileName, entry->d_name, sizeof(fd->cFileName) - 1);
-            char fullPath[512];
-            snprintf(fullPath, sizeof(fullPath), "%s/%s", ffh->dirPath, entry->d_name);
-            struct stat st;
-            if (stat(fullPath, &st) == 0) {
-                if (S_ISDIR(st.st_mode)) fd->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-                fd->nFileSizeLow = (DWORD)st.st_size;
-            }
-            return TRUE;
-        }
-    }
-
-    // Then serve virtual game entries
-    virtual_entries:
-    while (ffh->vgPos < ffh->vgCount) {
-        int idx = ffh->vgIndices[ffh->vgPos++];
-        VirtualGame& vg = g_vgames.games[idx];
-        if (!vg.valid) continue;
-        // Skip if a real folder with this name already exists
-        char checkPath[512];
-        snprintf(checkPath, sizeof(checkPath), "%s/%s", ffh->dirPath, vg.name);
-        struct stat cst;
-        if (stat(checkPath, &cst) == 0) continue; // real folder takes priority
-        // Check against glob pattern
-        if (fnmatch(ffh->pattern, vg.name, FNM_CASEFOLD) != 0) continue;
-        memset(fd, 0, sizeof(*fd));
-        strncpy(fd->cFileName, vg.name, sizeof(fd->cFileName) - 1);
-        fd->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-        return TRUE;
-    }
-
-    return FALSE;
-}
-inline BOOL FindClose(HANDLE h) {
-    if (h && h != INVALID_HANDLE_VALUE) {
-        FindFileHandle* ffh = (FindFileHandle*)h;
-        if (ffh->dir) closedir(ffh->dir);
-        delete ffh;
-    }
-    return TRUE;
-}
-#endif // !_WIN32
-
-// Simple Xbox path translation for stubs below (full version in xboxfs.h).
-// Converts "C:\..." -> "Configs/...", "Q:\..." -> "Data/...",
-// "E:\..." -> "Library/...". For unknown drives (F:, G:, R:, ...) returns
-// an empty string so callers' stat/mkdir/fopen all fail predictably; do
-// NOT pass through unchanged, since Preloader_Mkdirp would then create
-// a literal "F:" directory on disk.
-inline const char* _StubTranslatePath(const char* xboxPath) {
-    static char s_stubBuf[512];
-    if (!xboxPath) return xboxPath;
-    const char* colon = strchr(xboxPath, ':');
-    if (colon && (colon[1] == '\\' || colon[1] == '/')) {
-        int driveLen = (int)(colon - xboxPath);
-        if (driveLen == 1) {
-            const char* prefix = XboxFS_DriveToPrefix(xboxPath[0]);
-            if (prefix) {
-                snprintf(s_stubBuf, sizeof(s_stubBuf), "%s/%s", prefix, colon + 2);
-                for (char* p = s_stubBuf; *p; p++) { if (*p == '\\') *p = '/'; }
-                return s_stubBuf;
-            }
-        }
-        // Drive letter present but unrecognized -- fail safe.
-        s_stubBuf[0] = '\0';
-        return s_stubBuf;
-    }
-    return xboxPath;
-}
-
 // Win32 API function stubs (only needed on non-Windows platforms)
 #ifndef _WIN32
-inline BOOL GetFileAttributesEx(const char* path, int level, void* info) {
-    (void)level; (void)info;
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-    struct stat st;
-    if (stat(p, &st) == 0) {
-        // Fill in basic WIN32_FILE_ATTRIBUTE_DATA if info is provided
-        if (info) {
-            WIN32_FILE_ATTRIBUTE_DATA* fad = (WIN32_FILE_ATTRIBUTE_DATA*)info;
-            memset(fad, 0, sizeof(*fad));
-            fad->dwFileAttributes = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-            fad->nFileSizeLow = (DWORD)(st.st_size & 0xFFFFFFFF);
-            fad->nFileSizeHigh = (DWORD)(st.st_size >> 32);
-        }
-        return TRUE;
-    }
-    return FALSE;
-}
-inline DWORD GetFileAttributes(const char* path) {
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-    struct stat st;
-    if (stat(p, &st) == 0)
-        return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-    return INVALID_FILE_ATTRIBUTES;
-}
 inline BOOL GetFileTime(HANDLE h, FILETIME* c, FILETIME* a, FILETIME* w) {
     (void)h;
     FILETIME ft = {0, 0};
@@ -542,11 +287,6 @@ inline BOOL CompareFileTime(const FILETIME* a, const FILETIME* b) {
     if (a->dwHighDateTime != b->dwHighDateTime) return a->dwHighDateTime > b->dwHighDateTime ? 1 : -1;
     if (a->dwLowDateTime != b->dwLowDateTime) return a->dwLowDateTime > b->dwLowDateTime ? 1 : -1;
     return 0;
-}
-inline BOOL RemoveDirectory(const char* path) {
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-    return rmdir(p) == 0;
 }
 inline DWORD GetLastError() { return 0; }
 inline void GetLocalTime(SYSTEMTIME* st) {
@@ -696,7 +436,6 @@ typedef TCHAR* LPTSTR;
 #define _totlower tolower
 #define _tcstod strtod
 #define _itoa(val, buf, radix) snprintf(buf, 32, "%d", val)
-#define lstrcpyn(dst, src, n) strncpy(dst, src, n)
 #define _tfopen fopen
 #define _ftprintf fprintf
 
@@ -803,8 +542,8 @@ typedef struct { BYTE Signature[20]; } XCALCSIG_SIGNATURE;
 
 
 #ifndef _WIN32
-// File API stubs
-// NOTE: CreateFileA is defined in xboxfs.h with path translation
+// Handle-based file stubs. POSIX file HANDLEs are FILE*s, opened by
+// TheseusCreateFile in xbox_file.cpp.
 inline BOOL ReadFile(HANDLE h, void* buf, DWORD nBytes, DWORD* nRead, void* ovlp) {
     size_t r = fread(buf, 1, nBytes, (FILE*)h);
     if (nRead) *nRead = (DWORD)r;
@@ -831,6 +570,12 @@ inline DWORD GetFileSize(HANDLE h, DWORD* high) {
 #define OPEN_EXISTING 3
 #define CREATE_ALWAYS 2
 #define OPEN_ALWAYS   4
+#ifndef CREATE_NEW
+#define CREATE_NEW    1
+#endif
+#ifndef TRUNCATE_EXISTING
+#define TRUNCATE_EXISTING 5
+#endif
 #define FILE_BEGIN 0
 #define FILE_CURRENT 1
 #define FILE_END 2
@@ -849,13 +594,6 @@ inline BOOL SetFileTime(HANDLE h, const FILETIME* c, const FILETIME* a, const FI
     return TRUE;
 }
 
-// SetFileAttributes stub
-inline BOOL SetFileAttributes(const char* path, DWORD attr) {
-    (void)path; (void)attr;
-    return TRUE;
-}
-#define SetFileAttributesA SetFileAttributes
-
 // CharUpper/CharLower (Win32 string functions)
 inline LPTSTR CharUpper(LPTSTR p) {
     if ((uintptr_t)p < 256) return (LPTSTR)(uintptr_t)toupper((int)(uintptr_t)p);
@@ -868,21 +606,8 @@ inline LPTSTR CharLower(LPTSTR p) {
     return p;
 }
 
-// DeleteFile is provided by xboxfs.h with path translation
 
-// CreateDirectory
 #include <errno.h>
-inline BOOL CreateDirectory(const char* path, void* sa) {
-    (void)sa;
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-#ifdef _WIN32
-    return CreateDirectoryA(p, NULL);
-#else
-    return mkdir(p, 0755) == 0 || errno == EEXIST;
-#endif
-}
-#define CreateDirectoryA CreateDirectory
 
 // CreateThread stub (single-threaded on POSIX for now)
 typedef DWORD (*LPTHREAD_START_ROUTINE)(void*);
@@ -1044,16 +769,6 @@ typedef union _ULARGE_INTEGER {
     unsigned long long QuadPart;
 } ULARGE_INTEGER;
 
-// GetDiskFreeSpaceEx stub
-inline BOOL GetDiskFreeSpaceEx(const char* path, ULARGE_INTEGER* lpFree,
-                                ULARGE_INTEGER* lpTotal, ULARGE_INTEGER* lpTotalFree) {
-    (void)path;
-    if (lpFree) lpFree->QuadPart = 0;
-    if (lpTotal) lpTotal->QuadPart = 0;
-    if (lpTotalFree) lpTotalFree->QuadPart = 0;
-    return TRUE;
-}
-#define GetDiskFreeSpaceExA GetDiskFreeSpaceEx
 #endif // !_WIN32
 
 
@@ -1080,10 +795,8 @@ inline int WideCharToMultiByte(UINT codePage, DWORD flags, const wchar_t* src, i
     return len;
 }
 
-// FindFirstFileA / FindNextFileA - same as FindFirstFile (ANSI build)
+// ANSI build, so the A struct is the struct.
 typedef WIN32_FIND_DATA WIN32_FIND_DATAA;
-#define FindFirstFileA FindFirstFile
-#define FindNextFileA FindNextFile
 
 // __debugbreak
 #define __debugbreak() SDL_TriggerBreakpoint()
@@ -1115,12 +828,6 @@ typedef WIN32_FIND_DATA WIN32_FIND_DATAA;
 // -------------------------------------------------------
 
 #ifndef _WIN32
-// DeleteFileA stub
-inline BOOL DeleteFileA(const char* path) {
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-    return remove(p) == 0;
-}
 #endif // !_WIN32
 
 // IN_ADDR struct (Windows already has this from winsock2.h)
@@ -1156,8 +863,4 @@ inline int _uix_swprintf(wchar_t* buf, const wchar_t* fmt, ...) {
 #define swprintf _uix_swprintf
 #endif // !_WIN32
 
-// Xbox filesystem path translation; provides CreateFile/fopen/etc.
-// macro redirection so engine code that calls Win32 file APIs works
-// transparently on all platforms via xboxfs path mapping.
-#include "xboxfs.h"
 

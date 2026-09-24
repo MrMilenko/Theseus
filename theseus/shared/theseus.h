@@ -695,6 +695,10 @@ public:
 
 
 
+// Every file call that takes an Xbox path comes through here. The Xbox build
+// hands it straight to XTL; the desktop build translates it to a host path
+// first (desktop/xbox_file.cpp). Host paths never come through here.
+#ifdef _XBOX
 inline HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes = 0, HANDLE hTemplateFile = NULL)
 {
 	// null path would crash inside CleanFilePath. Bail before we get there.
@@ -702,38 +706,50 @@ inline HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD dwDesiredAccess, 
 		return INVALID_HANDLE_VALUE;
 	FSCHAR sszFileName [MAX_PATH];
 	CleanFilePath(sszFileName, szFileName);
-#ifdef _XBOX
 	return CreateFile(sszFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
-#elif defined(THESEUS_HOST_WIN)
-	// Native Windows: use real Win32 CreateFileA so subsequent ReadFile/CloseHandle
-	// calls hit real kernel handles. The fopen path below would return a FILE*
-	// that the real Win32 APIs can't interpret.
-	return CreateFileA(sszFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
-#else
-	const char* mode = "rb";
-	if (dwDesiredAccess & GENERIC_WRITE) mode = (dwCreationDisposition == CREATE_ALWAYS) ? "wb" : "r+b";
-	FILE* f = fopen(sszFileName, mode);
-	if (!f && (dwCreationDisposition == CREATE_ALWAYS || dwCreationDisposition == OPEN_ALWAYS))
-		f = fopen(sszFileName, "wb");
-	return f ? (HANDLE)f : INVALID_HANDLE_VALUE;
-#endif
 }
 
 inline bool TheseusCreateDirectory(LPCTSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes = NULL)
 {
 	FSCHAR sszFileName [MAX_PATH];
 	CleanFilePath(sszFileName, lpPathName);
-#ifdef _XBOX
 	return CreateDirectory(sszFileName, lpSecurityAttributes) != FALSE;
-#else
-	(void)lpSecurityAttributes;
-#ifdef THESEUS_HOST_WIN
-	return CreateDirectoryA(sszFileName, NULL) != FALSE;
-#else
-	return mkdir(sszFileName, 0755) == 0 || errno == EEXIST;
-#endif
-#endif
 }
+
+#ifdef _UNICODE
+// Same two calls for code that already holds a narrow path.
+inline HANDLE TheseusCreateFile(const char* path, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa, DWORD disp, DWORD flags = 0, HANDLE templ = NULL) { return CreateFile(path, access, share, sa, disp, flags, templ); }
+inline bool TheseusCreateDirectory(const char* path, LPSECURITY_ATTRIBUTES sa = NULL) { return CreateDirectory(path, sa) != FALSE; }
+#endif
+
+inline BOOL TheseusDeleteFile(LPCSTR path) { return DeleteFile(path); }
+inline BOOL TheseusRemoveDirectory(LPCSTR path) { return RemoveDirectory(path); }
+inline BOOL TheseusSetFileAttributes(LPCSTR path, DWORD attr) { return SetFileAttributes(path, attr); }
+inline DWORD TheseusGetFileAttributes(LPCSTR path) { return GetFileAttributes(path); }
+inline BOOL TheseusGetFileAttributesEx(LPCSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID info) { return GetFileAttributesEx(path, level, info); }
+inline BOOL TheseusGetDiskFreeSpaceEx(LPCSTR path, ULARGE_INTEGER* pFree, ULARGE_INTEGER* pTotal, ULARGE_INTEGER* pTotalFree) { return GetDiskFreeSpaceEx(path, pFree, pTotal, pTotalFree); }
+inline HANDLE TheseusFindFirstFile(LPCSTR path, WIN32_FIND_DATAA* fd) { return FindFirstFile(path, fd); }
+inline BOOL TheseusFindNextFile(HANDLE h, WIN32_FIND_DATAA* fd) { return FindNextFile(h, fd); }
+inline BOOL TheseusFindClose(HANDLE h) { return FindClose(h); }
+inline BOOL TheseusMoveFile(LPCSTR src, LPCSTR dst, DWORD flags = 0) { return MoveFileEx(src, dst, flags); }
+inline BOOL TheseusCopyFile(LPCSTR src, LPCSTR dst, BOOL bFailIfExists) { return CopyFile(src, dst, bFailIfExists); }
+inline FILE* TheseusFOpen(const TCHAR* path, const TCHAR* mode) { return _tfopen(path, mode); }
+#else
+HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes = 0, HANDLE hTemplateFile = NULL);
+bool TheseusCreateDirectory(LPCTSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes = NULL);
+BOOL TheseusDeleteFile(LPCSTR path);
+BOOL TheseusRemoveDirectory(LPCSTR path);
+BOOL TheseusSetFileAttributes(LPCSTR path, DWORD attr);
+DWORD TheseusGetFileAttributes(LPCSTR path);
+BOOL TheseusGetFileAttributesEx(LPCSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID info);
+BOOL TheseusGetDiskFreeSpaceEx(LPCSTR path, ULARGE_INTEGER* pFree, ULARGE_INTEGER* pTotal, ULARGE_INTEGER* pTotalFree);
+HANDLE TheseusFindFirstFile(LPCSTR path, WIN32_FIND_DATAA* fd);
+BOOL TheseusFindNextFile(HANDLE h, WIN32_FIND_DATAA* fd);
+BOOL TheseusFindClose(HANDLE h);
+BOOL TheseusMoveFile(LPCSTR src, LPCSTR dst, DWORD flags = 0);
+BOOL TheseusCopyFile(LPCSTR src, LPCSTR dst, BOOL bFailIfExists);
+FILE* TheseusFOpen(const TCHAR* path, const TCHAR* mode);
+#endif
 
 
 

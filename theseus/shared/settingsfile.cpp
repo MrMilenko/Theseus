@@ -157,7 +157,7 @@ bool CSettingsFile::Save()
 	{
 		// Write out Unicode file...
 
-		FILE* pFile = _tfopen(m_filePath, _T("w"));
+		FILE* pFile = TheseusFOpen(m_filePath, _T("w"));
 		if (pFile == NULL)
 			return false;
 

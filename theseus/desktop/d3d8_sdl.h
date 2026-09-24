@@ -388,8 +388,10 @@ struct D3DXCOLOR {
 #define TEXT(x) _T(x)
 #endif
 
-// _stscanf
+// _stscanf. mingw's tchar.h already maps it to sscanf in an ANSI build.
+#ifndef _stscanf
 #define _stscanf sscanf
+#endif
 
 // D3DX mesh stubs
 #define D3DXMESH_MANAGED D3DPOOL_MANAGED
@@ -2388,20 +2390,8 @@ IDirect3DTexture8* XBX_ParseTexture(const BYTE* pbContent, int cbContent);
 inline HRESULT D3DXCreateTextureFromFileA(IDirect3DDevice8* dev, const char* path, IDirect3DTexture8** ppTex) {
     (void)dev;
     *ppTex = NULL;
-    // Try to load the file from the xboxfs-mapped path
+    // Host path only. Xbox paths go through TheseusFOpen first.
     FILE* f = fopen(path, "rb");
-    if (!f) {
-        // Try drive remap (Q:\path -> Data/path, etc.).
-        char mapped[1024];
-        if (path[0] && path[1] == ':' && (path[2] == '\\' || path[2] == '/')) {
-            const char* prefix = XboxFS_DriveToPrefix(path[0]);
-            if (prefix) {
-                snprintf(mapped, sizeof(mapped), "%s/%s", prefix, path + 3);
-                for (char* p = mapped; *p; p++) if (*p == '\\') *p = '/';
-                f = fopen(mapped, "rb");
-            }
-        }
-    }
     if (!f) return E_FAIL;
     fseek(f, 0, SEEK_END);
     long size = ftell(f);

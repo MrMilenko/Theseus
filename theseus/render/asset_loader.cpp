@@ -746,7 +746,7 @@ LPDIRECT3DTEXTURE8 LoadTextureFromXPR(const char *xprfile)
 	if (xprfile == NULL)
 		return NULL;
 
-	HANDLE hFile = CreateFile(xprfile, GENERIC_READ, FILE_SHARE_READ, NULL,
+	HANDLE hFile = TheseusCreateFile(xprfile, GENERIC_READ, FILE_SHARE_READ, NULL,
 							  OPEN_EXISTING, 0, NULL);
 	if (hFile == INVALID_HANDLE_VALUE)
 	{
@@ -939,7 +939,7 @@ HIMAGE MyLoadImage(const TCHAR *szURL) { return LoadTexture(szURL, 0, 0); }
 
 bool DecodeRAW(const TCHAR *szFileName, CTexture *pTexture)
 {
-	FILE *fp = _tfopen(szFileName, _T("rb"));
+	FILE *fp = TheseusFOpen(szFileName, _T("rb"));
 	if (fp == NULL)
 		return false;
 
@@ -1114,7 +1114,7 @@ void PreloadSkinTextures()
 	OutputDebugStringA("\n");
 
 	WIN32_FIND_DATAA findData;
-	HANDLE hFind = FindFirstFileA(searchPath, &findData);
+	HANDLE hFind = TheseusFindFirstFile(searchPath, &findData);
 	if (hFind == INVALID_HANDLE_VALUE)
 	{
 		OutputDebugStringA("[Preload] No .xbx files found in skin directory.\n");
@@ -1145,9 +1145,9 @@ void PreloadSkinTextures()
 		MultiByteToWideChar(CP_ACP, 0, findData.cFileName, -1, wideFileName, MAX_PATH);
 		FindImage(wideFileName);
 
-	} while (FindNextFileA(hFind, &findData));
+	} while (TheseusFindNextFile(hFind, &findData));
 
-	FindClose(hFind);
+	TheseusFindClose(hFind);
 	OutputDebugStringA("[Preload] Skin texture preload complete.\n");
 }
 

@@ -31,25 +31,6 @@
 #include <dirent.h>
 #endif
 
-// Platform code uses native file I/O; undo Xbox filesystem macros.
-#undef fopen
-#undef _tfopen
-#ifdef _WIN32
-#undef CreateFile
-#undef CreateFileA
-#undef FindFirstFile
-#undef FindFirstFileA
-#undef FindNextFile
-#undef FindNextFileA
-#undef FindClose
-#undef GetFileAttributes
-#undef GetFileAttributesA
-#undef GetFileAttributesEx
-#undef GetFileAttributesExA
-#undef RemoveDirectory
-#undef RemoveDirectoryA
-#endif
-
 bool g_titleMakerOpen = false;
 
 // ============================================================================

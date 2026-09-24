@@ -531,15 +531,8 @@ int CConfig::NtFileExists(const char* FileName)
 
     // Translate Xbox path to local filesystem
     {
-        const char* translated = XboxFS_TranslatePath(szFile);
         char szLocal[MAX_PATH];
-        if (translated) {
-            strncpy(szLocal, translated, MAX_PATH - 1);
-            szLocal[MAX_PATH - 1] = 0;
-        } else {
-            strncpy(szLocal, szFile, MAX_PATH - 1);
-            szLocal[MAX_PATH - 1] = 0;
-        }
+        XboxPath_Translate(szFile, szLocal, sizeof(szLocal));
         for (char* p = szLocal; *p; p++) { if (*p == '\\') *p = '/'; }
 
         int result = (access(szLocal, F_OK) == 0) ? 1 : 0;

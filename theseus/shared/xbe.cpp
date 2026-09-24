@@ -167,10 +167,10 @@ int CXBExecutable::ReadFile( const char * szFileName, const bool bGetTitleImage,
 	// Copy path
 	strcpy( m_szFileName, szFileName );
 
-	if( GetFileAttributes( szFileName ) != -1 )
+	if( TheseusGetFileAttributes( szFileName ) != -1 )
 	{
 		// Open the local file
-		hFile = CreateFile( szFileName,
+		hFile = TheseusCreateFile( szFileName,
 							GENERIC_READ,
 							0,
 							NULL,
@@ -390,7 +390,7 @@ int CXBExecutable::SaveFile( void )
 		}
 
 	// Open the local file
-	hFile = ::CreateFile( m_szFileName,
+	hFile = TheseusCreateFile( m_szFileName,
 						  GENERIC_WRITE,
 						  0,
 						  NULL,
@@ -766,7 +766,7 @@ int CXBExecutable::ReadTitleName( void )
   sprintf( m_szBuffer, "E:\\UDATA\\%08lx\\TitleMeta.xbx", m_ulTitleId );
 
   // Open the local file
-  hTitleMetaFile = CreateFile( m_szBuffer,
+  hTitleMetaFile = TheseusCreateFile( m_szBuffer,
                                GENERIC_READ,
                                0,
                                NULL,

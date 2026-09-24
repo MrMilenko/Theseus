@@ -56,8 +56,6 @@ bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
 	}
 	char path[512];
 	snprintf(path, sizeof(path), "%s", AppPathf("Data/shaders/%s/%s.bin", sub, name));
-	// fopen is macro-routed through xboxfs.h's translator and AppPathf is
-	// absolute, so this relies on XboxFS_IsHostPath to skip the drive remap.
 	FILE* f = fopen(path, "rb");
 	if (!f) {
 		fprintf(stderr, "bgfx: shader file not found: %s\n", path);
@@ -174,27 +172,6 @@ volatile DWORD g_hangStartTime = 0;
 #define STBI_ONLY_PNG
 #define STBI_ONLY_BMP
 #include "stb_image.h"
-
-// Platform code uses native file I/O; undo Xbox filesystem macros
-// Dashboard engine files (config.cpp, Runner.cpp, xip.cpp, etc.) keep the macros
-// so they think they're on an Xbox. We don't.
-#undef fopen
-#undef _tfopen
-#ifdef _WIN32
-#undef CreateFile
-#undef CreateFileA
-#undef FindFirstFile
-#undef FindFirstFileA
-#undef FindNextFile
-#undef FindNextFileA
-#undef FindClose
-#undef GetFileAttributes
-#undef GetFileAttributesA
-#undef GetFileAttributesEx
-#undef GetFileAttributesExA
-#undef RemoveDirectory
-#undef RemoveDirectoryA
-#endif
 
 // Virtual games database
 VirtualGameDB g_vgames = {};
@@ -648,7 +625,7 @@ void SaveDesktopSettings() {
     fprintf(fp, "JellyfinUserId=%s\n",   g_jellyfinUserId);
     fprintf(fp, "JellyfinClientId=%s\n", g_jellyfinClientId);
     fprintf(fp, "JellyfinUserName=%s\n", g_jellyfinUserName);
-    // Legacy Q:\System\config.ini sections (aliased to this file by xboxfs.h).
+    // Legacy Q:\System\config.ini sections (aliased to this file by xbox_path.h).
     fprintf(fp, "\n[Progressive]\n");
     fprintf(fp, "Use 720p=%s\n",        g_use720p);
     fprintf(fp, "Use Progressive=%s\n", g_useProgressive);

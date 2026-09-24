@@ -31,9 +31,6 @@
 #include <dirent.h>
 #endif
 
-#undef fopen
-#undef _tfopen
-
 // Implemented in group.cpp
 extern "C" int CollectInlineNodes(CNode* pRoot, CInstance* pRootInst, void* outBuf, int maxEntries);
 extern "C" bool ReloadInlineNode(CNode* pInlineNode, const char* xapText);

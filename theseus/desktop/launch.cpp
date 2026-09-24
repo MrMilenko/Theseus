@@ -27,7 +27,6 @@
 #include "stb_image.h"
 #include "path_template.h"
 #include "launchers/launcher.h"
-#include <SDL_opengl.h>
 
 extern "C" void DashAudio_MuteAll(void);
 extern SDL_Window* g_pSDLWindow;
@@ -110,13 +109,6 @@ static void TrimOuterQuotes(char* s)
 	memmove(s, s + 1, len - 2);
 	s[len - 2] = '\0';
 }
-
-#ifdef _WIN32
-// xboxfs.h macro-routes these through the Xbox drive translator. A launch
-// spec is a real Windows path by definition, so ask the OS directly.
-#undef GetFileAttributesA
-#undef GetFileAttributes
-#endif
 
 static bool IsExistingFile(const char* path)
 {
@@ -485,17 +477,14 @@ void DesktopLaunchTitle(const char* devicePath)
 		return;
 	}
 
-	// Translate via the canonical xboxfs.h resolver. handles both
+	// Translate via xbox_path.h. Handles both
 	// drive-letter ("E:\...") and device-path ("\Device\Harddisk0\...")
 	// forms and routes to Library/Configs/Data as appropriate.
-	const char* translated = XboxFS_TranslatePath(devicePath);
-	if (!translated || !*translated) {
+	char localPath[512];
+	if (!XboxPath_Translate(devicePath, localPath, sizeof(localPath)) || !*localPath) {
 		fprintf(stderr, "[launch] DesktopLaunchTitle: unrecognized path format: %s\n", devicePath);
 		return;
 	}
-	char localPath[512];
-	strncpy(localPath, translated, sizeof(localPath) - 1);
-	localPath[sizeof(localPath) - 1] = '\0';
 
 	// Strip trailing slash for VGames matching.
 	size_t pathLen = strlen(localPath);

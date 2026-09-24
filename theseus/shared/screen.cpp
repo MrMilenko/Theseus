@@ -143,6 +143,6 @@ void CScreen::TakeScreenShot()
 	sprintf( tempPath, "Q:\\Screenshots\\ScreenShot%d%d%d.bmp",
 			 theDate.getHours(), theDate.getMinutes(), theDate.getSeconds() );
 						
-	CreateDirectory( "Q:\\Screenshots", NULL );
+	TheseusCreateDirectory( _T("Q:\\Screenshots"), NULL );
 	XGWriteSurfaceToFile( pFrontBuffer, tempPath );
 }

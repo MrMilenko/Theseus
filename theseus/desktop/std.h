@@ -14,8 +14,6 @@
 // D3D8 type stubs (no-op interfaces, math types, enums)
 #include "d3d8_sdl.h"
 
-// Filesystem path translation (Q:\ -> ./Data/)
-#include "xboxfs.h"
 
 // Standard C/C++ headers (already included by platform_shim.h, but
 // some source files expect these to come from std.h)
@@ -117,19 +115,6 @@ typedef struct tagRGBQUAD {
 typedef RGBQUAD* LPRGBQUAD;
 
 #define MAX_COMPUTERNAME_LENGTH 15
-
-// MoveFile stub (translates Xbox paths). DeleteFile / CreateFile / WriteFile /
-// CreateDirectory and the thread / critical section / event stubs all live
-// in platform_shim.h.
-inline BOOL MoveFile(const char* src, const char* dst) {
-    const char* s = src;
-    const char* d = dst;
-    if (src && strchr(src, ':')) s = _StubTranslatePath(src);
-    char srcBuf[512];
-    strncpy(srcBuf, s, sizeof(srcBuf) - 1); srcBuf[sizeof(srcBuf) - 1] = '\0';
-    if (dst && strchr(dst, ':')) d = _StubTranslatePath(dst);
-    return rename(srcBuf, d) == 0;
-}
 
 // GetCurrentThreadId (platform_shim.h doesn't provide this one)
 inline DWORD GetCurrentThreadId() { return (DWORD)SDL_ThreadID(); }

@@ -12,7 +12,7 @@ bool DoesFileExist(const TCHAR* szFileName)
     WIN32_FILE_ATTRIBUTE_DATA fad;
 
     Ansi(szFile, szFileName, MAX_PATH);
-    return GetFileAttributesEx(szFile, GetFileExInfoStandard, &fad) != 0;
+    return TheseusGetFileAttributesEx(szFile, GetFileExInfoStandard, &fad) != 0;
 }
 
 void MakePath(TCHAR* szBuf, const TCHAR* szDir, const TCHAR* szFile)
@@ -216,7 +216,7 @@ int GetDirectoryBlocks(const TCHAR* szDirPath, int nBlockSize, bool bRecursive, 
 
 	char sszBuf [MAX_PATH];
 	Ansi(sszBuf, szBuf, MAX_PATH);
-	HANDLE hFind = FindFirstFile(sszBuf, &fd);
+	HANDLE hFind = TheseusFindFirstFile(sszBuf, &fd);
 
 	if (hFind == INVALID_HANDLE_VALUE)
 		return 0;
@@ -241,8 +241,8 @@ int GetDirectoryBlocks(const TCHAR* szDirPath, int nBlockSize, bool bRecursive, 
 			nTotalBlocks += GetDirectoryBlocks(szBuf, nBlockSize, true, hCancelEvent);
 		}
 	}
-	while (FindNextFile(hFind, &fd));
-	FindClose(hFind);
+	while (TheseusFindNextFile(hFind, &fd));
+	TheseusFindClose(hFind);
 
 	return bCancel ? -1 : nTotalBlocks;
 }
