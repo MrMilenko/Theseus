@@ -12,6 +12,8 @@
 *.wrn
 *.ilk
 *.idb
+# -MMD writes these beside the compiler's cwd when a build is driven by hand.
+*.d
 Debug/
 Release/
 Profile/

@@ -213,6 +213,10 @@ The rest is build instructions, architecture notes, and the lineage. Skip if you
 
 One list, used by both the [Quick Start](#quick-start) and [Building](#building). "Run" is what a downloaded release needs; "Build" is that plus the toolchain and headers.
 
+The build finds all of these through `pkg-config`, so no particular package
+manager is required. Pick whichever one you already use, or install the
+libraries by hand and point `PKG_CONFIG_PATH` at their `.pc` files.
+
 **macOS (Homebrew):**
 
 ```
@@ -221,6 +225,17 @@ brew install sdl2 sdl2_mixer mpv curl ffmpeg opus
 
 # Build from source (adds the toolchain + libdatachannel's deps)
 brew install sdl2 sdl2_mixer mpv curl ffmpeg opus pkg-config cmake openssl@3
+```
+
+**macOS (MacPorts):**
+
+```
+# Run a release
+sudo port install libsdl2 libsdl2_mixer mpv curl ffmpeg libopus
+
+# Build from source
+sudo port install libsdl2 libsdl2_mixer mpv curl ffmpeg libopus \
+                  pkgconfig cmake openssl3
 ```
 
 **Linux (Debian / Ubuntu):**
@@ -246,11 +261,27 @@ pacman -S make pkg-config mingw-w64-x86_64-gcc \
           mingw-w64-x86_64-vulkan-headers mingw-w64-x86_64-vulkan-loader
 ```
 
+**Anything else (Fedora, Arch, nix, source builds):**
+
+```
+# Fedora
+sudo dnf install gcc-c++ pkgconf-pkg-config cmake SDL2-devel SDL2_mixer-devel \
+                 mpv-libs-devel libcurl-devel openssl-devel \
+                 ffmpeg-devel opus-devel vulkan-loader-devel libX11-devel
+
+# Arch
+sudo pacman -S base-devel pkgconf cmake sdl2 sdl2_mixer mpv curl openssl \
+               ffmpeg opus vulkan-icd-loader libx11
+```
+
 Notes:
 
+- Nothing in the build shells out to a package manager. If `pkg-config --exists
+  mpv libcurl libavcodec opus` succeeds, the build will find them, however they
+  got there. Prefixes off the default search path just need `PKG_CONFIG_PATH`.
 - Some distros ship `libmpv1` instead of `libmpv2`. Either works.
 - The FFmpeg runtime libs come in with libmpv. `ffmpeg` / `libopus0` cover the xCloud video and audio decoders.
-- OpenSSL is a runtime dependency of xCloud. On macOS it arrives with brew's curl / mpv / ffmpeg, and on Debian `libssl3` is already in the base install, so neither needs it listed for the run case. Building libdatachannel does need the headers, which is why `openssl@3` and `libssl-dev` show up above.
+- OpenSSL is a runtime dependency of xCloud. On macOS it arrives alongside curl / mpv / ffmpeg, and on Debian `libssl3` is already in the base install, so neither needs it listed for the run case. Building libdatachannel does need the headers, which is why `openssl@3` and `libssl-dev` show up above.
 
 ## Building
 
@@ -259,13 +290,13 @@ Both builds live in this repo and use the same Makefile.
 ### Xbox
 
 Cross-compiles from macOS or Linux using clang + lld-link + cxbe. Requires:
-- clang and lld-link (`brew install llvm` on macOS, `apt install clang lld` on Linux)
+- clang and lld-link (`apt install clang lld` on Debian, `dnf install clang lld` on Fedora, `pacman -S clang lld` on Arch, `brew install llvm` or `port install clang-17 lld-17` on macOS)
 - [OXDK](https://github.com/MrMilenko/OXDK) cloned and built
 - An Xbox SDK source tree (path passed as `XDK_BASE`)
 
 ```
 git clone https://github.com/MrMilenko/OXDK ~/OXDK
-cd ~/OXDK/tools/cxbe && make
+cd ~/OXDK/xbox/tools/cxbe && make
 cd /path/to/Theseus/build
 make CONFIG=retail XDK_BASE=/path/to/xbox
 ```
@@ -325,7 +356,7 @@ cd theseus/third-party/libdatachannel
 # macOS
 cmake -S . -B build-mac -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
       -DNO_WEBSOCKET=1 -DNO_EXAMPLES=1 -DNO_TESTS=1 \
-      -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+      -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT"   # only if cmake can't find OpenSSL itself
 cmake --build build-mac -j
 
 # Linux
