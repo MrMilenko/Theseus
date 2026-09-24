@@ -2,6 +2,7 @@
 // includes with the SDL2 + OpenGL platform layer. Counterpart to
 // xbox/std.h.
 
+#include "platform.h"
 #include "stdcfg.h"
 
 // Flag so toolbox/xboxinternals.h knows kernel types are already available

@@ -71,7 +71,7 @@ bool CActiveFile::Fetch(const TCHAR *szURL, bool bSearchAppDir /*=false*/, bool 
 	{
 		bool bAlreadyAbsolute = (szURL[0] == '\\' && szURL[1] == '\\') ||
 		                        (szURL[0] != 0 && szURL[1] == ':');
-#ifdef _DESKTOP
+#ifdef THESEUS_DESKTOP
 		// A host path is absolute too, and the two tests above only know about
 		// UNC and drive letters. Without this a /Users/... or /home/... URL
 		// gets the current base URL glued to the front of it and never opens.

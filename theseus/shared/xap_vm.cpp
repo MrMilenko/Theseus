@@ -832,7 +832,7 @@ void CRunner::Error(const TCHAR* szFmt, ...)
 	DumpStack();
 #endif
 
-#ifdef UIX_DESKTOP
+#ifdef THESEUS_DESKTOP
 	extern int TheseusMessageBox(const char* szText, unsigned int uType);
 	TheseusMessageBox(szMessage, 0);
 #endif

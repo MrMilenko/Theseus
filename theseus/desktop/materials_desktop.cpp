@@ -1966,7 +1966,7 @@ void CMaxMaterial::Render()
 
 	m_pMatInfo->Setup(this);
 
-#ifdef _DESKTOP
+#ifdef THESEUS_DESKTOP
 	extern IDirect3DDevice8* g_pD3DDev;
 	if (g_pD3DDev) m_pMatInfo->m_lastUsedFrame = g_pD3DDev->m_frameNumber;
 #endif

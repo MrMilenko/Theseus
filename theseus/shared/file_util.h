@@ -27,8 +27,3 @@ DWORD CreateUniqueDir(const TCHAR* szBase);
 
 void FindFilePath(TCHAR* szFullPath/*[MAX_PATH]*/, const TCHAR* szFile);
 int GetFileSize(const TCHAR* szFilePath);
-
-#ifdef _WINDOWS
-bool DeleteDirectory(const TCHAR* szPath);
-bool CopyDirectory(const TCHAR* szSrcPath, const TCHAR* szDestPath);
-#endif

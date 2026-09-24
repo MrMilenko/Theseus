@@ -37,12 +37,6 @@
 #endif
 #endif
 
-#ifdef _WINDOWS
-#define _LOG
-#define _JPEG
-//#define _LAN
-#endif
-
 #ifdef _PROFILE
 #undef _DEBUG
 #endif

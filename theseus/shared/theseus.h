@@ -6,6 +6,8 @@
 #ifndef THESEUS_H
 #define THESEUS_H
 
+#include "platform.h"
+
 #ifndef _XBOX
 #include <errno.h>
 #include <sys/stat.h>
@@ -27,7 +29,7 @@ extern void UpdateCurDirFromFile(const char* szURL);
 // files use _FND_CLASS. Alias them so files that set _FND_CLASS compile
 // under desktop's node.h. Temporary until desktop/node.h adopts the same
 // convention or the files drop into engine/shared/render wholesale.
-#ifdef _DESKTOP
+#ifdef THESEUS_DESKTOP
 #define _NFC _FND_CLASS
 #endif
 // Time values are stored as double for fractional precision over long uptimes.
@@ -199,7 +201,7 @@ inline void TheseusSetScreen(CScreen* p) { g_pScreen = p; }
 // Desktop always provides real implementations in desktop/debug.cpp.
 // Xbox debug build has them in engine/debug.cpp; Xbox retail gets the
 // inline no-op stubs so unused error logging links cleanly.
-#if defined(_DESKTOP) || defined(_DEBUG)
+#if defined(THESEUS_DESKTOP) || defined(_DEBUG)
 void TheseusGetErrorString(HRESULT hr, TCHAR* szBuf, int cchBuf);
 const TCHAR* TheseusGetErrorString(HRESULT hr);
 void LogComError(HRESULT hr, const char* szFunc = NULL);
@@ -702,7 +704,7 @@ inline HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD dwDesiredAccess, 
 	CleanFilePath(sszFileName, szFileName);
 #ifdef _XBOX
 	return CreateFile(sszFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
 	// Native Windows: use real Win32 CreateFileA so subsequent ReadFile/CloseHandle
 	// calls hit real kernel handles. The fopen path below would return a FILE*
 	// that the real Win32 APIs can't interpret.
@@ -725,7 +727,7 @@ inline bool TheseusCreateDirectory(LPCTSTR lpPathName, LPSECURITY_ATTRIBUTES lpS
 	return CreateDirectory(sszFileName, lpSecurityAttributes) != FALSE;
 #else
 	(void)lpSecurityAttributes;
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 	return CreateDirectoryA(sszFileName, NULL) != FALSE;
 #else
 	return mkdir(sszFileName, 0755) == 0 || errno == EEXIST;

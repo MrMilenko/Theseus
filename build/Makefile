@@ -451,6 +451,24 @@ clean:
 	@# Sweep up the in-tree leftovers from the old layout if present.
 	rm -rf bin bin-retail bin-desktop
 
+# Platform flags live in shared/platform.h. The old desktop spellings stay
+# retired, and code the Xbox build compiles never reads _WIN32, which is
+# true on the Xbox too.
+.PHONY: lint-platform
+lint-platform:
+	@bad=0; \
+	if grep -rnwE '_DESKTOP|UIX_DESKTOP|_WINDOWS' $(THESEUS_SRC) \
+	     --include='*.h' --include='*.cpp' --include='*.c' \
+	     --exclude-dir=third-party --exclude-dir=xdk --exclude-dir=imgui; then \
+	  echo "lint-platform: retired flag above. Use _XBOX or THESEUS_DESKTOP."; bad=1; \
+	fi; \
+	if grep -rnw '_WIN32' $(THESEUS_SRC)/shared $(THESEUS_SRC)/engine $(THESEUS_SRC)/render \
+	     --include='*.h' --include='*.cpp' --include='*.c' \
+	     --exclude='stb_*.h' --exclude='platform.h'; then \
+	  echo "lint-platform: _WIN32 above in Xbox-built code. Use THESEUS_HOST_WIN."; bad=1; \
+	fi; \
+	[ $$bad -eq 0 ] && echo "lint-platform: clean"; exit $$bad
+
 # ============================================================
 # Desktop build (macOS / Linux / Windows)
 # ============================================================
@@ -622,10 +640,6 @@ DESKTOP_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_DESKTOP \
-	-DTHESEUS_DESKTOP \
-	-DUIX_DESKTOP=1 \
-	-D_WINDOWS=1 \
 	-D_THESEUS_STD_H=1 \
 	-fpermissive \
 	-fms-extensions \
@@ -1178,10 +1192,6 @@ WIN64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_DESKTOP \
-	-DTHESEUS_DESKTOP \
-	-DUIX_DESKTOP=1 \
-	-D_WINDOWS=1 \
 	-D_THESEUS_STD_H=1 \
 	-DSDL_MAIN_HANDLED \
 	-DUIX_CDAUDIO=1 \
@@ -1445,10 +1455,6 @@ LINUX_ARM64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_DESKTOP \
-	-DTHESEUS_DESKTOP \
-	-DUIX_DESKTOP=1 \
-	-D_WINDOWS=1 \
 	-D_THESEUS_STD_H=1 \
 	-DUIX_CDAUDIO=1 \
 	-fpermissive \

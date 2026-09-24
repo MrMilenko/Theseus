@@ -540,7 +540,7 @@ protected:
 
     DECLARE_NODE_PROPS()
 
-#ifdef UIX_DESKTOP
+#ifdef THESEUS_DESKTOP
     // Hot-reload from new XAP source text (XAP editor "save" loop)
     bool ReloadFromText(const char* xapText);
 #endif
@@ -1879,7 +1879,7 @@ void CLevel::Deactivate()
 }
 
 
-#ifdef UIX_DESKTOP
+#ifdef THESEUS_DESKTOP
 // ===== XAP live-editor helpers (desktop only) ===============================
 // CInline reload + Inline-node enumeration for the desktop XAP editor's
 // "save -> hot reload" loop. Touch CInline's privates so they live in this
@@ -1990,4 +1990,4 @@ extern "C" bool ReloadInlineNode(CNode* pInlineNode, const char* xapText) {
         return false;
     return ((CInline*)pInlineNode)->ReloadFromText(xapText);
 }
-#endif // UIX_DESKTOP
+#endif // THESEUS_DESKTOP

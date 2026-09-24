@@ -7,6 +7,7 @@
 //   !_XBOX + !_WIN32 : POSIX shims + SDL + OpenGL (macOS / Linux)
 
 // Check Configuration Options
+#include "platform.h"
 #include "stdcfg.h"
 
 // Flag so toolbox/xboxinternals.h knows kernel types are already available

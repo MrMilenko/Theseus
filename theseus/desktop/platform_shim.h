@@ -6,8 +6,6 @@
 
 #pragma once
 
-#define _WINDOWS 1       // Triggers #ifndef _WINDOWS guards on Xbox headers
-#define UIX_DESKTOP 1
 #define _THESEUS_STD_H 1 // Prevent toolbox xboxinternals.h kernel type redefs
 
 #include "xboxfs_drive.h" // XboxFS_DriveToPrefix shared helper, used by stubs below
@@ -116,7 +114,7 @@ typedef intptr_t  WPARAM;
 typedef intptr_t  LPARAM;
 typedef intptr_t  LRESULT;
 
-// Window handle stubs (not used in SDL build but needed for _WINDOWS code paths)
+// Window handle stubs (not used in SDL build but needed by Win32-style code paths)
 typedef void*     HWND;
 typedef void*     HINSTANCE;
 typedef wchar_t   WCHAR;
