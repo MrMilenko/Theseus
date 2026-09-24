@@ -88,7 +88,7 @@ bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
 #include <dwmapi.h>
 #pragma comment(lib, "dbghelp.lib")
 
-// Watchdog: dumps main thread stack to hang_dump.txt after 10s of detected hang
+// Watchdog: dumps main thread stack to hang_dump.txt in the user data dir after 10s of detected hang
 static DWORD WINAPI HangWatchdog(LPVOID param) {
     DWORD mainThread = (DWORD)(uintptr_t)param;
     while (true) {
@@ -98,7 +98,9 @@ static DWORD WINAPI HangWatchdog(LPVOID param) {
         if (!g_hangCheck) continue;
         if (GetTickCount() - g_hangStartTime < 10000) continue;
 
-        FILE* f = fopen("hang_dump.txt", "w");
+        char dumpPath[512];
+        snprintf(dumpPath, sizeof(dumpPath), "%s/hang_dump.txt", Plat_UserDataDir());
+        FILE* f = fopen(dumpPath, "w");
         if (!f) continue;
         fprintf(f, "=== HANG DETECTED (>10s) ===\n");
         fprintf(f, "Main thread ID: %lu\n\n", mainThread);
@@ -135,7 +137,7 @@ static DWORD WINAPI HangWatchdog(LPVOID param) {
             CloseHandle(hThread);
         }
         fclose(f);
-        fprintf(stderr, "[Watchdog] Hang dump written to hang_dump.txt\n");
+        fprintf(stderr, "[Watchdog] Hang dump written to %s\n", dumpPath);
         g_hangCheck = false;
     }
     return 0;
@@ -229,10 +231,12 @@ static float s_crtTime = 0.0f;
 #endif
 
 // `--graphics-debug` dumper. Writes GPU / driver / vsync / MSAA / display info
-// to stderr and theseus_graphics.log next to the binary.
+// to stderr and theseus_graphics.log in the user data dir.
 static void DumpGraphicsInfo()
 {
-    FILE* logFp = fopen("theseus_graphics.log", "w");
+    char logPath[512];
+    snprintf(logPath, sizeof(logPath), "%s/theseus_graphics.log", Plat_UserDataDir());
+    FILE* logFp = fopen(logPath, "w");
 
     auto write2 = [&logFp](const char* line) {
         fprintf(stderr, "%s", line);
@@ -562,7 +566,7 @@ static void RereadLegacyFromDisk() {
 }
 
 void SaveDesktopSettings() {
-    Plat_MkdirP("Configs");
+    Plat_MkdirP(AppPath_Tree("Configs"));
     RereadLegacyFromDisk();
     FILE* fp = fopen(AppPath("Configs/desktop.ini"), "w");
     if (!fp) return;

@@ -70,7 +70,7 @@ static inline int Mkdir(const char* path)
 static std::string CachePath(const char* prefix, const std::string& slug)
 {
     std::string p = std::string(AppPath_Tree("Library/TMDB")) + "/";
-    Mkdir("Library");
+    Mkdir(AppPath_Tree("Library"));
     Mkdir(p.c_str());
     p += prefix;
     p += '_';

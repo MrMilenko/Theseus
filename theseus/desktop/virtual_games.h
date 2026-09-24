@@ -117,7 +117,7 @@ inline void VGames_Reload() {
 }
 
 inline void VGames_Save() {
-    Plat_MkdirP("Configs");
+    Plat_MkdirP(AppPath_Tree("Configs"));
 
     FILE* fp = fopen(VGAMES_INI, "w");
     if (!fp) return;

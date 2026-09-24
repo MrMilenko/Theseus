@@ -639,7 +639,7 @@ bool Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
 // Host path: curl writes here. Lives at Library/Plex/<rk>.jpg next to binary.
 static std::string Plex_ArtCacheHostPath(const std::string& ratingKey)
 {
-    Mkdir_("Library");
+    Mkdir_(AppPath_Tree("Library"));
     Mkdir_(AppPath_Tree("Library/Plex"));
     return std::string(AppPath_Tree("Library/Plex")) + "/" + ratingKey + ".jpg";
 }

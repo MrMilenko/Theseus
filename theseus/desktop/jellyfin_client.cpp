@@ -573,7 +573,7 @@ std::string Jellyfin_StreamUrl(const std::string& itemId)
 
 static std::string ArtHostPath(const std::string& itemId)
 {
-    Mkdir_("Library");
+    Mkdir_(AppPath_Tree("Library"));
     Mkdir_(AppPath_Tree("Library/Jellyfin"));
     return std::string(AppPath_Tree("Library/Jellyfin")) + "/" + itemId + ".jpg";
 }

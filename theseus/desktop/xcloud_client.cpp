@@ -889,7 +889,7 @@ static std::map<std::string, std::atomic<bool>*> s_artInFlight;
 // Host path curl writes to, next to the binary.
 static std::string Xcloud_ArtCacheHostPath(const std::string& titleId)
 {
-    Mkdir_("Library");
+    Mkdir_(AppPath_Tree("Library"));
     Mkdir_(AppPath_Tree("Library/Xcloud"));
     return std::string(AppPath_Tree("Library/Xcloud")) + "/" + titleId + ".jpg";
 }

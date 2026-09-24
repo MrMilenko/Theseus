@@ -385,7 +385,12 @@ static void WriteCacheTo(const std::vector<MovieRec>& movies,
 	}
 
 	fclose(f);
+#ifdef THESEUS_HOST_WIN
+	// MS CRT rename() won't replace an existing file.
+	MoveFileExA(tmp.c_str(), path, MOVEFILE_REPLACE_EXISTING);
+#else
 	rename(tmp.c_str(), path);
+#endif
 	printf("[MediaDB] Saved cache: %u movies, %u shows\n", nMovies, nShows);
 }
 

@@ -56,7 +56,7 @@ void Playlist_LoadAll() {
 }
 
 void Playlist_SaveAll() {
-    Plat_MkdirP("Configs");
+    Plat_MkdirP(AppPath_Tree("Configs"));
     FILE* fp = fopen(kPath, "w");
     if (!fp) return;
     for (size_t i = 0; i < s_playlists.size(); i++) {
