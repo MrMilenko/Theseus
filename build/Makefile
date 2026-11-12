@@ -1433,6 +1433,27 @@ $(WIN64_DIR)/%.o: $(THESEUS_SRC)/%.cpp
 	@mkdir -p $(dir $@)
 	$(WIN64_CXX) $(WIN64_CFLAGS) -c -o $@ $<
 
+# Import guard: only the host_win objects may call kernel32's file, clock
+# and sleep calls. Anything else that does got a real Win32 call where the
+# shim was meant to answer. Compiles the objects, doesn't link, so it runs
+# without the mingw libs.
+WIN64_NM ?= x86_64-w64-mingw32-nm
+WIN64_GUARD_SYMS = CreateFileA CreateFileW DeleteFileA DeleteFileW \
+                   CreateDirectoryA CreateDirectoryW GetDiskFreeSpaceExA GetDiskFreeSpaceExW \
+                   FindFirstFileA FindFirstFileW GetTickCount Sleep
+WIN64_GUARD_OBJS = $(filter-out $(WIN64_DIR)/desktop/host_win%.o,$(WIN64_OBJS))
+
+.PHONY: win64-import-guard
+win64-import-guard: $(WIN64_GUARD_OBJS)
+	@bad=0; \
+	for o in $(WIN64_GUARD_OBJS); do \
+	  hits=$$($(WIN64_NM) -u $$o | awk '{ print $$NF }' | sed 's/^__imp_//' | \
+	         grep -xF $(foreach s,$(WIN64_GUARD_SYMS),-e $(s)) | sort -u | tr '\n' ' '); \
+	  if [ -n "$$hits" ]; then echo "$$o: $$hits"; bad=1; fi; \
+	done; \
+	if [ $$bad -ne 0 ]; then echo "win64-import-guard: Win32 calls above belong in desktop/host_win*.cpp."; exit 1; fi; \
+	echo "win64-import-guard: clean ($(words $(WIN64_GUARD_OBJS)) objects)"
+
 desktop-win64-clean: projectm-win64-clean
 	rm -rf $(WIN64_DIR)
 
