@@ -535,8 +535,6 @@ const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray)
 
 const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int nVecSize)
 {
-	ASSERT(nVecSize > 0 && nVecSize <= 4);
-
 	pch = SkipWhite(pch);
 	if (*pch != '[')
 	{
@@ -585,50 +583,6 @@ const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int n
 	}
 
 	return pch + 1;
-}
-
-
-// CParser is a Theseus helper with no counterpart in the 5960 binary.
-// Kept as it was.
-
-CParser::CParser(const TCHAR* szFilePath, const TCHAR* pchFile, int cchFile)
-{
-	m_pchFile = pchFile;
-	m_cchFile = (cchFile == -1) ? _tcslen(pchFile) : cchFile;
-	m_filePath = szFilePath;
-	m_pch = m_pchFile;
-	m_nLine = 1;
-}
-
-CParser::~CParser()
-{
-}
-
-void CParser::SkipWhite()
-{
-	m_pch = ::SkipWhite(m_pch);
-}
-
-bool CParser::Token(const TCHAR*& pchToken, int& cchToken, bool bAllowPaths)
-{
-	m_pch = ::Token(m_pch, pchToken, cchToken, bAllowPaths);
-	return cchToken != 0;
-}
-
-void CParser::SyntaxError(const TCHAR* szMsg, ...)
-{
-	va_list args;
-	va_start(args, szMsg);
-
-	TCHAR szBuffer[512];
-	_vsntprintf(szBuffer, countof(szBuffer), szMsg, args);
-
-	TCHAR szMessage[1024];
-	_stprintf(szMessage, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), m_filePath, m_nLine, szBuffer);
-
-	Trace(_T("\007%s\n"), szMessage);
-
-	va_end(args);
 }
 
 
@@ -946,8 +900,6 @@ const TCHAR* CFunctionCompiler::ParseTerm(const TCHAR* pch)
 //     Write(opArray); return pch + 1;
 const TCHAR* CFunctionCompiler::ParseArray(const TCHAR* pch)
 {
-	ASSERT(*pch == '[');
-
 	pch = SkipWhite(ParseExpression(pch + 1));
 	if (*pch != ']')
 	{
@@ -968,8 +920,6 @@ const TCHAR* CFunctionCompiler::ParseArray(const TCHAR* pch)
 // The callee reference is already on the stack; the count is a single byte.
 const TCHAR* CFunctionCompiler::ParseCall(const TCHAR* pch)
 {
-	ASSERT(*pch == '(');
-
 	int cArgs = 0;
 	pch = SkipWhite(pch + 1);
 	if (*pch != ')')
@@ -1557,7 +1507,6 @@ const TCHAR* CFunctionCompiler::ParseLocalVar(const TCHAR* pch)
 // pointed at the class being built.
 CClassCompiler::CClassCompiler(CClass* pClass)
 {
-	ASSERT(pClass != NULL);
 	m_targetClass = pClass;
 }
 
@@ -1609,8 +1558,7 @@ static void ReportUnknown(CCompiler* pCompiler, const TCHAR* szFormat, const TCH
 //   otherwise       a node: script class or built-in node class by name,
 //                   opNewNode name, optional { props }, opEndNode.
 // One trailing ',' after the item is eaten. See docs/decomp/Compiler.md.
-// Theseus additions: the import trace line, and the "Expected a '}'" text
-// (5960 has a typo there).
+// Theseus spells "Expected a '}'" right; 5960 has a typo there.
 const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 {
 	const TCHAR* pchToken;
@@ -1709,7 +1657,6 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 		szURL[cchURL] = '\0';
 
 		CClass* pImported = new CClass;
-		TRACE(_T("Importing "), szURL);
 		if (!pImported->Load(szURL))
 		{
 			delete pImported;
@@ -2049,20 +1996,11 @@ const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFuncti
 //     Token(pch, &name, &cch); pch = SkipWhite(...); if (*pch != '{') { SyntaxError; return L""; }
 //     c = new CClass; pch = c->ParseClassBody(pch + 1);
 //     if (*pch != '}') { SyntaxError; return L""; } g_classes->Define(name, cch, c); return pch + 1;
-// The debug trace of the class name is Theseus's.
 const TCHAR* CClassCompiler::ParseClass(const TCHAR* pch)
 {
 	const TCHAR* pchName;
 	int cchName;
 	pch = Token(pch, pchName, cchName);
-
-#ifdef _DEBUG
-	{
-		TCHAR szName[256];
-		CopyNameForMessage(szName, countof(szName), pchName, cchName);
-		TRACE(_T("class %s\n"), szName);
-	}
-#endif
 
 	pch = SkipWhite(pch);
 	if (*pch != '{')
