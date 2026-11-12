@@ -23,7 +23,7 @@
 struct VirtualGame {
     char name[128];        // display name and virtual folder name
     char titleID[16];      // hex title id, e.g. "45410013"
-    char launch[512];
+    char launch[1024];     // an xemu line carries two full paths
     char drive[4];         // "E", "F", "G"
     char category[32];     // "Games", "Applications", "Homebrew", ...
     // Optional folder path under the category, "/" separated, e.g.
@@ -65,7 +65,7 @@ inline void VGames_Load() {
     FILE* fp = fopen(VGAMES_INI, "r");
     if (!fp) return;
 
-    char line[1024];
+    char line[2048];
     VirtualGame* cur = NULL;
 
     while (fgets(line, sizeof(line), fp)) {

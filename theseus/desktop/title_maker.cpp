@@ -15,6 +15,7 @@
 #include "xiso.h"
 #include "launchers/steam.h"
 #include "launchers/retroarch.h"
+#include "launchers/xemu.h"
 #include "imgui.h"
 #include "imfilebrowser.h"
 #include "stb_image.h"
@@ -651,13 +652,13 @@ void RenderTitleMaker() {
 
     // State (persists across frames)
     #define TM_MAX_ENTRIES 512
-    struct TmEntry { int vgIndex; char name[128]; char launch[512]; char titleID[16]; char drive[4]; char category[32]; };
+    struct TmEntry { int vgIndex; char name[128]; char launch[sizeof(VirtualGame::launch)]; char titleID[16]; char drive[4]; char category[32]; };
     static TmEntry s_entries[TM_MAX_ENTRIES];
     static int s_entryCount = 0;
     static bool s_needsScan = true;
     static int s_selectedIdx = -1;
     static char s_editName[128] = "";
-    static char s_editLaunch[512] = "";
+    static char s_editLaunch[sizeof(VirtualGame::launch)] = "";
     static char s_editTitleID[16] = "";
     static int s_editCategoryIdx = 0;
     static char s_newTitleName[128] = "";
@@ -809,12 +810,16 @@ void RenderTitleMaker() {
                     found = true;
                 }
             }
-            if (!found) {
+            if (!found && Xemu_FlatpakInstalled()) {
+                s_xemuPath[0] = 0;
+                strncpy(s_statusMsg, "Flatpak xemu found, leave the path empty", sizeof(s_statusMsg) - 1);
+                s_statusTime = 3.0f;
+            } else if (!found) {
                 strncpy(s_statusMsg, "xemu not found in common locations", sizeof(s_statusMsg) - 1);
                 s_statusTime = 3.0f;
             }
         }
-        if (s_xemuPath[0] == 0)
+        if (s_xemuPath[0] == 0 && !Xemu_FlatpakInstalled())
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "Set xemu path to enable ISO launching");
     }
 
@@ -1180,7 +1185,8 @@ void RenderTitleMaker() {
                         snprintf(titleIdHex, sizeof(titleIdHex), "%08x", s_isoInfo.titleId);
 
                         // Build xemu launch command
-                        char xemuLaunchCmd[1024] = "";
+                        char xemuLaunchCmd[sizeof(VirtualGame::launch)] = "";
+                        int cmdLen;
                         {
                             char xemuBin[512] = "";
                             if (s_xemuPath[0]) {
@@ -1190,28 +1196,34 @@ void RenderTitleMaker() {
                                 else
                                     strncpy(xemuBin, s_xemuPath, sizeof(xemuBin) - 1);
                             }
+                            // Bare xemu is found at launch, Flatpak and snap included.
                             if (xemuBin[0])
-                                snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
+                                cmdLen = snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
                                     "\"%s\" -machine xbox,short-animation=on -dvd_path \"%s\"", xemuBin, s_isoPath);
                             else
-                                snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
+                                cmdLen = snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
                                     "xemu -machine xbox,short-animation=on -dvd_path \"%s\"", s_isoPath);
                         }
+                        // A cut off line loses its closing quote and never launches.
+                        if (cmdLen < 0 || cmdLen >= (int)sizeof(xemuLaunchCmd)) {
+                            snprintf(s_statusMsg, sizeof(s_statusMsg), "ISO path too long to launch: %s", s_isoPath);
+                            s_statusTime = 6.0f;
+                        } else {
+                            VGames_Add(safeName, titleIdHex, xemuLaunchCmd, "E", "Games");
+                            VGames_Save(); UDataSynth_RebuildAll();
 
-                        VGames_Add(safeName, titleIdHex, xemuLaunchCmd, "E", "Games");
-                        VGames_Save(); UDataSynth_RebuildAll();
+                            // Save icon to VGAMES_ICONS/{titleID}.jpg
+                            if (s_isoInfo.titleImageRGBA) {
+                                TM_EnsureDir(VGAMES_ICONS);
+                                char iconPath[512];
+                                snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", VGAMES_ICONS, titleIdHex);
+                                XisoSaveTitleImage(&s_isoInfo, iconPath);
+                            }
 
-                        // Save icon to VGAMES_ICONS/{titleID}.jpg
-                        if (s_isoInfo.titleImageRGBA) {
-                            TM_EnsureDir(VGAMES_ICONS);
-                            char iconPath[512];
-                            snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", VGAMES_ICONS, titleIdHex);
-                            XisoSaveTitleImage(&s_isoInfo, iconPath);
+                            snprintf(s_statusMsg, sizeof(s_statusMsg), "Added: %s", safeName);
+                            s_statusTime = 3.0f;
+                            s_needsScan = true;
                         }
-
-                        snprintf(s_statusMsg, sizeof(s_statusMsg), "Added: %s", safeName);
-                        s_statusTime = 3.0f;
-                        s_needsScan = true;
                         s_showIsoResult = false;
                     }
                     ImGui::SameLine();
