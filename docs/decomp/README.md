@@ -160,8 +160,9 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x00040b70 | `CJoystick_EnableGlobalInput` | `CJoystick::EnableGlobalInput` (input.cpp) | [Input](#input) | Toggles dashboard-wide gamepad input. Used by modal scenes (alerts, panic) to suspend or restore controller events. |
 | 0x0004147c | `CObject::Deref` | `CObject::Deref` (xap_vm.cpp) | [Script VM](VM.md) | Dereferences a script value. For `CVarObject` resolves to the bound target; for primitive objects returns `this`. |
 | 0x000417f8 | `CTimeDepNode::OnSetProperty` | `CTimeDepNode::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Reacts to property writes on time-dep nodes. Re-registers the node with the time-dep list when its `enabled` toggles. |
-| 0x00041950 | `CObject::Assign` | `CObject::Assign` (xap_vm.cpp) | [Script VM](VM.md) | Default assignment handler. Called by `opAssign` when LHS is a script-visible property. |
-| 0x000419e0 | `CSettings_GetValue` | `CSettings::GetValue` (settings_nodes.cpp) | [Settings](Settings.md) | FND-bound script accessor: returns the value of a settings entry by name. |
+| 0x00041950 | `CSettings_Dot` | `CSettings::Dot` (settings_nodes.cpp) | [Settings](Settings.md) | Member lookup on a Settings node: its own members first, any other name becomes a setting object bound to that ini entry. |
+| 0x000419e0 | `CSettings_SetValue` | `CSettings::SetValue` (settings_nodes.cpp) | [Settings](Settings.md) | FND-bound script call: writes a value into the node's section and saves when it changed. |
+| 0x00041a50 | `CSettings_GetValue` | `CSettings::GetValue` (settings_nodes.cpp) | [Settings](Settings.md) | FND-bound script call: returns the value of an entry in the node's section. |
 | 0x00041f20 | `FUN_00041f20` | `CTitleArray::AddTitle` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Reads `<udata>\<titleID>\TitleMeta.xbx`, extracts `TitleName` for the active language code (or falls back to a translated `"Broken Game"`), then grows the title array by 50 entries if at capacity (`m_titleCount == m_titleCapacity`), and copies the title ID + name into the new slot. Identified by the path-build + INI read + `+= 50` capacity grow + array memcpy pattern. |
 | 0x00041c90 | `CTimeSensor::Advance` | `CTimeSensor::Advance` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Per-frame tick. Computes fractional progress through the sensor's cycle interval and routes that into the bound interpolators. |
 | 0x00041d80 | `CObject::ToStr` | `CObject::ToStr` (xap_vm.cpp) | [Script VM](VM.md) | Default string coercion. Returns class name; subclasses override for meaningful output. |
@@ -314,16 +315,18 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Animation Nodes | [AnimationNodes.md](AnimationNodes.md) | 4 functions |
 | Audio System | [AudioSystem.md](AudioSystem.md) | 12 functions |
 | Camera | [Camera.md](Camera.md) | not yet started |
-| Date | [Date.md](Date.md) | 7 functions |
+| Date | [Date.md](Date.md) | 30 functions |
 | Math | [Math.md](Math.md) | 5 functions |
 | File Operations | [FileOps.md](FileOps.md) | 7 functions |
+| File Utilities | [FileUtil.md](FileUtil.md) | 10 functions: paths, URL resolving, block counts |
 | Disc | (no doc yet, narrative TODO) | 1 function |
 | HUD & Picture | [HudNode.md](HudNode.md) | 9 functions |
 | Keyboard | [Keyboard.md](Keyboard.md) | 22 functions |
-| Locale | (no doc yet, narrative TODO) | 1 function |
+| Locale | [Locale.md](Locale.md) | 20 functions: translation table, Translator node, date/time/number formats, time zones |
 | NtIoSvc | [NtIoSvc.md](NtIoSvc.md) | 1 function |
 | Scene Groups | [SceneGroups.md](SceneGroups.md) | 6 functions |
-| Settings | [Settings.md](Settings.md) | 14 functions |
+| Settings | [Settings.md](Settings.md) | 28 functions: settings file, Settings and ScreenSaver nodes |
+| Screen & Recovery | [Screen.md](Screen.md) | 9 functions |
 | Shape Render | [ShapeRender.md](ShapeRender.md) | not yet started |
 | Text | [Text.md](Text.md) | 2 functions |
 | Title Collection | [TitleCollection.md](TitleCollection.md) | 9 verified Theseus mappings (AddTitle, Update, FindTitle, RemoveTitle, RemoveSavedGame x2, GetTitleTotalBlocks, IsDirty, IsPublisherExists) + 6 binary-only anchors (DLC enumerator, save dir walker, drive-letter translator, etc.); more labeling pending |
@@ -331,7 +334,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Util | [Util.md](Util.md) | 1 function |
 | Save Games | (no doc yet, narrative TODO) | 29 functions |
 | Live Accounts | (no doc yet, narrative TODO) | 13 verified Theseus mappings + 2 binary-only anchors (bulk delete, single-user delete) |
-| Input | (no doc yet, narrative TODO) | 1 function |
+| Input | [Input.md](Input.md) | 9 functions |
 | Memory Monitor | (no doc yet, narrative TODO) | 12 functions |
 | Music Collection | (no doc yet, narrative TODO) | 5 verified Theseus mappings (FormatSoundtrackSongTime, GetUpdateString + 3 stubs: AddSoundtrack, ClearCopyList, DeleteSoundtrack) + 3 binary-only anchors (global ::DeleteSoundtrack, ::DeleteAllSoundtracks, ThreadProc); more labeling pending |
 | Render | (no doc yet, narrative TODO) | 1 function |

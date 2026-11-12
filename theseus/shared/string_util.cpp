@@ -1,6 +1,6 @@
-// string_util.cpp: CStrObject method implementations (the JS-style
-// String built-in exposed to XAP scripts) plus a handful of script-
-// callable utility functions. Decompiled from the 5960 retail XBE; see
+// string_util.cpp: the script String object. A counted buffer with the
+// handful of JavaScript string methods the dashboard scripts call. Rebuilt
+// function by function from the 5960 retail XBE (0x32040..0x328c0); see
 // docs/decomp/StringObject.md.
 
 #include "std.h"
@@ -8,6 +8,7 @@
 #include "node.h"
 #include "runner.h"
 
+// FND at 0x0017f9c0, same order.
 #define _FND_CLASS CStrObject
 START_NODE_FUN(CStrObject, CObject)
 	NODE_FUN_IV(length)
@@ -24,40 +25,51 @@ END_NODE_FUN()
 #undef _FND_CLASS
 
 
+// ===== The buffer ==========================================================
+
+// CStrObject::CStrObject()
+// Reconstructed from 5960 retail XBE @ 0x00032040: type 3, no buffer.
 CStrObject::CStrObject()
 {
 	m_obj = objString;
+	m_text = NULL;
 	m_length = 0;
 	m_capacity = 0;
-	m_text = NULL;
 }
 
-CStrObject::CStrObject(const TCHAR* sz)
-{
-	if (sz == NULL)
-		sz = _T("");
-
-	m_obj = objString;
-	m_length = _tcslen(sz);
-	m_capacity = m_length + 1;
-	m_text = new TCHAR [m_capacity];
-	CopyChars(m_text, sz, m_length);
-	m_text[m_length] = '\0';
-}
-
+// CStrObject::CStrObject(pch, cch)
+// Reconstructed from 5960 retail XBE @ 0x00032130:
+//     length = cch; capacity = cch + 1; text = new WCHAR[cch + 1];
+//     copy cch characters; text[cch] = 0;
 CStrObject::CStrObject(const TCHAR* pch, int cch)
 {
 	m_obj = objString;
 	m_length = cch;
 	m_capacity = cch + 1;
-	m_text = new TCHAR [m_capacity];
+	m_text = new TCHAR[m_capacity];
 	CopyChars(m_text, pch, cch);
-	m_text[cch] = '\0';
+	m_text[cch] = 0;
 }
 
+// CStrObject::CStrObject(sz)
+// Reconstructed from 5960 retail XBE @ 0x00032090: the counted constructor
+// on wcslen(sz), with NULL read as "".
+CStrObject::CStrObject(const TCHAR* sz)
+{
+	if (sz == NULL)
+		sz = _T("");
+	m_obj = objString;
+	m_length = (int)_tcslen(sz);
+	m_capacity = m_length + 1;
+	m_text = new TCHAR[m_capacity];
+	CopyChars(m_text, sz, m_length + 1);
+}
+
+// CStrObject::~CStrObject()
+// Reconstructed from 5960 retail XBE @ 0x000321d0: frees the buffer.
 CStrObject::~CStrObject()
 {
-	delete [] m_text;
+	delete[] m_text;
 }
 
 CStrObject* CStrObject::ToStr()
@@ -66,194 +78,197 @@ CStrObject* CStrObject::ToStr()
 	return this;
 }
 
+// CStrObject::ToNum()
+// Reconstructed from 5960 retail XBE @ 0x00032200: a number object from
+// wcstod of the text (or "").
 CNumObject* CStrObject::ToNum()
 {
 	return new CNumObject(GetSz());
 }
 
+// A fresh zeroed buffer of nLength characters plus the null.
 TCHAR* CStrObject::SetLength(int nLength)
 {
-	delete [] m_text;
-
+	delete[] m_text;
 	m_length = nLength;
 	m_capacity = nLength + 1;
-	m_text = new TCHAR [m_capacity];
-	ZeroMemory(m_text, m_capacity * sizeof (TCHAR));
+	m_text = new TCHAR[m_capacity];
+	memset(m_text, 0, m_capacity * sizeof(TCHAR));
 	return m_text;
 }
 
+// CStrObject::Append(sz)
+// Reconstructed from 5960 retail XBE @ 0x00032260. Grows the buffer to
+// exactly length + n + 1 when it's too small, then copies sz on the end.
 void CStrObject::Append(const TCHAR* szAppend)
 {
-	int cchAppend = _tcslen(szAppend);
-
-	if (m_length + cchAppend + 1 > m_capacity)
+	int add = (int)_tcslen(szAppend);
+	int need = m_length + add + 1;
+	if (need > m_capacity)
 	{
-		int nAllocNew = m_length + cchAppend + 1;
-		TCHAR* szNew = new TCHAR [nAllocNew];
-		m_capacity = nAllocNew;
-		CopyChars(szNew, m_text, m_length);
-		delete [] m_text;
-		m_text = szNew;
+		TCHAR* grown = new TCHAR[need];
+		CopyChars(grown, m_text, m_length);
+		delete[] m_text;
+		m_text = grown;
+		m_capacity = need;
 	}
-
-	CopyChars(m_text + m_length, szAppend, cchAppend);
-	m_length += cchAppend;
+	CopyChars(m_text + m_length, szAppend, add);
+	m_length += add;
 	m_text[m_length] = 0;
 }
 
 
-// Scriptable String methods, reached from XAP via the FND table above.
-// Reconstructed from the 5960 retail XBE: length, charCodeAt @0x00032300,
-// charAt @0x00032320, concat @0x000323a0, indexOf @0x00032460,
-// lastIndexOf @0x000325b0, substr @0x00032680, substring @0x00032780,
-// toLowerCase @0x00032850, toUpperCase @0x000328c0.
-// These implement JavaScript String.prototype semantics, which are fixed by the
-// language, so the observable behavior is not ours to invent. The binary's exact
-// edge handling is preserved deliberately and matches by necessity: out-of-range
-// charAt/charCodeAt return ""/-1, and the start index is clamped to [0, length]
-// before the search. Written from that behavior, not transcribed.
+// ===== Script methods ======================================================
 
+// Reads a script argument as a number and lets go of the temporary.
+static int ArgInt(CObject* arg)
+{
+	CNumObject* num = arg->ToNum();
+	int value = (int)num->m_value;
+	num->Release();
+	return value;
+}
+
+static int Clamp(int value, int low, int high)
+{
+	if (value < low)
+		return low;
+	if (value > high)
+		return high;
+	return value;
+}
+
+// CStrObject::length()   [script fn 'length', FND 0x0017f9c0, sig 2]
 int CStrObject::length()
 {
 	return m_length;
 }
 
+// CStrObject::charCodeAt(index)   [script fn 'charCodeAt', FND 0x0017f9d8, sig 3]
+// Reconstructed from 5960 retail XBE @ 0x00032300:
+//     return (index >= 0 && index < length) ? text[index] : -1;
 int CStrObject::charCodeAt(int index)
 {
 	if (index < 0 || index >= m_length)
 		return -1;
-
 	return m_text[index];
 }
 
+// CStrObject::charAt(index)   [script fn 'charAt', FND 0x0017f9f0, sig 4]
+// Reconstructed from 5960 retail XBE @ 0x00032320: a one character string,
+// where the binary returns no object at all out of range. Theseus returns an
+// empty string there.
 CStrObject* CStrObject::charAt(int index)
 {
 	if (index < 0 || index >= m_length)
 		return new CStrObject(_T(""), 0);
-
-	return new CStrObject(&m_text[index], 1);
+	return new CStrObject(m_text + index, 1);
 }
 
+// CStrObject::concat(sz)   [script fn 'concat', FND 0x0017fa08, sig 5]
+// Reconstructed from 5960 retail XBE @ 0x000323a0: a new string sized
+// exactly for both, this one first.
 CStrObject* CStrObject::concat(const TCHAR* sz)
 {
-	int cch = _tcslen(sz);
-	
-	CStrObject* pNewStr = new CStrObject;
-	pNewStr->m_length = m_length + cch;
-	pNewStr->m_capacity = pNewStr->m_length + 1;
-	pNewStr->m_text = new TCHAR [pNewStr->m_capacity];
-	CopyChars(pNewStr->m_text, m_text, m_length);
-	CopyChars(pNewStr->m_text + m_length, sz, cch);
-	pNewStr->m_text[pNewStr->m_length] = '\0';
-
-	return pNewStr;
+	int add = (int)_tcslen(sz);
+	CStrObject* out = new CStrObject;
+	out->m_length = m_length + add;
+	out->m_capacity = out->m_length + 1;
+	out->m_text = new TCHAR[out->m_capacity];
+	CopyChars(out->m_text, m_text, m_length);
+	CopyChars(out->m_text + m_length, sz, add);
+	out->m_text[out->m_length] = 0;
+	return out;
 }
 
+// CStrObject::indexOf(find [, from])   [script fn 'indexOf', FND 0x0017fa20, sig 0]
+// Reconstructed from 5960 retail XBE @ 0x00032460. One or two arguments or
+// "invalid number of parameters". from is clamped to 0..length; when it's
+// short of the end, wcsstr from there; the answer as a number, -1 for none.
 CObject* CStrObject::indexOf(CObject** rgparam, int nParam)
 {
-	if (nParam < 1 || nParam > 2)
+	if (nParam != 1 && nParam != 2)
 	{
 		g_pRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 
-	const TCHAR* szSubstring = rgparam[0]->ToStr()->GetSz();
-
-	int nStartIndex = 0;
-	if (nParam == 2)
+	int from = nParam == 2 ? Clamp(ArgInt(rgparam[1]), 0, m_length) : 0;
+	CStrObject* find = rgparam[0]->ToStr();
+	int found = -1;
+	if (from < m_length)
 	{
-		nStartIndex = (int)rgparam[1]->ToNum()->m_value;
-
-		if (nStartIndex < 0)
-			nStartIndex = 0;
-		else if (nStartIndex > m_length)
-			nStartIndex = m_length;
+		const TCHAR* hit = _tcsstr(m_text + from, find->GetSz());
+		if (hit != NULL)
+			found = (int)(hit - m_text);
 	}
-
-	int nRet = -1;
-
-	if (nStartIndex < m_length)
-	{
-		const TCHAR* pch = _tcsstr(m_text + nStartIndex, szSubstring);
-		if (pch != NULL)
-			nRet = (int)(pch - m_text);
-	}
-
-	return new CNumObject((float)nRet);
+	find->Release();
+	return new CNumObject((float)found);
 }
 
-const TCHAR* strrstr(const TCHAR* sz, const TCHAR* szFind, int nStartIndex)
+// The last place find starts with its end at or before text + before.
+static const TCHAR* FindLast(const TCHAR* text, const TCHAR* find, int before)
 {
-	int cchSz = _tcslen(sz);
-	int cchFind = _tcslen(szFind);
-
-	if (cchSz < cchFind)
+	int textLen = (int)_tcslen(text);
+	int findLen = (int)_tcslen(find);
+	if (textLen < findLen)
 		return NULL;
-
-	const TCHAR* pch = sz + nStartIndex - cchFind;
-	while (pch >= sz)
+	for (int at = before - findLen; at >= 0; at--)
 	{
-		if (_tcsncmp(pch, szFind, cchFind) == 0)
-			return pch;
-		pch -= 1;
+		if (_tcsncmp(text + at, find, findLen) == 0)
+			return text + at;
 	}
-
 	return NULL;
 }
 
+// CStrObject::lastIndexOf(find [, from])   [script fn 'lastIndexOf', FND 0x0017fa38, sig 0]
+// Reconstructed from 5960 retail XBE @ 0x000325b0 (search @ 0x00032550).
+// Same argument rules as indexOf, from defaulting to the length. Walks back
+// from text + from - len(find) comparing with wcsncmp. When nothing matches
+// the binary hands back the pointer it stopped at, which can come out below
+// -1; Theseus answers -1.
 CObject* CStrObject::lastIndexOf(CObject** rgparam, int nParam)
 {
-	if (nParam < 1 || nParam > 2)
+	if (nParam != 1 && nParam != 2)
 	{
 		g_pRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 
-	const TCHAR* szSubstring = rgparam[0]->ToStr()->GetSz();
-
-	int nStartIndex = m_length;
-	if (nParam == 2)
-	{
-		nStartIndex = (int)rgparam[1]->ToNum()->m_value;
-
-		if (nStartIndex < 0)
-			nStartIndex = 0;
-		else if (nStartIndex > m_length)
-			nStartIndex = m_length;
-	}
-
-	const TCHAR* pch = strrstr(m_text, szSubstring, nStartIndex);
-	int nRet = -1;
-	if (pch != NULL)
-		nRet = (int)(pch - m_text);
-
-	return new CNumObject((float)nRet);
+	int from = nParam == 2 ? Clamp(ArgInt(rgparam[1]), 0, m_length) : m_length;
+	CStrObject* find = rgparam[0]->ToStr();
+	const TCHAR* hit = FindLast(GetSz(), find->GetSz(), from);
+	find->Release();
+	return new CNumObject(hit != NULL ? (float)(hit - GetSz()) : -1.0f);
 }
 
+// CStrObject::substr(start [, count])   [script fn 'substr', FND 0x0017fa50, sig 0]
+// Reconstructed from 5960 retail XBE @ 0x00032680. count defaults to
+// length - start; start is capped at length; a count of 0 or less gives "",
+// one running past the end stops at it.
 CObject* CStrObject::substr(CObject** rgparam, int nParam)
 {
-	if (nParam < 1 || nParam > 2)
+	if (nParam != 1 && nParam != 2)
 	{
 		g_pRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 
-	int nStart = (int)rgparam[0]->ToNum()->m_value;
-
-	int nLength = m_length - nStart;
-	if (nParam == 2)
-		nLength = (int)rgparam[1]->ToNum()->m_value;
-
-	if (nStart > m_length)
-		nStart = m_length;
-	if (nLength <= 0)
-		nLength = 0;
-	else if (nStart + nLength > m_length)
-		nLength = m_length - nStart;
-
-	return new CStrObject(m_text + nStart, nLength);
+	int start = ArgInt(rgparam[0]);
+	int count = nParam == 2 ? ArgInt(rgparam[1]) : m_length - start;
+	if (start > m_length)
+		start = m_length;
+	if (count <= 0)
+		count = 0;
+	else if (start + count > m_length)
+		count = m_length - start;
+	return new CStrObject(m_text + start, count);
 }
 
+// CStrObject::substring(start, end)   [script fn 'substring', FND 0x0017fa68, sig 0]
+// Reconstructed from 5960 retail XBE @ 0x00032780. Exactly two arguments.
+// A negative start is 0, a negative end is start; the two swap when out of
+// order, then both are capped at length.
 CObject* CStrObject::substring(CObject** rgparam, int nParam)
 {
 	if (nParam != 2)
@@ -262,39 +277,38 @@ CObject* CStrObject::substring(CObject** rgparam, int nParam)
 		return NULL;
 	}
 
-	int nStart = (int)rgparam[0]->ToNum()->m_value;
-	if (nStart < 0)
-		nStart = 0;
-
-	int nEnd = (int)rgparam[1]->ToNum()->m_value;
-	if (nEnd < 0)
-		nEnd = nStart;
-
-	if (nStart > nEnd)
+	int start = ArgInt(rgparam[0]);
+	if (start < 0)
+		start = 0;
+	int end = ArgInt(rgparam[1]);
+	if (end < 0)
+		end = start;
+	if (start > end)
 	{
-		int t = nStart;
-		nStart = nEnd;
-		nEnd = t;
+		int swap = start;
+		start = end;
+		end = swap;
 	}
-
-	if (nStart > m_length)
-		nStart = m_length;
-	if (nEnd > m_length)
-		nEnd = m_length;
-
-	return new CStrObject(m_text + nStart, nEnd - nStart);
+	if (start > m_length)
+		start = m_length;
+	if (end > m_length)
+		end = m_length;
+	return new CStrObject(m_text + start, end - start);
 }
 
+// CStrObject::toLowerCase() / toUpperCase()   [script fns, FND 0x0017fa80 / 0x0017fa98, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x00032850 / 0x000328c0: a copy,
+// then wcslwr / wcsupr on it.
 CStrObject* CStrObject::toLowerCase()
 {
-	CStrObject* pStrObject = new CStrObject(m_text, m_length);
-	_tcslwr(pStrObject->m_text);
-	return pStrObject;
+	CStrObject* out = new CStrObject(m_text, m_length);
+	_tcslwr(out->m_text);
+	return out;
 }
 
 CStrObject* CStrObject::toUpperCase()
 {
-	CStrObject* pStrObject = new CStrObject(m_text, m_length);
-	_tcsupr(pStrObject->m_text);
-	return pStrObject;
+	CStrObject* out = new CStrObject(m_text, m_length);
+	_tcsupr(out->m_text);
+	return out;
 }

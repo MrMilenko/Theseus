@@ -44,8 +44,6 @@ struct CNameSpace
     CDefine* Add(const TCHAR* pchName, int cchName);
 
     CDefine* m_firstDefine;
-
-    void Dump() const;
 };
 
 struct BBox
