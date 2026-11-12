@@ -1,196 +1,108 @@
 # Desktop Features
 
-## Beyond a Port
+UIX Desktop is the Xbox dashboard first and a PC launcher second. The scene scripts drive everything you see; the desktop build adds what a PC needs underneath them, plus a set of ImGui tool windows for managing your library and building skins and scenes. This page is the tour. Setup steps for users are in the main [README](../../README.md).
 
-UIX Desktop isn't just the Xbox dashboard running on PC. It adds desktop-native features that turn it into a usable game launcher and development tool. The dashboard's scripting system handles the UI, while the platform layer adds PC-specific functionality underneath.
+## The games grid
 
-## Game Launching
+On the Xbox, the dashboard found games by walking `E:\Games` and reading each `default.xbe` for its title and icon. The desktop build keeps that exact flow and feeds it entries that mostly aren't folders at all:
 
-Games are added and managed through the **Title Maker** (F3). You don't need to create files or edit configs by hand: the Title Maker handles everything: game entries, icons, launch commands, and categories.
+- **`Configs/games.ini`**: everything added in Title Maker, including Steam and RetroArch imports. One section per entry with `TitleID`, `Launch`, `Drive` and `Category`.
+- **ES-DE**: read live from your ES-DE gamelists every launch, under one ES-DE category with a folder per system.
+- **Xbox Cloud Gaming**: your cloud library and consoles, fetched after sign in and injected for the session.
+- **Real folders** under `Library/Games`, `Library/Applications` and `Library/Emulators`, the same as on an Xbox.
 
-### Adding Games
-
-- **Manually**: Enter a name, launch command, and optional icon
-- **Steam import**: One-click scan of your Steam library: discovers installed games, downloads icons from Steam CDN, and creates entries with `steam://` launch URIs
-- **Xbox ISOs**: Browse for an ISO file: the Title Maker extracts the game title and cover art automatically, then creates an xemu launch entry
-- **xemu setup**: A "Find" button checks common install paths on each platform (`/Applications/xemu.app`, `/usr/bin/xemu`, `C:\Program Files\xemu\`, etc.)
-
-Games appear on the dashboard organized by category (Games, Applications, Homebrew, Emulators, etc.) and drive letter, just like the Xbox.
-
-### How It Works (Under the Hood)
-
-The Title Maker writes to `games.ini`, which the virtual filesystem layer reads at runtime. When the dashboard scans for games (via `FindFirstFile`), the platform layer injects virtual directory entries from `games.ini` alongside any real folders in `Library/Games/`. The dashboard doesn't know the difference: it sees what looks like real Xbox game folders.
-
-Icons are stored in `Configs/icons/` and mapped via `Icons.ini`. The dashboard's icon selector searches both UDATA title images and the desktop icon database.
+The file layer makes the first three list like folders, and their `default.xbe` opens as a synthesized header carrying the name and title ID. Icons come from `Configs/icons/<TitleID>.jpg` or `.png`. For each Title Maker entry the desktop also writes a small `Library/UDATA/<TitleID>/TitleMeta.xbx`, so the Memory screen shows a title pod per game the way the Xbox did.
 
 ### Launching
 
-When you select a game, the dashboard:
-1. Hides the SDL window
-2. Spawns the game process (`fork`/`exec` on POSIX, `CreateProcess` on Windows)
-3. Waits for the process to exit
-4. Restarts itself via `execv()` (POSIX) or relaunches via `CreateProcess` (Windows) with `--preview` to skip the preloader
+`theseus/desktop/launch.cpp` takes the launch line from the entry:
 
-Launch commands can be direct executables, Steam URIs (`steam://rungameid/...`), xemu with an ISO path, or any shell command. The dispatch logic lives in `theseus/desktop/launch.cpp` and follows three rules:
+- `xcloud://` and `xhome://` start a cloud or remote play stream inside the dashboard window.
+- `steam://` links go to Steam. On Linux the `steam` binary is called directly, because some desktop environments have no handler registered for the scheme.
+- Other URLs go to the system URL opener.
+- Anything else runs as a shell command from the program's own folder, so executables, scripts, commands with arguments and `$VARIABLES` all work. Quote paths with spaces.
 
-- **`steam://...`**: invokes the `steam` binary directly on Linux to bypass KIO. KDE/Plasma's URL chain often has no registered handler for the `steam` scheme; calling `steam` directly avoids the "Unknown protocol" error path entirely. macOS and Windows still go through their native URL handlers, which work fine there.
-- **Other URLs** (`http://`, `https://`, `file://`, ...): system URL opener (`xdg-open` / `open` / `ShellExecute`).
-- **Anything else**: runs through the shell (`/bin/sh -c` on POSIX, `cmd /C` on Windows). Raw executables, paths with arguments, bash scripts, multi-token commands like `firefox --new-window URL` all work. Quote any path containing spaces.
-
-The same dispatcher is used by Title Maker's "Test Launch" button (fire-and-forget, no window hide) and by the dashboard's `.uixshortcut` / virtual-game launches (full hide + wait + restart pipeline).
+A real launch fades the screen to black the way the Xbox's launch level did, spawns the game, and minimizes the dashboard so the game gets focus. Title Maker's Test Launch uses the same path without the fade or the minimize, and shows how the spawn went. The full command line is always in the log.
 
 ## Title Maker (F3)
 
-The Title Maker is the central tool for managing your game library. It supports adding games manually, importing from Steam, and adding Xbox ISOs with automatic metadata extraction. Each entry gets a name, launch command, icon, category, and drive letter. Icons can be PNG, JPG, or BMP: Steam imports download icons automatically from Steam CDN.
+The central tool for the library. Tabs:
 
-## Save Game Browser
+- **Main**: every entry, with search and a category filter. Edit the name, launch line, icon and category; Test Launch; Delete. Create entries by hand, add Xbox ISOs as xemu entries (the title and art are read from the ISO), and Fix Names to tidy up imported titles.
+- **Steam**: finds the Steam install (or browse to it), imports every installed game with icons from Steam, adds betas and demos by App ID, opens store pages.
+- **RetroArch**: finds the install, imports recently played titles with the right core and box art from RetroArch's thumbnails, or adds a ROM with a core picked from the list. Launch fullscreen is a toggle.
+- **ES-DE**: point it at the ES-DE data folder. Rescan rereads it; Compress Art re-encodes everything in `Configs/icons` to 256 pixel JPEGs, which keeps big collections light.
 
-The dashboard's Memory section is fully functional on desktop. It reads real Xbox save data from `Library/UDATA/` (or from a mounted qcow2 FATX image) and renders the same save game browser as the original Xbox, complete with:
+Steam, RetroArch and ES-DE can each be hidden under Optional Tabs. Hiding one only hides the tab.
 
-- **Title pods** with game icons loaded from `TitleImage.xbx`
-- **Title headers** with game names parsed from `TitleMeta.xbx` (UTF-16LE with localization support)
-- **Save icon rows** with per-save images (falls back to title-level `SaveImage.xbx` when a save doesn't have its own icon)
-- **Save metadata** (name, date, block count) exposed via node functions for the XAP script to display
-- **Smooth scrolling** between titles with animated transitions
-- **D-pad navigation** to browse titles and individual saves
+## Media
 
-The rendering is adapted from the Xbox source's custom `RenderLoop`: it positions pods, headers, and icon rows using D3D transformation matrices rather than the normal scene graph. This matches the Xbox's approach where `SavedGameGrid` was a separate rendering subsystem.
+- **Local library**: Movies and TV folders, with TMDB posters and synopses if you add a key.
+- **Plex**: sign in with a PIN, browse and stream your server.
+- **Jellyfin**: server URL plus Quick Connect.
+- **Playlist Maker (F6)**: build playlists from the library.
 
-To test with your own saves, copy Xbox `UDATA` folders into `Library/UDATA/`. Each title folder should contain `TitleMeta.xbx` (the game name) and optionally `TitleImage.xbx` (the icon), with save subfolders containing `SaveMeta.xbx`.
+How the player is wired is in [media-player-design.md](media-player-design.md).
 
-## Development Tools
+## Music
 
-Development tools are gated behind **Development Mode** (set via startup chooser or Settings > General > Startup Mode). In Dashboard Mode, only user-facing features (Title Maker, HDD Browser) appear in the Tools menu. In Development Mode, the Inspector and XAP Editor become available.
+The dashboard's music screen reads from your music folder (Settings > Media > Local Library > Music Root): every subfolder is a soundtrack, `.m3u` files become soundtracks, loose files collect in one called Music. Formats: MP3, WAV, OGG, FLAC, WMA, M4A, AAC. Tags and durations are read once and cached.
 
-### XAP Script Editor (F2)
+With **Use projectM visualizer** on (Settings > Audio), X + Y on the keyboard or a pad opens [projectM](https://github.com/projectM-visualizer/projectm), the open source MilkDrop, in its own window, fed from whatever the dashboard is playing. F or F11 makes it fullscreen. Configure projectM picks presets.
 
-A live script editor for dashboard development, built on ImGuiColorTextEdit:
+## Xbox Cloud Gaming and remote play
 
-- **Syntax highlighting** for VRML/XAP keywords, node types, strings, numbers, and comments
-- **Undo/redo** (Ctrl+Z / Ctrl+Y) with full edit history
-- **Live reload**: Edit a script, save, and the dashboard reloads the scene without restarting
-- **Scene browser**: Navigate inline scenes and browse .xap files on disk
-- **Error reporting**: Compiler errors show line numbers and descriptions
-- **Floating ImGui panel**: Independent from all other tools, resizable and repositionable
+Sign in under Settings > Media > Xbox / xCloud with a device code. Your Game Pass cloud titles and your consoles appear in the games grid; launching one streams it inside the dashboard window over WebRTC (libdatachannel), with FFmpeg decoding the video and Opus the audio. The same panel lists your consoles with a Stream button for each.
 
-### Scene Inspector (F1)
+## Skins
 
-A read-only scene graph browser for understanding what the dashboard is doing:
+A skin is a folder in `Data/Skins/`: a `<SkinName>.xbx` file listing material colors, plus any textures and meshes it replaces. The Stock skin is the retail 5960 dashboard, and its colors live in the source (`theseus/render/materials_retail.inl`), so `Stock.xbx` lists nothing. Other skins only list the materials they change.
 
-- **Scene tree**: Expandable hierarchy of all nodes with search/filter
-- **Visibility toggles**: Click to hide/show any node or subtree
-- **3D click-to-select**: Click any object in the viewport to select it in the tree (pulsing green highlight)
-- **Right-click context menu**: Solo/unsolo, show/hide, recursive operations on subtrees
-- **Node properties** (read-only): Transform (position, scale, rotation, alpha), material (diffuse, emissive, transparency), texture (name, dimensions, thumbnail preview), geometry info, mesh file
-- **Script variables**: All CInstance members shown with types and current values
-- **Stats bar**: Draw call count, visible/total nodes, group count, wireframe toggle
+The **Skin Editor** (Tools > Skin Editor) lists your skins, applies one live, creates a new one from Stock, and edits material colors with a picker before saving them to the skin. UIX Lite community skins work as they are.
 
-Property editing is currently read-only. A future update will wire edits back to the XAP source for round-trip editing.
+## CRT effect
 
-### Xbox HDD Browser (F5)
+A post process pass over the finished frame, video included, with eight controls: scanlines, curvature, phosphor mask, vignette, bloom, flicker, color bleed and brightness. Subtle, Classic, Heavy and Off presets set them all at once. It's in Settings > Display and View > CRT Effect, and saved in `desktop.ini`.
 
-Browse and manage Xbox hard drive images:
+## Development tools
 
-- **qcow2 support**: Mount Xbox HDD images (the format xemu uses)
-- **FATX filesystem**: Full read-write access to the Xbox file system
-- **Title enumeration**: Browse installed games, saves, and system files
-- **Integration**: SavedGameGrid reads titles and icons from mounted images
+- **Scene inspector (F1)**: the live scene graph as a tree with search. Click in the viewport to select what's under the cursor, hide or solo nodes and subtrees, and read transforms, materials, textures (with a thumbnail), meshes and script variables. A stats bar shows draw calls and node counts, and there's a wireframe toggle.
+- **XAP editor (F2)**: a script editor with XAP syntax highlighting, undo and redo, and compile errors with line numbers. Save and the scene reloads in place.
+- **Xbox HDD browser (F5)**: opens an xemu qcow2 hard drive image read only, lists its FATX partitions, browses them and exports files. Set the image in Settings > General and the Memory screen reads saves from it too.
 
-## CRT Post-Processing
+**Development Mode** (chosen at launch when Startup Mode is Ask on launch, or set in Settings > General) unpacks the shipped `.xip` archives into folders under `Data/Xips/` in your user data folder and runs the scenes from those loose files, so script edits show up without repacking. The Development menu only appears in that mode.
 
-An optional retro display filter accessible from Settings (F4) or the View menu, implemented as a full-screen GLSL fragment shader with 8 independent parameters:
+## Display and window
 
-- **Scanlines**: Horizontal darkened lines simulating a CRT display
-- **Curvature**: Barrel distortion simulating a curved CRT screen
-- **Phosphor mask**: RGB sub-pixel pattern
-- **Vignette**: Corner and edge darkening
-- **Bloom**: Glow/light bleed from bright areas
-- **Flicker**: Brightness variation simulating unstable signal
-- **Color bleed**: Horizontal color smear
-- **Brightness**: Overall intensity adjustment
+Settings > Display covers display mode (windowed, borderless, fullscreen), resolution, vsync, FPS cap, MSAA, renderer, hardware video decode and Emulate Xbox Resolution, which keeps scenes framed in the original 720x480 design space. F11 toggles fullscreen, F12 a borderless window, F10 the menu bar (it can also auto hide).
 
-**Presets** (Off, Subtle, Classic, Heavy) set all 8 parameters at once, or each can be tuned individually in the Settings window. Settings persist in `desktop.ini`. CRT effects also apply to media playback.
+### Command line
 
-## Audio
+| Flag | What it does |
+|---|---|
+| `--fullscreen` | Start fullscreen |
+| `--4k` | Fullscreen plus 2x UI scale |
+| `--scale N` | Scale the tool windows (for example `1.5` or `2.0` on a high DPI screen) |
+| `--no-toolbar` | Start with the menu bar hidden |
+| `--muted` | Start muted |
+| `--minimized` | Start minimized |
+| `--dashboard` | Skip the startup choice and run the dashboard |
+| `--development` | Start in Development Mode |
+| `--graphics-debug` | Extra renderer diagnostics |
 
-The desktop build uses SDL_mixer for audio playback:
+## Controllers
 
-- **Dashboard sounds**: Button clicks, transitions, navigation feedback
-- **Background music**: Soundtrack playback from the music directory
-- **Mute toggle**: Ctrl+M to mute/unmute all audio (persistent toast overlay)
-- **Auto-mute during game launch**: Audio pauses when a game is running
-- **IMA ADPCM decoding**: Xbox audio format decoded in software
+SDL2's GameController API covers Xbox, PlayStation, Switch Pro and most other pads. The dashboard reads them exactly like the Xbox's four ports: D-pad and stick to move, A to select, B to back out, the triggers and Black and White where the scenes use them. LT + B hands the pad to the tool windows, with a prompt bar showing what each button does and an on screen keyboard for text fields.
 
-## Media Player
+## Settings files
 
-The dashboard's original Xbox DVD player UI (`dvd.xap`) has been wired to libmpv for file-based media playback. When a media file is opened (File > Open Media), the DVD player scene loads and renders video through the XAP's `texture_panel` mesh while the OSD overlay shows playback info.
+All in `Configs/` inside the user data folder:
 
-See [Media Player Design](media-player-design.md) for the full technical breakdown.
+| File | What it holds |
+|---|---|
+| `desktop.ini` | Desktop settings: tool paths (xemu, Steam, RetroArch, ES-DE, qcow2 image), display and CRT, audio, library folders, and Plex, Jellyfin and Xbox sign in tokens |
+| `config.ini` | The dashboard's own settings, the same file the Xbox build uses (current skin, main menu wiring, clock and so on) |
+| `games.ini`, `Icons.ini`, `icons/` | The launcher library |
+| `playlists.ini` | Playlists from the Playlist Maker |
 
-## Preloader
-
-When the application starts (without a startup-mode CLI flag), a startup screen lets you choose:
-
-- **Dashboard Mode**: Uses compiled `.xip` binary archives (production mode, user-facing features only)
-- **Development Mode**: Uses extracted script directories (supports live editing, enables Inspector and XAP Editor)
-
-The choice is saved to `desktop.ini` and can be changed later in Settings > General > Startup Mode.
-
-## CLI Flags
-
-Pass these on the command line when launching the binary:
-
-| Flag             | What it does                                                                  |
-|------------------|-------------------------------------------------------------------------------|
-| `--scale N`      | UI scale factor for the ImGui debug overlay (`1.5`, `2.0` for high-DPI / 4K) |
-| `--fullscreen`   | Borderless fullscreen at native resolution                                    |
-| `--4k`           | Convenience: `--fullscreen` + `--scale 2.0`                                   |
-| `--no-toolbar`   | Start with the menu bar hidden (toggle back with F10)                        |
-| `--dashboard`    | Start in dashboard mode (skip the preloader picker)                           |
-| `--development`  | Start in development mode (enables Inspector, XAP Editor)                     |
-| `--muted`        | Start with audio muted                                                        |
-| `--preview`      | Legacy alias for `--dashboard`                                                |
-
-`--scale` writes to `ImGui::GetIO().FontGlobalScale`. ImGui's `imgui.ini` only stores window layout (positions, sizes, docking state); UI scale is not persisted there and must be re-supplied each launch.
-
-## Menu Bar Visibility
-
-The top menu bar can be toggled three ways:
-
-- **F10**: global hotkey, toggles in and out
-- **File menu, Hide Menu Bar**: discoverable menu item (gone with the bar; F10 brings it back)
-- **`--no-toolbar`**: CLI flag, starts hidden
-
-Useful when running fullscreen and you want a clean viewport.
-
-## Configuration
-
-Desktop-specific settings are stored in `Configs/desktop.ini`:
-
-```ini
-XemuPath=/Applications/xemu.app
-QcowPath=/path/to/xbox.qcow2
-StartupMode=1
-CRT_Enabled=0
-CRT_Scanlines=0.3
-CRT_Curvature=0.2
-CRT_Phosphor=0.3
-CRT_Vignette=0.3
-CRT_Bloom=0.15
-CRT_Flicker=0.2
-CRT_ColorBleed=1.0
-CRT_Brightness=1.05
-```
-
-Dashboard settings (skins, video mode, language, etc.) use the same `config.ini` as the Xbox version. The configuration system is shared between platforms.
-
-## Controller Support
-
-SDL2's GameController API provides native support for:
-
-- Xbox controllers (wired and wireless via Bluetooth/USB)
-- PlayStation DualShock 4 and DualSense controllers
-- Nintendo Switch Pro Controller
-- Any SDL2-compatible gamepad
-
-The dashboard maps controller input to the same navigation model as the Xbox: D-pad for movement, A for select, B for back, triggers for page scrolling. All XAP-visible callbacks, the secret key sequence system, screen saver reset, and typomatic repeat logic are preserved.
+Every save writes a new file, flushes it to disk and swaps it in, keeping the previous one as `.old`.

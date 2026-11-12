@@ -1,184 +1,80 @@
-# D3D8 to OpenGL Translation
+# D3D8 to bgfx
 
-## The Problem
+## The problem
 
-The Xbox dashboard renders everything through Direct3D 8, Microsoft's graphics API from 2000. D3D8 predates programmable shaders (it has vertex shaders but no pixel shaders in the modern sense), uses a fixed-function texture blending pipeline, and has a completely different state model from modern OpenGL.
+The Xbox dashboard draws everything through the Xbox flavor of Direct3D 8, on an NV2A GPU with a fixed function texture combiner and a handful of custom vertex shaders. The scene graph code calls `SetRenderState`, `SetTextureStageState`, `SetTransform` and `DrawIndexedPrimitive` like any 2001 game, and it expects Xbox texture formats and Xbox vertex layouts.
 
-The desktop port doesn't use a general-purpose D3D8-to-OpenGL translator. Instead, `d3d8_sdl.h` implements just enough of the D3D8 interface to render the dashboard, approximately 2,600 lines of purpose-built translation code.
+The desktop build doesn't carry a general D3D8 emulator. `theseus/desktop/d3d8_sdl.h` implements the slice of the D3D8 interface the dashboard actually uses and backs it with [bgfx](https://github.com/bkaradzic/bgfx), which picks Metal on macOS, Direct3D 11 on Windows and Vulkan on Linux (overridable in Settings > Display > Renderer). The dashboard code above it doesn't know the difference.
 
-## Architecture
-
-The translation layer provides stub classes that mirror the D3D8 COM interfaces:
+## Shape of the shim
 
 ```
-D3D8 Interface              Desktop Implementation
-─────────────────           ──────────────────────
-IDirect3D8                  → Returns a single "SDL OpenGL" adapter
-IDirect3DDevice8            → OpenGL state machine + GLSL shaders
-IDirect3DTexture8           → GL texture objects
-IDirect3DVertexBuffer8      → CPU-side vertex arrays with transform caching
-IDirect3DIndexBuffer8       → CPU-side index arrays
-IDirect3DSurface8           → GL framebuffer attachments
+D3D8 interface              Desktop implementation
+IDirect3D8                  One adapter, one device
+IDirect3DDevice8            Render state mirror, packed into bgfx state and shader uniforms
+IDirect3DTexture8           CPU side RGBA pixels, uploaded to a bgfx texture on first use
+IDirect3DVertexBuffer8      Vertex data plus a bgfx layout built from the FVF on first draw
+IDirect3DIndexBuffer8       WORD indices, expanded to triangle lists at draw time
+D3DX math                   Matrices, vectors, quaternions, inline
 ```
 
-## IDirect3DDevice8: The Core
+Everything the dashboard draws in a frame lands in bgfx view 0. The CRT effect, video and the ImGui tools layer on after.
 
-Every D3D8 call in the dashboard goes through `CDashApp` wrapper functions that call into `IDirect3DDevice8`. On desktop, this class manages:
+## Render state
 
-### Render State Tracking
+D3D8 has a couple hundred render states. The shim tracks the ones the dashboard sets and folds them into a `BGFX_STATE_*` bitmask that rides along with each draw:
 
-D3D8 uses `SetRenderState()` with ~200 possible state flags. The translation layer tracks the ones the dashboard actually uses:
+| D3D8 | bgfx |
+|---|---|
+| `D3DRS_ZENABLE`, `D3DRS_ZFUNC`, `D3DRS_ZWRITEENABLE` | depth test bits and `BGFX_STATE_WRITE_Z` |
+| `D3DRS_ALPHABLENDENABLE`, `D3DRS_SRCBLEND`, `D3DRS_DESTBLEND` | blend function bits |
+| `D3DRS_CULLMODE` | cull bits (bgfx's default winding is clockwise, same as D3D) |
+| `D3DRS_ALPHATESTENABLE`, `D3DRS_ALPHAREF` | a shader uniform, `discard` in the fragment shader |
+| `D3DRS_TEXTUREFACTOR` | a shader uniform |
 
-| D3D8 Render State | OpenGL Equivalent |
-|-------------------|-------------------|
-| `D3DRS_ZENABLE` | `glEnable/glDisable(GL_DEPTH_TEST)` |
-| `D3DRS_ALPHABLENDENABLE` | `glEnable/glDisable(GL_BLEND)` |
-| `D3DRS_SRCBLEND` / `D3DRS_DESTBLEND` | `glBlendFunc()` |
-| `D3DRS_CULLMODE` | `glEnable(GL_CULL_FACE)` + `glCullFace()` |
-| `D3DRS_LIGHTING` | Tracked as a flag, applied in vertex shader |
-| `D3DRS_FILLMODE` | `glPolygonMode()` |
-| `D3DRS_ALPHATESTENABLE` / `D3DRS_ALPHAREF` | Fragment shader `discard` |
-| `D3DRS_TEXTUREFACTOR` | Uniform passed to fragment shader |
+The rest are accepted and dropped: NV2A display tricks (flicker filter, soft display, swath width), fog, stencil, point sprites, vertex blending. The dashboard sets them during init and never relies on them.
 
-The dashboard sets ~40 different render states during initialization. Most are Xbox-specific display modes (flicker filter, soft display filter, swath width) or features not needed on desktop (stencil, fog, point sprites). These are accepted by `SetRenderState` without error but have no GPU-side effect.
+Sampler state (`D3DTSS_ADDRESSU/V`, `MINFILTER`, `MAGFILTER`) becomes `BGFX_SAMPLER_*` flags passed with the texture on each draw.
 
-### Texture Stage States
+F8 dumps a count of how often each render and texture stage state is set, and how many of those sets changed nothing. Shift+F8 resets the counters.
 
-D3D8 uses a multi-stage texture blending model. Each stage can have a texture bound and configure how its color and alpha are combined with previous stages:
+## The fixed function emulator
 
-```cpp
-// Dashboard typically does:
-SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-```
+Two bgfx shaders stand in for the whole fixed function pipeline: `vs_ff.sc` and `fs_ff.sc` in `theseus/desktop/shaders/`. Rather than compiling a shader per state combination, the shim packs the current state into a few `vec4` flag uniforms and the shaders branch on them.
 
-The translation layer tracks stage 0 and stage 1 configurations and generates GLSL fragment shader logic to match. The most common patterns:
-- **MODULATE**: `texture_color * vertex_color` (the default)
-- **SELECTARG1**: Use texture color only
-- **SELECTARG2**: Use vertex color only
-- **ADD**: `texture_color + vertex_color`
+**Vertex side** (`vs_ff`):
 
-### Transform Pipeline
+- Transforms by the world view projection matrix, or passes pretransformed `XYZRHW` vertices straight through for 2D overlays
+- Picks the vertex color from falloff, vertex diffuse, texture factor, material diffuse or plain white
+- Reads Xbox `NORMPACKED3` normals (11:11:10 in four bytes) as well as float normals
+- Does spherical environment mapping for the materials that use it
 
-D3D8 uses separate World, View, and Projection matrices set via `SetTransform()`. The translation layer captures these and combines them into an MVP (Model-View-Projection) matrix for the GLSL vertex shader:
+**Falloff** is the dashboard's signature look: the faint glow along the edges of the green shell and the brighter faces pointing at you. On the Xbox it's `effect.vsh`. The desktop shader does the same math on the GPU: side color plus (front color minus side color) times the absolute dot product of the view direction and the normal. Faces turned toward the camera get the front color and edges fade to the side color. Both colors come from the material, through the same vertex shader constants the Xbox code sets.
 
-```cpp
-// D3D8 code sets:
-SetTransform(D3DTS_WORLD, &matWorld);
-SetTransform(D3DTS_VIEW, &matView);
-SetTransform(D3DTS_PROJECTION, &matProjection);
+**Fragment side** (`fs_ff`) covers the texture stage setups the dashboard uses: modulate, select texture, select diffuse and add for color; modulate or select for alpha; an optional second stage that adds color or multiplies alpha; and the alpha test. With no texture bound, a 1x1 white texture keeps the sample well defined.
 
-// Translation layer combines to:
-mat4 MVP = Projection * View * World;
-// Passed to vertex shader as uniform
-```
+## Draw calls
 
-## GLSL Shaders
+- `DrawIndexedPrimitive` submits through a dynamic vertex buffer and a transient index buffer.
+- `DrawPrimitiveUP` and `DrawIndexedPrimitiveUP` copy the caller's data into transient buffers each draw.
+- Strips, fans and the Xbox only `D3DPT_QUADLIST` are expanded to triangle lists, so bgfx only ever sees triangles. The scratch buffer for that lives for the whole run.
+- Vertex layouts come from the FVF on first use. Float normals map to bgfx's normal attribute; packed normals ride in a color attribute and get unpacked in the shader.
 
-The dashboard's rendering is handled by two GLSL shaders:
+## Textures
 
-### Vertex Shader
+Dashboard textures are `.xbx` files: Xbox XPR0 resources holding DXT1, DXT3, DXT5 or linear data, usually swizzled into Morton (Z) order for the NV2A. `xbx_texture.h` parses the header, decodes DXT blocks on the CPU and unswizzles to plain RGBA. PNG, JPG and BMP (skins, Steam icons, box art) go through `stb_image`. Either way the result is RGBA pixels on the CPU side of `IDirect3DTexture8`.
 
-```glsl
-// Simplified. Actual shader handles more cases.
-uniform mat4 u_MVP;
-uniform vec4 u_falloffCenter;
-uniform float u_falloffRadius;
-uniform float u_falloffIntensity;
+Upload to bgfx happens the first time a texture is drawn. Textures the dashboard rewrites every frame (the music visualizer, dynamic textures) are created with `BGFX_TEXTURE_BLIT_DST`. Without it, Metal can put the texture in GPU only memory and silently ignore later CPU updates, and the visualizer freezes on its first frame.
 
-in vec3 a_position;
-in vec4 a_color;
-in vec2 a_texcoord;
+## Things drawn outside the scene
 
-out vec4 v_color;
-out vec2 v_texcoord;
+A few things skip the D3D8 shim entirely:
 
-void main() {
-    gl_Position = u_MVP * vec4(a_position, 1.0);
-    v_color = a_color;
-    v_texcoord = a_texcoord;
-}
-```
+- **CRT effect**: when it's on, view 0 renders into an offscreen framebuffer and `fs_crt.sc` draws that to the backbuffer with scanlines, curvature, phosphor mask, vignette, bloom, flicker and color bleed.
+- **Video**: libmpv renders each frame into a CPU buffer that's uploaded to a bgfx texture and drawn fullscreen with `vs_blit` and `fs_blit` (see [media-player-design.md](media-player-design.md)). It goes through the CRT pass too.
+- **Boot animation and xCloud streams**: the same blit path.
+- **ImGui tools**: their own bgfx backend (`imgui_impl_bgfx.cpp`) with `vs_imgui` and `fs_imgui`.
 
-### Fragment Shader
+## Shaders on disk
 
-```glsl
-// Simplified. Actual shader handles TSS state combinations.
-uniform sampler2D u_texture;
-uniform bool u_hasTexture;
-uniform float u_alphaRef;
-
-in vec4 v_color;
-in vec2 v_texcoord;
-
-out vec4 fragColor;
-
-void main() {
-    vec4 texColor = u_hasTexture ? texture(u_texture, v_texcoord) : vec4(1.0);
-    fragColor = texColor * v_color;
-    if (fragColor.a < u_alphaRef) discard;
-}
-```
-
-The actual shaders are more complex, handling independent color and alpha operations, multiple texture stages, and various blend modes configured by the TSS tracking.
-
-## Per-Vertex Falloff Lighting
-
-The dashboard's signature visual effect is a radial falloff, a spotlight-like effect where objects near the camera's focus are bright and objects further away fade to dark. On Xbox, this was implemented as a custom vertex shader (`effect.vsh`) running on the NV2A GPU.
-
-On desktop, this is computed on the CPU during vertex transformation:
-
-```
-For each vertex:
-  1. Transform position by World-View-Projection matrix
-  2. Compute distance from vertex to falloff center (in view space)
-  3. Calculate attenuation: brightness = 1.0 - saturate(distance / radius)
-  4. Multiply vertex color by attenuation
-  5. Store result in vertex diffuse color
-```
-
-The falloff parameters (center, radius, intensity) are extracted from the D3D8 vertex shader constants that the dashboard sets. Multiple shader variants exist for different numbers of lights and different vertex formats.
-
-## Matrix Caching
-
-The device caches the combined World-View-Projection (`m_matWVP`) and World-View (`m_matWV`) matrices, recomputing them only when a dirty flag is set by `SetTransform()`. This avoids redundant matrix multiplications when the same camera/world state is used across multiple draw calls in a frame.
-
-## Texture Handling
-
-### XBX Textures (Xbox native)
-
-Xbox textures use DXT compression with swizzled pixel layout:
-
-1. **Read XBX header**: Extract width, height, format (DXT1/DXT3/DXT5), mipmap count
-2. **Deswizzle**: Convert from Morton order to linear scanline order
-3. **Upload to OpenGL**: `glCompressedTexImage2D()` with the appropriate GL format:
-   - DXT1 → `GL_COMPRESSED_RGBA_S3TC_DXT1_EXT`
-   - DXT3 → `GL_COMPRESSED_RGBA_S3TC_DXT3_EXT`
-   - DXT5 → `GL_COMPRESSED_RGBA_S3TC_DXT5_EXT`
-
-### Standard Textures (Desktop)
-
-PNG, JPG, and BMP textures (used by skins and the Title Maker) are loaded via `stb_image` and uploaded as uncompressed RGBA.
-
-### Texture Cache
-
-The dashboard loads textures frequently as scenes change. A texture cache (`TXTCACHE[100]`) stores recently-used GL textures by name. On skin changes, the cache is flushed and all `CImageTexture` nodes are marked dirty for reload.
-
-## What's NOT Translated
-
-The translation layer deliberately skips D3D8 features the dashboard doesn't use:
-
-- **Pixel shaders**: D3D8 pixel shaders aren't used by the dashboard (it uses TSS instead)
-- **Stencil buffer**: Not used
-- **Multi-render-targets**: Not used
-- **Fog**: Set during init but not rendered (states accepted, no GL calls)
-- **Point sprites**: Not used
-- **Vertex declarations** (beyond FVF): The dashboard uses FVF exclusively
-
-This keeps the translation layer small and focused. A general-purpose D3D8 wrapper would be 10x larger; this is purpose-built for one application.
-
-## Coordinate System Differences
-
-D3D8 uses a left-handed coordinate system (Y up, Z into screen). OpenGL uses right-handed (Y up, Z out of screen). The translation layer handles this by negating the Z component in the projection matrix, which flips the winding order. `glFrontFace(GL_CW)` compensates for the reversed triangle winding.
+Shader sources are `theseus/desktop/shaders/*.sc`. The compiled binaries for every backend are checked in under `Data/shaders/` (`metal`, `spirv`, `dx11`, `glsl`, `essl`), and the app loads the folder matching the renderer bgfx picked. They're the one part of `Data/` that stays with the app instead of moving to the user data folder. If that folder is missing, the log says so near the top, because otherwise the only symptom is a black window.

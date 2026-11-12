@@ -1,7 +1,81 @@
 # Desktop dependencies
 
 What the desktop build links against on each platform, the floor each library
-has to clear, and where the Windows cross-deps come from.
+has to clear, and where the Windows cross deps come from. The build steps
+themselves are in [building.md](building.md).
+
+## Packages
+
+Everything is found through `pkg-config`, and nothing in the build shells out
+to a package manager. If `pkg-config --exists mpv libcurl libavcodec opus`
+succeeds, the build will find them, however they got there. Prefixes off the
+default search path just need `PKG_CONFIG_PATH`.
+
+"Run" is what a downloaded release needs. "Build" is that plus the toolchain
+and headers. The Windows zip and the Linux AppImage carry their own libraries,
+so they need nothing installed.
+
+**macOS (Homebrew)**
+
+```
+# Run the bare binary release (the .app needs nothing)
+brew install sdl2 sdl2_mixer mpv curl ffmpeg opus
+
+# Build
+brew install sdl2 sdl2_mixer mpv curl ffmpeg opus pkg-config cmake openssl@3
+```
+
+**macOS (MacPorts)**
+
+```
+# Run
+sudo port install libsdl2 libsdl2_mixer mpv curl ffmpeg libopus
+
+# Build
+sudo port install libsdl2 libsdl2_mixer mpv curl ffmpeg libopus \
+                  pkgconfig cmake openssl3
+```
+
+**Debian / Ubuntu**
+
+```
+# Run the tarball release
+sudo apt install libsdl2-2.0-0 libsdl2-mixer-2.0-0 libmpv2 libcurl4 libopus0
+
+# Build
+sudo apt install build-essential pkg-config cmake \
+                 libsdl2-dev libsdl2-mixer-dev \
+                 libvulkan-dev libx11-dev libgl-dev \
+                 libmpv-dev libcurl4-openssl-dev libssl-dev \
+                 libavcodec-dev libavutil-dev libswscale-dev libopus-dev
+```
+
+**Fedora**
+
+```
+sudo dnf install gcc-c++ pkgconf-pkg-config cmake SDL2-devel SDL2_mixer-devel \
+                 mpv-libs-devel libcurl-devel openssl-devel \
+                 ffmpeg-devel opus-devel vulkan-loader-devel libX11-devel
+```
+
+**Arch**
+
+```
+sudo pacman -S base-devel pkgconf cmake sdl2 sdl2_mixer mpv curl openssl \
+               ffmpeg opus vulkan-icd-loader libx11
+```
+
+Notes:
+
+- Some distros ship `libmpv1` instead of `libmpv2`. Either works.
+- The FFmpeg runtime libraries come in with libmpv. FFmpeg and Opus also
+  cover the xCloud video and audio decoders.
+- OpenSSL is a runtime dependency of xCloud. On macOS it arrives alongside
+  curl, mpv and FFmpeg, and on Debian `libssl3` is in the base install, so
+  neither run list names it. Building libdatachannel does need the headers,
+  which is why `openssl@3` and `libssl-dev` are in the build lists.
+- projectM is built from the submodule on the first `make desktop` and ships
+  in `lib/` beside the binary, so it isn't a package you install.
 
 ## Minimum versions
 
@@ -36,11 +110,13 @@ should link and run.
 | glibc | n/a | 2.41 | n/a |
 
 The Linux binary links libavcodec 61 and glibc 2.41, and a tester on
-libavcodec 62 could not load a build made against 61. That is why the Linux
-tarball bundles its whole `ldd` closure except the host-tied libraries
-(glibc, GPU driver GL/EGL/Vulkan/DRM, X11/xcb/Wayland/xkb).
+libavcodec 62 could not load a build made against 61. That is why the
+AppImage bundles the binary's whole `ldd` closure except the libraries that
+have to come from the host (glibc, GPU driver GL/EGL/Vulkan/DRM, X11, xcb,
+Wayland, audio servers). The tarball only carries projectM in `lib/` and
+uses the system's copies of everything else.
 
-## Windows cross-deps
+## Windows cross deps
 
 `build/fetch-mingw-deps.sh` populates `~/cross/mingw64` and both CI workflows
 call it. Two different strategies in there:
@@ -54,10 +130,10 @@ call it. Two different strategies in there:
 
 HEVC is enabled even though xCloud sends H.264. `h2645_sei.o` calls
 `ff_aom_uninit_film_grain_params`, and libavcodec only compiles
-`aom_film_grain.o` when an HEVC config is on, so an h264-only build leaves that
+`aom_film_grain.o` when an HEVC config is on, so an H.264 only build leaves that
 symbol dangling.
 
-The other cross-deps (SDL2, SDL2_mixer, libmpv, libcurl) are fetched by the
+The other cross deps (SDL2, SDL2_mixer, libmpv, libcurl) are fetched by the
 workflows into `~/cross/{sdl2-mingw,mpv-mingw,curl-mingw}`.
 
 ### Two traps worth knowing
@@ -72,7 +148,7 @@ against the static archive. Its libsrtp also needs
 `-DENABLE_WARNINGS_AS_ERRORS=OFF`, because `u_long` is 32 bit under LLP64 and
 its `%x` format checks trip `-Werror=format`.
 
-## Streaming is opt-in at build time
+## Streaming is optional at build time
 
 xCloud and Xbox remote play only compile in when libdatachannel is present:
 `build-mac`, `build-linux`, or `build-win64` under
