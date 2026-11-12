@@ -340,7 +340,17 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0005b970 | `CKeyboard_OnSetProperty` | `CKeyboard::OnSetProperty` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Setting `string` loads the edit buffer (up to 31 characters) with the whole thing selected. |
 | 0x0005b9d0 | `CKeyboard_Render` | `CKeyboard::Render` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Draws the frame, the text node with the edit string and cursor, then one node per key with its label. |
 | 0x0005bca0 | `CKeyboard_Advance` | `CKeyboard::Advance` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Advances the node, then the control node. |
-| 0x0005c250 | `CLevel_load` |  | [Scene Groups](SceneGroups.md) | FND-bound script method on Level: triggers asynchronous load of the Level's referenced sub-scene. |
+| 0x0005bce0 | `CMesh_ScalarDeletingDtor` | `CMesh::~CMesh` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | CMesh vtable (`0x00029d60`) slot 2: destructor, then free. |
+| 0x0005bd00 | `CMesh_dtor` | `CMesh::~CMesh` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Releases the vertex and index buffers. |
+| 0x0005bdb0 | `CMesh_Create_File` | `CMesh::Create` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Reads the 0x18 byte `.xm` header, maps type 4/5 to list/strip (anything else fails), reads the vertices and indices straight into new buffers. |
+| 0x0005bea0 | `FUN_0005bea0` | `CMesh::Render` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | CMesh slot 0. Sets the FVF, swaps edge AA for multisample past 800 faces, gives the first mesh of the frame the camera's own view, draws. |
+| 0x0005c050 | `CMeshNode_CreateNode` | `CMeshNode::CMeshNode` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Factory for "Mesh": dirty, owns its mesh, pushed on the front of the mesh node list. |
+| 0x0005c0e0 | `CMeshNode_dtor` | `CMeshNode::~CMeshNode` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Frees an owned mesh and the url, unlinks the node. |
+| 0x0005c1f0 | `CMeshNode_vfunc23` | `CMeshNode::Init` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Clears the dirty flag. |
+| 0x0005c200 | `CMeshNode_Render` | `CMeshNode::Render` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Stamps the render time, loads on first use, draws the mesh and sets its FVF unless the shape renderer already did. |
+| 0x0005c250 | `Xap_load` | `CMeshNode::load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Script fn `load` (FND `0x00188418`). XIP first; else the file beside the scene, then beside the app. |
+| 0x0005c320 | `CreateMesh_File` | `LoadMesh` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | New CMesh read from a path. Comes back even when the file didn't open. |
+| 0x0005c390 | `MakeSphere` | `MakeSphere` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | D3DX sphere cloned to XYZ, normal, diffuse, then repacked with one DWORD per normal. |
 | 0x0005d200 | `CLevel::Deactivate` | `CLevel::Deactivate` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Marks a Level node inactive. Pauses its time-dep children and skips it during render traversal. |
 | 0x0005d300 | `CPositionInterpolator::Interpolate` | `CPositionInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Catmull-Rom between interior keys, straight lines on the end spans, clamped at both ends. |
 | 0x0005d520 | `COrientationInterpolator_OnLoad` | `COrientationInterpolator::OnLoad` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Converts each axis+angle key into a quaternion once. |
@@ -352,8 +362,24 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x000606d0 | `CDotField_CreateNode` | `CDotField::CDotField` (dotfield_node.cpp) | [TMAP System](TmapSystem.md) | Factory for "DotField": spacing 8, still. |
 | 0x00060790 | `CDotField_Advance` | `CDotField::Advance` (dotfield_node.cpp) | [TMAP System](TmapSystem.md) | Scrolls the grid; with no speeds set it picks a new heading and spacing every 10 to 15 seconds. |
 | 0x00060930 | `CDotField_RenderDynamicTexture` | `CDotField::RenderDynamicTexture` (dotfield_node.cpp) | [TMAP System](TmapSystem.md) | Writes 255 at every grid point. |
-| 0x00061090 | `CBackgroundLoader::Fetch` | `CBackgroundLoader::Fetch` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Pulls the next pending request off the background loader queue. The loader thread spins on this. |
-| 0x00061760 | `CImageTexture::Load` | `CImageTexture::Load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Loads an XBX (Xbox swizzled) texture from a XIP entry into a D3D texture. |
+| 0x00060990 | `CBackgroundTexture_OnComplete` | `ParseTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | File bytes to a texture: `.xt` raw, `.xbx` XPR0 with header and size checks, anything else through D3DX with the out of memory retry. |
+| 0x00060c90 | `FUN_00060c90` | `LoadTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Forces the `.xbx` extension and looks the texture up in the XIPs. |
+| 0x00060d40 | `CreateTexture` | `CreateTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | One level managed texture; hands back the size it came out at. |
+| 0x00060db0 | `CTexture_CreateNode` | `CTexture::CTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Factory for "Texture": repeats on, A8R8G8B8, no surface. |
+| 0x00060e30 | `CTexture_dtor` | `CTexture::~CTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Releases the surface, then the node destructor. |
+| 0x00060ec0 | `CTexture_vfunc23` | `CTexture::Create` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Stores the size and makes the surface. |
+| 0x00060ef0 | `CImageTexture_CreateNode` | `CImageTexture::CImageTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Factory for "ImageTexture": no url, dirty. |
+| 0x00060f70 | `CImageTexture_dtor` | `CImageTexture::~CImageTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Frees the url, then the CTexture destructor. |
+| 0x00060f90 | `CImageTexture_GetTextureSurface` | `CImageTexture::GetTextureSurface` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Loads the url the first time after it changes, returns the surface. |
+| 0x00060fc0 | `FUN_00060fc0` | `CBackgroundLoader::CBackgroundLoader` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Clears the loader and queues it at the tail of the list at `0x0017e6f0`. |
+| 0x00061030 | `FUN_00061030` | `CBackgroundLoader::~CBackgroundLoader` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Unlinks, closes the file, frees the url and the data. |
+| 0x00061090 | `CBackgroundLoader_Fetch` | `CBackgroundLoader::Fetch` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Opens the file overlapped (unbuffered on `c:` and `y:`), sector rounds the size, starts one ReadFile for all of it. |
+| 0x000611f0 | `FUN_000611f0` | `CBackgroundTexture::~CBackgroundTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Clears the cache slot's loading flag. |
+| 0x00061210 | `FUN_00061210` | `CBackgroundTexture::OnComplete` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Parses the loaded file into the cache slot; a 64 or 128 wide request that fails gets the Xbox logo. |
+| 0x00061290 | `CleanupTextureCache` | `CleanupTextureCache` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Frees the least recently used texture that isn't locked or loading. First stop of every out of memory retry. |
+| 0x000615a0 | `FindTexture` | `FindTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Cache lookup by url; a miss takes a free or the oldest slot and loads now or in the background. |
+| 0x00061760 | `GetTexture` | `CImageTexture::Load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Swaps the surface for the cached texture of a url, synchronously, and takes its size. |
+| 0x00061820 | `CImageTexture_OnSetProperty` | `CImageTexture::OnSetProperty` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | A new url marks the texture dirty. |
 | 0x00061b40 | `CAudioClip::Cleanup` | `CAudioClip::Cleanup` (audio_system.cpp) | [Audio](AudioSystem.md) | Releases an audio clip's DirectSound buffer and waveform data. |
 | 0x00061ba0 | `CAudioClip::Init` | `CAudioClip::Init` (audio_system.cpp) | [Audio](AudioSystem.md) | Loads a clip from a XIP entry, parses the WAV header, allocates a DSound buffer, and uploads the PCM payload. |
 | 0x000629a0 | `CAudioBuf::Lock` | `CAudioBuf::Lock` (audio_system.cpp) | [Audio](AudioSystem.md) | DSound `IDirectSoundBuffer::Lock` wrapper. Used by the audio pump to write streamed samples. |
@@ -426,7 +452,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Music Collection | (no doc yet, narrative TODO) | 5 verified Theseus mappings (FormatSoundtrackSongTime, GetUpdateString + 3 stubs: AddSoundtrack, ClearCopyList, DeleteSoundtrack) + 3 binary-only anchors (global ::DeleteSoundtrack, ::DeleteAllSoundtracks, ThreadProc); more labeling pending |
 | Render | (no doc yet, narrative TODO) | 1 function |
 | App Shell | (no doc yet, narrative TODO) | 9 functions |
-| Asset Loader | [AssetLoader.md](AssetLoader.md) (narrative TODO) | 2 functions |
+| Asset Loader | [AssetLoader.md](AssetLoader.md) | 29 functions |
 | DVD Playback | (reference-only, no doc) | 1 function |
 | Original WMA Pump | (reference-only, folded into AudioSystem.md) | 1 function |
 | Original CDDA Streamer | (reference-only, folded into AudioSystem.md) | 1 function |
