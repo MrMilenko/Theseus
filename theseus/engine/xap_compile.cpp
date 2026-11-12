@@ -229,7 +229,7 @@ const TCHAR* Token(const TCHAR* pch, const TCHAR*& pchTok, int& cchTok, bool bAl
 
 
 // Reads exactly cDigits hex digits for \x and \u. Returns false on a bad one.
-static bool ReadHexEscape(const TCHAR*& pch, int& cch, int cDigits, TCHAR& chOut)
+static bool ReadHexValue(const TCHAR*& pch, int& cch, int cDigits, int& nOut)
 {
 	int nValue = 0;
 	for (int i = 0; i < cDigits; i++)
@@ -249,6 +249,15 @@ static bool ReadHexEscape(const TCHAR*& pch, int& cch, int cDigits, TCHAR& chOut
 
 		nValue = nValue * 16 + nDigit;
 	}
+	nOut = nValue;
+	return true;
+}
+
+static bool ReadHexEscape(const TCHAR*& pch, int& cch, int cDigits, TCHAR& chOut)
+{
+	int nValue;
+	if (!ReadHexValue(pch, cch, cDigits, nValue))
+		return false;
 	chOut = (TCHAR)nValue;
 	return true;
 }
@@ -261,7 +270,7 @@ static bool ReadHexEscape(const TCHAR*& pch, int& cch, int cDigits, TCHAR& chOut
 // other escaped character stands for itself. Fails with -1 and a syntax error
 // when the output fills, the string ends on a backslash, or a hex escape is
 // short or bad. Returns the number of characters written.
-// \u only exists in wide builds, where TCHAR can hold it (5960 is wide).
+// \u is one UTF-16 unit in wide builds (5960 is wide) and UTF-8 bytes in narrow ones.
 int ExpandCString(TCHAR* szOut, int cchOut, const TCHAR* pchTok, int cchTok)
 {
 	TCHAR* pchOut = szOut;
@@ -341,6 +350,45 @@ int ExpandCString(TCHAR* szOut, int cchOut, const TCHAR* pchTok, int cchTok)
 				return -1;
 			}
 			break;
+#else
+		// Theseus: narrow builds carry UTF-8, so \u becomes its UTF-8 bytes.
+		case 'u':
+			{
+				int cp;
+				if (cchTok < 4 || !ReadHexValue(pchTok, cchTok, 4, cp))
+				{
+					SyntaxError(_T("Invalid Unicode character escape sequence"));
+					return -1;
+				}
+				char utf8[3];
+				int nBytes;
+				if (cp < 0x80)
+				{
+					utf8[0] = (char)cp;
+					nBytes = 1;
+				}
+				else if (cp < 0x800)
+				{
+					utf8[0] = (char)(0xC0 | (cp >> 6));
+					utf8[1] = (char)(0x80 | (cp & 0x3F));
+					nBytes = 2;
+				}
+				else
+				{
+					utf8[0] = (char)(0xE0 | (cp >> 12));
+					utf8[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+					utf8[2] = (char)(0x80 | (cp & 0x3F));
+					nBytes = 3;
+				}
+				if (pchOut + nBytes > pchEnd)
+				{
+					SyntaxError(_T("string constant is too long"));
+					return -1;
+				}
+				for (int i = 0; i < nBytes; i++)
+					*pchOut++ = utf8[i];
+			}
+			continue;
 #endif
 
 		default:

@@ -354,6 +354,8 @@ BOOL NextReal(FindHandle* ffh, WIN32_FIND_DATAA* fd) {
 	char name[260];
 	HostFileInfo info;
 	while (Host_ReadDir(ffh->real, name, sizeof(name), &info)) {
+		// FATX has no . or .. entries, so Xbox code never expects them.
+		if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
 		if (!PatternMatch(ffh->pattern, name)) continue;
 		memset(fd, 0, sizeof(*fd));
 		strncpy(fd->cFileName, name, sizeof(fd->cFileName) - 1);

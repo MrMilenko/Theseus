@@ -288,11 +288,12 @@ function StartTitleList()
 	c.audio_panel.SetTranslation(-45.549999, 55.07, -204.5);
 	nPlayScroll0 = 0;
 	nPlayCursor0 = 0;
+	// Set before the first fill so row 0 asks the collection for its icon.
+	bInTitleList = true;
 	UpdateTrackList();
 	theTitleListViewpoint.isBound = true;
 	CurrentViewpoint = theTitleListViewpoint;
 	bLauncherVisible0 = false;
-	bInTitleList = true;
 }
 
 function EnterLauncherMenu()
