@@ -2197,8 +2197,15 @@ void RenderTitleMaker() {
             if (strcmp(s_esScannedFor, s_esdePath) != 0) EsdeRescan(s_esdePath);
 
             if (s_esSysCount <= 0) {
-                ImGui::TextDisabled("Nothing found. ES-DE keeps its roms in %s",
-                                    Esde_RomRoot(s_esdePath));
+                if (!Esde_LastScanFoundSystemsXml()) {
+                    ImGui::TextDisabled("No es_systems.xml under %s.", s_esdePath);
+                    ImGui::TextDisabled("An ES-DE AppImage keeps its copy inside the");
+                    ImGui::TextDisabled("image, so point this at an es_systems.xml or at");
+                    ImGui::TextDisabled("a folder holding custom_systems/es_systems.xml.");
+                } else {
+                    ImGui::TextDisabled("Systems loaded but no roms matched. ES-DE keeps");
+                    ImGui::TextDisabled("its roms in %s", Esde_RomRoot(s_esdePath));
+                }
             } else {
                 ImGui::Text("%d system%s, %d game%s.",
                             s_esSysCount,  s_esSysCount  == 1 ? "" : "s",

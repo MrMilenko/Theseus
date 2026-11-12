@@ -131,27 +131,64 @@ const char* Esde_RomRoot(const char* esdeRoot)
     return s_root;
 }
 
+static bool g_esdeFoundSystemsXml = false;
+
 // Custom systems win, same order ES-DE uses, then the copy inside the install.
+// An AppImage keeps its copy inside the mount, so nothing is on disk for us to
+// read; those users point us straight at an es_systems.xml instead.
 static bool FindSystemsXml(const char* esdeRoot, char* out, size_t outSz)
 {
     struct stat st;
+
+    // Pointed straight at the file.
+    size_t rl = strlen(esdeRoot);
+    if (rl > 15 && strcasecmp(esdeRoot + rl - 15, "es_systems.xml") == 0 &&
+        stat(esdeRoot, &st) == 0) {
+        snprintf(out, outSz, "%s", esdeRoot);
+        return true;
+    }
+
     snprintf(out, outSz, "%s/custom_systems/es_systems.xml", esdeRoot);
+    fprintf(stderr, "[ES-DE] probe %s\n", out);
     if (stat(out, &st) == 0) return true;
 
-    static const char* kBundled[] = {
+    char home[1024];
+    snprintf(home, sizeof(home), "%s", PlatformHomeDir());
+
+    char userLocal[1024], homeEsde[1024];
+    snprintf(userLocal, sizeof(userLocal),
+             "%s/.local/share/es-de/resources/systems/linux/es_systems.xml", home);
+    snprintf(homeEsde, sizeof(homeEsde),
+             "%s/ES-DE/resources/systems/linux/es_systems.xml", home);
+
+    const char* kBundled[] = {
         "/Applications/ES-DE.app/Contents/Resources/resources/systems/macos/es_systems.xml",
         "/usr/share/es-de/resources/systems/linux/es_systems.xml",
+        "/usr/local/share/es-de/resources/systems/linux/es_systems.xml",
+        "/usr/share/emulationstation/resources/systems/linux/es_systems.xml",
         "/app/share/es-de/resources/systems/linux/es_systems.xml",
         "/var/lib/flatpak/app/org.es_de.frontend/current/active/files/share/es-de/resources/systems/linux/es_systems.xml",
+        "/var/lib/snapd/snap/es-de/current/usr/share/es-de/resources/systems/linux/es_systems.xml",
+        userLocal,
+        homeEsde,
         "C:/Program Files/ES-DE/resources/systems/windows/es_systems.xml",
     };
     for (size_t i = 0; i < sizeof(kBundled) / sizeof(kBundled[0]); i++) {
+        fprintf(stderr, "[ES-DE] probe %s\n", kBundled[i]);
         if (stat(kBundled[i], &st) == 0) {
             snprintf(out, outSz, "%s", kBundled[i]);
             return true;
         }
     }
+    out[0] = '\0';
     return false;
+}
+
+// True when we could not find a systems definition at all, which is a
+// different failure from finding one and matching no roms.
+bool Esde_LastScanFoundSystemsXml(void)
+{
+    return g_esdeFoundSystemsXml;
 }
 
 // One directory level. cb gets (name, isDir) and stops the walk on false.
@@ -244,7 +281,12 @@ int Esde_ScanSystems(const char* esdeRoot, EsdeSystem* out, int maxOut)
     if (!esdeRoot || !*esdeRoot || !out || maxOut <= 0) return 0;
 
     char sysXml[700];
-    if (!FindSystemsXml(esdeRoot, sysXml, sizeof(sysXml))) return 0;
+    g_esdeFoundSystemsXml = FindSystemsXml(esdeRoot, sysXml, sizeof(sysXml));
+    if (!g_esdeFoundSystemsXml) {
+        fprintf(stderr, "[ES-DE] no es_systems.xml found for root %s\n", esdeRoot);
+        return 0;
+    }
+    fprintf(stderr, "[ES-DE] systems from %s\n", sysXml);
 
     FILE* fp = fopen(sysXml, "rb");
     if (!fp) return 0;

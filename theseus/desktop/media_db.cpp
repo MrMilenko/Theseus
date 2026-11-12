@@ -182,22 +182,40 @@ static std::string ParseEpisodeTitle(const std::string& filename, int& seasonOut
 	return rest;
 }
 
-static std::string FindFirstVideoFile(const std::string& dir)
+// First video at or below dir. depth 1 is this level only; 2 also covers a
+// Season folder or similar sitting under the title folder.
+static std::string FindFirstVideoFile(const std::string& dir, int depth = 1)
 {
 	DIR* d = opendir(dir.c_str());
 	if (!d) return "";
+	std::vector<std::string> subdirs;
+	std::string out;
 	struct dirent* e;
 	while ((e = readdir(d)))
 	{
 		if (e->d_name[0] == '.') continue;
 		if (IsVideoExt(e->d_name))
 		{
-			std::string out = dir + "/" + e->d_name;
-			closedir(d);
-			return out;
+			out = dir + "/" + e->d_name;
+			break;
+		}
+		if (depth > 1)
+		{
+			std::string sub = dir + "/" + e->d_name;
+			struct stat st;
+			if (stat(sub.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+				subdirs.push_back(sub);
 		}
 	}
 	closedir(d);
+	if (!out.empty()) return out;
+
+	// Files win over folders, so only descend once this level came up empty.
+	for (size_t i = 0; i < subdirs.size(); i++)
+	{
+		out = FindFirstVideoFile(subdirs[i], depth - 1);
+		if (!out.empty()) return out;
+	}
 	return "";
 }
 
@@ -215,13 +233,22 @@ static void ScanMoviesInto(std::vector<MovieRec>& out)
 		if (e->d_name[0] == '.') continue;
 		std::string folder = std::string(kMoviesRoot) + "/" + e->d_name;
 		struct stat st;
-		if (stat(folder.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+		if (stat(folder.c_str(), &st) != 0) continue;
 
-		std::string videoPath = FindFirstVideoFile(folder);
+		std::string videoPath;
+		std::string title = e->d_name;
+		if (S_ISDIR(st.st_mode)) {
+			videoPath = FindFirstVideoFile(folder, 2);
+		} else if (IsVideoExt(e->d_name)) {
+			// Movies dropped straight in the root, no folder per title.
+			videoPath = folder;
+			size_t dot = title.find_last_of('.');
+			if (dot != std::string::npos) title.erase(dot);
+		}
 		if (videoPath.empty()) continue;
 
 		MovieRec m;
-		m.title = e->d_name;
+		m.title = title;
 		m.path  = videoPath;
 		m.year  = ParseYearFromTitle(m.title);
 		out.push_back(m);
@@ -244,8 +271,8 @@ static void ScanShowSeasons(ShowRec& show)
 		std::string seasonDir = show.path + "/" + e->d_name;
 		struct stat st;
 		if (stat(seasonDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
-		// Only "Season N" folders.
-		if (strncmp(e->d_name, "Season", 6) != 0) continue;
+		if (strncasecmp(e->d_name, "Season", 6) != 0 &&
+		    strncasecmp(e->d_name, "Specials", 8) != 0) continue;
 
 		SeasonRec s;
 		s.name = e->d_name;
@@ -276,6 +303,28 @@ static void ScanShowSeasons(ShowRec& show)
 		show.seasons.push_back(s);
 	}
 	closedir(d);
+
+	// Episodes sitting straight in the show folder, no Season dirs. Common
+	// enough that dropping the show entirely just looks like nothing loaded.
+	if (show.seasons.empty())
+	{
+		SeasonRec s;
+		s.name = "Season 1";
+		DIR* fd = opendir(show.path.c_str());
+		if (!fd) return;
+		struct dirent* fe;
+		while ((fe = readdir(fd)))
+		{
+			if (fe->d_name[0] == '.') continue;
+			if (!IsVideoExt(fe->d_name)) continue;
+			EpisodeRec ep;
+			ep.path = show.path + "/" + fe->d_name;
+			ep.title = ParseEpisodeTitle(fe->d_name, ep.season, ep.episode);
+			s.episodes.push_back(ep);
+		}
+		closedir(fd);
+		if (!s.episodes.empty()) show.seasons.push_back(s);
+	}
 }
 
 static void ScanShowsInto(std::vector<ShowRec>& out)
@@ -289,9 +338,33 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 		if (e->d_name[0] == '.') continue;
 		std::string folder = std::string(kTvRoot) + "/" + e->d_name;
 		struct stat st;
-		if (stat(folder.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+		if (stat(folder.c_str(), &st) != 0) continue;
 
 		ShowRec sh;
+		if (!S_ISDIR(st.st_mode))
+		{
+			// A loose episode in the root. Its own one episode show, so it
+			// is at least reachable instead of invisible.
+			if (!IsVideoExt(e->d_name)) continue;
+			std::string title = e->d_name;
+			size_t dot = title.find_last_of('.');
+			if (dot != std::string::npos) title.erase(dot);
+
+			SeasonRec s;
+			s.name = "Season 1";
+			EpisodeRec ep;
+			ep.path  = folder;
+			ep.title = ParseEpisodeTitle(e->d_name, ep.season, ep.episode);
+			s.episodes.push_back(ep);
+
+			sh.title = title;
+			sh.path  = kTvRoot;
+			sh.seasons.push_back(s);
+			out.push_back(sh);
+			BumpProgress((int)out.size());
+			continue;
+		}
+
 		sh.title = e->d_name;
 		sh.path  = folder;
 		ScanShowSeasons(sh);
