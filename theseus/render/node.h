@@ -235,6 +235,7 @@ typedef CObject* (__cdecl CObject::*NODE_PFN)(void);
 #define sig_viis			26
 #define sig_ni				27
 #define sig_vis				28
+#define sig_iis				29
 
 union FSIG
 {
@@ -251,6 +252,7 @@ union FSIG
 	int (CObject::*pfn_is)(const TCHAR*);
 	int (CObject::*pfn_isi)(const TCHAR*, int);
 	int (CObject::*pfn_iii)(int, int);
+	int (CObject::*pfn_iis)(int, const TCHAR*);
 	CStrObject* (CObject::*pfn_sv)(void);
 	CStrObject* (CObject::*pfn_si)(int);
 	CStrObject* (CObject::*pfn_sii)(int, int);
@@ -312,6 +314,9 @@ struct FND
 
 #define NODE_FUN_III(name) \
 	{ (NODE_PFN)(int (CObject::*)(int, int))&_FND_CLASS::name, sig_iii, _T(#name) },
+
+#define NODE_FUN_IIS(name) \
+	{ (NODE_PFN)(int (CObject::*)(int, const TCHAR*))&_FND_CLASS::name, sig_iis, _T(#name) },
 
 #define NODE_FUN_SI(name) \
 	{ (NODE_PFN)(CStrObject* (CObject::*)(int))&_FND_CLASS::name, sig_si, _T(#name) },
