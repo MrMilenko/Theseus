@@ -466,13 +466,6 @@ static inline bool CanBreakAfter(WCHAR ch)
 	return ch == ' ' || (ch >= 0x3040 && ch < 0xf000) || ch >= 0xff66;
 }
 
-// Glyphs past index 190 come from the Japanese set and are drawn 10% smaller.
-// Theseus's; the 5960 layout uses every glyph at full size.
-static inline float GlyphScale(int nGlyph)
-{
-	return nGlyph > 190 ? 0.9f : 1.0f;
-}
-
 // Appends the blinking cursor quad, 0.1 wide from y - 0.1 to y + 0.75.
 // Reconstructed from 5960 retail XBE @ 0x00055030 (CFont::CreateCursorMesh):
 //     a = |sin((now + now) * PI)|; if (!visible) a = 0; color = (int)(a * 255) << 24 | 0xffffff;
@@ -773,13 +766,12 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 			for (int i = 0; i < pShape->nIndices; i++)
 				indices[nIndex++] = (WORD)(nVertex + pShape->indices[i]);
 
-			float glyphScale = GlyphScale(nGlyph);
 			DWORD color = 0xffffff00 | (DWORD)(blue * 255.0f);
 			for (int i = 0; i < pShape->nPoints; i++)
 			{
 				TEXTVERTEX& v = verts[nVertex++];
-				v.x = x + pShape->points[i].x * glyphScale;
-				v.y = y + pShape->points[i].y * glyphScale;
+				v.x = x + pShape->points[i].x;
+				v.y = y + pShape->points[i].y;
 				v.z = 0.0f;
 				v.nx = 0.0f;
 				v.ny = 0.0f;
@@ -790,7 +782,7 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 			if (ich - 1 == g_nTextChar)
 				AddCursor(indices, nIndex, verts, nVertex, x, y, true);
 
-			x += Advance(nGlyph) * glyphScale;
+			x += Advance(nGlyph);
 			if (column == 2)
 				col2Width += Advance(nGlyph);
 
