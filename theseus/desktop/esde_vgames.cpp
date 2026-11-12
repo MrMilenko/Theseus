@@ -116,6 +116,7 @@ void EsdeVGames_Sync(const char* esdeRoot)
                 snprintf(group, sizeof(group), "%s", systems[s].fullname);
             VGames_SetGroup(idx, group);
             g_vgames.games[idx].transient = true;
+            VGames_ApplyLiveMarks(idx);
 
             // Their scraped art, cached the way Steam icons are.
             c0 = clock();

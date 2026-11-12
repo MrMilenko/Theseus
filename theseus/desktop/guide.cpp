@@ -246,7 +246,10 @@ static const char* kSections[SEC_COUNT] = {
 };
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
-            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME };
+            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME };
+
+// What a game list shows.
+enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL };
 
 static const View kSectionViews[SEC_COUNT] = {
     GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_LOGS, GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT,
@@ -259,6 +262,7 @@ enum Act {
     GA_STEAM, GA_RETROARCH, GA_ESDE, GA_CHOOSEFILE, GA_CATEGORY, GA_ADDGAME,
     GA_BROWSEUP, GA_BROWSE, GA_PLAYLIST,
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
+    GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE,
     GA_COUNT
 };
 
@@ -309,6 +313,8 @@ static struct Guide {
     std::vector<BrowseEntry> entries;
     bool browseStale;
     int category, playlist;
+    int gameList, game;
+    unsigned gameLayout;   // g_vgames.layout when game was picked
 
     std::vector<HitTarget> targets;
     int promptButtons[4];
@@ -321,6 +327,41 @@ static void Add(const char* label, const char* value, const char* help, int act 
     r.act = act; r.arg = arg;
     g.rows.push_back(r);
 }
+
+// The rows of one game list, as DB indices.
+static void GameListRows(int list, std::vector<int>& out)
+{
+    out.clear();
+    if (list == GL_FAVORITES) { VGames_MarkList(VGAMES_FAVORITES, out); return; }
+    if (list == GL_RECENT)    { VGames_MarkList(VGAMES_RECENT, out); return; }
+    VGames_Load();
+    for (int i = 0; i < g_vgames.count; i++) {
+        const VirtualGame& vg = g_vgames.games[i];
+        if (list == GL_HIDDEN ? (vg.valid && vg.hidden) : VGames_IsShown(vg)) out.push_back(i);
+    }
+    std::sort(out.begin(), out.end(), [](int a, int b) {
+        return strcasecmp(g_vgames.games[a].name, g_vgames.games[b].name) < 0;
+    });
+}
+
+static std::string PlayedOn(long long t)
+{
+    if (!t) return "Never";
+    time_t tt = (time_t)t;
+    char buf[32];
+    strftime(buf, sizeof(buf), "%b %d, %H:%M", localtime(&tt));
+    return buf;
+}
+
+// The picked game, or NULL once the DB has moved rows around under us.
+static VirtualGame* PickedGame()
+{
+    if (g.gameLayout != g_vgames.layout || g.game < 0 || g.game >= g_vgames.count) return NULL;
+    VirtualGame* vg = &g_vgames.games[g.game];
+    return vg->valid ? vg : NULL;
+}
+
+static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games" };
 
 static void Build()
 {
@@ -374,6 +415,18 @@ static void Build()
         Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
         Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
         char n[32];
+        std::vector<int> list;
+        static const char* kListHelp[] = {
+            "Games you starred. They get their own spot in the launcher too.",
+            "The last games you started, newest first.",
+            "Games kept out of the launcher. Pick one to bring it back.",
+            "Everything in the launcher, A to Z. Pick one to star, hide or launch it.",
+        };
+        for (int l = GL_FAVORITES; l <= GL_ALL; l++) {
+            GameListRows(l, list);
+            snprintf(n, sizeof(n), "%d", (int)list.size());
+            Add(kGameListNames[l], n, kListHelp[l], GA_GAMELIST, l);
+        }
         snprintf(n, sizeof(n), "%d", Playlist_Count());
         Add("Playlists", n, "Made in the Playlist Maker.", GA_VIEW, GV_PLAYLISTS);
         break;
@@ -394,6 +447,29 @@ static void Build()
         for (size_t i = 0; i < g.entries.size(); i++)
             Add(g.entries[i].name.c_str(), g.entries[i].dir ? "Folder" : "", g.browseDir.c_str(), GA_BROWSE, (int)i);
         break;
+    case GV_GAMES: {
+        std::vector<int> list;
+        GameListRows(g.gameList, list);
+        for (size_t i = 0; i < list.size(); i++) {
+            const VirtualGame& vg = g_vgames.games[list[i]];
+            std::string value = g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed) : std::string(vg.category);
+            Add(vg.name, value.c_str(), vg.group[0] ? vg.group : vg.category, GA_GAME, list[i]);
+        }
+        if (g.rows.empty()) Add(g.gameList == GL_HIDDEN ? "Nothing hidden" : "Nothing here yet", "", NULL);
+        break;
+    }
+    case GV_GAME: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) { Add("This game moved", "", "Go back and pick it again."); break; }
+        Add("Launch", "", vg->launch, GA_LAUNCH);
+        Add("Favorite", vg->favorite ? "Yes" : "No", "Starred games get their own spot in the launcher.", GA_FAVORITE);
+        Add("Hidden", vg->hidden ? "Yes" : "No", "Hidden games stay out of the launcher until you bring them back.",
+            GA_HIDE);
+        Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
+        std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
+        Add("Category", where.c_str(), NULL);
+        break;
+    }
     case GV_PLAYLISTS:
         for (int i = 0; i < Playlist_Count(); i++) {
             const Playlist* pl = Playlist_Get(i);
@@ -506,6 +582,11 @@ static const char* ViewTitle()
     case GV_ADDGAME:   return "Add a Game";
     case GV_BROWSE:    return "Choose a File";
     case GV_PLAYLISTS: return "Playlists";
+    case GV_GAMES:     return kGameListNames[g.gameList];
+    case GV_GAME: {
+        VirtualGame* vg = PickedGame();
+        return vg ? vg->name : "Game";
+    }
     case GV_PLAYLIST: {
         const Playlist* pl = Playlist_Get(g.playlist);
         return pl ? pl->name.c_str() : "Playlist";
@@ -748,6 +829,36 @@ static void Select()
         g.playlist = r.arg;
         Push(GV_PLAYLIST);
         break;
+    case GA_GAMELIST:
+        g.gameList = r.arg;
+        Push(GV_GAMES);
+        break;
+    case GA_GAME:
+        g.game = r.arg;
+        g.gameLayout = g_vgames.layout;
+        Push(GV_GAME);
+        break;
+    case GA_FAVORITE:
+    case GA_HIDE: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        if (r.act == GA_FAVORITE) VGames_SetFavorite(g.game, !vg->favorite);
+        else                      VGames_SetHidden(g.game, !vg->hidden);
+        Build();
+        break;
+    }
+    case GA_LAUNCH: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        // The same Xbox-style path the launcher hands over.
+        char devicePath[512];
+        snprintf(devicePath, sizeof(devicePath), "\\Device\\Harddisk0\\Partition1\\%s\\%s",
+                 vg->category[0] ? vg->category : "Games", vg->name);
+        Close();
+        extern void DesktopLaunchTitle(const char* devicePath);
+        DesktopLaunchTitle(devicePath);
+        break;
+    }
     case GA_OPENLOGS:
         Host_OpenFolder(Plat_UserDataDir());
         break;
