@@ -11,6 +11,9 @@
 #include "settings_schema.h"
 #include "host.h"
 #include "app_paths.h"
+#include "preloader.h"
+#include <unistd.h>
+#include <errno.h>
 #include <SDL.h>
 #include <string>
 #include <vector>
@@ -24,6 +27,46 @@ extern void* g_pActiveKeyboard_void();
 // Set from the input layer (Guide button, LT+B, F7); the node picks it up.
 bool g_guideRequested = false;
 bool g_guideOpen = false;
+bool g_welcomeDone = false;   // desktop.ini WelcomeDone, set once the welcome has been seen
+
+extern int g_argc;
+extern char** g_argv;
+
+// Starts this program over with one mode flag in place of any other.
+static void RestartWithMode(const char* flag)
+{
+    std::vector<char*> args;
+    args.push_back(g_argv[0]);
+    for (int i = 1; i < g_argc; i++) {
+        if (!strcmp(g_argv[i], "--dashboard") || !strcmp(g_argv[i], "--development") ||
+            !strcmp(g_argv[i], "--preview")) continue;
+        args.push_back(g_argv[i]);
+    }
+    args.push_back((char*)flag);
+    args.push_back(NULL);
+    execv(g_argv[0], args.data());
+    fprintf(stderr, "[Guide] restart failed: %s\n", strerror(errno));
+}
+
+// Somewhere to put things on a fresh install: Movies, TV Shows and ROMs next
+// to the bundled Music folder. Only fills roots that are still empty.
+static void SetUpFolders()
+{
+    extern char g_musicRoot[512], g_moviesRoot[512], g_tvRoot[512], g_romsDir[512];
+    struct { char* root; size_t cch; const char* name; } kFolders[] = {
+        { g_musicRoot,  sizeof(g_musicRoot),  "Music" },
+        { g_moviesRoot, sizeof(g_moviesRoot), "Movies" },
+        { g_tvRoot,     sizeof(g_tvRoot),     "TV Shows" },
+        { g_romsDir,    sizeof(g_romsDir),    "ROMs" },
+    };
+    for (size_t i = 0; i < sizeof(kFolders) / sizeof(kFolders[0]); i++) {
+        char dir[1024];
+        snprintf(dir, sizeof(dir), "%s/%s", AppPath_Tree("Library"), kFolders[i].name);
+        Host_MakeDir(dir);
+        if (!kFolders[i].root[0]) snprintf(kFolders[i].root, kFolders[i].cch, "%s", dir);
+    }
+    SaveDesktopSettings();
+}
 
 static const char* ShippedVersion()
 {
@@ -73,10 +116,11 @@ static const char* SettingHelp(const SettingDef& d)
 static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games" };
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
 
-enum GuideView { GV_ROOT, GV_PAGES, GV_PAGE, GV_ABOUT, GV_SHORTCUTS };
+enum GuideView { GV_ROOT, GV_PAGES, GV_PAGE, GV_ABOUT, GV_SHORTCUTS, GV_START };
 
 enum GuideAct {
     GA_NONE, GA_VIEW, GA_SETTING, GA_TOOLS, GA_RESUME, GA_QUIT,
+    GA_DEVMODE, GA_FOLDERS, GA_OPENFOLDERS,
 };
 
 struct GuideRow {
@@ -88,7 +132,8 @@ struct GuideRow {
 class CDesktopGuide : public CNode
 {
 public:
-    CDesktopGuide() : m_view(GV_ROOT), m_page(0), m_cursor(0), m_backTo(NULL) {}
+    CDesktopGuide() : m_view(GV_ROOT), m_page(0), m_cursor(0), m_backTo(NULL),
+                      m_startChecked(false), m_startShown(false), m_foldersDone(false) {}
     DECLARE_NODE(CDesktopGuide, CNode)
     DECLARE_NODE_PROPS()
     DECLARE_NODE_FUNCTIONS()
@@ -97,6 +142,17 @@ public:
     void Advance(float nSeconds)
     {
         CNode::Advance(nSeconds);
+
+        // First run, or Startup Mode is "Ask": once the dashboard has
+        // arrived, the guide asks how to start.
+        if (!m_startChecked && g_pCurLevel && !g_bLevelTransition) {
+            m_startChecked = true;
+            if (!g_welcomeDone || g_startupMode == 0) {
+                CallFunction(this, _T("OnStartup"));
+                return;
+            }
+        }
+
         if (!g_guideRequested) return;
         if (g_bLevelTransition) return;
         g_guideRequested = false;
@@ -121,10 +177,23 @@ public:
     int ReturnToDashboard()
     {
         g_guideOpen = false;
+        if (m_startShown && !g_welcomeDone) {
+            g_welcomeDone = true;
+            SaveDesktopSettings();
+        }
+        m_startShown = false;
         CLevel* back = m_backTo;
         m_backTo = NULL;
         if (back && back != g_pCurLevel) { back->GoBackTo(); return 1; }
         return 0;
+    }
+
+    void ShowStart()
+    {
+        m_view = GV_START;
+        m_cursor = 0;
+        m_startShown = true;
+        Build();
     }
 
     int GetCount() { return (int)m_rows.size(); }
@@ -138,6 +207,7 @@ public:
         case GV_PAGE:      return new CStrObject(kPages[m_page]);
         case GV_ABOUT:     return new CStrObject(_T("About"));
         case GV_SHORTCUTS: return new CStrObject(_T("Shortcuts"));
+        case GV_START:     return new CStrObject(g_welcomeDone ? _T("Start") : _T("Welcome"));
         default:           return new CStrObject(_T("UIX Desktop"));
         }
     }
@@ -167,6 +237,20 @@ public:
             return 0;
         case GA_RESUME:
             return 3;
+        case GA_DEVMODE:
+            g_welcomeDone = true;
+            SaveDesktopSettings();
+            if (!Preloader_EnsureExtracted()) return -1;
+            RestartWithMode("--development");
+            return -1;
+        case GA_FOLDERS:
+            SetUpFolders();
+            m_foldersDone = true;
+            Build();
+            return 2;
+        case GA_OPENFOLDERS:
+            Plat_OpenInFileManager(AppPath_Tree("Library"));
+            return 0;
         case GA_QUIT: {
             SDL_Event quit;
             quit.type = SDL_QUIT;
@@ -212,6 +296,7 @@ private:
     std::vector<Frame> m_stack;
     std::vector<GuideRow> m_rows;
     CLevel* m_backTo;
+    bool m_startChecked, m_startShown, m_foldersDone;
 
     const GuideRow* Row(int i) const
     {
@@ -270,6 +355,25 @@ private:
             Add("And everyone who contributed", "", NULL);
             break;
         }
+        case GV_START: {
+            const char* intro = g_welcomeDone ? "B or A starts the dashboard."
+                : "Nothing here is required. It's all in the guide later too.";
+            Add("Start the Dashboard", "", intro, GA_RESUME);
+            Add("Development Mode", "", "Edit the scenes live. Restarts UIX Desktop.", GA_DEVMODE);
+            if (!g_welcomeDone || m_foldersDone)
+                Add("Set Up My Folders", m_foldersDone ? "Done" : "",
+                    "Makes Music, Movies, TV Shows and ROMs folders. Fill them when you like.",
+                    GA_FOLDERS);
+            Add("Open My Folders", "", "Shows them in your file manager.", GA_OPENFOLDERS);
+            const SettingDef* mode = DesktopSettings_Find("StartupMode");
+            if (mode) {
+                char val[64];
+                Setting_Display(*mode, val, sizeof(val));
+                Add(mode->label, val, "Ask on launch brings this screen back each time.", GA_SETTING,
+                    (int)(mode - DesktopSettings_Table().defs));
+            }
+            break;
+        }
         case GV_SHORTCUTS:
             Add("Guide button, LT+B or F7", "Guide", "Opens and closes this guide.");
             Add("F3",  "Title Maker", NULL);
@@ -301,6 +405,7 @@ END_NODE_PROPS()
 #define _FND_CLASS CDesktopGuide
 START_NODE_FUN(CDesktopGuide, CNode)
 	NODE_FUN_VV(Remember)
+	NODE_FUN_VV(ShowStart)
 	NODE_FUN_IV(ReturnToDashboard)
 	NODE_FUN_IV(GetCount)
 	NODE_FUN_IV(GetCursor)

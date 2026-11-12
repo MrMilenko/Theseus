@@ -21,6 +21,7 @@ extern int  g_audioBufferFrames;
 extern int  g_startupMode;
 extern bool g_bUseOnScreenKeyboard, g_bShowBootAnimation;
 extern bool g_menuBarAutoHide, g_padModeEnabled;
+extern bool g_welcomeDone;
 extern bool g_bEmulateXboxRes;
 extern float g_masterVolume;
 extern bool g_useMilkdropViz, g_showAlbumCover;
@@ -95,7 +96,7 @@ static const SettingDef kDefs[] = {
       SF_RESTART | SF_HIDDEN, NOENUM, 0, 0, 256, NULL, NULL },
     S_BOOL("ShowRetroArchTab", "Desktop", "Games", "RetroArch Tab", g_showRetroArchTab, "1", 0),
     S_BOOL("ShowSteamTab",     "Desktop", "Games", "Steam Tab",     g_showSteamTab,     "1", 0),
-    { "StartupMode", "Desktop", "General", "Startup Mode", SK_ENUM, &g_startupMode, 0, "", 0,
+    { "StartupMode", "Desktop", "General", "When UIX Desktop Starts", SK_ENUM, &g_startupMode, 0, "", 0,
       ENUM(kStartupVals, kStartupLbl, kStartupTok), 0, 0, 0, NULL, NULL },
     S_BOOL("UseOnScreenKeyboard", "Desktop", "General", "On-Screen Keyboard Only", g_bUseOnScreenKeyboard, "0", 0),
     S_BOOL("ShowBootAnimation",   "Desktop", "General", "Boot Animation",          g_bShowBootAnimation,   "1", 0),
@@ -105,6 +106,7 @@ static const SettingDef kDefs[] = {
       ENUM(kVsyncVals, kVsyncLbl, NULL), 0, 2, 0, NULL, ApplyVsync },
     S_BOOL("MenuBarAutoHide", "Desktop", "General", "Auto-hide Menu Bar", g_menuBarAutoHide, "1", 0),
     S_BOOL("PadMode",         "Desktop", "General", "Controller Tools",   g_padModeEnabled,  "1", SF_HIDDEN),
+    S_BOOL("WelcomeDone",     "Desktop", "General", "Welcome Shown",      g_welcomeDone,     "0", SF_HIDDEN),
     { "EmulateXboxRes", "Desktop", "Display", "Emulate Xbox Resolution", SK_BOOL, &g_bEmulateXboxRes, 0, "1", 0,
       NOENUM, 0, 0, 0, NULL, ApplyProjection },
     { "FpsCap", "Desktop", "Display", "FPS Cap", SK_ENUM, &g_fpsCap, 0, "0", 0,
