@@ -38,6 +38,11 @@ static char s_use720p[8]        = "Yes";
 static char s_useProgressive[8] = "Yes";
 char g_currentSkin[64]          = "Stock";
 
+// What desktop.ini says. g_startupMode is this run's mode, which
+// --dashboard / --development can override without it being saved.
+static int s_startupModeSaved = 0;
+static void ApplyStartupMode() { g_startupMode = s_startupModeSaved; }
+
 static void ApplyMsaa()       { g_msaaChangeRequested = true; }
 static void ApplyVsync()      { g_vsyncChangeRequested = true; }
 static void ApplyDisplay()    { g_displayChangeRequested = true; }
@@ -102,8 +107,8 @@ static const SettingDef kDefs[] = {
       SF_RESTART | SF_HIDDEN, NOENUM, 0, 0, 256, NULL, NULL },
     S_BOOL("ShowRetroArchTab", "Desktop", "Games", "RetroArch Tab", g_showRetroArchTab, "1", 0),
     S_BOOL("ShowSteamTab",     "Desktop", "Games", "Steam Tab",     g_showSteamTab,     "1", 0),
-    { "StartupMode", "Desktop", "General", "When UIX Desktop Starts", SK_ENUM, &g_startupMode, 0, "", 0,
-      ENUM(kStartupVals, kStartupLbl, kStartupTok), 0, 0, 0, NULL, NULL },
+    { "StartupMode", "Desktop", "General", "When UIX Desktop Starts", SK_ENUM, &s_startupModeSaved, 0, "", 0,
+      ENUM(kStartupVals, kStartupLbl, kStartupTok), 0, 0, 0, NULL, ApplyStartupMode },
     S_BOOL("UseOnScreenKeyboard", "Desktop", "General", "On-Screen Keyboard Only", g_bUseOnScreenKeyboard, "0", 0),
     S_BOOL("ShowBootAnimation",   "Desktop", "General", "Boot Animation",          g_bShowBootAnimation,   "1", 0),
     { "MSAA", "Desktop", "Display", "MSAA", SK_ENUM, &g_msaaSamples, 0, "4", SF_STRICT,
@@ -178,6 +183,7 @@ const SettingDef* DesktopSettings_Find(const char* key)
 void LoadDesktopSettings()
 {
     Settings_Load(DesktopSettings_Table(), AppPath("Configs/desktop.ini"));
+    ApplyStartupMode();
     TheseusSetProjectionDirty();
 }
 

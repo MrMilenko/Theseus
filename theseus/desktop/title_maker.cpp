@@ -15,6 +15,7 @@
 #include "xiso.h"
 #include "launchers/steam.h"
 #include "launchers/retroarch.h"
+#include "launchers/xemu.h"
 #include "imgui.h"
 #include "imfilebrowser.h"
 #include "stb_image.h"
@@ -22,6 +23,11 @@
 #include <sys/stat.h>
 #include <algorithm>
 #include <string>
+#include <vector>
+#include <deque>
+#include <thread>
+#include <mutex>
+#include <atomic>
 
 #include "host.h"
 #include "safe_save.h"
@@ -244,16 +250,17 @@ static void TM_RAImportItem(const char* label, const char* path,
     ctx->added++;
 }
 
-// Read Icons.ini into parallel key/value arrays. Returns entry count.
-#define TM_MAX_ICONS 512
-static int TM_ReadIconsIni(char keys[][128], char vals[][128]) {
-    int count = 0;
+// Icons.ini as name -> titleID pairs, as many as the file holds.
+struct TmIconEntry { char key[128]; char val[128]; };
+
+static std::vector<TmIconEntry> TM_ReadIconsIni() {
+    std::vector<TmIconEntry> out;
     const char* path = AppPath("Configs/Icons.ini");
     FILE* fp = fopen(path, "r");
     if (!fp) fp = fopen(AppPath("Configs/icons.ini"), "r");
-    if (!fp) return 0;
-    char line[256];
-    while (fgets(line, sizeof(line), fp) && count < TM_MAX_ICONS) {
+    if (!fp) return out;
+    char line[512];
+    while (fgets(line, sizeof(line), fp)) {
         char* nl = strchr(line, '\n'); if (nl) *nl = 0;
         char* cr = strchr(line, '\r'); if (cr) *cr = 0;
         if (line[0] == 0) continue;
@@ -262,23 +269,38 @@ static int TM_ReadIconsIni(char keys[][128], char vals[][128]) {
         char* eq = strchr(line, '=');
         if (eq) {
             *eq = 0;
-            strncpy(keys[count], line, 127); keys[count][127] = 0;
-            strncpy(vals[count], eq + 1, 127); vals[count][127] = 0;
-            count++;
+            TmIconEntry e;
+            strncpy(e.key, line, 127); e.key[127] = 0;
+            strncpy(e.val, eq + 1, 127); e.val[127] = 0;
+            out.push_back(e);
         }
     }
     fclose(fp);
-    return count;
+    return out;
 }
 
-static void TM_WriteIconsIni(char keys[][128], char vals[][128], int count) {
+static void TM_WriteIconsIni(const std::vector<TmIconEntry>& icons) {
     SafeSave save(AppPath("Configs/Icons.ini"));
     FILE* fp = save.f;
     if (!fp) return;
     fprintf(fp, "[default]\n");
-    for (int i = 0; i < count; i++)
-        fprintf(fp, "%s=%s\n", keys[i], vals[i]);
+    for (size_t i = 0; i < icons.size(); i++)
+        fprintf(fp, "%s=%s\n", icons[i].key, icons[i].val);
     save.Commit();
+}
+
+static void TM_UpsertIcon(std::vector<TmIconEntry>& icons, const char* name, const char* titleID) {
+    for (size_t i = 0; i < icons.size(); i++) {
+        if (strcasecmp(icons[i].key, name) == 0) {
+            strncpy(icons[i].val, titleID, 127);
+            icons[i].val[127] = 0;
+            return;
+        }
+    }
+    TmIconEntry e;
+    strncpy(e.key, name, 127); e.key[127] = 0;
+    strncpy(e.val, titleID, 127); e.val[127] = 0;
+    icons.push_back(e);
 }
 
 // Open a URL via the platform's default handler. Falls through the
@@ -472,32 +494,17 @@ static void TM_TransliterateUTF8(char* dst, const char* src, int maxLen) {
 // right icon file under Configs/icons/.
 static void TM_RegisterIcon(const char* name, const char* titleID) {
     if (!name || !*name || !titleID || !*titleID) return;
-    static char keys[TM_MAX_ICONS][128];
-    static char vals[TM_MAX_ICONS][128];
-    int count = TM_ReadIconsIni(keys, vals);
-    bool found = false;
-    for (int i = 0; i < count; i++) {
-        if (strcasecmp(keys[i], name) == 0) {
-            strncpy(vals[i], titleID, 127);
-            vals[i][127] = 0;
-            found = true;
-            break;
-        }
-    }
-    if (!found && count < TM_MAX_ICONS) {
-        strncpy(keys[count], name, 127); keys[count][127] = 0;
-        strncpy(vals[count], titleID, 127); vals[count][127] = 0;
-        count++;
-    }
-    TM_WriteIconsIni(keys, vals, count);
+    std::vector<TmIconEntry> icons = TM_ReadIconsIni();
+    TM_UpsertIcon(icons, name, titleID);
+    TM_WriteIconsIni(icons);
 }
 
 // Try a series of Steam CDN art URLs for an appid, copy the first hit
-// to <VGAMES_ICONS>/<titleID>.jpg, resize to 128px on macOS / Linux.
-// Returns true if an icon ended up on disk.
-static bool TM_DownloadSteamIcon(int appid, const char* titleID) {
+// to <iconDir>/<titleID>.jpg, resize to 128px on macOS / Linux.
+// Returns true if an icon ended up on disk. Runs on the icon worker.
+static bool TM_DownloadSteamIcon(int appid, const char* titleID, const char* iconDir) {
     char iconPath[512];
-    snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", VGAMES_ICONS, titleID);
+    snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", iconDir, titleID);
     struct stat ist;
     if (stat(iconPath, &ist) == 0) return true; // already have one
 
@@ -512,7 +519,7 @@ static bool TM_DownloadSteamIcon(int appid, const char* titleID) {
         bool isPng = strstr(tryUrls[u], ".png") != NULL;
         char tmpPath[512], url[512];
         snprintf(tmpPath, sizeof(tmpPath), "%s/%s_tmp%s",
-                 VGAMES_ICONS, titleID, isPng ? ".png" : ".jpg");
+                 iconDir, titleID, isPng ? ".png" : ".jpg");
         snprintf(url, sizeof(url),
                  "https://cdn.akamai.steamstatic.com/steam/apps/%d/%s",
                  appid, tryUrls[u]);
@@ -541,6 +548,71 @@ static bool TM_DownloadSteamIcon(int appid, const char* titleID) {
     return gotIcon;
 }
 
+// Steam icons download on a few workers so a big library doesn't freeze the
+// app. Most misses cost six requests each. The Title Maker shows progress.
+static const int kTmIconWorkers = 4;
+struct TmIconJob { int appid; char titleID[16]; std::string iconDir; };
+struct TmIconQueue {
+    std::mutex mtx;
+    std::deque<TmIconJob> jobs;
+    int workers = 0;
+    std::atomic<int> done{0}, total{0}, got{0};
+};
+// Never freed, so a download still going at exit has nothing torn down under it.
+static TmIconQueue& TM_Icons() {
+    static TmIconQueue* q = new TmIconQueue;
+    return *q;
+}
+
+static void TM_IconWorker() {
+    TmIconQueue& q = TM_Icons();
+    for (;;) {
+        TmIconJob job;
+        {
+            std::lock_guard<std::mutex> lk(q.mtx);
+            if (q.jobs.empty()) { q.workers--; return; }
+            job = q.jobs.front();
+            q.jobs.pop_front();
+        }
+        if (TM_DownloadSteamIcon(job.appid, job.titleID, job.iconDir.c_str())) q.got++;
+        q.done++;
+    }
+}
+
+static void TM_QueueSteamIcon(int appid, const char* titleID) {
+    TM_EnsureDir(VGAMES_ICONS);
+    TmIconJob job;
+    job.appid = appid;
+    strncpy(job.titleID, titleID, sizeof(job.titleID) - 1);
+    job.titleID[sizeof(job.titleID) - 1] = 0;
+    job.iconDir = VGAMES_ICONS;
+    TmIconQueue& q = TM_Icons();
+    std::lock_guard<std::mutex> lk(q.mtx);
+    // A finished batch starts the count over.
+    if (q.workers == 0) { q.done = 0; q.total = 0; q.got = 0; }
+    q.jobs.push_back(job);
+    q.total++;
+    if (q.workers < kTmIconWorkers) {
+        q.workers++;
+        std::thread(TM_IconWorker).detach();
+    }
+}
+
+// Main thread, every frame: let the dashboard pick up icons as they land.
+static void TM_PollSteamIcons() {
+    TmIconQueue& q = TM_Icons();
+    static int s_seen = 0;
+    int done = q.done;
+    if (done == s_seen) return;
+    bool idle;
+    { std::lock_guard<std::mutex> lk(q.mtx); idle = q.workers == 0; }
+    if (done < s_seen || done - s_seen >= 50 || idle) {
+        extern bool s_iconsLoaded;
+        s_iconsLoaded = false;
+        s_seen = done;
+    }
+}
+
 // Walk every installed Steam app (via Steam_DiscoverLibraries +
 // appmanifest_*.acf parsing) and add fresh entries to VGames as
 // steam://rungameid/<id> launches. Returns counts via outparams.
@@ -551,14 +623,12 @@ static void TM_ImportSteamLibrary(const char* steamPath,
     if (outIcons)   *outIcons   = 0;
 
     struct SteamGame { int appid; char name[256]; };
-    static SteamGame games[256];
-    int gameCount = 0;
+    std::vector<SteamGame> games;
 
     char libDirs[16][512];
     int libCount = Steam_DiscoverLibraries(steamPath, libDirs, 16);
 
     auto ParseAppManifest = [&](const char* libDir, const char* fileName) {
-        if (gameCount >= 256) return;
         if (strncmp(fileName, "appmanifest_", 12) != 0) return;
         char acfPath[512];
         snprintf(acfPath, sizeof(acfPath), "%s/%s", libDir, fileName);
@@ -581,27 +651,28 @@ static void TM_ImportSteamLibrary(const char* steamPath,
         }
         fclose(acf);
         if (appid > 0 && name[0]) {
-            games[gameCount].appid = appid;
-            TM_TransliterateUTF8(games[gameCount].name, name, 256);
-            gameCount++;
+            SteamGame g;
+            g.appid = appid;
+            TM_TransliterateUTF8(g.name, name, sizeof(g.name));
+            games.push_back(g);
         }
     };
 
-    for (int d = 0; d < libCount && gameCount < 256; d++) {
+    for (int d = 0; d < libCount; d++) {
         HostDir* dir = Host_OpenDir(libDirs[d]);
         if (!dir) continue;
         char name[260];
-        while (gameCount < 256 && Host_ReadDir(dir, name, sizeof(name), NULL))
+        while (Host_ReadDir(dir, name, sizeof(name), NULL))
             ParseAppManifest(libDirs[d], name);
         Host_CloseDir(dir);
     }
 
-    if (gameCount == 0) return;
+    if (games.empty()) return;
 
-    TM_EnsureDir(VGAMES_ICONS);
-    int created = 0, skipped = 0, iconsDl = 0;
+    int created = 0, skipped = 0, iconsQueued = 0;
+    std::vector<TmIconEntry> icons = TM_ReadIconsIni();
 
-    for (int i = 0; i < gameCount; i++) {
+    for (size_t i = 0; i < games.size(); i++) {
         char safeName[256];
         strncpy(safeName, games[i].name, 255); safeName[255] = 0;
         TM_SanitizeName(safeName, sizeof(safeName));
@@ -609,25 +680,27 @@ static void TM_ImportSteamLibrary(const char* steamPath,
         char titleID[16];
         snprintf(titleID, sizeof(titleID), "%08x", games[i].appid);
 
-        TM_RegisterIcon(safeName, titleID);
+        TM_UpsertIcon(icons, safeName, titleID);
 
         if (VGames_FindByName(safeName) >= 0) { skipped++; continue; }
 
         char launchCmd[256];
         snprintf(launchCmd, sizeof(launchCmd), "steam://rungameid/%d", games[i].appid);
-        VGames_Add(safeName, titleID, launchCmd, "E", "Games");
+        if (VGames_Add(safeName, titleID, launchCmd, "E", "Games") < 0) break;
         created++;
 
-        if (TM_DownloadSteamIcon(games[i].appid, titleID)) iconsDl++;
+        TM_QueueSteamIcon(games[i].appid, titleID);
+        iconsQueued++;
     }
 
+    TM_WriteIconsIni(icons);
     VGames_Save();
     UDataSynth_RebuildAll();
     VGames_Reload();
 
     if (outCreated) *outCreated = created;
     if (outSkipped) *outSkipped = skipped;
-    if (outIcons)   *outIcons   = iconsDl;
+    if (outIcons)   *outIcons   = iconsQueued;
 }
 
 // ============================================================================
@@ -635,6 +708,7 @@ static void TM_ImportSteamLibrary(const char* steamPath,
 // ============================================================================
 
 void RenderTitleMaker() {
+    TM_PollSteamIcons();
     if (!g_titleMakerOpen) return;
 
     // Position and size on first open. Cap max size to the viewport so the
@@ -650,14 +724,13 @@ void RenderTitleMaker() {
     ImGui::Begin("UIX Title Maker", &g_titleMakerOpen);
 
     // State (persists across frames)
-    #define TM_MAX_ENTRIES 512
-    struct TmEntry { int vgIndex; char name[128]; char launch[512]; char titleID[16]; char drive[4]; char category[32]; };
-    static TmEntry s_entries[TM_MAX_ENTRIES];
+    struct TmEntry { int vgIndex; char name[128]; char launch[sizeof(VirtualGame::launch)]; char titleID[16]; char drive[4]; char category[32]; };
+    static std::vector<TmEntry> s_entries;
     static int s_entryCount = 0;
     static bool s_needsScan = true;
     static int s_selectedIdx = -1;
     static char s_editName[128] = "";
-    static char s_editLaunch[512] = "";
+    static char s_editLaunch[sizeof(VirtualGame::launch)] = "";
     static char s_editTitleID[16] = "";
     static int s_editCategoryIdx = 0;
     static char s_newTitleName[128] = "";
@@ -730,10 +803,12 @@ void RenderTitleMaker() {
         extern bool s_iconsLoaded;
         s_iconsLoaded = false;
 
-        for (int i = 0; i < g_vgames.count && s_entryCount < TM_MAX_ENTRIES; i++) {
+        s_entries.clear();
+        for (int i = 0; i < g_vgames.count; i++) {
             VirtualGame& vg = g_vgames.games[i];
             if (!vg.valid) continue;
-            TmEntry& e = s_entries[s_entryCount];
+            s_entries.emplace_back();
+            TmEntry& e = s_entries.back();
             e.vgIndex = i;
             strncpy(e.name, vg.name, sizeof(e.name) - 1); e.name[sizeof(e.name) - 1] = 0;
             strncpy(e.launch, vg.launch, sizeof(e.launch) - 1); e.launch[sizeof(e.launch) - 1] = 0;
@@ -744,7 +819,7 @@ void RenderTitleMaker() {
         }
 
         // Sort alphabetically by name
-        std::sort(s_entries, s_entries + s_entryCount, [](const TmEntry& a, const TmEntry& b) {
+        std::sort(s_entries.begin(), s_entries.end(), [](const TmEntry& a, const TmEntry& b) {
             return strcasecmp(a.name, b.name) < 0;
         });
     };
@@ -809,12 +884,16 @@ void RenderTitleMaker() {
                     found = true;
                 }
             }
-            if (!found) {
+            if (!found && Xemu_FlatpakInstalled()) {
+                s_xemuPath[0] = 0;
+                strncpy(s_statusMsg, "Flatpak xemu found, leave the path empty", sizeof(s_statusMsg) - 1);
+                s_statusTime = 3.0f;
+            } else if (!found) {
                 strncpy(s_statusMsg, "xemu not found in common locations", sizeof(s_statusMsg) - 1);
                 s_statusTime = 3.0f;
             }
         }
-        if (s_xemuPath[0] == 0)
+        if (s_xemuPath[0] == 0 && !Xemu_FlatpakInstalled())
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "Set xemu path to enable ISO launching");
     }
 
@@ -983,22 +1062,9 @@ void RenderTitleMaker() {
 
             // Update Icons.ini for Xbox-side compatibility
             {
-                static char iconKeys[TM_MAX_ICONS][128];
-                static char iconVals[TM_MAX_ICONS][128];
-                int iconCount = TM_ReadIconsIni(iconKeys, iconVals);
-                bool found = false;
-                for (int i = 0; i < iconCount; i++) {
-                    if (strcasecmp(iconKeys[i], s_editName) == 0) {
-                        strncpy(iconVals[i], s_editTitleID, 127);
-                        found = true; break;
-                    }
-                }
-                if (!found && iconCount < TM_MAX_ICONS) {
-                    strncpy(iconKeys[iconCount], s_editName, 127);
-                    strncpy(iconVals[iconCount], s_editTitleID, 127);
-                    iconCount++;
-                }
-                TM_WriteIconsIni(iconKeys, iconVals, iconCount);
+                std::vector<TmIconEntry> icons = TM_ReadIconsIni();
+                TM_UpsertIcon(icons, s_editName, s_editTitleID);
+                TM_WriteIconsIni(icons);
             }
 
             // Refresh local entry cache
@@ -1038,20 +1104,12 @@ void RenderTitleMaker() {
 
                 // Remove from Icons.ini
                 {
-                    static char iconKeys[TM_MAX_ICONS][128];
-                    static char iconVals[TM_MAX_ICONS][128];
-                    int iconCount = TM_ReadIconsIni(iconKeys, iconVals);
-                    int newCount = 0;
-                    for (int i = 0; i < iconCount; i++) {
-                        if (strcasecmp(iconKeys[i], delName) != 0) {
-                            if (i != newCount) {
-                                strncpy(iconKeys[newCount], iconKeys[i], 127);
-                                strncpy(iconVals[newCount], iconVals[i], 127);
-                            }
-                            newCount++;
-                        }
+                    std::vector<TmIconEntry> icons = TM_ReadIconsIni();
+                    for (size_t i = 0; i < icons.size(); ) {
+                        if (strcasecmp(icons[i].key, delName) == 0) icons.erase(icons.begin() + i);
+                        else i++;
                     }
-                    TM_WriteIconsIni(iconKeys, iconVals, newCount);
+                    TM_WriteIconsIni(icons);
                 }
 
                 snprintf(s_statusMsg, sizeof(s_statusMsg), "Deleted: %s", delName);
@@ -1180,7 +1238,8 @@ void RenderTitleMaker() {
                         snprintf(titleIdHex, sizeof(titleIdHex), "%08x", s_isoInfo.titleId);
 
                         // Build xemu launch command
-                        char xemuLaunchCmd[1024] = "";
+                        char xemuLaunchCmd[sizeof(VirtualGame::launch)] = "";
+                        int cmdLen;
                         {
                             char xemuBin[512] = "";
                             if (s_xemuPath[0]) {
@@ -1190,28 +1249,34 @@ void RenderTitleMaker() {
                                 else
                                     strncpy(xemuBin, s_xemuPath, sizeof(xemuBin) - 1);
                             }
+                            // Bare xemu is found at launch, Flatpak and snap included.
                             if (xemuBin[0])
-                                snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
+                                cmdLen = snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
                                     "\"%s\" -machine xbox,short-animation=on -dvd_path \"%s\"", xemuBin, s_isoPath);
                             else
-                                snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
+                                cmdLen = snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
                                     "xemu -machine xbox,short-animation=on -dvd_path \"%s\"", s_isoPath);
                         }
+                        // A cut off line loses its closing quote and never launches.
+                        if (cmdLen < 0 || cmdLen >= (int)sizeof(xemuLaunchCmd)) {
+                            snprintf(s_statusMsg, sizeof(s_statusMsg), "ISO path too long to launch: %s", s_isoPath);
+                            s_statusTime = 6.0f;
+                        } else {
+                            VGames_Add(safeName, titleIdHex, xemuLaunchCmd, "E", "Games");
+                            VGames_Save(); UDataSynth_RebuildAll();
 
-                        VGames_Add(safeName, titleIdHex, xemuLaunchCmd, "E", "Games");
-                        VGames_Save(); UDataSynth_RebuildAll();
+                            // Save icon to VGAMES_ICONS/{titleID}.jpg
+                            if (s_isoInfo.titleImageRGBA) {
+                                TM_EnsureDir(VGAMES_ICONS);
+                                char iconPath[512];
+                                snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", VGAMES_ICONS, titleIdHex);
+                                XisoSaveTitleImage(&s_isoInfo, iconPath);
+                            }
 
-                        // Save icon to VGAMES_ICONS/{titleID}.jpg
-                        if (s_isoInfo.titleImageRGBA) {
-                            TM_EnsureDir(VGAMES_ICONS);
-                            char iconPath[512];
-                            snprintf(iconPath, sizeof(iconPath), "%s/%s.jpg", VGAMES_ICONS, titleIdHex);
-                            XisoSaveTitleImage(&s_isoInfo, iconPath);
+                            snprintf(s_statusMsg, sizeof(s_statusMsg), "Added: %s", safeName);
+                            s_statusTime = 3.0f;
+                            s_needsScan = true;
                         }
-
-                        snprintf(s_statusMsg, sizeof(s_statusMsg), "Added: %s", safeName);
-                        s_statusTime = 3.0f;
-                        s_needsScan = true;
                         s_showIsoResult = false;
                     }
                     ImGui::SameLine();
@@ -1453,12 +1518,11 @@ void RenderTitleMaker() {
             } else {
                 VGames_Add(cleanName, genID, launch, "E", "Games");
                 TM_RegisterIcon(cleanName, genID);
-                bool gotIcon = TM_DownloadSteamIcon(appidNum, genID);
+                TM_QueueSteamIcon(appidNum, genID);
                 VGames_Save();
                 UDataSynth_RebuildAll();
                 snprintf(s_statusMsg, sizeof(s_statusMsg),
-                         "Added: %s (%s)", cleanName,
-                         gotIcon ? "with icon" : "no icon found");
+                         "Added: %s, fetching its icon", cleanName);
                 s_statusTime = 3.0f;
                 s_stTitle[0] = 0;
                 s_stAppID[0] = 0;
@@ -1471,15 +1535,24 @@ void RenderTitleMaker() {
         bool canImport = s_steamPath[0] != 0;
         if (!canImport) ImGui::BeginDisabled();
         if (ImGui::Button("Import Steam Library")) {
-            int created = 0, skipped = 0, iconsDl = 0;
-            TM_ImportSteamLibrary(s_steamPath, &created, &skipped, &iconsDl);
+            int created = 0, skipped = 0, iconsQueued = 0;
+            TM_ImportSteamLibrary(s_steamPath, &created, &skipped, &iconsQueued);
             s_needsScan = true;
             snprintf(s_statusMsg, sizeof(s_statusMsg),
-                     "Imported %d new, %d existing, %d icons",
-                     created, skipped, iconsDl);
+                     "Imported %d new, %d existing, fetching %d icons",
+                     created, skipped, iconsQueued);
             s_statusTime = 5.0f;
         }
         if (!canImport) ImGui::EndDisabled();
+
+        {
+            TmIconQueue& q = TM_Icons();
+            int done = q.done, total = q.total;
+            if (total > 0 && done < total)
+                ImGui::Text("Fetching icons: %d / %d", done, total);
+            else if (total > 0)
+                ImGui::TextDisabled("Icons: %d of %d found", (int)q.got, total);
+        }
 
         ImGui::EndChild();
         ImGui::SameLine();
@@ -1573,13 +1646,13 @@ void RenderTitleMaker() {
         // Library list: every VGames entry whose launch URL is a
         // steam:// spec.
         {
-            int matchIdx[TM_MAX_ENTRIES];
-            int matchCount = 0;
-            for (int i = 0; i < g_vgames.count && matchCount < TM_MAX_ENTRIES; i++) {
+            std::vector<int> matchIdx;
+            for (int i = 0; i < g_vgames.count; i++) {
                 if (!g_vgames.games[i].valid) continue;
                 if (strncmp(g_vgames.games[i].launch, "steam://", 8) != 0) continue;
-                matchIdx[matchCount++] = i;
+                matchIdx.push_back(i);
             }
+            int matchCount = (int)matchIdx.size();
 
             ImGui::Text("Steam Library (%d)", matchCount);
 
@@ -1991,13 +2064,13 @@ void RenderTitleMaker() {
         // retroarch:// spec. Per-row delete; columns show the core
         // and content path parsed out of the launch URL.
         {
-            int matchIdx[TM_MAX_ENTRIES];
-            int matchCount = 0;
-            for (int i = 0; i < g_vgames.count && matchCount < TM_MAX_ENTRIES; i++) {
+            std::vector<int> matchIdx;
+            for (int i = 0; i < g_vgames.count; i++) {
                 if (!g_vgames.games[i].valid) continue;
                 if (strncmp(g_vgames.games[i].launch, "retroarch://", 12) != 0) continue;
-                matchIdx[matchCount++] = i;
+                matchIdx.push_back(i);
             }
+            int matchCount = (int)matchIdx.size();
 
             ImGui::Text("RetroArch Library (%d)", matchCount);
 

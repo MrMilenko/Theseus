@@ -1357,6 +1357,7 @@ END_NODE_FUN()
 #include "media_player.h"
 #include "panel_shared.h"  // for DashAudio_MuteAll/UnmuteAll
 #include <sys/stat.h>
+#include <deque>
 
 #define XBOX_BLOCK_SIZE 16384
 #define SAVED_GAME_MAX_TITLES 256
@@ -1909,7 +1910,9 @@ struct DesktopIconEntry {
 	char id[128];          // lowercased ID from icons.ini value
 	char iconPath[MAX_PATH]; // Xbox path: "E:\Games\FolderName\icon.jpg"
 };
-static DesktopIconEntry s_iconEntries[512];
+// Grows and never shrinks: the selected title's image path points in here,
+// and a deque keeps that pointer good while it grows.
+static std::deque<DesktopIconEntry> s_iconEntries;
 static int s_iconCount = 0;
 bool s_iconsLoaded = false;  // non-static: reset by Title Maker when games change
 
@@ -1924,7 +1927,7 @@ static void LoadDesktopIcons()
 	extern void VGames_Load();
 	VGames_Load();
 
-	for (int i = 0; i < g_vgames.count && s_iconCount < 512; i++) {
+	for (int i = 0; i < g_vgames.count; i++) {
 		if (!g_vgames.games[i].valid) continue;
 		if (!g_vgames.games[i].titleID[0]) continue;
 
@@ -1939,6 +1942,7 @@ static void LoadDesktopIcons()
 		}
 
 		// Store the Xbox path so xbox_path.h can redirect it to the cached icon.
+		if ((int)s_iconEntries.size() <= s_iconCount) s_iconEntries.emplace_back();
 		snprintf(s_iconEntries[s_iconCount].iconPath, MAX_PATH,
 			"%s:\\%s\\%s\\icon.jpg",
 			g_vgames.games[i].drive,

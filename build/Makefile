@@ -882,6 +882,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/launchers/registry.cpp \
 	$(THESEUS_SRC)/desktop/launchers/steam.cpp \
 	$(THESEUS_SRC)/desktop/launchers/retroarch.cpp \
+	$(THESEUS_SRC)/desktop/launchers/xemu.cpp \
 	$(THESEUS_SRC)/desktop/title_sanitize.cpp \
 	$(THESEUS_SRC)/desktop/udata_synth.cpp \
 	$(THESEUS_SRC)/desktop/desktop_stubs.cpp \
@@ -1098,6 +1099,10 @@ $(PROJECTM_MARKER):
 
 projectm-clean:
 	rm -rf $(PROJECTM_SRC)/build $(PROJECTM_SRC)/install
+
+# milkdrop_window.cpp includes projectM's headers and the link needs its libs,
+# so a parallel first build has to wait for the install.
+$(DESKTOP_DIR)/desktop/milkdrop_window.o $(DESKTOP_TARGET): | $(PROJECTM_MARKER)
 
 $(DESKTOP_TARGET): $(DESKTOP_OBJS)
 	@mkdir -p $(DESKTOP_DIR) $(DESKTOP_DIR)/lib
@@ -1362,6 +1367,9 @@ PROJECTM_WIN64_MARKER := $(PROJECTM_WIN64_PREFIX)/include/projectM-4/projectM.h
 PROJECTM_WIN64_TOOLCHAIN := $(abspath $(THESEUS_SRC)/../build/cmake-toolchains/mingw-w64-x86_64.cmake)
 
 projectm-deps-win64: $(PROJECTM_WIN64_MARKER)
+
+# Same race as the native build.
+$(WIN64_DIR)/desktop/milkdrop_window.o $(WIN64_TARGET): | $(PROJECTM_WIN64_MARKER)
 
 $(PROJECTM_WIN64_MARKER):
 	@if [ ! -f $(PROJECTM_SRC)/CMakeLists.txt ]; then \
