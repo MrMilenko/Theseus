@@ -4,7 +4,7 @@ What we found in the Xbox Dashboard about how it gets textures and meshes on scr
 `Texture` and `ImageTexture` nodes, a hundred slot texture cache fed by a background file
 loader, the XPR texture parser, and the `Mesh` node with the `.xm` reader behind it.
 Everything here comes from the 5960 retail XBE. Theseus rebuilds it in
-`render/asset_loader.cpp`.
+`render/asset_loader.cpp`, one file for both builds.
 
 ## Registration
 
@@ -208,4 +208,10 @@ and switches the FVF to XYZ, NORMPACKED3, DIFFUSE.
   loads the device view every frame.
 - A loose mesh that isn't beside the scene is looked for beside the app, not in the XIP folder.
 - A texture header whose pixel allocation fails is freed and the load returns NULL.
+- Desktop decodes textures in software: XPR files through `xbx_texture.h`, `.jpg`, `.png`
+  and `.bmp` through stb_image, anything else is refused. Loose files decode from the bytes
+  already fetched. It only probes the skin folder for files a skin can replace, and when the
+  XIP misses a texture it tries the other names in its equivalence group there too.
+- Desktop has no edge AA swap, adds a `falloff` prop to Mesh, counts drawn vertices, names
+  each texture for the inspector, and scans the skin folder through the host layer.
 - No out of memory reboot: allocations retry through `NewFailed` and give up.

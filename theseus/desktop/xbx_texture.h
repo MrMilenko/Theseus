@@ -1,6 +1,6 @@
 // xbx_texture.h: XBX texture parser. Parses Xbox XPR0 (.xbx) texture
 // format (DXT1 / DXT3 / DXT5 / linear, swizzled / unswizzled) and
-// creates GL texture objects. Used by desktop/image.cpp.
+// creates GL texture objects. Used by render/asset_loader.cpp.
 
 #pragma once
 

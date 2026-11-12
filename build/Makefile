@@ -837,11 +837,9 @@ DESKTOP_SRCS_FILE = \
 
 DESKTOP_SRCS_RENDER = \
 	$(THESEUS_SRC)/shared/screen.cpp \
-	$(THESEUS_SRC)/desktop/image.cpp \
-	$(THESEUS_SRC)/desktop/texture.cpp \
+	$(THESEUS_SRC)/render/asset_loader.cpp \
 	$(THESEUS_SRC)/render/tmap_system.cpp \
 	$(THESEUS_SRC)/render/materials.cpp \
-	$(THESEUS_SRC)/desktop/mesh.cpp \
 	$(THESEUS_SRC)/render/shape_render.cpp \
 	$(THESEUS_SRC)/render/text.cpp \
 	$(THESEUS_SRC)/render/starfield.cpp \

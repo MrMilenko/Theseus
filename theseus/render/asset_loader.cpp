@@ -7,6 +7,8 @@
 //
 // Theseus adds the skin folder probing in front of the XIP, the loose file
 // fallbacks, the skin texture preload, and the flushes a skin switch uses.
+// Both builds compile this file. The desktop seams are the texture decoders,
+// the preload's folder scan, the NV2A states and the inspector's names.
 
 #include "std.h"
 #include "theseus.h"
@@ -18,9 +20,15 @@
 #include "activefile.h"
 #include "xip_archive.h"
 #include "file_util.h"
-
+#ifdef _XBOX
 extern "C" void WINAPI D3D_FreeNoncontiguousMemory(void* pMemory);
 extern BOOL g_bEdgeAntialiasOverride;
+#else
+#include "xbx_texture.h"
+#include "host.h"
+extern int g_nVertPerFrame;
+extern int g_nTriPerFrame;
+#endif
 
 
 // ===== Textures =============================================================
@@ -290,6 +298,18 @@ struct CachedTexture
 static CachedTexture g_textureCache[100];
 static CachedTexture* g_pLockedTexture;		// 0x0017da68, the slot being filled
 
+// Desktop: the inspector shows which file a texture came from.
+static void NameTexture(LPDIRECT3DTEXTURE8 pTex, const TCHAR* szURL)
+{
+#ifndef _XBOX
+	if (pTex != NULL && szURL != NULL)
+	{
+		Ansi(pTex->m_srcName, szURL, sizeof(pTex->m_srcName) - 1);
+		pTex->m_srcName[sizeof(pTex->m_srcName) - 1] = 0;
+	}
+#endif
+}
+
 static void EmptySlot(CachedTexture* pSlot)
 {
 	delete [] pSlot->m_url;
@@ -339,6 +359,7 @@ void CBackgroundTexture::OnComplete()
 	m_slot->m_texture = pTex;
 	m_slot->m_loading = false;
 	m_slot->m_timeLoaded = TheseusGetNow();
+	NameTexture(pTex, m_url);
 }
 
 // CleanupTextureCache()
@@ -443,6 +464,7 @@ CachedTexture* FindTexture(const TCHAR* szURL, bool bAsync, UINT width, UINT hei
 	{
 		pFree->m_texture = LoadTexture(szURL, width, height);
 		pFree->m_timeLoaded = TheseusGetNow();
+		NameTexture(pFree->m_texture, szURL);
 	}
 	else
 	{
@@ -579,7 +601,6 @@ LPDIRECT3DTEXTURE8 ParseTexture(const TCHAR* szURL, const BYTE* pbContent, int c
 			return MakeTexture(pRes, pbContent + pXpr->dwHeaderSize, cbPixels);
 		}
 	}
-#endif
 
 	HRESULT hr;
 	LPDIRECT3DTEXTURE8 pTex;
@@ -594,6 +615,90 @@ LPDIRECT3DTEXTURE8 ParseTexture(const TCHAR* szURL, const BYTE* pbContent, int c
 	while (hr == E_OUTOFMEMORY && NewFailed(cbContent) != 0);
 
 	return NULL;
+#else
+	// Desktop: XPR textures decode in software (xbx_texture.h), common
+	// image files through stb_image, anything else is refused.
+	const char* pszExt = strrchr(szURL, '.');
+	if (pszExt == NULL)
+		return NULL;
+	pszExt++;
+
+	if (_stricmp(pszExt, "xbx") == 0 || _stricmp(pszExt, "xt") == 0)
+	{
+		LPDIRECT3DTEXTURE8 pTex = XBX_ParseTexture(pbContent, cbContent);
+		if (pTex == NULL)
+			fprintf(stderr, "[XBX] ParseTexture failed for '%s'\n", szURL);
+		return pTex;
+	}
+
+	if (_stricmp(pszExt, "jpg") == 0 || _stricmp(pszExt, "jpeg") == 0 || _stricmp(pszExt, "png") == 0 || _stricmp(pszExt, "bmp") == 0)
+	{
+		int w = 0, h = 0, channels = 0;
+		unsigned char* pixels = stbi_load_from_memory(pbContent, cbContent, &w, &h, &channels, 4);
+		if (pixels == NULL)
+			return NULL;
+		LPDIRECT3DTEXTURE8 pTex = NULL;
+		if (w > 0 && h > 0)
+		{
+			pTex = new IDirect3DTexture8();
+			pTex->CreateFromRGBA((UINT)w, (UINT)h, pixels);
+		}
+		stbi_image_free(pixels);
+		return pTex;
+	}
+
+	return NULL;
+#endif
+}
+
+// Skin folder path for one candidate name: the skin dir with the name on the end.
+static void MakeSkinPath(TCHAR* szOut, const char* szName)
+{
+	_tcscpy(szOut, TheseusGetSkinDir());
+	int cch = (int)_tcslen(szOut);
+	Unicode(szOut + cch, szName, MAX_PATH - cch);
+}
+
+// The file name part of a path, as ANSI, for SkinCandidatesFor.
+static void BaseName(char* szOut, const TCHAR* szPath)
+{
+	const TCHAR* pszBase = szPath;
+	for (const TCHAR* p = szPath; *p; p++)
+		if (*p == '/' || *p == '\\')
+			pszBase = p + 1;
+	Ansi(szOut, pszBase, MAX_PATH);
+}
+
+// Theseus: a loose image file fetched from disk. Xbox opens the common
+// formats with D3DX by name; desktop decodes the bytes already fetched, so the
+// virtual game icon redirect still applies.
+static LPDIRECT3DTEXTURE8 DecodeLooseImage(const TCHAR* szURL, CActiveFile& file, UINT width, UINT height)
+{
+	const TCHAR* pszExt = _tcsrchr(szURL, '.');
+#ifdef _XBOX
+	static const TCHAR* const c_rgszD3DX[] = { _T(".tga"), _T(".bmp"), _T(".dds") };
+#else
+	static const TCHAR* const c_rgszD3DX[] = { ".tga", ".bmp", ".dds", ".jpg", ".png", ".jpeg" };
+#endif
+	for (int i = 0; pszExt != NULL && i < countof(c_rgszD3DX); i++)
+	{
+		if (_tcsicmp(pszExt, c_rgszD3DX[i]) != 0)
+			continue;
+
+		LPDIRECT3DTEXTURE8 pTex = NULL;
+#ifdef _XBOX
+		char szAnsi[MAX_PATH];
+		Ansi(szAnsi, szURL, MAX_PATH);
+		if (FAILED(D3DXCreateTextureFromFileA(TheseusGetD3DDev(), szAnsi, &pTex)))
+			return NULL;
+#else
+		if (FAILED(D3DXCreateTextureFromFileInMemory(TheseusGetD3DDev(), file.GetContent(), file.GetContentLength(), &pTex)))
+			return NULL;
+#endif
+		return pTex;
+	}
+
+	return ParseTexture(szURL, file.GetContent(), file.GetContentLength(), width, height);
 }
 
 // LoadTexture(url, width, height)
@@ -610,38 +715,36 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR* szURL, UINT width, UINT height)
 
 	CActiveFile file;
 
-	// Theseus: a skin's texture wins over the XIP, under any name in its
-	// equivalence group so UI.X-era skins still cover retail requests.
+	// Theseus: a skin's texture wins over the XIP, under any .xbx name in its
+	// equivalence group so UI.X-era skins still cover retail requests. Desktop
+	// only probes the files a skin can replace.
 	if (TheseusGetSkinDir())
 	{
-		TCHAR OverrideName[MAX_PATH];
-		_tcscpy(OverrideName, szURL);
+		TCHAR szWanted[MAX_PATH];
+		_tcscpy(szWanted, szURL);
+		TCHAR* pszDot = _tcsrchr(szWanted, '.');
+		if (pszDot != NULL)
+			_tcscpy(pszDot + 1, _T("xbx"));
 
-		TCHAR *ext = _tcsrchr(OverrideName, '.');
-		if (ext != NULL)
-			_tcscpy(ext + 1, _T("xbx")); // force .xbx extension for override
-
-		// Convert basename to ANSI for SkinCandidatesFor.
-		const TCHAR *baseW = OverrideName;
-		for (const TCHAR *p = OverrideName; *p; p++)
-			if (*p == _T('/') || *p == _T('\\')) baseW = p + 1;
-		char baseAnsi[MAX_PATH];
-		Ansi(baseAnsi, baseW, MAX_PATH);
-
-		const char *candidates[4];
-		int nCandidates = SkinCandidatesFor(baseAnsi, candidates, 4);
-
-		for (int i = 0; i < nCandidates; i++)
+		char szName[MAX_PATH];
+		BaseName(szName, szWanted);
+#ifndef _XBOX
+		if (IsSkinnableAsset(szName))
+#endif
 		{
-			TCHAR SkinPath[MAX_PATH];
-			_stprintf(SkinPath, _T("%s%hs"), TheseusGetSkinDir(), candidates[i]);
+			const char* rgszNames[4];
+			int cNames = SkinCandidatesFor(szName, rgszNames, 4);
+			for (int i = 0; i < cNames; i++)
+			{
+				TCHAR szSkinPath[MAX_PATH];
+				MakeSkinPath(szSkinPath, rgszNames[i]);
+				if (!file.Fetch(szSkinPath, true))
+					continue;
 
-			if (!file.Fetch(SkinPath, true))
-				continue;
-
-			LPDIRECT3DTEXTURE8 lpTexture = ParseTexture(SkinPath, file.GetContent(), file.GetContentLength(), width, height);
-			if (lpTexture != NULL)
-				return lpTexture;
+				LPDIRECT3DTEXTURE8 pTex = ParseTexture(szSkinPath, file.GetContent(), file.GetContentLength(), width, height);
+				if (pTex != NULL)
+					return pTex;
+			}
 		}
 	}
 
@@ -652,26 +755,33 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR* szURL, UINT width, UINT height)
 		LPDIRECT3DTEXTURE8 pTex = (LPDIRECT3DTEXTURE8)FindObjectInXIP(szPath, szURL, XIP_TYPE_TEXTURE);
 		if (pTex != NULL)
 			return pTex;
+
+#ifndef _XBOX
+		// Desktop: the XIP holds one name per group, so shell.xbx finds the
+		// cellwall.xbx that's really in there.
+		char szName[MAX_PATH];
+		BaseName(szName, szPath);
+		int cchDir = (int)_tcslen(szPath) - (int)strlen(szName);
+
+		const char* rgszNames[4];
+		int cNames = SkinCandidatesFor(szName, rgszNames, 4);
+		for (int i = 1; i < cNames; i++)
+		{
+			TCHAR szAlias[MAX_PATH];
+			snprintf(szAlias, sizeof(szAlias), "%.*s%s", cchDir, szPath, rgszNames[i]);
+			pTex = (LPDIRECT3DTEXTURE8)FindObjectInXIP(szAlias, szURL, XIP_TYPE_TEXTURE);
+			if (pTex != NULL)
+				return pTex;
+		}
+#endif
 	}
 
 	// Theseus: the file itself, with its own extension.
 	if (file.Fetch(szURL, true))
 	{
-		TCHAR *ext = _tcsrchr(szURL, '.');
-		if (ext && (_tcsicmp(ext, _T(".tga")) == 0 || _tcsicmp(ext, _T(".bmp")) == 0 || _tcsicmp(ext, _T(".dds")) == 0))
-		{
-			char ansiPath[MAX_PATH];
-			Ansi(ansiPath, szURL, MAX_PATH);
-			LPDIRECT3DTEXTURE8 lpTexture = NULL;
-			if (SUCCEEDED(D3DXCreateTextureFromFileA(TheseusGetD3DDev(), ansiPath, &lpTexture)))
-				return lpTexture;
-		}
-		else
-		{
-			LPDIRECT3DTEXTURE8 lpTexture = ParseTexture(szURL, file.GetContent(), file.GetContentLength(), width, height);
-			if (lpTexture != NULL)
-				return lpTexture;
-		}
+		LPDIRECT3DTEXTURE8 pTex = DecodeLooseImage(szURL, file, width, height);
+		if (pTex != NULL)
+			return pTex;
 	}
 
 	// No final fallback. Returning menu_hilight.xbx for any missing texture
@@ -725,10 +835,8 @@ IMGCACHE *FindImage(const TCHAR *szURL)
 	{
 		delete[] pOldOne->m_url;
 
-#ifdef _XBOX
 		if (pOldOne->m_hImage != NULL)
 			pOldOne->m_hImage->Release();
-#endif
 
 		ZeroMemory(pOldOne, sizeof(IMGCACHE));
 		pFreeOne = pOldOne;
@@ -745,12 +853,10 @@ IMGCACHE *FindImage(const TCHAR *szURL)
 
 	if (pFreeOne->m_hImage != NULL)
 	{
-#ifdef _XBOX
 		D3DSURFACE_DESC sd;
 		VERIFYHR(pFreeOne->m_hImage->GetLevelDesc(0, &sd));
 		pFreeOne->m_size.cx = (int)sd.Width;
 		pFreeOne->m_size.cy = (int)sd.Height;
-#endif
 	}
 
 	pImgLock = NULL;
@@ -760,6 +866,7 @@ IMGCACHE *FindImage(const TCHAR *szURL)
 
 LPDIRECT3DTEXTURE8 MyLoadImage(const TCHAR *szURL) { return LoadTexture(szURL, 0, 0); }
 
+#ifdef _XBOX
 void PreloadSkinTextures()
 {
 	OutputDebugStringA("[Preload] Entered PreloadSkinTextures()\n");
@@ -834,6 +941,68 @@ void PreloadSkinTextures()
 	TheseusFindClose(hFind);
 	OutputDebugStringA("[Preload] Skin texture preload complete.\n");
 }
+#else
+// Desktop: the skin folder goes through the path translator and the host
+// folder scan.
+void PreloadSkinTextures()
+{
+
+	if (!g_sSkinDir || g_sSkinDir[0] == '\0')
+	{
+		return;
+	}
+
+	char ansiSkinDir[MAX_PATH] = {0};
+	Ansi(ansiSkinDir, g_sSkinDir, MAX_PATH);
+
+	// The skin menu saves the name with a capital first letter, so on Linux
+	// the folder only turns up through the case blind translator.
+	char mappedDir[MAX_PATH];
+	if (!XboxPath_Translate(ansiSkinDir, mappedDir, sizeof(mappedDir)))
+		mappedDir[0] = '\0';
+
+
+	// Extract skin folder name to skip the config .xbx file
+	const char* skinDirName = strrchr(ansiSkinDir, '\\');
+	if (!skinDirName) skinDirName = strrchr(ansiSkinDir, '/');
+	if (skinDirName) skinDirName++;
+	// Handle trailing slash; back up one more
+	if (skinDirName && *skinDirName == '\0') {
+		const char* end = skinDirName - 2; // before the slash
+		while (end > ansiSkinDir && *end != '\\' && *end != '/') end--;
+		if (*end == '\\' || *end == '/') skinDirName = end + 1;
+	}
+	char skinConfigName[MAX_PATH] = {};
+	if (skinDirName) {
+		// Config file is "skinname.xbx"; extract just the folder name part
+		const char* nameEnd = skinDirName;
+		while (*nameEnd && *nameEnd != '\\' && *nameEnd != '/') nameEnd++;
+		snprintf(skinConfigName, MAX_PATH, "%.*s.xbx", (int)(nameEnd - skinDirName), skinDirName);
+	}
+
+	auto ProcessXbxFile = [&](const char* fileName) {
+		const char* dot = strrchr(fileName, '.');
+		if (!dot || _stricmp(dot, ".xbx") != 0) return;
+		if (skinConfigName[0] && _stricmp(fileName, skinConfigName) == 0) return;
+
+
+		char wideFileName[MAX_PATH];
+		for (int i = 0; i < MAX_PATH - 1 && fileName[i]; i++)
+			wideFileName[i] = (char)fileName[i];
+		wideFileName[strlen(fileName)] = 0;
+		FindImage(wideFileName);
+	};
+
+	HostDir* dir = Host_OpenDir(mappedDir);
+	if (!dir) {
+		OutputDebugStringA("[Preload] Could not open skin directory\n");
+		return;
+	}
+	char name[MAX_PATH];
+	while (Host_ReadDir(dir, name, sizeof(name), NULL)) ProcessXbxFile(name);
+	Host_CloseDir(dir);
+}
+#endif
 
 // ===== Meshes ===============================================================
 
@@ -891,7 +1060,13 @@ bool CMesh::Create(HANDLE hFile)
 	else if (hdr.dwPrimitiveType == 5)
 		m_primitiveType = D3DPT_TRIANGLESTRIP;
 	else
+	{
+#ifdef _XBOX
 		return false;
+#else
+		m_primitiveType = (D3DPRIMITIVETYPE)hdr.dwPrimitiveType;	// desktop takes the file's word for it
+#endif
+	}
 
 	m_nFaceCount = hdr.dwFaceCount;
 	m_fvf = hdr.dwFVF;
@@ -904,7 +1079,11 @@ bool CMesh::Create(HANDLE hFile)
 
 	BYTE* pb;
 	TheseusCreateVertexBuffer(cbVertices, D3DUSAGE_DYNAMIC, m_fvf, D3DPOOL_DEFAULT, &m_vertexBuffer);
+#ifdef _XBOX
 	m_vertexBuffer->Lock(0, 0, &pb, D3DLOCK_DISCARD | D3DLOCK_NOFLUSH);
+#else
+	m_vertexBuffer->Lock(0, 0, &pb, D3DLOCK_DISCARD);
+#endif
 	ReadFile(hFile, pb, cbVertices, &cbRead, NULL);
 	m_vertexBuffer->Unlock();
 
@@ -958,7 +1137,7 @@ bool CMesh::Load(const TCHAR* szFilePath)
 //     DrawIndexedVertices(primType, the index count for faces, indices);
 //     if (g_uMesh == 0) put the view back; g_uMesh++;
 // Theseus doesn't swap the view; its camera writes the device view every
-// frame. The edge AA swap is Xbox only, and the draw counter is Theseus's.
+// frame. The edge AA swap is Xbox only; the draw and vertex counters are Theseus's.
 void CMesh::Render(bool bSetFVF)
 {
 	if (m_vertexBuffer == NULL || m_indexBuffer == NULL)
@@ -979,6 +1158,11 @@ void CMesh::Render(bool bSetFVF)
 	TheseusSetIndices(m_indexBuffer, 0);
 	Frame_Count(FC_DRAW_SCENE);
 	TheseusDrawIndexedPrimitive(m_primitiveType, 0, m_nVertexCount, 0, m_nFaceCount);
+
+#ifndef _XBOX
+	g_nVertPerFrame += m_nVertexCount;
+	g_nTriPerFrame += m_nFaceCount;
+#endif
 }
 
 // LoadMesh(path)
@@ -1104,6 +1288,9 @@ IMPLEMENT_NODE("Mesh", CMeshNode, CNode)
 
 START_NODE_PROPS(CMeshNode, CNode)
 	NODE_PROP(pt_string, CMeshNode, url)
+#ifndef _XBOX
+	NODE_PROP(pt_number, CMeshNode, falloff)	// Theseus, desktop only
+#endif
 END_NODE_PROPS()
 
 #define _FND_CLASS CMeshNode
@@ -1225,33 +1412,27 @@ void CMeshNode::load(const TCHAR* szFile)
 	// so a skin shipping only Inner_cell-FACES.xm covers cellwall.xm.
 	if (TheseusGetSkinDir() && TheseusGetSkinDir()[0])
 	{
-		const TCHAR *baseW = szFile;
-		for (const TCHAR *p = szFile; *p; p++)
-			if (*p == _T('/') || *p == _T('\\')) baseW = p + 1;
-		char baseAnsi[MAX_PATH];
-		Ansi(baseAnsi, baseW, MAX_PATH);
+		char szName[MAX_PATH];
+		BaseName(szName, szFile);
 
-		const char *candidates[4];
-		int nCandidates = SkinCandidatesFor(baseAnsi, candidates, 4);
-
-		for (int i = 0; i < nCandidates && m_mesh == NULL; i++)
+		const char* rgszNames[4];
+		int cNames = SkinCandidatesFor(szName, rgszNames, 4);
+		for (int i = 0; i < cNames; i++)
 		{
-			TCHAR SkinMeshPath[MAX_PATH];
-			_stprintf(SkinMeshPath, _T("%s%hs"), TheseusGetSkinDir(), candidates[i]);
-			CMesh *pSkinMesh = new CMesh;
-			if (pSkinMesh->Load(SkinMeshPath))
+			TCHAR szSkinPath[MAX_PATH];
+			MakeSkinPath(szSkinPath, rgszNames[i]);
+			CMesh* pSkinMesh = new CMesh;
+			if (pSkinMesh->Load(szSkinPath))
 			{
-				m_ownMesh = true;
 				m_mesh = pSkinMesh;
-				TRACE(_T("\002Loaded %s from skin override\n"), SkinMeshPath);
+				m_ownMesh = true;
+#ifdef _XBOX
+				TRACE(_T("\002Loaded %s from skin override\n"), szSkinPath);
+#endif
+				return;
 			}
-			else
-			{
-				delete pSkinMesh;
-			}
+			delete pSkinMesh;
 		}
-		if (m_mesh != NULL)
-			return;
 	}
 
 	m_mesh = (CMeshCore*)FindObjectInXIP(szPath, szFile);
