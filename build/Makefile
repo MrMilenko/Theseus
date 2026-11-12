@@ -862,7 +862,7 @@ DESKTOP_SRCS_SYSTEM = \
 	$(THESEUS_SRC)/desktop/dashinit.cpp \
 	$(THESEUS_SRC)/desktop/config.cpp \
 	$(THESEUS_SRC)/desktop/joystick.cpp \
-	$(THESEUS_SRC)/desktop/keyboard.cpp \
+	$(THESEUS_SRC)/shared/keyboard_node.cpp \
 	$(THESEUS_SRC)/desktop/locale.cpp \
 	$(THESEUS_SRC)/shared/timezone.cpp \
 	$(THESEUS_SRC)/desktop/debug.cpp \
