@@ -428,8 +428,16 @@ below `(4 * lastMax + 6 * lastMin) / 10`.
   `d1, d2 = 80, 140.48` and `187.2, 271.13`. `k` starts from a global (`0x00188f40`) each
   trail and the second trail's end is stored back.
 
-## Notes
+## FFT
 
-- CSurfx operates on a raw BYTE array with manual pitch calculation.
-- The FFT is a standard radix-2 Cooley-Tukey with precomputed twiddle factors. Buffer size is 256 samples (FFT_BUFFER_SIZE_LOG=8).
-- CDynamicTexture uses the Xbox Swizzler API for texture upload.
+A plain 256 point radix-2 decimation-in-time FFT.
+
+- **Tables (`0x0005f040`).** Allocates the 0x800 byte state (256 real + 256 imaginary floats),
+  fills a 256 entry bit-reverse table (`0x0017ccf8`) and 128 entry cos/sin tables
+  (`0x0017c8f8`, `0x0017caf8`) of `i * 2pi/256` (`0x0002bf40`).
+- **Load (`0x0005f0f0`).** `re[i] = sample[bitrev[i]]`, `im[i] = 0`, then the passes and the
+  power step.
+- **Passes (`0x0005f290`).** 8 passes, butterfly span 1, 2, .. 128; twiddle `j * (128 / span)`;
+  `t = (re*c - im*s, im*c + re*s)`, `b = a - t`, `a = a + t`.
+- **Power (`0x0005f140`).** `out[i] = re^2 + im^2` for bins 0..128 (unrolled by 4), then bins 0
+  and 128 times 0.25 (`0x0002beec`).

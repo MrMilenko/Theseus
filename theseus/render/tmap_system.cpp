@@ -1,15 +1,10 @@
-// tmap_system.cpp: TMAP (dynamic texture) rendering pipeline.
+// tmap_system.cpp: the music visualizer's texture effects.
 //
-//   CSurfx           8-bit palettized pixel surface with line drawing
-//   DeltaField       2D vector-field pixel-displacement effects
-//   CPalette         HSV palette generator with timed crossfades
-//   CDynamicTexture  Renders children into a palettized texture each frame
-//   CImageFader      Delta-field effect applied to a CSurfx
-//   CAudioVisualizer PCM / FFT audio visualisation rendered to CSurfx
-//   FFT              Radix-2 Cooley-Tukey
-//
-// Decompiled from the 5960 retail XBE; see docs/decomp/TmapSystem.md.
-// All node types confirmed in 5960 retail XBE.
+// A DynamicTexture owns an 8-bit CSurfx; each frame its children draw into it
+// (ImageFader warps last frame through a DeltaField, AudioVisualizer draws the
+// music, Palette paints a test ramp) and the result goes up as a paletted
+// texture. Rebuilt function by function from the 5960 retail XBE; the
+// findings are in docs/decomp/TmapSystem.md.
 
 #include "std.h"
 #include "theseus.h"
@@ -1912,47 +1907,46 @@ void CAudioVisualizer::RenderEffect2(CSurfx* pSurfx)
 
 
 // ===== FFT ==================================================================
-// Radix-2 Cooley-Tukey FFT. Input: FFT_BUFFER_SIZE sound_samples.
-// Output: FFT_BUFFER_SIZE/2+1 intensity floats. Pure math, used by both
-// Xbox CAudioVisualizer above and desktop's CAudioVisualizer in
-// desktop/desktop_nodes.cpp.
+// 256 point radix-2 FFT returning the power of bins 0..128. Shared with the
+// desktop CAudioVisualizer in desktop/desktop_nodes.cpp.
+//
+// Written from first principles: the textbook iterative decimation-in-time
+// Cooley-Tukey transform (bit reversed load, log2(N) butterfly passes with
+// cos/sin twiddle tables). Same shape as the 5960 routines @ 0x0005f040
+// (tables), 0x0005f0f0 (load), 0x0005f290 (passes) and 0x0005f140 (power,
+// with bins 0 and N/2 quartered via 0x0002beec), so the output matches.
 
-#undef PI
 #define PI 3.14159265358979323846f
 
 struct _struct_fft_state
 {
-	float real [FFT_BUFFER_SIZE];
-	float imag [FFT_BUFFER_SIZE];
+	float re [FFT_BUFFER_SIZE];
+	float im [FFT_BUFFER_SIZE];
 };
 
-static void fft_prepare(const sound_sample *input, float * re, float * im);
-static void fft_calculate(float * re, float * im);
-static void fft_output(const float *re, const float *im, float *output);
-static int reverseBits(unsigned int initial);
-
-static unsigned int bitReverse [FFT_BUFFER_SIZE];
-
-static float sintable [FFT_BUFFER_SIZE / 2];
-static float costable [FFT_BUFFER_SIZE / 2];
+static unsigned int s_bitReverse [FFT_BUFFER_SIZE];
+static float s_cos [FFT_BUFFER_SIZE / 2];
+static float s_sin [FFT_BUFFER_SIZE / 2];
 
 fft_state* fft_init(void)
 {
-	fft_state *state;
-	unsigned int i;
-
-	state = (fft_state*)malloc(sizeof (fft_state));
+	fft_state* state = (fft_state*)malloc(sizeof(fft_state));
 	if (state == NULL)
 		return NULL;
 
-	for (i = 0; i < FFT_BUFFER_SIZE; i++)
-		bitReverse[i] = reverseBits(i);
-
-	for (i = 0; i < FFT_BUFFER_SIZE / 2; i++)
+	for (unsigned int n = 0; n < FFT_BUFFER_SIZE; n++)
 	{
-		float j = 2.0f * PI * (float)i / (float)FFT_BUFFER_SIZE;
-		costable[i] = cosf(j);
-		sintable[i] = sinf(j);
+		unsigned int rev = 0;
+		for (int bit = 0; bit < FFT_BUFFER_SIZE_LOG; bit++)
+			rev |= ((n >> bit) & 1) << (FFT_BUFFER_SIZE_LOG - 1 - bit);
+		s_bitReverse[n] = rev;
+	}
+
+	for (unsigned int n = 0; n < FFT_BUFFER_SIZE / 2; n++)
+	{
+		float angle = 2.0f * PI * (float)n / (float)FFT_BUFFER_SIZE;
+		s_cos[n] = cosf(angle);
+		s_sin[n] = sinf(angle);
 	}
 
 	return state;
@@ -1960,93 +1954,42 @@ fft_state* fft_init(void)
 
 void fft_perform(const sound_sample* input, float* output, fft_state* state)
 {
-	fft_prepare(input, state->real, state->imag);
-	fft_calculate(state->real, state->imag);
-	fft_output(state->real, state->imag, output);
-}
+	float* re = state->re;
+	float* im = state->im;
 
-void fft_close(fft_state *state)
-{
-	if (state != NULL)
-		free(state);
-}
-
-static void fft_prepare(const sound_sample* input, float* re, float* im)
-{
-	unsigned int i;
-	float* realptr = re;
-	float* imagptr = im;
-
-	for (i = 0; i < FFT_BUFFER_SIZE; i++)
+	for (int n = 0; n < FFT_BUFFER_SIZE; n++)
 	{
-		*realptr++ = input[bitReverse[i]];
-		*imagptr++ = 0;
-	}
-}
-
-static void fft_output(const float* re, const float* im, float* output)
-{
-	float* outputptr = output;
-	const float* realptr = re;
-	const float* imagptr = im;
-	float* endptr = output + FFT_BUFFER_SIZE / 2;
-
-	while (outputptr <= endptr)
-	{
-		*outputptr = (*realptr * *realptr) + (*imagptr * *imagptr);
-		outputptr++; realptr++; imagptr++;
+		re[n] = input[s_bitReverse[n]];
+		im[n] = 0.0f;
 	}
 
-	*output /= 4;
-	*endptr /= 4;
-}
-
-static void fft_calculate(float* re, float* im)
-{
-	unsigned int i, j, k;
-	unsigned int exchanges;
-	float fact_real, fact_imag;
-	float tmp_real, tmp_imag;
-	unsigned int factfact;
-
-	exchanges = 1;
-	factfact = FFT_BUFFER_SIZE / 2;
-
-	for (i = FFT_BUFFER_SIZE_LOG; i != 0; i--)
+	for (int half = 1; half < FFT_BUFFER_SIZE; half *= 2)
 	{
-		for (j = 0; j != exchanges; j++)
+		int stride = FFT_BUFFER_SIZE / (2 * half);
+		for (int j = 0; j < half; j++)
 		{
-			fact_real = costable[j * factfact];
-			fact_imag = sintable[j * factfact];
-
-			for (k = j; k < FFT_BUFFER_SIZE; k += exchanges << 1)
+			float wr = s_cos[j * stride];
+			float wi = s_sin[j * stride];
+			for (int a = j; a < FFT_BUFFER_SIZE; a += 2 * half)
 			{
-				int k1 = k + exchanges;
-
-				tmp_real = fact_real * re[k1] - fact_imag * im[k1];
-				tmp_imag = fact_real * im[k1] + fact_imag * re[k1];
-				re[k1] = re[k] - tmp_real;
-				im[k1] = im[k] - tmp_imag;
-				re[k] += tmp_real;
-				im[k] += tmp_imag;
+				int b = a + half;
+				float tr = wr * re[b] - wi * im[b];
+				float ti = wr * im[b] + wi * re[b];
+				re[b] = re[a] - tr;
+				im[b] = im[a] - ti;
+				re[a] += tr;
+				im[a] += ti;
 			}
 		}
-
-		exchanges <<= 1;
-		factfact >>= 1;
 	}
+
+	for (int n = 0; n <= FFT_BUFFER_SIZE / 2; n++)
+		output[n] = re[n] * re[n] + im[n] * im[n];
+	output[0] /= 4;
+	output[FFT_BUFFER_SIZE / 2] /= 4;
 }
 
-static int reverseBits(unsigned int initial)
+void fft_close(fft_state* state)
 {
-	unsigned int reversed = 0, loop;
-
-	for (loop = 0; loop < FFT_BUFFER_SIZE_LOG; loop++)
-	{
-		reversed <<= 1;
-		reversed += (initial & 1);
-		initial >>= 1;
-	}
-
-	return reversed;
+	free(state);
 }
