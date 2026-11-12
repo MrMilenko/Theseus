@@ -122,11 +122,32 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0003baf0 | `CRecovery::RecoveryThread` | (reference only) | [App Shell](#app-shell) | Worker thread that performs the original factory-recovery wipe sequence. Theseus does not exercise this on modded hardware. |
 | 0x0003bf00 | `CSettingsFile::Save` | `CSettingsFile::Save` (settingsfile.cpp) | [Settings](Settings.md) | Serializes the in-memory settings tree to disk. Driven by the settings panel's "Save" action. |
 | 0x0003ca10 | `CTranslator::TranslateStripColon` | `CTranslator::TranslateStripColon` (locale_node.cpp) | [Locale](Locale.md) | Looks up a localized string by key, then strips a trailing `:` if present. Used for menu labels that need both punctuated and bare forms. |
-| 0x0003dba0 | `FindObjectInXIP` | `FindObjectInXIP` (xip_archive.cpp) | [XIP Archives](XIP.md) | Free function: searches an opened XIP archive's directory for a named object (texture, mesh, script). |
-| 0x0003ddf0 | `CXipFile::Open` | `CXipFile::Open` (xip_archive.cpp) | [XIP Archives](XIP.md) | Opens a `.xip` archive, reads the header, and validates the magic. Returns a `CXipFile*` handle for subsequent lookups. |
-| 0x0003dec0 | `CXipFile::StartLoadThread` | `CXipFile::StartLoadThread` (xip_archive.cpp) | [XIP Archives](XIP.md) | Spawns a background loader thread that streams archive payload while the main thread continues. |
-| 0x0003e290 | `CXipFile::Find` | `CXipFile::Find` (xip_archive.cpp) | [XIP Archives](XIP.md) | Linear scan of the archive's TOC for a named entry. |
-| 0x0003e320 | `CXipFile::FindObject` | `CXipFile::FindObject` (xip_archive.cpp) | [XIP Archives](XIP.md) | Higher-level wrapper around `Find` that also resolves cross-archive references via the global XIP search list. |
+| 0x0003d390 | `FUN_0003d390` | `CXipFile::ReadIndexBuffer` (xip_archive.cpp) | [XIP Archives](XIP.md) | Builds an index buffer resource by hand from `XMemAlloc`, retrying through the texture and mesh caches when memory runs out. |
+| 0x0003d410 | `FUN_0003d410` | `CXipFile::ReadVertexBuffer` (xip_archive.cpp) | [XIP Archives](XIP.md) | Same for a vertex buffer: a 12 byte resource header plus contiguous memory for the vertices. |
+| 0x0003d4a0 | `CFileBuffer_FreeBuffer` | `CFileBuffer::SetFile` (xip_archive.cpp) | [XIP Archives](XIP.md) | Takes the file handle and finds the archive's entry in the signed `XIPS` hash section. Theseus keeps the handle only. |
+| 0x0003d570 | `CFileBuffer_VerifyXipSignature` | (not built) | [XIP Archives](XIP.md) | Hashes one 64 KB block and compares it with the signed table; a mismatch reboots. Theseus loads unsigned archives. |
+| 0x0003d5e0 | `CFileBuffer_Seek` | `CFileBuffer::Seek` (xip_archive.cpp) | [XIP Archives](XIP.md) | Loads the 64 KB block holding a file offset and points the read index into it. |
+| 0x0003d710 | `CFileBuffer_Read` | `CFileBuffer::Read` (xip_archive.cpp) | [XIP Archives](XIP.md) | Copies out of the block buffer and refills it a block at a time. A failed `ReadFile` reboots. |
+| 0x0003d900 | `LoadXIP` | `LoadXIP` (xip_archive.cpp) | [XIP Archives](XIP.md) | Finds an archive in the 20 slot pool by path or opens the next slot, then loads it on a thread or inline. |
+| 0x0003dab0 | `FindInXIPAndDetach` | `FindInXIPAndDetach` (xip_archive.cpp) | [XIP Archives](XIP.md) | Finds a raw entry, newest archive first, and hands its bytes to the caller. |
+| 0x0003dba0 | `FindObjectInXIP` | `FindObjectInXIP` (xip_archive.cpp) | [XIP Archives](XIP.md) | Searches every loaded archive, newest first; textures asked of the default archive are looked up as `.xbx`. |
+| 0x0003dd20 | `CXipFile_dtor` | `CXipFile::~CXipFile` (xip_archive.cpp) | [XIP Archives](XIP.md) | Frees the tables and names, releases the mesh buffers, frees the block buffer. |
+| 0x0003ddf0 | `CXipFile_Open` | `CXipFile::Open` (xip_archive.cpp) | [XIP Archives](XIP.md) | Stores the file name and the lookup key: the path without its extension, with `default` dropped. |
+| 0x0003dec0 | `CXipFile_StartLoadThread` | `CXipFile::StartLoadThread` (xip_archive.cpp) | [XIP Archives](XIP.md) | Thread entry: reloads the mesh buffers if a reload is pending, otherwise loads the archive. |
+| 0x0003def0 | `CXipFile_Load` | `CXipFile::Load` (xip_archive.cpp) | [XIP Archives](XIP.md) | Opens the file unbuffered, reads the header, tables and name pool, then every entry. |
+| 0x0003e030 | `FUN_0003e030` | `ReadTexture` (xip_archive.cpp) | [XIP Archives](XIP.md) | Turns an XPR0 entry into a texture: copies the resource header and moves the pixels to contiguous memory. |
+| 0x0003e110 | `CXipFile_CreateObjects` | `CXipFile::CreateObjects` (xip_archive.cpp) | [XIP Archives](XIP.md) | Reads every entry in file order into raw memory, a texture, a mesh reference or a mesh buffer. |
+| 0x0003e270 | `LAB_0003e270` | `XipCompareName` (xip_archive.cpp) | [XIP Archives](XIP.md) | `bsearch` compare: `_stricmp` of the wanted name against a directory entry's name. |
+| 0x0003e290 | `CXipFile_Find` | `CXipFile::Find` (xip_archive.cpp) | [XIP Archives](XIP.md) | Checks the path starts with this archive's key, then binary searches the sorted directory. |
+| 0x0003e320 | `CXipFile_FindObject` | `CXipFile::FindObject` (xip_archive.cpp) | [XIP Archives](XIP.md) | `Find` plus an optional type check; a texture gets an `AddRef` for the caller. |
+| 0x0003e390 | `CXipFile_DeleteMeshBuffers` | `CXipFile::DeleteMeshBuffers` (xip_archive.cpp) | [XIP Archives](XIP.md) | Releases all ten vertex and index buffers. |
+| 0x0003e440 | `CleanupMeshCache` | `CleanupMeshCache` (xip_archive.cpp) | [XIP Archives](XIP.md) | Under memory pressure, frees the mesh buffers of the archive drawn longest ago. |
+| 0x0003e5f0 | `CXipFile_ReadIndexBuffer` | `CXipFile::ReadIndexBuffer` (xip_archive.cpp) | [XIP Archives](XIP.md) | Reads an index buffer entry into a new buffer. |
+| 0x0003e650 | `CXipFile_ReadVertexBuffer` | `CXipFile::ReadVertexBuffer` (xip_archive.cpp) | [XIP Archives](XIP.md) | Reads the vertex count and FVF, then the vertices into a new buffer. |
+| 0x0003e710 | `CXipFile_ReloadMeshBuffers` | `CXipFile::ReloadMeshBuffers` (xip_archive.cpp) | [XIP Archives](XIP.md) | Seeks back to every mesh buffer entry and reads it again after an eviction. |
+| 0x0003e800 | `CMeshRef_Render` | `CXipFile::Reload` (xip_archive.cpp) | [XIP Archives](XIP.md) | Mislabeled in the project: flags a reload and starts the loader thread, running it inline if no thread starts. |
+| 0x0003e850 | (no function) | `CMeshRef::Render` (xip_archive.cpp) | [XIP Archives](XIP.md) | CMeshRef vtable slot 0: reloads evicted buffers, sets the shader, draws the slice. |
+| 0x0003ead0 | (no function) | `CMeshRef::GetFVF` (xip_archive.cpp) | [XIP Archives](XIP.md) | CMeshRef vtable slot 1: the FVF of the buffer the reference draws from. |
 | 0x0003f420 | `CGameCopier::CreateDirectoryA` | `CGameCopier::CreateDirectory` (file_ops.cpp) | [File Ops](FileOps.md) | Wrapper around the kernel's CreateDirectory with progress-reporting hooks for the copy UI. |
 | 0x0003f700 | `CGameCopier::CopyFileA` | `CGameCopier::CopyFile` (file_ops.cpp) | [File Ops](FileOps.md) | Buffered file copy with progress callback. Used by save-to-MU and game-copy flows. |
 | 0x0003f830 | `CGameCopier::DeleteFileA` | `CGameCopier::DeleteFile` (file_ops.cpp) | [File Ops](FileOps.md) | DeleteFile wrapper. |
@@ -287,7 +308,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 |-----------|-----|----------|
 | Script VM | [VM.md](VM.md) | 35 functions |
 | Scene Graph | [Node.md](Node.md) | 2 functions + 32 class-table registrations |
-| XIP Archives | [XIP.md](XIP.md) | 5 functions |
+| XIP Archives | [XIP.md](XIP.md) | 26 functions |
 | Animation Nodes | [AnimationNodes.md](AnimationNodes.md) | 4 functions |
 | Audio System | [AudioSystem.md](AudioSystem.md) | 12 functions |
 | Camera | [Camera.md](Camera.md) | not yet started |

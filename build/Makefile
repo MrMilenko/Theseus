@@ -336,7 +336,8 @@ SRCS_RENDER = \
 	render/text.cpp \
 	render/tmap_system.cpp \
 	render/widget_draw.cpp \
-	render/widget_layer.cpp
+	render/widget_layer.cpp \
+	render/xip_archive.cpp
 
 SRCS_XBOX = \
 	xbox/config.cpp \
@@ -358,8 +359,7 @@ SRCS_XBOX = \
 	xbox/theseus_launcher.cpp \
 	xbox/title_scanner.cpp \
 	xbox/widget_config.cpp \
-	xbox/xbox_live.cpp \
-	xbox/xip_archive.cpp
+	xbox/xbox_live.cpp
 
 SRCS_TOOLBOX = \
 	toolbox/drive.cpp \

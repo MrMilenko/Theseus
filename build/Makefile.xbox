@@ -199,7 +199,7 @@ $(MINIMP3_OBJ): CXXFLAGS := -MMD -MP -fno-rtti \
 # separate BUILDS_ROOT so it never mixes with the -O0 objects.
 ifdef HOT_O2
 HOT_O2_OBJS := $(foreach f,render/text.cpp render/widget_draw.cpp render/asset_loader.cpp \
-                             render/shape_render.cpp xbox/xip_archive.cpp,$(call oxdk_obj,$(THESEUS_SRC)/$(f)))
+                             render/shape_render.cpp render/xip_archive.cpp,$(call oxdk_obj,$(THESEUS_SRC)/$(f)))
 $(HOT_O2_OBJS): OXDK_OPT := -O2
 endif
 
