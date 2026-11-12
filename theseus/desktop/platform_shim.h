@@ -247,6 +247,7 @@ typedef struct _WIN32_FILE_ATTRIBUTE_DATA {
 } WIN32_FILE_ATTRIBUTE_DATA;
 
 // File attribute constants
+#define FILE_ATTRIBUTE_READONLY     0x01
 #define FILE_ATTRIBUTE_DIRECTORY    0x10
 #define FILE_ATTRIBUTE_HIDDEN       0x02
 #define FILE_ATTRIBUTE_SYSTEM       0x04

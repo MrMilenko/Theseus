@@ -12,6 +12,7 @@
 #include "tmdb.h"
 #include "playlist.h"
 #include "media_db.h"
+#include "host.h"
 
 // ============================================================================
 // CMediaCollection - filesystem-backed library of movies + TV shows.
@@ -458,12 +459,7 @@ static void WriteCacheTo(const std::vector<MovieRec>& movies,
 	}
 
 	fclose(f);
-#ifdef THESEUS_HOST_WIN
-	// MS CRT rename() won't replace an existing file.
-	MoveFileExA(tmp.c_str(), path, MOVEFILE_REPLACE_EXISTING);
-#else
-	rename(tmp.c_str(), path);
-#endif
+	Host_RenameReplace(tmp.c_str(), path);
 	printf("[MediaDB] Saved cache: %u movies, %u shows\n", nMovies, nShows);
 }
 

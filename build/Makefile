@@ -791,7 +791,16 @@ DESKTOP_SRCS_ENGINE = \
 	$(THESEUS_SRC)/engine/math_node.cpp \
 	$(THESEUS_SRC)/shared/date_node.cpp
 
+# The host layer: one per OS, picked by host. host_win.cpp is the only
+# desktop file that sees <windows.h>.
+ifeq ($(filter Darwin Linux,$(UNAME_S)),)
+  DESKTOP_SRCS_HOST = $(THESEUS_SRC)/desktop/host_win.cpp
+else
+  DESKTOP_SRCS_HOST = $(THESEUS_SRC)/desktop/host_posix.cpp
+endif
+
 DESKTOP_SRCS_FILE = \
+	$(DESKTOP_SRCS_HOST) \
 	$(THESEUS_SRC)/desktop/xbox_file.cpp \
 	$(THESEUS_SRC)/desktop/xip.cpp \
 	$(THESEUS_SRC)/shared/file_util.cpp \
@@ -1302,8 +1311,10 @@ endif
 
 WIN64_SRCS = $(filter-out \
   $(THESEUS_SRC)/desktop/imgui/imgui_impl_opengl3.cpp \
-  $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp, $(DESKTOP_ALL_SRCS))
-WIN64_SRCS += $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp
+  $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp \
+  $(DESKTOP_SRCS_HOST), $(DESKTOP_ALL_SRCS))
+WIN64_SRCS += $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp \
+  $(THESEUS_SRC)/desktop/host_win.cpp
 
 # Same source list as desktop. the compiler reads the same files.
 WIN64_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(WIN64_DIR)/%.o,$(WIN64_SRCS))
