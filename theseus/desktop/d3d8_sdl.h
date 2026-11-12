@@ -2369,7 +2369,7 @@ inline HRESULT D3DXCreateMatrixStack(DWORD flags, ID3DXMatrixStack** pp) { *pp =
 #define D3DX_DEFAULT_NONPOW2 ((UINT)-2)
 #define D3DX_FILTER_NONE 1
 
-// Forward-declare XBX parser (defined in xbx_texture.h, included by Image.cpp/xip.cpp)
+// Forward-declare XBX parser (defined in xbx_texture.h, included by image.cpp/xip_archive.cpp)
 IDirect3DTexture8* XBX_ParseTexture(const BYTE* pbContent, int cbContent);
 
 inline HRESULT D3DXCreateTextureFromFileA(IDirect3DDevice8* dev, const char* path, IDirect3DTexture8** ppTex) {

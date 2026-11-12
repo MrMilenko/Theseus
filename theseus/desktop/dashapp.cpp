@@ -6,7 +6,7 @@
 #include "std.h"
 #include "dashapp.h"
 #include "file_util.h"
-#include "xip.h"
+#include "xip_archive.h"
 #include "node.h"
 #include "screen.h"
 #include "runner.h"

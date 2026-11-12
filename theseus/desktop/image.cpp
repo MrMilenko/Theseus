@@ -8,7 +8,7 @@
 #include "node.h"
 #include "asset_loader.h"
 #include "activefile.h"
-#include "xip.h"
+#include "xip_archive.h"
 #include "file_util.h"
 #include "xbx_texture.h"
 #include "skin_assets.h"
