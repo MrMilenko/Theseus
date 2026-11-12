@@ -14,37 +14,6 @@
 #include "skin_assets.h"
 #include "host.h"
 
-inline void D3D_FreeNoncontiguousMemory(void *pMemory) { free(pMemory); }
-
-bool DecodeRAW(const char *szFileName, CTexture *pTexture);
-
-// ============================================================================
-// CImage; raw pixel buffer (used by DecodeRAW)
-// ============================================================================
-
-class CImage
-{
-public:
-	CImage();
-	~CImage();
-
-	int m_nWidth;
-	int m_nHeight;
-	uint8_t *m_pels;
-	int m_nPitch;
-};
-
-CImage::CImage()
-{
-	m_pels = NULL;
-	m_nWidth = 0;
-	m_nHeight = 0;
-}
-
-CImage::~CImage()
-{
-}
-
 // ============================================================================
 // Texture Parsing and Loading
 // ============================================================================
@@ -189,86 +158,22 @@ LPDIRECT3DTEXTURE8 LoadTexture(const char *szURL, unsigned int width, unsigned i
 	return NULL;
 }
 
-// Desktop: load XPR/XBX textures from file path (with xboxfs drive mapping)
-LPDIRECT3DTEXTURE8 LoadTextureFromXPR(const char *xprfile)
-{
-	// Read file and parse via XBX_ParseTexture (same XPR0 format)
-	if (xprfile == NULL)
-		return NULL;
-
-	FILE* f = TheseusFOpen(xprfile, "rb");
-	if (!f) {
-		// Try drive-letter remap (C: -> Configs, Q: -> Data, E: -> Library).
-		char mapped[MAX_PATH];
-		if (xprfile[0] && xprfile[1] == ':' && (xprfile[2] == '\\' || xprfile[2] == '/')) {
-			const char* prefix = XboxFS_DriveToPrefix(xprfile[0]);
-			if (prefix) {
-				snprintf(mapped, sizeof(mapped), "%s/%s", prefix, xprfile + 3);
-				for (char* p = mapped; *p; p++) if (*p == '\\') *p = '/';
-				f = fopen(mapped, "rb");
-			}
-		}
-	}
-	if (!f) {
-		OutputDebugStringA("Could not open texture ");
-		OutputDebugStringA(xprfile);
-		OutputDebugStringA(" for reading.\n");
-		return NULL;
-	}
-
-	fseek(f, 0, SEEK_END);
-	long size = ftell(f);
-	fseek(f, 0, SEEK_SET);
-	if (size <= 0) { fclose(f); return NULL; }
-
-	uint8_t* data = new uint8_t[size];
-	fread(data, 1, size, f);
-	fclose(f);
-
-	IDirect3DTexture8* pTexture = XBX_ParseTexture(data, (int)size);
-	delete [] data;
-
-	if (!pTexture) {
-		OutputDebugStringA("Could not read ");
-		OutputDebugStringA(xprfile);
-		OutputDebugStringA("\n");
-	}
-	return pTexture;
-}
-
 // ============================================================================
 // Image Cache; LRU texture cache (100 entries)
 // ============================================================================
 
-HIMAGE MyLoadImage(const char *szURL);
+LPDIRECT3DTEXTURE8 MyLoadImage(const char *szURL);
 
 struct IMGCACHE
 {
 	char *m_szURL;
-	HIMAGE m_hImage;
+	LPDIRECT3DTEXTURE8 m_hImage;
 	SIZE m_size;
 	XTIME m_usage;
 };
 
 static IMGCACHE imageCache[100];
 static IMGCACHE *pImgLock;
-
-void CleanupImageCache()
-{
-	for (int i = 0; i < countof(imageCache); i += 1)
-	{
-		IMGCACHE *pImg = &imageCache[i];
-		if (pImg == pImgLock)
-			continue;
-
-		delete[] pImg->m_szURL;
-
-		if (pImg->m_hImage != NULL)
-			pImg->m_hImage->Release();
-
-		memset(pImg, 0, sizeof(IMGCACHE));
-	}
-}
 
 IMGCACHE *FindImage(const char *szURL)
 {
@@ -329,161 +234,9 @@ IMGCACHE *FindImage(const char *szURL)
 	return pFreeOne;
 }
 
-extern "C" HIMAGE FetchImage(const char *szURL, SIZE *pSize)
-{
-	IMGCACHE *pImgCache = FindImage(szURL);
-	if (pImgCache == NULL)
-		return NULL;
-
-	if (pSize != NULL)
-		*pSize = pImgCache->m_size;
-
-	return pImgCache->m_hImage;
-}
-
-HIMAGE MyLoadImage(const char *szURL)
+LPDIRECT3DTEXTURE8 MyLoadImage(const char *szURL)
 {
 	return LoadTexture(szURL, 0, 0);
-}
-
-// ============================================================================
-// RAW Texture Decoding
-// ============================================================================
-
-bool DecodeRAW(const char *szFileName, CTexture *pTexture)
-{
-	FILE *fp = TheseusFOpen(szFileName, "rb");
-	if (fp == NULL)
-		return false;
-
-	fseek(fp, 0, SEEK_END);
-	uint32_t dwFileSize = ftell(fp);
-	fseek(fp, 0, SEEK_SET);
-
-	int nWidth = 0;
-	int nHeight = 0;
-	int nDepth = 0;
-
-	if (dwFileSize == 1024 * 1024 * 3)
-	{
-		nWidth = 1024;
-		nHeight = 1024;
-		nDepth = 24;
-	}
-
-	if (nWidth == 0 || nHeight == 0 || nDepth == 0)
-	{
-		fclose(fp);
-		return false;
-	}
-
-	if (!pTexture->Create(nWidth, nHeight))
-	{
-		TRACE("Create texture failed!\n");
-		fclose(fp);
-		return false;
-	}
-
-	D3DLOCKED_RECT lr;
-	VERIFYHR(pTexture->m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD));
-	void *pvPels = lr.pBits;
-	int nPitch = lr.Pitch;
-
-	uint8_t *rgbsrc = new uint8_t[nWidth * (nDepth / 8)];
-
-	for (int y = 0; y < nHeight; y += 1)
-	{
-		fread(rgbsrc, 1, nWidth * (nDepth / 8), fp);
-
-		uint8_t *pbSrc = rgbsrc;
-		uint8_t *pbDest = (uint8_t *)pvPels + y * nPitch;
-
-		for (int x = 0; x < nWidth; x += 1)
-		{
-			pbDest[0] = pbSrc[2];
-			pbDest[1] = pbSrc[1];
-			pbDest[2] = pbSrc[0];
-			pbDest[3] = 255;
-
-			pbDest += 4;
-			pbSrc += 3;
-		}
-	}
-
-	delete[] rgbsrc;
-
-	pTexture->m_surface->UnlockRect(0);
-
-	fclose(fp);
-
-	return true;
-}
-
-// ============================================================================
-// Image Drawing API (used by RenderHTML)
-// ============================================================================
-
-EXTERN_C int GetImageSize(const char *szImgFile, SIZE *pSize)
-{
-	return FetchImage(szImgFile, pSize) != NULL;
-}
-
-EXTERN_C void DrawImage(HDRAW hDC, const char *szImgFile, int x, int y, int align, uint16_t *pcx, uint16_t *pcy)
-{
-	HIMAGE hImage;
-	SIZE size;
-
-	hImage = FetchImage(szImgFile, &size);
-
-	if (hImage != NULL)
-	{
-		if ((align & TA_RIGHT) != 0)
-			x -= size.cx;
-
-		if ((align & TA_BOTTOM) != 0)
-			y -= size.cy;
-
-		X_BitBlt(hDC, x, y, size.cx, size.cy, hImage, 0, 0);
-	}
-	else
-	{
-		size.cx = 20;
-		size.cy = 20;
-	}
-
-	if (pcx != NULL)
-		*pcx = (uint16_t)size.cx;
-
-	if (pcy != NULL)
-		*pcy = (uint16_t)size.cy;
-}
-
-static bool Clip(HDRAW hDraw, int &x, int &y, int &cx, int &cy)
-{
-	ASSERT(hDraw != NULL);
-
-	if (x < 0)
-	{
-		cx += x;
-		x = 0;
-	}
-
-	if (y < 0)
-	{
-		cy += y;
-		y = 0;
-	}
-
-	if (x + cx > (int)hDraw->Desc.Width)
-		cx = (int)hDraw->Desc.Width - x;
-
-	if (y + cy > (int)hDraw->Desc.Height)
-		cy = (int)hDraw->Desc.Height - y;
-
-	if (cx <= 0 || cy <= 0)
-		return false;
-
-	return true;
 }
 
 // ============================================================================
@@ -556,60 +309,4 @@ void PreloadSkinTextures()
 	char name[MAX_PATH];
 	while (Host_ReadDir(dir, name, sizeof(name), NULL)) ProcessXbxFile(name);
 	Host_CloseDir(dir);
-}// ============================================================================
-// Software Rasterization (FillRect / BitBlt)
-// ============================================================================
-
-EXTERN_C HRESULT X_FillRect(HDRAW hDraw, int x, int y, int cx, int cy, D3DCOLOR color)
-{
-	ASSERT(hDraw != NULL);
-	ASSERT(hDraw->Desc.Format == D3DFMT_A8R8G8B8 || hDraw->Desc.Format == D3DFMT_X8R8G8B8);
-
-	if (!Clip(hDraw, x, y, cx, cy))
-		return S_OK;
-
-	for (int j = 0; j < cy; j += 1)
-	{
-		uint32_t *ppel = (uint32_t *)((uint8_t *)hDraw->Lock.pBits + hDraw->Lock.Pitch * (y + j)) + x;
-		for (int i = 0; i < cx; i += 1)
-			*ppel++ = color;
-	}
-
-	return S_OK;
-}
-
-EXTERN_C HRESULT X_BitBlt(HDRAW hDraw, int x, int y, int cx, int cy, LPDIRECT3DTEXTURE8 pSrcSurface, int xSrc, int ySrc)
-{
-	ASSERT(hDraw != NULL);
-	ASSERT(pSrcSurface != NULL);
-
-	{
-		D3DSURFACE_DESC descSrc;
-
-		VERIFYHR(pSrcSurface->GetLevelDesc(0, &descSrc));
-
-		ASSERT(hDraw->Desc.Format == D3DFMT_A8R8G8B8 || hDraw->Desc.Format == D3DFMT_X8R8G8B8);
-		ASSERT(hDraw->Desc.Format == descSrc.Format);
-	}
-
-	if (!Clip(hDraw, x, y, cx, cy))
-		return S_OK;
-
-	D3DLOCKED_RECT lockSrc;
-	HRESULT hr = pSrcSurface->LockRect(0, &lockSrc, NULL, D3DLOCK_READONLY);
-	if (FAILED(hr))
-		return hr;
-
-	for (int j = 0; j < cy; j += 1)
-	{
-		uint32_t *ppel = (uint32_t *)((uint8_t *)hDraw->Lock.pBits + hDraw->Lock.Pitch * (y + j)) + x;
-		uint32_t *ppelSrc = (uint32_t *)((uint8_t *)lockSrc.pBits + lockSrc.Pitch * (ySrc + j)) + xSrc;
-
-		for (int i = 0; i < cx; i += 1)
-			*ppel++ = *ppelSrc++;
-	}
-
-	pSrcSurface->UnlockRect(0);
-
-	return S_OK;
 }

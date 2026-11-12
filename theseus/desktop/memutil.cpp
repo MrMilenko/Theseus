@@ -7,7 +7,6 @@
 
 // Desktop: simple memory management - no Xbox D3D memory pools
 
-extern void CleanupImageCache();
 extern bool CleanupTextureCache();
 extern bool CleanupMeshCache();
 

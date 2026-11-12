@@ -49,38 +49,6 @@ DWORD CMesh::GetFVF() const
 	return m_fvf;
 }
 
-bool CMesh::Create(BYTE *pbData, DWORD dwData)
-{
-	MESHFILEHEADER *pHeader = (MESHFILEHEADER *)pbData;
-	pbData += sizeof(MESHFILEHEADER);
-
-	m_primitiveType = (D3DPRIMITIVETYPE)pHeader->dwPrimitiveType;
-
-	m_nFaceCount = pHeader->dwFaceCount;
-	m_fvf = pHeader->dwFVF;
-	m_nVertexStride = pHeader->dwVertexStride;
-	m_nVertexCount = pHeader->dwVertexCount;
-	m_nIndexCount = pHeader->dwIndexCount;
-
-	TheseusCreateVertexBuffer(m_nVertexCount * m_nVertexStride, D3DUSAGE_DYNAMIC, m_fvf, D3DPOOL_DEFAULT, &m_vertexBuffer);
-
-	uint8_t *verts;
-	const uint32_t dwLockFlags = D3DLOCK_DISCARD;
-	VERIFYHR(m_vertexBuffer->Lock(0, 0, &verts, dwLockFlags));
-	memcpy(verts, pbData, m_nVertexCount * m_nVertexStride);
-	pbData += m_nVertexCount * m_nVertexStride;
-	VERIFYHR(m_vertexBuffer->Unlock());
-
-	TheseusCreateIndexBuffer(m_nIndexCount * sizeof(uint16_t), D3DUSAGE_DYNAMIC, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &m_indexBuffer);
-
-	uint8_t *indices;
-	VERIFYHR(m_indexBuffer->Lock(0, m_nIndexCount * sizeof(uint16_t), (uint8_t **)&indices, dwLockFlags));
-	memcpy(indices, pbData, m_nIndexCount * sizeof(uint16_t));
-	VERIFYHR(m_indexBuffer->Unlock());
-
-	return true;
-}
-
 bool CMesh::Create(HANDLE hFile)
 {
 	uint32_t dwRead;
@@ -407,20 +375,6 @@ CMesh *LoadMesh(const char *szFilePath)
 {
 	CMesh *pMesh = new CMesh;
 	pMesh->Load(szFilePath);
-	return pMesh;
-}
-
-CMesh *CreateMesh(HANDLE hFile)
-{
-	CMesh *pMesh = new CMesh;
-	pMesh->Create(hFile);
-	return pMesh;
-}
-
-CMesh *CreateMesh(uint8_t *pbContent, uint32_t cbContent)
-{
-	CMesh *pMesh = new CMesh;
-	pMesh->Create(pbContent, cbContent);
 	return pMesh;
 }
 

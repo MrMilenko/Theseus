@@ -21,8 +21,6 @@
 
 extern "C" void WINAPI D3D_FreeNoncontiguousMemory(void *pMemory);
 
-bool DecodeRAW(const TCHAR *szFileName, CTexture *pTexture);
-
 // Allocate a managed-pool D3D texture at the requested size and format.
 // nWidth / nHeight are in/out parameters because D3DXCreateTexture rounds
 // up to the nearest supported size and the caller wants the rounded
@@ -462,8 +460,6 @@ LPDIRECT3DTEXTURE8 GetTexture(const TCHAR* szURL, XTIME* pTimeLoaded, UINT width
 
 
 
-extern bool CreateTextureFromFile(const TCHAR* szFileName, CTexture* pTexture);
-
 void CImageTexture::Load(const TCHAR* szURL)
 {
 	if (m_surface != NULL)
@@ -492,33 +488,8 @@ bool CImageTexture::OnSetProperty(const PRD* pprd, const void* pvValue)
 }
 
 // =========================================================================
-// Image: Texture parsing, image cache, XPR loader, and drawing primitives
+// Image: Texture parsing and the image cache
 // =========================================================================
-
-/*
-TODO:
-	Load images from arbitrary URL
-	Perform load/decode in background thread
-	Deal with incremental display (as an option)
-	Deal with animated GIF's
-	Handle the same image formats for both BITMAP and SURFACE cases
-	Optimize case where CreateTexture actually returns the right size/format
-*/
-
-class CImage
-{
-public:
-	CImage();
-	~CImage();
-
-	int m_nWidth;
-	int m_nHeight;
-	BYTE *m_pels;
-	int m_nPitch;
-};
-
-CImage::CImage() { m_pels = NULL; m_nWidth = 0; m_nHeight = 0; }
-CImage::~CImage() { }
 
 
 
@@ -739,120 +710,19 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR *szURL, UINT width, UINT height)
 	return NULL;
 }
 
-// Load a texture from a standalone XPR / XBX file on disk. The regular
-// texture path stages through memory; this reads straight from the file.
-LPDIRECT3DTEXTURE8 LoadTextureFromXPR(const char *xprfile)
-{
-	if (xprfile == NULL)
-		return NULL;
 
-	HANDLE hFile = TheseusCreateFile(xprfile, GENERIC_READ, FILE_SHARE_READ, NULL,
-							  OPEN_EXISTING, 0, NULL);
-	if (hFile == INVALID_HANDLE_VALUE)
-	{
-		OutputDebugStringA("Could not open texture ");
-		OutputDebugStringA(xprfile);
-		OutputDebugStringA(" for reading.\n");
-		return NULL;
-	}
-
-	XPR_HEADER xprh;
-	DWORD cb;
-	BYTE *headers = NULL;
-	BYTE *texData = NULL;
-
-	if (!ReadFile(hFile, &xprh, sizeof(XPR_HEADER), &cb, NULL) ||
-	    xprh.dwMagic != XPR_MAGIC_VALUE)
-	{
-		goto fail;
-	}
-
-	// Resource headers come immediately after XPR_HEADER. Subtract the
-	// three DWORDs that XPR_HEADER stores past the trailing magic word
-	// to get the actual header section size.
-	{
-		DWORD headersSize = xprh.dwHeaderSize - 3 * sizeof(DWORD);
-		headers = new BYTE[headersSize];
-		if (!headers)
-			goto fail;
-		if (!ReadFile(hFile, headers, headersSize, &cb, NULL))
-			goto fail;
-
-		// Texture payload bytes go into contiguous video-accessible
-		// memory so the GPU can sample directly out of them.
-		DWORD texDataSize = xprh.dwTotalSize - xprh.dwHeaderSize;
-		texData = (BYTE *)D3D_AllocContiguousMemory(texDataSize, D3DTEXTURE_ALIGNMENT);
-		if (!texData)
-			goto fail;
-
-		SetFilePointer(hFile, xprh.dwHeaderSize, NULL, FILE_BEGIN);
-		if (!ReadFile(hFile, texData, texDataSize, &cb, NULL))
-			goto fail;
-
-		// First resource record in the header section determines what
-		// kind of D3D object this XPR contains. We only honor textures
-		// and vertex buffers; index buffers exist as a recognized type
-		// but D3D won't accept Register() on them.
-		DWORD type = *((DWORD *)headers) & D3DCOMMON_TYPE_MASK;
-		if (type != D3DCOMMON_TYPE_VERTEXBUFFER &&
-		    type != D3DCOMMON_TYPE_TEXTURE &&
-		    type != D3DCOMMON_TYPE_INDEXBUFFER)
-		{
-			goto fail;
-		}
-
-		LPDIRECT3DRESOURCE8 ppResource = (LPDIRECT3DRESOURCE8)headers;
-		if (type != D3DCOMMON_TYPE_INDEXBUFFER)
-			ppResource->Register(texData);
-
-		CloseHandle(hFile);
-		return (LPDIRECT3DTEXTURE8)ppResource;
-	}
-
-fail:
-	OutputDebugStringA("Could not read ");
-	OutputDebugStringA(xprfile);
-	OutputDebugStringA("\n");
-	delete [] headers;
-	if (hFile != INVALID_HANDLE_VALUE)
-		CloseHandle(hFile);
-	return NULL;
-}
-
-
-
-HIMAGE MyLoadImage(const TCHAR *szURL);
+LPDIRECT3DTEXTURE8 MyLoadImage(const TCHAR *szURL);
 
 struct IMGCACHE
 {
 	TCHAR *m_url;
-	HIMAGE m_hImage;
+	LPDIRECT3DTEXTURE8 m_hImage;
 	SIZE m_size;
 	XTIME m_usage;
 };
 
 static IMGCACHE imageCache[100];
 static IMGCACHE *pImgLock;
-
-void CleanupImageCache()
-{
-	int i;
-	for (i = 0; i < countof(imageCache); i += 1)
-	{
-		IMGCACHE *pImg = &imageCache[i];
-		if (pImg == pImgLock)
-			continue;
-
-		delete[] pImg->m_url;
-
-#ifdef _XBOX
-		if (pImg->m_hImage != NULL)
-			pImg->m_hImage->Release();
-#endif
-
-		ZeroMemory(pImg, sizeof(IMGCACHE));
-	}
-}
 
 IMGCACHE *FindImage(const TCHAR *szURL)
 {
@@ -919,163 +789,8 @@ IMGCACHE *FindImage(const TCHAR *szURL)
 	return pFreeOne;
 }
 
-extern "C" // this one is used by the RenderHTML C-code...
-	HIMAGE
-	FetchImage(const TCHAR *szURL, SIZE *pSize)
-{
-	IMGCACHE *pImgCache = FindImage(szURL);
-	if (pImgCache == NULL)
-		return NULL;
+LPDIRECT3DTEXTURE8 MyLoadImage(const TCHAR *szURL) { return LoadTexture(szURL, 0, 0); }
 
-	if (pSize != NULL)
-		*pSize = pImgCache->m_size;
-
-	return pImgCache->m_hImage;
-}
-
-HIMAGE MyLoadImage(const TCHAR *szURL) { return LoadTexture(szURL, 0, 0); }
-
-
-
-bool DecodeRAW(const TCHAR *szFileName, CTexture *pTexture)
-{
-	FILE *fp = TheseusFOpen(szFileName, _T("rb"));
-	if (fp == NULL)
-		return false;
-
-	fseek(fp, 0, SEEK_END);
-	DWORD dwFileSize = ftell(fp);
-	fseek(fp, 0, SEEK_SET);
-
-	int nWidth = 0;
-	int nHeight = 0;
-	int nDepth = 0;
-
-	if (dwFileSize == 1024 * 1024 * 3)
-	{
-		nWidth = 1024;
-		nHeight = 1024;
-		nDepth = 24;
-	}
-
-	if (nWidth == 0 || nHeight == 0 || nDepth == 0)
-	{
-		fclose(fp);
-		return false;
-	}
-
-	if (!pTexture->Create(nWidth, nHeight))
-	{
-		TRACE(_T("Create texture failed!\n"));
-		fclose(fp);
-		return false;
-	}
-
-	D3DLOCKED_RECT lr;
-	VERIFYHR(pTexture->m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD));
-	void *pvPels = lr.pBits;
-	int nPitch = lr.Pitch;
-
-	BYTE *rgbsrc = new BYTE[nWidth * (nDepth / 8)];
-
-	int y;
-	for (y = 0; y < nHeight; y += 1)
-	{
-		fread(rgbsrc, 1, nWidth * (nDepth / 8), fp);
-
-		BYTE *pbSrc = rgbsrc;
-		BYTE *pbDest = (BYTE *)pvPels + y * nPitch;
-
-		int x;
-		for (x = 0; x < nWidth; x += 1)
-		{
-			pbDest[0] = pbSrc[2];
-			pbDest[1] = pbSrc[1];
-			pbDest[2] = pbSrc[0];
-			pbDest[3] = 255;
-
-			pbDest += 4;
-			pbSrc += 3;
-		}
-	}
-
-	delete[] rgbsrc;
-
-	pTexture->m_surface->UnlockRect(0);
-
-	fclose(fp);
-
-	return true;
-}
-
-
-
-EXTERN_C BOOL GetImageSize(const TCHAR *szImgFile, SIZE *pSize)
-{
-	return FetchImage(szImgFile, pSize) != NULL;
-}
-
-EXTERN_C void DrawImage(HDRAW hDC, const TCHAR *szImgFile, int x, int y, int align, WORD *pcx, WORD *pcy)
-{
-	HIMAGE hImage;
-	SIZE size;
-
-	hImage = FetchImage(szImgFile, &size);
-
-	if (hImage != NULL)
-	{
-		if ((align & TA_RIGHT) != 0)
-			x -= size.cx;
-
-		if ((align & TA_BOTTOM) != 0)
-			y -= size.cy;
-
-#ifdef _XBOX
-		X_BitBlt(hDC, x, y, size.cx, size.cy, hImage, 0, 0);
-#endif
-	}
-	else
-	{
-		size.cx = 20;
-		size.cy = 20;
-	}
-
-	if (pcx != NULL)
-		*pcx = (WORD)size.cx;
-
-	if (pcy != NULL)
-		*pcy = (WORD)size.cy;
-}
-
-
-
-static bool Clip(HDRAW hDraw /*LPDIRECT3DSURFACE8 pSurface*/, int &x, int &y, int &cx, int &cy)
-{
-	ASSERT(hDraw != NULL);
-
-	if (x < 0)
-	{
-		cx += x;
-		x = 0;
-	}
-
-	if (y < 0)
-	{
-		cy += y;
-		y = 0;
-	}
-
-	if (x + cx > (int)hDraw->Desc /*desc*/.Width)
-		cx = (int)hDraw->Desc /*desc*/.Width - x;
-
-	if (y + cy > (int)hDraw->Desc /*desc*/.Height)
-		cy = (int)hDraw->Desc /*desc*/.Height - y;
-
-	if (cx <= 0 || cy <= 0)
-		return false;
-
-	return true;
-}
 void PreloadSkinTextures()
 {
 	OutputDebugStringA("[Preload] Entered PreloadSkinTextures()\n");
@@ -1151,72 +866,6 @@ void PreloadSkinTextures()
 	OutputDebugStringA("[Preload] Skin texture preload complete.\n");
 }
 
-
-
-EXTERN_C HRESULT X_FillRect(HDRAW hDraw, int x, int y, int cx, int cy, D3DCOLOR color)
-{
-	ASSERT(hDraw != NULL);
-
-#ifdef _DEBUG
-	{
-		ASSERT(hDraw->Desc /*desc*/.Format == D3DFMT_A8R8G8B8 || hDraw->Desc /*desc*/.Format == D3DFMT_X8R8G8B8);
-	}
-#endif
-
-	if (!Clip(hDraw /*pSurface*/, x, y, cx, cy))
-		return S_OK;
-
-	for (int j = 0; j < cy; j += 1)
-	{
-		DWORD *ppel = (DWORD *)((BYTE *)hDraw->Lock /*lock*/.pBits + hDraw->Lock /*lock*/.Pitch * (y + j)) + x;
-		for (int i = 0; i < cx; i += 1)
-			*ppel++ = color;
-	}
-
-	return S_OK;
-}
-
-EXTERN_C HRESULT X_BitBlt(HDRAW hDraw, int x, int y, int cx, int cy, LPDIRECT3DTEXTURE8 pSrcSurface, int xSrc, int ySrc)
-{
-	ASSERT(hDraw != NULL);
-	ASSERT(pSrcSurface != NULL);
-
-#ifdef _DEBUG
-	{
-		D3DSURFACE_DESC descSrc;
-
-		VERIFYHR(pSrcSurface->GetLevelDesc(0, &descSrc));
-
-		ASSERT(hDraw->Desc.Format == D3DFMT_A8R8G8B8 || hDraw->Desc.Format == D3DFMT_X8R8G8B8);
-		ASSERT(hDraw->Desc.Format == descSrc.Format);
-	}
-#endif
-
-	// Clipping is against the destination only. callers are
-	// responsible for keeping (xSrc + cx) and (ySrc + cy) inside
-	// the source surface.
-	if (!Clip(hDraw, x, y, cx, cy))
-		return S_OK;
-
-	D3DLOCKED_RECT lockSrc;
-	HRESULT hr = pSrcSurface->LockRect(0, &lockSrc, NULL, D3DLOCK_READONLY);
-	if (FAILED(hr))
-		return hr;
-
-	for (int j = 0; j < cy; j += 1)
-	{
-		DWORD *ppel = (DWORD *)((BYTE *)hDraw->Lock.pBits + hDraw->Lock.Pitch * (y + j)) + x;
-		DWORD *ppelSrc = (DWORD *)((BYTE *)lockSrc.pBits + lockSrc.Pitch * (ySrc + j)) + xSrc;
-
-		for (int i = 0; i < cx; i += 1)
-			*ppel++ = *ppelSrc++;
-	}
-
-	pSrcSurface->UnlockRect(0);
-
-	return S_OK;
-}
-
 // =========================================================================
 // Mesh: Mesh loading, rendering, and node system
 // =========================================================================
@@ -1252,59 +901,6 @@ DWORD CMesh::GetFVF() const
 {
 	ASSERT(m_fvf != D3DFVF_RESERVED0);
 	return m_fvf;
-}
-
-bool CMesh::Create(BYTE *pbData, DWORD dwData)
-{
-	MESHFILEHEADER *pHeader = (MESHFILEHEADER *)pbData;
-	pbData += sizeof(MESHFILEHEADER);
-
-#ifdef _XBOX
-	switch (pHeader->dwPrimitiveType)
-	{
-	default:
-		ASSERT(FALSE); // unsupported primitive type
-		return false;
-
-	case 4:
-		m_primitiveType = D3DPT_TRIANGLELIST;
-		break;
-
-	case 5:
-		m_primitiveType = D3DPT_TRIANGLESTRIP;
-		break;
-	}
-#else
-	m_primitiveType = (D3DPRIMITIVETYPE)pHeader->dwPrimitiveType;
-#endif
-
-	m_nFaceCount = pHeader->dwFaceCount;
-	m_fvf = pHeader->dwFVF;
-	m_nVertexStride = pHeader->dwVertexStride;
-	m_nVertexCount = pHeader->dwVertexCount;
-	m_nIndexCount = pHeader->dwIndexCount;
-
-	TheseusCreateVertexBuffer(m_nVertexCount * m_nVertexStride, D3DUSAGE_DYNAMIC, m_fvf, D3DPOOL_DEFAULT, &m_vertexBuffer);
-
-	BYTE *verts;
-#ifdef _XBOX
-	const DWORD dwLockFlags = D3DLOCK_DISCARD | D3DLOCK_NOFLUSH;
-#else
-	const DWORD dwLockFlags = D3DLOCK_DISCARD;
-#endif
-	VERIFYHR(m_vertexBuffer->Lock(0, 0, &verts, dwLockFlags));
-	CopyMemory(verts, pbData, m_nVertexCount * m_nVertexStride);
-	pbData += m_nVertexCount * m_nVertexStride;
-	VERIFYHR(m_vertexBuffer->Unlock());
-
-	TheseusCreateIndexBuffer(m_nIndexCount * sizeof(WORD), D3DUSAGE_DYNAMIC, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &m_indexBuffer);
-
-	BYTE *indices;
-	VERIFYHR(m_indexBuffer->Lock(0, m_nIndexCount * sizeof(WORD), (BYTE **)&indices, dwLockFlags));
-	CopyMemory(indices, pbData, m_nIndexCount * sizeof(WORD));
-	VERIFYHR(m_indexBuffer->Unlock());
-
-	return true;
 }
 
 bool CMesh::Create(HANDLE hFile)
@@ -1652,20 +1248,6 @@ CMesh *LoadMesh(const TCHAR *szFilePath)
 {
 	CMesh *pMesh = new CMesh;
 	pMesh->Load(szFilePath);
-	return pMesh;
-}
-
-CMesh *CreateMesh(HANDLE hFile)
-{
-	CMesh *pMesh = new CMesh;
-	pMesh->Create(hFile);
-	return pMesh;
-}
-
-CMesh *CreateMesh(BYTE *pbContent, DWORD cbContent)
-{
-	CMesh *pMesh = new CMesh;
-	pMesh->Create(pbContent, cbContent);
 	return pMesh;
 }
 
