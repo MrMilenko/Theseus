@@ -1,5 +1,7 @@
 # Dashboards
 
-On Xbox hardware, this is where alternate dashboards (UnleashX, Evolution X, XBMC4Xbox, etc.) live, each in its own subfolder containing a `default.xbe`. Theseus itself can also live under here.
+On Xbox hardware, this is where alternate dashboards (UnleashX, Evolution X, XBMC4Xbox and friends) live, each in its own subfolder containing a `default.xbe`. Theseus itself can live here too.
 
-This folder is intentionally empty in the public repo. It exists so the desktop build's `E:\` filesystem virtualization has the standard Xbox layout to enumerate at boot. Drop dashboard folders here on desktop to see them in the launcher. On Xbox hardware your real `E:\Dashboards\` is what gets read.
+The folder is empty in the repo. It exists so the desktop build's `E:` drive has the standard Xbox layout to list at boot.
+
+On desktop, the copy of this folder that counts is the one in your user data folder (`Library/` inside `~/Library/Application Support/Theseus/` on macOS, `~/.local/share/theseus/` on Linux, `%APPDATA%\Theseus\` on Windows), which is seeded from this one on first run. Most entries on desktop come from Title Maker and live in `Configs/games.ini`, so this folder can stay empty. On Xbox hardware your real `E:\Dashboards\` is what gets read.

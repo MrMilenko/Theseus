@@ -1,119 +1,58 @@
-# Media Player (libmpv + DVD XAP)
+# Media Player
 
-The dashboard's original Xbox DVD player UI (`dvd.xap`) is wired to libmpv for file-based media playback on desktop. Video renders through the XAP scene's `texture_panel` mesh while the OSD overlay shows playback info using the same script that ran on the Xbox.
+The Xbox could play DVDs, provided you bought the little IR remote dongle that unlocked it. On desktop there's no disc to spin, so UIX Desktop plays your files and your Plex and Jellyfin libraries instead, through libmpv, behind scenes styled like the rest of the dashboard.
 
-## How Xbox DVD Playback Worked
-
-### XAP Script Flow
-
-1. `theDiscDrive` (DiscDrive node) has property `discType` (string)
-2. When `discType` changes, XAP callbacks fire:
-   - `OnDiscInserted()` checks `discType`: "Audio", "Video", "Title", "unknown"
-   - `OnDiscRemoved()` stops playback, returns to launcher
-3. For "Video": calls `StartDVDPlayer()` which sets `theDVDPlayerInline.visible = true`
-4. This loads `dvd.xap` via Inline node (lazy load)
-5. dvd.xap's `onLoad()` calls `theDVDLevel.GoTo()` to transition to the player scene
-6. Script calls `theDVDPlayer.play()`, `.stop()`, `.pause()`, etc. on the DVDPlayer node
-
-On the original Xbox, video frames came from a hardware MPEG-2 decoder that wrote to a D3D overlay surface. The `texture_panel` mesh was a black placeholder that the decoder composited over. On desktop, libmpv renders frames to an OpenGL FBO texture that gets bound to the `texture_panel` material during rendering.
-
-### dvd.xap Scene Structure
-
-Pure 3D scene with these key elements:
-- `texture_panel`: flat mesh with material "Black80", no ImageTexture. This is where the video frame appears.
-- `text_panel`: flat mesh for time/chapter text overlay
-- `theText`: Text node for elapsed/chapter display
-- `DVD_buttons` group with 6 button meshes (rewind, play, stop, fast-forward, prev chapter, next chapter)
-- `dvd_shell`: panel frame meshes
-- `icons` group: transport control icon meshes (play/pause/stop symbols as geometry)
-
-## Desktop Implementation
-
-### Architecture
+## The pieces
 
 ```
-File > Open Media
-       |
-       v
-MediaPlayer_Open(path)  -->  mpv_command("loadfile", path)
-       |
-       v
-Set theDiscDrive.discType = "Video"
-       |
-       v
-XAP reacts: dvd.xap loads, DVDPlayer.play() called
-       |
-       v
-Each frame:
-  MediaPlayer_Update()  -->  mpv_render_context_render() to FBO
-  CDVDPlayer::Advance() -->  reads mpv position/chapter/track info
-                             updates XAP properties (hours, minutes, etc.)
-  D3D8 draw call        -->  detects "Black80" material on texture_panel
-                             binds video FBO texture instead of black
+Main menu button  ->  mediaplayer.xap scenes    (browse, action menu, seasons and episodes)
+                           |
+                           v
+                   MediaCollection node        (media_db.cpp: scan, cache, TMDB, queries)
+                           |  PlayMovie / PlayEpisode
+                           v
+                   media_ui.cpp                (fullscreen video, OSD, track menu, queue)
+                           |
+                           v
+                   media_player.cpp            (libmpv, software render, bgfx texture)
 ```
 
-Three files handle the integration:
+Plex and Jellyfin follow the same shape with their own nodes (`PlexLibrary`, `JellyfinLibrary`) and scenes (`plex.xip`, `jellyfin.xip`), streaming from the server instead of reading files.
 
-- **media_player.h/.cpp**: libmpv wrapper. Creates an mpv instance with OpenGL render context, renders video frames to an FBO, exposes transport controls (play/pause/stop/seek), chapter navigation, audio/subtitle track cycling, zoom/pan, A-B looping, frame stepping, and playback speed. The FBO texture ID is returned via `MediaPlayer_GetVideoTexture()` for the renderer to bind.
+## Getting there
 
-- **CDVDPlayer** (desktop_nodes.cpp): The XAP node implementation. Bridges all 34 DVDPlayer script functions to `MediaPlayer_*` calls. The `Advance()` method runs every frame, querying mpv for current position, chapter, track info, and updating the node's properties so the XAP OSD text stays current.
+On the desktop build the main menu's Xbox Live button is pointed at the media library. `Configs/config.ini` holds the main menu wiring, and its `Button3Action=GoToMedia()` makes that button run `GoToMedia()` from the desktop `default.xap`, which loads the media player scenes. The scripts are in `xips-source/mediaplayer/` and the packed archives are `mediaplayer.xip` and `mediaplayer_action.xip` in `Data/Xips/`.
 
-- **dvd.xap** (original Xbox script): Defines the joystick handlers that map controller buttons to DVDPlayer functions, the OSD layout, and the menu overlay. Unmodified from the Xbox version.
+## The library: MediaCollection
 
-### Video Rendering
+`CMediaCollection` (in `theseus/desktop/media_db.cpp`) owns the library. It scans the Movies and TV roots set in Settings > Media > Local Library:
 
-The video texture injection happens in the D3D8 translation layer. When the renderer encounters the `texture_panel` mesh (identified by its "Black80" material), it checks if `MediaPlayer_GetVideoTexture()` returns a valid GL texture. If so, it binds that texture instead of the material's default. When playback stops, the override is removed and the mesh goes back to black.
+- **Movies**: one folder per movie (the first video file in it, or one level down), or video files straight in the root
+- **TV**: one folder per show, with `Season N` or `Specials` folders inside, or episodes straight in the show folder. Episodes sort by `S01E02` style numbers, then by name
+- **Video types**: `.mkv`, `.mp4`, `.m4v`, `.avi`, `.mov`, `.webm`
 
-The CRT post-processing shader works on top of this: scanlines and curvature are applied to the final composited frame including video, giving media playback the same retro look as the rest of the dashboard.
+Results are cached in `Library/MediaDB.cache` so the next launch doesn't rescan. With a TMDB API key the scan also fetches posters, synopses and ratings; without one the library still works, just with plain titles.
 
-### Playback Modes
+The scenes talk to it through script functions: `GetMovieCount`, `GetMovieTitle`, `SetCurrentShow`, `GetSeasonCount`, `GetEpisodeTitle`, `GetSelectedPlot`, `PlayMovie`, `PlayEpisode`, `RefreshLibrary` and friends. The scripts never touch libmpv directly.
 
-The DVDPlayer node's `playbackMode` property maps to these states (from the Xbox DVD navigator):
+## Playback: media_ui and media_player
 
-| Mode | Value | Meaning |
-|------|-------|---------|
-| DPM_STOPPED | 0 | Stopped / no media |
-| DPM_PAUSED | 1 | Paused |
-| DPM_STILL | 2 | Still frame |
-| DPM_PLAYING | 3 | Normal playback |
-| DPM_NONE | 4 | No mode |
-| DPM_SCANNING | 5 | Fast forward / rewind |
-| DPM_TRICKPLAY | 8 | Frame stepping |
+`PlayMovie` and `PlayEpisode` hand a path and a title to `media_ui.cpp`, which takes over the screen: video fullscreen, an on screen display in the dashboard's style, an audio and subtitle track picker, and a play queue for playlists. Esc, Q or Backspace stops and returns you to the library scene.
 
-### Scan Speed Ramp
+`media_player.cpp` wraps libmpv. Every play creates a fresh mpv instance and every stop tears it down completely, because partial stops left the render pipeline wedged on Apple Silicon. mpv renders each frame in software into a CPU buffer, which is uploaded to a bgfx texture and drawn with a fullscreen blit. That keeps video independent of whichever GPU backend bgfx picked, and lets the CRT effect apply to video too. Hardware decoding is a toggle in Settings > Display.
 
-Forward/backward scan cycles through speed multipliers on each press:
-- **Playing + forward scan**: 2x, 4x, 8x, 16x, 32x (via mpv `speed` property)
-- **Paused + forward scan**: Slow motion 1/2x, 1/4x, 1/8x, 1/16x
-- **Backward scan**: Simulated via periodic reverse seeking in Advance() (mpv doesn't support native reverse playback)
+mpv brings its own audio output (CoreAudio, PulseAudio or ALSA, WASAPI). Dashboard sounds and music are muted while video plays and come back when it stops.
 
-### Track Info Mapping
+## Playlists
 
-| Xbox property | mpv source |
-|---------------|------------|
-| audioFormat | `audio-codec-name` mapped to enum (0=AC3, 1=MPEG1, 2=MPEG2, 3=PCM/Stereo, 4=DTS) |
-| audioChannels | `audio-params/channel-count` |
-| audioLanguage | `current-tracks/audio/lang` |
-| subTitleLanguage | `current-tracks/sub/lang` |
-| subTitle | `sid` (subtitle track index) |
+The Playlist Maker (F6) builds playlists out of the media library. They're stored as file paths in `Configs/playlists.ini`, so they survive rescans and renamed metadata, and `PlaylistCollection` exposes them to scripts. During playback `[` and `]` step through the queue.
 
-### Function Mapping
+## The DVDPlayer node
 
-| Xbox function | mpv equivalent |
-|---------------|---------------|
-| play/pause/stop | `pause` property, `stop` command |
-| forwardScan/backwardScan | `speed` property (forward), periodic seeking (backward) |
-| stopScan | Reset `speed` to 1.0 |
-| frameAdvance/frameReverse | `frame-step` / `frame-back-step` commands |
-| nextChapter/prevChapter | `add chapter +/-1` |
-| nextAudioStream | `cycle audio` |
-| nextSubtitle | `cycle sub` |
-| setScale | `video-zoom` (log2 scale) |
-| setZoomPos | `video-pan-x` / `video-pan-y` |
-| abRepeat | `ab-loop-a` / `ab-loop-b` properties |
+The dashboard's own DVD scene, `dvd.xap`, drives a `DVDPlayer` node: play, pause, scan, chapters, angles, subtitles, A/B repeat, zoom, and a stream of callbacks (`OnTimeChange`, `OnChapterChange` and so on) that the on screen display listens to. The desktop `DVDPlayer` still honors that whole contract and maps it onto libmpv: scans become playback speed (reverse scan is periodic seeking backward, since mpv can't play in reverse), chapters map to mpv chapters, and audio and subtitle stream changes cycle mpv's tracks. Its per frame update fires the callbacks in the same order the 5960 binary does.
 
-Functions that are no-ops for file playback: menu, titleMenu, selectUp/Down/Left/Right, activate, goUp, nextAngle, enableWideScreen, disableWideScreen, refreshAudioSettings.
+On desktop the disc drive only ever reports audio CDs, though, so in normal use nothing opens `dvd.xap`. The node is there so the scene and its scripts keep loading and stay correct; the media library above is how you actually watch things.
 
-### Audio
+## Audio CDs
 
-mpv has its own audio output (CoreAudio on macOS, ALSA/PulseAudio on Linux, WASAPI on Windows). Dashboard audio uses SDL_mixer separately. When media playback starts, dashboard background music is muted via `DashAudio_MuteAll()` and restored on stop via `DashAudio_UnmuteAll()`.
+`DiscDrive` on desktop polls the first optical drive for an audio CD and reports it to the dashboard, which opens the music screen the way the Xbox did. Detection works on Linux and Windows (not macOS yet), and playback goes through libmpv.

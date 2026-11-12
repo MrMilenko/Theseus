@@ -28,23 +28,31 @@ Used by the Xbox build:
 |---|---|---|
 | [minimp3](https://github.com/lieff/minimp3) | CC0 (Public Domain) | Single-header MP3 decoder for streaming music playback |
 
-Used by the desktop port:
+Used by the desktop build:
 
 | Library | License | Purpose |
 |---|---|---|
 | [SDL2](https://www.libsdl.org/) | zlib | Window, input, audio platform layer |
 | [SDL2_mixer](https://github.com/libsdl-org/SDL_mixer) | zlib | Sound playback |
-| [libmpv](https://mpv.io/) | LGPL-2.1+ | Video playback for the DVD player node |
-| [Dear ImGui](https://github.com/ocornut/imgui) | MIT | Developer tool UI |
+| [libmpv](https://mpv.io/) | LGPL-2.1+ | Video playback for the media library and the DVD player node, audio CD playback |
+| [libcurl](https://curl.se/libcurl/) | curl (MIT style) | HTTPS for TMDB, Plex, Jellyfin and Xbox sign in |
+| [FFmpeg](https://ffmpeg.org/) (libavcodec, libavutil, libswscale) | LGPL-2.1+ | xCloud video decode |
+| [Opus](https://opus-codec.org/) | BSD-3-Clause | xCloud audio decode |
+| [OpenSSL](https://www.openssl.org/) | Apache-2.0 | TLS and DTLS for the xCloud transport |
+| [libdatachannel](https://github.com/paullouisageneau/libdatachannel) (submodule) | MPL-2.0 | WebRTC transport for xCloud and remote play |
+| [bgfx](https://github.com/bkaradzic/bgfx), [bx](https://github.com/bkaradzic/bx), [bimg](https://github.com/bkaradzic/bimg) (submodules) | BSD-2-Clause | Rendering on Metal, Direct3D 11 and Vulkan |
+| [projectM](https://github.com/projectM-visualizer/projectm) (submodule) | LGPL-2.1+ | MilkDrop music visualizer, linked as a shared library |
+| [Dear ImGui](https://github.com/ocornut/imgui) | MIT | Tool window UI |
 | [ImGuiColorTextEdit](https://github.com/BalazsJako/ImGuiColorTextEdit) | MIT | XAP script editor with syntax highlighting |
-| [stb_image](https://github.com/nothings/stb) | Public Domain (or MIT, dual-licensed) | Image loading on the desktop side |
-| [GLEW](https://glew.sourceforge.net/) | Modified BSD / MIT | OpenGL extension loader (Windows desktop build only) |
+| [imgui-filebrowser](https://github.com/AirGuanZ/imgui-filebrowser) | MIT | File picker in the tool windows |
+| [stb_image, stb_image_write](https://github.com/nothings/stb) | Public Domain (or MIT, dual licensed) | Image loading, re-encoding icons and box art |
+| [GLEW](https://glew.sourceforge.net/) | Modified BSD / MIT | OpenGL extension loader, linked only by a native MSYS2 Windows build. The release builds don't use it |
 
 All of the above are GPL-3.0-compatible, either by being permissive (MIT, BSD, zlib, public domain) or by being LGPL (linkable from GPL).
 
-## Xbox Dashboard Assets (`xboxfs/`)
+## Xbox Dashboard Assets (`Data/`)
 
-The XIPs and skin assets in `xboxfs/` are authored by [UIX Lite](https://github.com/OfficialTeamUIX/UIX-Lite) and contain TeamUIX modifications of dashboard scripts present on every retail Xbox console. The `uixdata` directory layout is a convention established by JbOnE's earlier source-level modification, *User.Interface.X* (UIX); Theseus follows that convention so the same content runs on both projects. UIX Lite's modifications are licensed under GPL-3.0-or-later. The underlying script formats and any unmodified original components are referenced for compatibility and preservation; Microsoft retains its rights to its original work. Every Xbox owner already possesses the equivalent original files on their console.
+The XIPs and skin assets in `Data/` are authored by [UIX Lite](https://github.com/OfficialTeamUIX/UIX-Lite) and contain TeamUIX modifications of dashboard scripts present on every retail Xbox console. The `uixdata` directory layout is a convention established by JbOnE's earlier source-level modification, *User.Interface.X* (UIX); Theseus follows that convention so the same content runs on both projects. UIX Lite's modifications are licensed under GPL-3.0-or-later. The underlying script formats and any unmodified original components are referenced for compatibility and preservation; Microsoft retains its rights to its original work. Every Xbox owner already possesses the equivalent original files on their console.
 
 ## Microsoft XDK Headers (`theseus/xdk/`)
 
