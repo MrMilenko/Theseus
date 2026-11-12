@@ -566,8 +566,10 @@ static bool LoadCache()
 		fclose(f); return false;
 	}
 
-	g_movies.clear();
-	g_shows.clear();
+	// Parsed into locals and swapped in under the lock, since a scan thread
+	// may be publishing at the same time.
+	std::vector<MovieRec> movies;
+	std::vector<ShowRec>  shows;
 
 	uint32_t nMovies;
 	if (fread(&nMovies, 4, 1, f) != 1) { fclose(f); return false; }
@@ -578,7 +580,7 @@ static bool LoadCache()
 		if (!ReadStr(f, m.title) || !ReadStr(f, m.path) ||
 		    fread(&y, 2, 1, f) != 1)
 		{
-			fclose(f); g_movies.clear(); return false;
+			fclose(f); return false;
 		}
 		m.year = y;
 		uint16_t vote = 0;
@@ -587,11 +589,11 @@ static bool LoadCache()
 		    fread(&vote, 2, 1, f) != 1 ||
 		    fread(&tid,  4, 1, f) != 1)
 		{
-			fclose(f); g_movies.clear(); return false;
+			fclose(f); return false;
 		}
 		m.voteAverage = vote / 10.0f;
 		m.tmdbId      = tid;
-		g_movies.push_back(m);
+		movies.push_back(m);
 	}
 
 	uint32_t nShows;
@@ -632,10 +634,15 @@ static bool LoadCache()
 			}
 			sh.seasons.push_back(sn);
 		}
-		g_shows.push_back(sh);
+		shows.push_back(sh);
 	}
 
 	fclose(f);
+	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
+		g_movies.swap(movies);
+		g_shows.swap(shows);
+	}
 	printf("[MediaDB] Loaded cache: %u movies, %u shows\n", nMovies, nShows);
 	return true;
 }
@@ -671,9 +678,11 @@ public:
 	int m_curSelKind;   // 0 = movie, 1 = show
 	int m_curSelIdx;
 
-	int GetMovieCount() { return (int)g_movies.size(); }
+	// A scan thread swaps these vectors out, so every read takes g_dbMutex.
+	int GetMovieCount() { std::lock_guard<std::mutex> lock(g_dbMutex); return (int)g_movies.size(); }
 	CStrObject* GetMovieTitle(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_movies.size()) return new CStrObject;
 		// Strip trailing " (YYYY)" for cleaner display.
 		std::string t = g_movies[i].title;
@@ -683,6 +692,7 @@ public:
 	}
 	CStrObject* GetMovieMeta(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_movies.size()) return new CStrObject;
 		char buf[64];
 		if (g_movies[i].year > 0)
@@ -693,13 +703,15 @@ public:
 	}
 	CStrObject* GetMoviePath(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_movies.size()) return new CStrObject;
 		return new CStrObject(_T(g_movies[i].path.c_str()));
 	}
 
-	int GetShowCount() { return (int)g_shows.size(); }
+	int GetShowCount() { std::lock_guard<std::mutex> lock(g_dbMutex); return (int)g_shows.size(); }
 	CStrObject* GetShowTitle(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_shows.size()) return new CStrObject;
 		std::string t = g_shows[i].title;
 		size_t p = t.rfind(" (");
@@ -708,6 +720,7 @@ public:
 	}
 	CStrObject* GetShowMeta(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_shows.size()) return new CStrObject;
 		int totalEps = 0;
 		for (size_t s = 0; s < g_shows[i].seasons.size(); s++)
@@ -727,11 +740,13 @@ public:
 	}
 	int GetSeasonCount()
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return 0;
 		return (int)g_shows[m_curShowIdx].seasons.size();
 	}
 	CStrObject* GetSeasonName(int sIdx)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return new CStrObject;
 		if (sIdx < 0 || sIdx >= (int)g_shows[m_curShowIdx].seasons.size()) return new CStrObject;
 		return new CStrObject(_T(g_shows[m_curShowIdx].seasons[sIdx].name.c_str()));
@@ -740,12 +755,14 @@ public:
 	void SetCurrentSeason(int i) { m_curSeasonIdx = i; }
 	int GetEpisodeCount()
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return 0;
 		if (m_curSeasonIdx < 0 || m_curSeasonIdx >= (int)g_shows[m_curShowIdx].seasons.size()) return 0;
 		return (int)g_shows[m_curShowIdx].seasons[m_curSeasonIdx].episodes.size();
 	}
 	CStrObject* GetEpisodeTitle(int epIdx)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return new CStrObject;
 		if (m_curSeasonIdx < 0 || m_curSeasonIdx >= (int)g_shows[m_curShowIdx].seasons.size()) return new CStrObject;
 		const std::vector<EpisodeRec>& eps = g_shows[m_curShowIdx].seasons[m_curSeasonIdx].episodes;
@@ -754,6 +771,7 @@ public:
 	}
 	CStrObject* GetEpisodePath(int epIdx)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return new CStrObject;
 		if (m_curSeasonIdx < 0 || m_curSeasonIdx >= (int)g_shows[m_curShowIdx].seasons.size()) return new CStrObject;
 		const std::vector<EpisodeRec>& eps = g_shows[m_curShowIdx].seasons[m_curSeasonIdx].episodes;
