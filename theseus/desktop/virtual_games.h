@@ -257,17 +257,24 @@ inline void VGames_DeleteByName(const char* name) {
     fprintf(stderr, "[VGames] Deleted: %s\n", name);
 }
 
+// Forward slashes, no doubled or trailing separator. The Windows user data
+// root comes back with backslashes while translated Xbox paths use '/'.
+inline void VGames_NormPath(const char* in, char* out, size_t outSize) {
+    size_t j = 0;
+    for (size_t k = 0; in[k] && j + 1 < outSize; k++) {
+        char c = (in[k] == '\\') ? '/' : in[k];
+        if (c == '/' && j > 0 && out[j-1] == '/') continue;
+        out[j++] = c;
+    }
+    if (j > 0 && out[j-1] == '/') j--;
+    out[j] = 0;
+}
+
 // Match a disk path like "Library/Games/Road Rage" to a game index, or -1.
 inline int VGames_MatchFolder(const char* localPath) {
     VGames_Load();
     char norm[512];
-    int j = 0;
-    for (int k = 0; localPath[k] && j < 510; k++) {
-        if (localPath[k] == '/' && j > 0 && norm[j-1] == '/') continue;
-        norm[j++] = localPath[k];
-    }
-    if (j > 0 && norm[j-1] == '/') j--;
-    norm[j] = 0;
+    VGames_NormPath(localPath, norm, sizeof(norm));
 
     for (int i = 0; i < g_vgames.count; i++) {
         if (!g_vgames.games[i].valid) continue;
@@ -276,9 +283,10 @@ inline int VGames_MatchFolder(const char* localPath) {
         const char* prefix = (g_vgames.games[i].drive[0])
             ? XboxFS_DriveToPrefix(g_vgames.games[i].drive[0]) : 0;
         if (!prefix) continue;
-        char expected[512];
-        snprintf(expected, sizeof(expected), "%s/%s/%s",
+        char raw[512], expected[512];
+        snprintf(raw, sizeof(raw), "%s/%s/%s",
                  prefix, g_vgames.games[i].category, g_vgames.games[i].name);
+        VGames_NormPath(raw, expected, sizeof(expected));
         if (strcasecmp(norm, expected) == 0)
             return i;
     }
