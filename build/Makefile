@@ -1099,6 +1099,10 @@ $(PROJECTM_MARKER):
 projectm-clean:
 	rm -rf $(PROJECTM_SRC)/build $(PROJECTM_SRC)/install
 
+# milkdrop_window.cpp includes projectM's headers and the link needs its libs,
+# so a parallel first build has to wait for the install.
+$(DESKTOP_DIR)/desktop/milkdrop_window.o $(DESKTOP_TARGET): | $(PROJECTM_MARKER)
+
 $(DESKTOP_TARGET): $(DESKTOP_OBJS)
 	@mkdir -p $(DESKTOP_DIR) $(DESKTOP_DIR)/lib
 	$(DESKTOP_CXX) -o $@ $(DESKTOP_OBJS) $(DESKTOP_LDFLAGS)
@@ -1362,6 +1366,9 @@ PROJECTM_WIN64_MARKER := $(PROJECTM_WIN64_PREFIX)/include/projectM-4/projectM.h
 PROJECTM_WIN64_TOOLCHAIN := $(abspath $(THESEUS_SRC)/../build/cmake-toolchains/mingw-w64-x86_64.cmake)
 
 projectm-deps-win64: $(PROJECTM_WIN64_MARKER)
+
+# Same race as the native build.
+$(WIN64_DIR)/desktop/milkdrop_window.o $(WIN64_TARGET): | $(PROJECTM_WIN64_MARKER)
 
 $(PROJECTM_WIN64_MARKER):
 	@if [ ! -f $(PROJECTM_SRC)/CMakeLists.txt ]; then \
