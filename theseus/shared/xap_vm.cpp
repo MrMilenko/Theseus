@@ -58,10 +58,11 @@ CNumObject::CNumObject(const TCHAR* szValue)
 //     n = swprintf(buf20, L"%f", (double)m_value); p = buf + n - 1;
 //     while (*p == '0') p--;  if (*p == '.') p--;  p[1] = 0;
 //     return new CStrObject(buf);
-// So 2.500000 prints as "2.5" and 3.000000 as "3".
+// So 2.500000 prints as "2.5" and 3.000000 as "3". The binary's 20 characters
+// overflow from 1e12 up, so Theseus makes room for the biggest float.
 CStrObject* CNumObject::ToStr()
 {
-	TCHAR szNum[20];
+	TCHAR szNum[64];
 	int cch = _stprintf(szNum, _T("%f"), m_value);
 
 	TCHAR* pchLast = &szNum[cch - 1];
@@ -118,10 +119,10 @@ CVec3Object::CVec3Object(const D3DXVECTOR3& v)
 // CVec3Object::ToStr
 // Reconstructed from 5960 retail XBE @ 0x000390f0. Decompile:
 //     swprintf(buf60, L"%f %f %f", x, y, z); return new CStrObject(buf);
-// No zero trimming here, unlike numbers.
+// No zero trimming here, unlike numbers. Theseus sizes it for three huge floats.
 CStrObject* CVec3Object::ToStr()
 {
-	TCHAR szVec[60];
+	TCHAR szVec[160];
 	_stprintf(szVec, _T("%f %f %f"), m_x, m_y, m_z);
 	return new CStrObject(szVec);
 }
@@ -857,11 +858,13 @@ CObject* LookupMember(CObject* pThis, const TCHAR* pchName, int cchName)
 //     m_sp = m_nop = 0; m_ops = NULL; m_self = m_thisRef = obj;
 //     m_bError = false; m_nextContext = NULL; zero the stack;
 // and torn down with ResetFunc. 5960's stack holds 100 entries; Theseus's
-// holds 256 (see runner.h).
+// holds 256 (see runner.h). Theseus also starts the line at 0 so an error
+// before the first statement doesn't print a junk line number.
 CRunner::CRunner(CObject* pObject)
 {
 	ASSERT(pObject != NULL);
 
+	m_nLine = 0;
 	m_wakeup = 0.0f;
 	m_nop = 0;
 	m_ops = NULL;
@@ -1657,24 +1660,28 @@ BOOL CRunner::ExecuteBuiltIn(const TCHAR* pchName, int cchName, int nParam, CObj
 		CStrObject* pPath = pPathArg->ToStr();
 		const TCHAR* szPath = pPath->GetSz();
 
+		// Theseus: script paths longer than MAX_PATH get cut instead of overrunning.
 		TCHAR szDir[MAX_PATH];
 		if (nParam == 2)
 		{
 			CObject* pDirArg = Dereference(rgParam[1]);
 			CStrObject* pDir = pDirArg->ToStr();
-			_tcscpy(szDir, pDir->GetSz());
+			_tcsncpy(szDir, pDir->GetSz(), MAX_PATH - 1);
+			szDir[MAX_PATH - 1] = '\0';
 			pDir->Release();
 			pDirArg->Release();
 		}
 		else
 		{
-			_tcscpy(szDir, szPath);
+			_tcsncpy(szDir, szPath, MAX_PATH - 1);
+			szDir[MAX_PATH - 1] = '\0';
 			TCHAR* pchSlash = _tcsrchr(szDir, '/');
 			if (pchSlash != NULL)
 				*pchSlash = '\\';
 			pchSlash = _tcsrchr(szDir, '\\');
-			ASSERT(pchSlash != NULL);
-			*pchSlash = '\0';
+			// Theseus: a bare file name keeps the whole path instead of writing through NULL.
+			if (CHECK(pchSlash != NULL))
+				*pchSlash = '\0';
 		}
 
 		TRACE(_T("Launch title: %s, %s\n"), szPath, szDir);
