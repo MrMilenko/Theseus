@@ -256,7 +256,7 @@ protected:
 	const WORD* ActiveLayout() { return GetActiveLayout(m_mode, m_jmode); }
 	TCHAR ApplyCase(TCHAR ch);
 	void ClearSelection();
-	void InsertChar(TCHAR ch);
+	bool InsertChar(TCHAR ch);
 
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS();
@@ -343,20 +343,21 @@ TCHAR CKeyboard::ApplyCase(TCHAR ch)
 	return ch;
 }
 
-void CKeyboard::InsertChar(TCHAR ch)
+bool CKeyboard::InsertChar(TCHAR ch)
 {
 	ClearSelection();
 
 	if (m_nLength >= KB_MAX_LENGTH)
 	{
 		CallFunction(this, _T("OnError"));
-		return;
+		return false;
 	}
 
 	MoveMemory(&m_rgch[m_nCursor + 1], &m_rgch[m_nCursor], (m_nLength - m_nCursor) * sizeof(TCHAR));
 	m_rgch[m_nCursor] = ch;
 	m_nCursor += 1;
 	m_nLength += 1;
+	return true;
 }
 
 
@@ -569,8 +570,9 @@ void CKeyboard::activate()
 		break;
 
 	default:
-		InsertChar(ApplyCase((TCHAR)key));
-		m_shift = false;
+		// Shift stays on if the string was full.
+		if (InsertChar(ApplyCase((TCHAR)key)))
+			m_shift = false;
 		break;
 	}
 }
