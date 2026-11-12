@@ -27,6 +27,8 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <algorithm>
+#include <ctype.h>
 
 #define MEDIADB_MAGIC   "TMDB"
 #define MEDIADB_VERSION 2u   // v2: + overview, voteAverage, tmdbId on movies/shows
@@ -182,6 +184,81 @@ static std::string ParseEpisodeTitle(const std::string& filename, int& seasonOut
 	return rest;
 }
 
+// Season and episode out of a bare filename, for ordering only. Takes S01E02,
+// s1e2 and 1x02 anywhere in the name, as long as it starts on a word break.
+static bool ParseSeasonEpisode(const char* name, int& season, int& episode)
+{
+	for (const char* p = name; *p; p++)
+	{
+		if (p != name && isalnum((unsigned char)p[-1])) continue;
+		const char* q = p;
+		bool sForm = (*q == 'S' || *q == 's');
+		if (sForm) q++;
+		const char* d = q;
+		int s = 0;
+		while (isdigit((unsigned char)*q)) s = s * 10 + (*q++ - '0');
+		int sDigits = (int)(q - d);
+		if (sDigits < 1 || sDigits > 2) continue;
+		if (sForm ? (*q != 'E' && *q != 'e') : (*q != 'x' && *q != 'X')) continue;
+		q++;
+		d = q;
+		int e = 0;
+		while (isdigit((unsigned char)*q)) e = e * 10 + (*q++ - '0');
+		int eDigits = (int)(q - d);
+		if (eDigits < 1 || eDigits > 3 || (!sForm && eDigits < 2)) continue;
+		season = s; episode = e;
+		return true;
+	}
+	return false;
+}
+
+// Filename compare where digit runs count as numbers, so "Ep 2" lands before "Ep 10".
+static int NaturalCompare(const char* a, const char* b)
+{
+	while (*a && *b)
+	{
+		if (isdigit((unsigned char)*a) && isdigit((unsigned char)*b))
+		{
+			while (*a == '0') a++;
+			while (*b == '0') b++;
+			const char* na = a; const char* nb = b;
+			while (isdigit((unsigned char)*a)) a++;
+			while (isdigit((unsigned char)*b)) b++;
+			size_t la = a - na, lb = b - nb;
+			if (la != lb) return la < lb ? -1 : 1;
+			int c = strncmp(na, nb, la);
+			if (c) return c;
+			continue;
+		}
+		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
+		if (ca != cb) return ca < cb ? -1 : 1;
+		a++; b++;
+	}
+	return (*a != 0) - (*b != 0);
+}
+
+static const char* BaseName(const std::string& path)
+{
+	size_t slash = path.find_last_of('/');
+	return path.c_str() + (slash == std::string::npos ? 0 : slash + 1);
+}
+
+// Numbered episodes in (season, episode) order, anything unnumbered after them by name.
+static void SortEpisodes(std::vector<EpisodeRec>& eps)
+{
+	std::stable_sort(eps.begin(), eps.end(), [](const EpisodeRec& x, const EpisodeRec& y) {
+		const char* nx = BaseName(x.path);
+		const char* ny = BaseName(y.path);
+		int sx = 0, ex = 0, sy = 0, ey = 0;
+		bool hx = ParseSeasonEpisode(nx, sx, ex);
+		bool hy = ParseSeasonEpisode(ny, sy, ey);
+		if (hx != hy) return hx;
+		if (hx && sx != sy) return sx < sy;
+		if (hx && ex != ey) return ex < ey;
+		return NaturalCompare(nx, ny) < 0;
+	});
+}
+
 // First video at or below dir. depth 1 is this level only; 2 also covers a
 // Season folder or similar sitting under the title folder.
 static std::string FindFirstVideoFile(const std::string& dir, int depth = 1)
@@ -323,6 +400,7 @@ static void ScanShowSeasons(ShowRec& show)
 			s.episodes.push_back(ep);
 		}
 		closedir(fd);
+		SortEpisodes(s.episodes);
 		if (!s.episodes.empty()) show.seasons.push_back(s);
 	}
 }
