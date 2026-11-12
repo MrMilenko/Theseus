@@ -2812,12 +2812,12 @@ function InitializeLanguageMenu()
 	astrLanguageButtonText = new Array( "ENGLISH",                      // English
 										"\u65e5\u672c\u8a9e",           // Japanese
 										"DEUTSCH",                      // German
-										"FRAN�AIS",                     // French
-										"ESPA�OL",                      // Spanish
+										"FRANÇAIS",                     // French
+										"ESPAÑOL",                      // Spanish
 										"ITALIANO",                     // Italian
 										"\uD55C\uAD6D\uC5B4",           // Korean
 										"\u7E41\u9AD4\u4E2D\u6587",     // Traditional Chinese
-										"PORTUGU�S" );                  // Portuguese
+										"PORTUGUÊS" );                  // Portuguese
 }
 
 function StartLanguageMenu() 
@@ -3703,9 +3703,9 @@ function UpdateRootMeta()
 		else if (nLanguage == 3)
 			metaString = "DEUTSCH";                     // German
 		else if (nLanguage == 4)
-			metaString = "FRAN�AIS";                    // French
+			metaString = "FRANÇAIS";                    // French
 		else if (nLanguage == 5)
-			metaString = "ESPA�OL";                     // Spanish
+			metaString = "ESPAÑOL";                     // Spanish
 		else if (nLanguage == 6)
 			metaString = "ITALIANO";                    // Italian
 		else if (nLanguage == 7)
@@ -3713,7 +3713,7 @@ function UpdateRootMeta()
 		else if (nLanguage == 8)
 			metaString = "\u7E41\u9AD4\u4E2D\u6587";    // Traditional Chinese
 		else if (nLanguage == 9)
-			metaString = "PORTUGU�S";                   // Portugues
+			metaString = "PORTUGUÊS";                   // Portugues
 		else
 			metaString = ""; 
 	}
