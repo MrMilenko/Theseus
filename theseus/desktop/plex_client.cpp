@@ -80,6 +80,9 @@ static std::atomic<bool>                              s_syncRunning{false};
 static std::atomic<int>                               s_syncProgress{0};   // 0..1000
 static std::string                                    s_syncPhase;
 static std::thread                                    s_syncThread;
+// Bumped by sign out. A worker from an older generation finishes on its own
+// but publishes nothing, and owns s_syncRunning until it does.
+static std::atomic<unsigned>                          s_syncGen{0};
 static std::vector<PlexLibrary>                       s_cacheLibs;
 static std::map<std::string, std::vector<PlexItem>>   s_cacheItems;        // sectionKey -> items
 static std::map<std::string, std::vector<PlexSeason>> s_cacheSeasons;      // showRk -> seasons
@@ -127,8 +130,8 @@ void Plex_SignOut()
     s_cacheItems.clear();
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
+    s_syncGen++;
     s_syncReady    = false;
-    s_syncRunning  = false;
     s_syncProgress = 0;
     s_syncPhase.clear();
 }
@@ -243,6 +246,7 @@ static std::string PickConnection(const std::string& serverJson)
 
 static void ServersWorker()
 {
+    const unsigned gen = s_syncGen;
     HttpResponse r = Http_Get(
         "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1",
         PlexHeaders(true, true));
@@ -266,13 +270,15 @@ static void ServersWorker()
         fprintf(stderr, "[Plex] resources fetch failed (status %ld)\n", r.status);
     }
 
+    size_t n = servers.size();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
+        if (gen != s_syncGen) return;   // signed out meanwhile
         s_servers = std::move(servers);
         s_activeServerName = s_servers.empty() ? std::string() : s_servers[0].name;
     }
     s_serversReady = true;
-    fprintf(stderr, "[Plex] discovered %zu server(s)\n", s_servers.size());
+    fprintf(stderr, "[Plex] discovered %zu server(s)\n", n);
 }
 
 std::string Plex_GetActiveServerName()
@@ -440,20 +446,34 @@ std::string Plex_ResolveStreamUrl(const std::string& serverUri,
 // episodes stay lazy (the fanout is too wide to walk on every sign-in).
 // ============================================================================
 
-static void SetSyncPhase(const std::string& phase, int progressOf1000)
+static void SetSyncPhase(unsigned gen, const std::string& phase, int progressOf1000)
 {
     std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen != s_syncGen) return;
     s_syncPhase    = phase;
     s_syncProgress = progressOf1000;
 }
 
+// Marks the sync done, unless a sign out made this run stale.
+static void FinishSync(unsigned gen, const char* phase)
+{
+    SetSyncPhase(gen, phase, 1000);
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        if (gen == s_syncGen) s_syncReady = true;
+    }
+    s_syncRunning = false;
+}
+
 static void SyncWorker()
 {
+    const unsigned gen = s_syncGen;
     s_syncReady = false;
 
-    SetSyncPhase("Finding Plex server", 0);
+    SetSyncPhase(gen, "Finding Plex server", 0);
     Plex_FetchServers();
     while (!Plex_ServersReady()) {
+        if (gen != s_syncGen) { s_syncRunning = false; return; }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -462,16 +482,14 @@ static void SyncWorker()
         // Signed in but nothing came back from plex.tv. Distinct from "signed
         // in and the server has no libraries", and the UI shows both as 0.
         fprintf(stderr, "[Plex] no servers returned for this account/token\n");
-        SetSyncPhase("No Plex servers reachable", 1000);
-        s_syncReady   = true;
-        s_syncRunning = false;
+        FinishSync(gen, "No Plex servers reachable");
         return;
     }
     // Ask each server in turn rather than betting on the first. An account
     // can list a server that's simply unreachable from here (someone else's
     // share, a LAN address while you're remote, a machine that's off), and
     // taking servers[0] on faith renders as "0 libraries" with no complaint.
-    SetSyncPhase("Loading library list", 50);
+    SetSyncPhase(gen, "Loading library list", 50);
     std::string serverUri;
     HttpResponse r;
     std::vector<PlexLibrary> libs;
@@ -486,7 +504,7 @@ static void SyncWorker()
         serverUri = servers[si].uri;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
-            s_activeServerName = servers[si].name;
+            if (gen == s_syncGen) s_activeServerName = servers[si].name;
         }
         fprintf(stderr, "[Plex] using %s (%s)\n",
                 servers[si].name.c_str(), serverUri.c_str());
@@ -495,9 +513,7 @@ static void SyncWorker()
 
     if (serverUri.empty()) {
         fprintf(stderr, "[Plex] none of the %zu server(s) answered\n", servers.size());
-        SetSyncPhase("No Plex servers reachable", 1000);
-        s_syncReady   = true;
-        s_syncRunning = false;
+        FinishSync(gen, "No Plex servers reachable");
         return;
     }
 
@@ -521,7 +537,7 @@ static void SyncWorker()
         char phaseBuf[128];
         snprintf(phaseBuf, sizeof(phaseBuf),
                  "Loading %s (%d/%d)", lib.title.c_str(), i + 1, libCount);
-        SetSyncPhase(phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
+        SetSyncPhase(gen, phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
 
         std::string url = serverUri + "/library/sections/" + lib.sectionKey + "/all";
         HttpResponse ir = Http_Get(url, PlexHeaders(true, true));
@@ -550,16 +566,17 @@ static void SyncWorker()
     }
 
     // Publish atomically. Readers see old snapshot or whole new one.
+    size_t nLibs = libs.size();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheLibs  = std::move(libs);
-        s_cacheItems = std::move(itemsByKey);
+        if (gen == s_syncGen) {
+            s_cacheLibs  = std::move(libs);
+            s_cacheItems = std::move(itemsByKey);
+        }
     }
 
-    SetSyncPhase("Plex library ready", 1000);
-    s_syncReady   = true;
-    s_syncRunning = false;
-    fprintf(stderr, "[Plex] sync complete (%zu libraries)\n", s_cacheLibs.size());
+    FinishSync(gen, "Plex library ready");
+    fprintf(stderr, "[Plex] sync complete (%zu libraries)\n", nLibs);
 }
 
 void Plex_StartSync()
