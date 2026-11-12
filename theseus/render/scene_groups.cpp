@@ -615,7 +615,8 @@ CInline::~CInline()
 //              xip = LoadXIP(path); if (xip) return; loading = 0; }
 //     FinishLoad();
 // The archive is named after the folder holding the XAP. With one, the load
-// finishes later in Advance; without, the class loads right here.
+// finishes later in Advance; without, the class loads right here. The binary
+// never fills in the absolute url on that path; we do, so it can't parse garbage.
 void CInline::Init()
 {
     m_dirty = false;
@@ -638,6 +639,7 @@ void CInline::Init()
         m_bLoading = false;
     }
 
+    MakeAbsoluteURL(m_szAbsURL, m_url);
     FinishLoad();
 }
 
