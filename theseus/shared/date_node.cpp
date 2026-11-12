@@ -1,6 +1,7 @@
-// date_node.cpp: CDateObject, the JavaScript-style Date object exposed to
-// XAP scripts. Decompiled from the 5960 retail XBE; see
-// docs/decomp/Date.md.
+// date_node.cpp: the script Date object. Holds one FILETIME and hands out
+// its parts in local time or UTC, a few strings, two calendar helpers, and
+// the call that sets the console clock. Rebuilt function by function from
+// the 5960 retail XBE; see docs/decomp/Date.md.
 
 #include "std.h"
 #include "theseus.h"
@@ -17,12 +18,9 @@ extern int g_nParam;
 extern CRunner* g_pRunner;
 extern CObject* Dereference(CObject* pObject);
 
-// =========================================================================
-// Node registration. Names must match what XAP scripts call.
-// =========================================================================
-
 IMPLEMENT_NODE("Date", CDateObject, CObject)
 
+// FND at 0x0017f698, same order.
 #define _FND_CLASS CDateObject
 START_NODE_FUN(CDateObject, CObject)
 	NODE_FUN_IV(getDate)
@@ -50,315 +48,224 @@ START_NODE_FUN(CDateObject, CObject)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-// =========================================================================
-// Internal helpers
-// =========================================================================
-
-// Convert stored FILETIME to local SYSTEMTIME
-static void ToLocalSystemTime(const FILETIME& ft, SYSTEMTIME* pST)
+// Every getter is one of these two conversions and a field.
+static SYSTEMTIME LocalParts(const FILETIME& when)
 {
 	FILETIME local;
-	FileTimeToLocalFileTime(&ft, &local);
-	FileTimeToSystemTime(&local, pST);
+	SYSTEMTIME parts;
+	FileTimeToLocalFileTime(&when, &local);
+	FileTimeToSystemTime(&local, &parts);
+	return parts;
 }
 
-// Convert stored FILETIME to UTC SYSTEMTIME
-static void ToUTCSystemTime(const FILETIME& ft, SYSTEMTIME* pST)
+static SYSTEMTIME UTCParts(const FILETIME& when)
 {
-	FileTimeToSystemTime(&ft, pST);
+	SYSTEMTIME parts;
+	FileTimeToSystemTime(&when, &parts);
+	return parts;
 }
 
-// Pull a numeric param from the script VM
-static int GetNumParam(int idx)
-{
-	CNumObject* pNum = g_rgParam[idx]->ToNum();
-	int val = (int)pNum->m_value;
-	pNum->Release();
-	return val;
-}
 
-// =========================================================================
-// Calendar utilities (exposed to XAP scripts)
-// =========================================================================
+// ===== Calendar ============================================================
 
 // CDateObject::isLeapYear(year)   [script fn 'isLeapYear', FND 0x0017f860, sig 3]
 // Reconstructed from 5960 retail XBE @ 0x00030f90. Ghidra decompile:
 //     if (year%100==0 && year%400!=0) return false; return (year & 3)==0;
 // The binary tests the 100/400 exception first, then year%4 (emitted as the
-// signed `& 0x80000003` idiom). The Gregorian leap rule is functionally fixed:
-// every correct implementation is identical by necessity. Written from behavior,
-// not transcribed: note we use the plain `% 4`, not the compiler's bit idiom.
+// signed `& 0x80000003` idiom). The Gregorian leap rule is functionally fixed,
+// so every correct version reads the same; this one is the plain `% 4` form.
 int CDateObject::isLeapYear(int nYear)
 {
-	return (nYear % 4 == 0 && (nYear % 100 != 0 || nYear % 400 == 0)) ? 1 : 0;
+	if (nYear % 100 == 0 && nYear % 400 != 0)
+		return 0;
+	return nYear % 4 == 0;
 }
 
 // CDateObject::getDaysInMonth(month, year)  [script fn 'getDaysInMonth', FND 0x0017f878, sig 24]
 // Reconstructed from 5960 retail XBE @ 0x00030fd0. Ghidra decompile:
-//     if (month!=2) return *(short*)(&DAT_001765c6 + month*2);   // length table
-//     return 28 + (leap ? 1 : 0);                                // February
-// The month-length table and the 28/29 February rule are calendar facts,
-// identical by necessity in any implementation. (month is 1-based here.)
+//     if (month != 2) return days[month];      // short table @ 0x001765c6, [0] = 0
+//     return 28 + isLeapYear(year);
+// Month lengths are calendar facts. Months are 1 based; Theseus answers 0
+// outside 1..12 where the binary reads past its table.
 int CDateObject::getDaysInMonth(int nMonth, int nYear)
 {
-	static const short days[] = { 31, 0, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+	static const short s_monthDays[13] = { 0, 31, 0, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 
 	if (nMonth == 2)
-		return isLeapYear(nYear) ? 29 : 28;
-
-	return days[nMonth - 1];
+		return 28 + isLeapYear(nYear);
+	if (nMonth < 1 || nMonth > 12)
+		return 0;
+	return s_monthDays[nMonth];
 }
 
-// =========================================================================
-// Constructor
-// =========================================================================
 
+// ===== Construction ========================================================
+
+static WORD ParamWord(int index)
+{
+	CNumObject* num = g_rgParam[index]->ToNum();
+	WORD value = (WORD)(int)num->m_value;
+	num->Release();
+	return value;
+}
+
+// CDateObject::CDateObject()
+// Reconstructed from 5960 retail XBE @ 0x00031040. No arguments takes the
+// current UTC time. Three to seven are year, month (0 based), day, then
+// optional hour, minute, second and millisecond; each argument is
+// dereferenced first and read as a number, a year below 100 gets 1900 added.
+// Any other count is a script error and leaves the time zero.
 CDateObject::CDateObject()
 {
-	SYSTEMTIME st;
+	m_time.dwLowDateTime = 0;
+	m_time.dwHighDateTime = 0;
 
+	SYSTEMTIME parts;
 	if (g_nParam == 0)
 	{
-		// No args: current system time
-		GetSystemTime(&st);
+		GetSystemTime(&parts);
+		SystemTimeToFileTime(&parts, &m_time);
+		return;
 	}
-	else if (g_nParam >= 3 && g_nParam <= 7)
-	{
-		// 3-7 args: year, month(0-based), day, [hour], [min], [sec], [ms]
-		ZeroMemory(&st, sizeof(st));
-
-		for (int i = 0; i < g_nParam; i++)
-			g_rgParam[i] = Dereference(g_rgParam[i]);
-
-		st.wYear = (WORD)GetNumParam(0);
-		if (st.wYear < 100)
-			st.wYear += 1900;
-
-		st.wMonth = (WORD)(GetNumParam(1) + 1); // JS months are 0-based
-		st.wDay = (WORD)GetNumParam(2);
-
-		if (g_nParam > 3) st.wHour = (WORD)GetNumParam(3);
-		if (g_nParam > 4) st.wMinute = (WORD)GetNumParam(4);
-		if (g_nParam > 5) st.wSecond = (WORD)GetNumParam(5);
-		if (g_nParam > 6) st.wMilliseconds = (WORD)GetNumParam(6);
-	}
-	else
+	if (g_nParam < 3 || g_nParam > 7)
 	{
 		g_pRunner->Error(_T("Wrong number of parameters to Date constructor\n"));
 		return;
 	}
 
-	VERIFY(SystemTimeToFileTime(&st, &m_time));
+	for (int i = 0; i < g_nParam; i++)
+		g_rgParam[i] = Dereference(g_rgParam[i]);
+
+	memset(&parts, 0, sizeof(parts));
+	parts.wYear = ParamWord(0);
+	if (parts.wYear < 100)
+		parts.wYear += 1900;
+	parts.wMonth = ParamWord(1) + 1;
+	parts.wDay = ParamWord(2);
+
+	WORD* optional[4] = { &parts.wHour, &parts.wMinute, &parts.wSecond, &parts.wMilliseconds };
+	for (int i = 3; i < g_nParam; i++)
+		*optional[i - 3] = ParamWord(i);
+
+	SystemTimeToFileTime(&parts, &m_time);
 }
 
-// =========================================================================
-// Local time accessors
-// =========================================================================
 
-int CDateObject::getDate()
-{
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-	return st.wDay;
-}
+// ===== Getters =============================================================
 
-int CDateObject::getDay()
-{
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-	return st.wDayOfWeek;
-}
+// CDateObject::getDate .. getSeconds   [script fns, FND 0x0017f698..0x0017f740, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x00031290..0x000313e0, one each:
+//     FileTimeToLocalFileTime(&time, &local); FileTimeToSystemTime(&local, &st);
+//     return st.<field>;          // getMonth returns wMonth - 1
+int CDateObject::getDate()          { return LocalParts(m_time).wDay; }
+int CDateObject::getDay()           { return LocalParts(m_time).wDayOfWeek; }
+int CDateObject::getFullYear()      { return LocalParts(m_time).wYear; }
+int CDateObject::getHours()         { return LocalParts(m_time).wHour; }
+int CDateObject::getMilliseconds()  { return LocalParts(m_time).wMilliseconds; }
+int CDateObject::getMinutes()       { return LocalParts(m_time).wMinute; }
+int CDateObject::getMonth()         { return LocalParts(m_time).wMonth - 1; }
+int CDateObject::getSeconds()       { return LocalParts(m_time).wSecond; }
 
-int CDateObject::getFullYear()
-{
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-	return st.wYear;
-}
+// CDateObject::getUTCDate .. getUTCSeconds   [script fns, FND 0x0017f758..0x0017f800, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x00031410..0x000314f0: the same
+// without the local time step.
+int CDateObject::getUTCDate()         { return UTCParts(m_time).wDay; }
+int CDateObject::getUTCDay()          { return UTCParts(m_time).wDayOfWeek; }
+int CDateObject::getUTCFullYear()     { return UTCParts(m_time).wYear; }
+int CDateObject::getUTCHours()        { return UTCParts(m_time).wHour; }
+int CDateObject::getUTCMilliseconds() { return UTCParts(m_time).wMilliseconds; }
+int CDateObject::getUTCMinutes()      { return UTCParts(m_time).wMinute; }
+int CDateObject::getUTCMonth()        { return UTCParts(m_time).wMonth - 1; }
+int CDateObject::getUTCSeconds()      { return UTCParts(m_time).wSecond; }
 
-int CDateObject::getHours()
-{
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-	return st.wHour;
-}
-
-int CDateObject::getMilliseconds()
-{
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-	return st.wMilliseconds;
-}
-
-int CDateObject::getMinutes()
-{
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-	return st.wMinute;
-}
-
-int CDateObject::getMonth()
-{
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-	return st.wMonth - 1; // JS months are 0-based
-}
-
-int CDateObject::getSeconds()
-{
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-	return st.wSecond;
-}
-
-// =========================================================================
-// UTC accessors
-// =========================================================================
-
-int CDateObject::getUTCDate()
-{
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-	return st.wDay;
-}
-
-int CDateObject::getUTCDay()
-{
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-	return st.wDayOfWeek;
-}
-
-int CDateObject::getUTCFullYear()
-{
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-	return st.wYear;
-}
-
-int CDateObject::getUTCHours()
-{
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-	return st.wHour;
-}
-
-int CDateObject::getUTCMilliseconds()
-{
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-	return st.wMilliseconds;
-}
-
-int CDateObject::getUTCMinutes()
-{
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-	return st.wMinute;
-}
-
-int CDateObject::getUTCMonth()
-{
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-	return st.wMonth - 1;
-}
-
-int CDateObject::getUTCSeconds()
-{
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-	return st.wSecond;
-}
-
-// =========================================================================
-// Deprecated JS accessor
-// =========================================================================
-
+// Not in the 5960 function table; Theseus keeps it for C++ callers.
 int CDateObject::getYear()
 {
-	int nYear = getFullYear();
-	if (nYear >= 1900 && nYear < 2000)
-		return nYear - 1900;
-	return nYear;
+	int year = getFullYear();
+	if (year >= 1900 && year < 2000)
+		return year - 1900;
+	return year;
 }
 
-// =========================================================================
-// String formatting
-// =========================================================================
 
-static const TCHAR* s_rgszMonth3[] = {
-	_T("Jan"), _T("Feb"), _T("Mar"), _T("Apr"), _T("May"), _T("Jun"),
-	_T("Jul"), _T("Aug"), _T("Sep"), _T("Oct"), _T("Nov"), _T("Dec")
+// ===== Strings =============================================================
+
+// Month abbreviations, 1 based like the pointer table at 0x0017442c.
+static const TCHAR* const s_monthNames[13] =
+{
+	NULL, _T("Jan"), _T("Feb"), _T("Mar"), _T("Apr"), _T("May"), _T("Jun"),
+	_T("Jul"), _T("Aug"), _T("Sep"), _T("Oct"), _T("Nov"), _T("Dec"),
 };
 
-CStrObject* CDateObject::toGMTString()
+static CStrObject* StampString(const FILETIME& when, const TCHAR* zone)
 {
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-
-	TCHAR szBuf[32];
-	_stprintf(szBuf, _T("%02d %s %d %02d:%02d:%02d GMT"),
-		st.wDay, s_rgszMonth3[st.wMonth - 1], st.wYear,
-		st.wHour, st.wMinute, st.wSecond);
-	return new CStrObject(szBuf);
+	SYSTEMTIME st = UTCParts(when);
+	TCHAR buf[32];
+	_stprintf(buf, _T("%02d %s %d %02d:%02d:%02d %s"),
+		st.wDay, s_monthNames[st.wMonth], st.wYear, st.wHour, st.wMinute, st.wSecond, zone);
+	return new CStrObject(buf);
 }
 
-CStrObject* CDateObject::toLocaleString()
+// CDateObject::toGMTString()   [script fn 'toGMTString', FND 0x0017f818, sig 8]
+// CDateObject::toUTCString()   [script fn 'toUTCString', FND 0x0017f848, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x00031510 and @ 0x00031660:
+//     FileTimeToSystemTime(&time, &st);
+//     swprintf(buf, L"%02d %s %d %02d:%02d:%02d GMT", day, months[month], year, h, m, s);
+// The two differ only in the last word (UTC format at 0x00021d24).
+CStrObject* CDateObject::toGMTString()
 {
-	SYSTEMTIME st;
-	ToLocalSystemTime(m_time, &st);
-
-	TCHAR szBuf[32];
-	FormatTime(szBuf, countof(szBuf), &st);
-	return new CStrObject(szBuf);
+	return StampString(m_time, _T("GMT"));
 }
 
 CStrObject* CDateObject::toUTCString()
 {
-	SYSTEMTIME st;
-	ToUTCSystemTime(m_time, &st);
-
-	TCHAR szBuf[32];
-	_stprintf(szBuf, _T("%02d %s %d %02d:%02d:%02d UTC"),
-		st.wDay, s_rgszMonth3[st.wMonth - 1], st.wYear,
-		st.wHour, st.wMinute, st.wSecond);
-	return new CStrObject(szBuf);
+	return StampString(m_time, _T("UTC"));
 }
 
-// =========================================================================
-// System clock (Xbox kernel)
-// =========================================================================
+// CDateObject::toLocaleString()   [script fn 'toLocaleString', FND 0x0017f830, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x000315c0: local time through
+// FormatTime into a 32 character buffer.
+CStrObject* CDateObject::toLocaleString()
+{
+	SYSTEMTIME st = LocalParts(m_time);
+	TCHAR buf[32];
+	FormatTime(buf, countof(buf), &st);
+	return new CStrObject(buf);
+}
 
+
+// ===== Clock ===============================================================
+
+// CDateObject::SetSystemClock()   [script fn 'SetSystemClock', FND 0x0017f890, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x00031710. Sets the local clock to
+// this date, reads it back, and sets it again when the two are a minute or
+// more apart (crossing a daylight saving change moves it an hour). Then, if
+// the refurb record has no first set time yet, stores this one there.
+// Desktop leaves the host clock alone.
 void CDateObject::SetSystemClock()
 {
 #ifdef _XBOX
-	SYSTEMTIME st;
-	FileTimeToSystemTime(&m_time, &st);
+	SYSTEMTIME wanted;
+	FileTimeToSystemTime(&m_time, &wanted);
+	XapiSetLocalTime(&wanted);
 
-	VERIFY(XapiSetLocalTime(&st));
+	SYSTEMTIME now;
+	FILETIME nowTime;
+	GetLocalTime(&now);
+	SystemTimeToFileTime(&now, &nowTime);
 
-	// DST boundary correction:
-	// If the old time was in daylight saving and the new time is in standard
-	// (or vice versa), the result is off by one hour. Detect by checking if
-	// the time we just set differs from what we wanted by more than a minute,
-	// and re-set if so.
-	SYSTEMTIME verify;
-	FILETIME verifyFT;
-	GetLocalTime(&verify);
-	VERIFY(SystemTimeToFileTime(&verify, &verifyFT));
+	ULARGE_INTEGER a, b;
+	a.LowPart = nowTime.dwLowDateTime;
+	a.HighPart = nowTime.dwHighDateTime;
+	b.LowPart = m_time.dwLowDateTime;
+	b.HighPart = m_time.dwHighDateTime;
+	ULONGLONG drift = a.QuadPart > b.QuadPart ? a.QuadPart - b.QuadPart : b.QuadPart - a.QuadPart;
+	const ULONGLONG ONE_MINUTE = 60ull * 10000000;
+	if (drift >= ONE_MINUTE)
+		XapiSetLocalTime(&wanted);
 
-	LONGLONG offset = *((LONGLONG*)&verifyFT) - *((LONGLONG*)&m_time);
-	if (offset < 0) offset = -offset;
-
-	if (offset >= 600000000) // 60 seconds in 100ns ticks
-		VERIFY(XapiSetLocalTime(&st));
-
-	// If this is the first time the clock has been set, record it in the
-	// refurb sector so the kernel knows the console has been initialized.
 	XBOX_REFURB_INFO refurb;
-	NTSTATUS status = ExReadWriteRefurbInfo(&refurb, sizeof(refurb), FALSE);
-	if (NT_SUCCESS(status) && refurb.FirstSetTime.QuadPart == 0)
+	if (NT_SUCCESS(ExReadWriteRefurbInfo(&refurb, sizeof(refurb), FALSE)) && refurb.FirstSetTime.QuadPart == 0)
 	{
 		refurb.FirstSetTime.LowPart = m_time.dwLowDateTime;
 		refurb.FirstSetTime.HighPart = m_time.dwHighDateTime;

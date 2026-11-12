@@ -40,3 +40,21 @@ Same pattern without the `FileTimeToLocalFileTime` step.
 Accepts 0 args (current time) or 3-7 args (year, month, day, [hour, min, sec, ms]).
 Two-digit years get +1900. Month is 0-based (JS convention), converted to 1-based for SYSTEMTIME.
 
+
+## Function addresses
+
+| Address | Name | What it does |
+|---------|------|--------------|
+| 0x00030f90 | isLeapYear | 100/400 exception first, then `year % 4` |
+| 0x00030fd0 | getDaysInMonth | February from the leap test, other months from the short table at `0x001765c6` (index 0 is 0, then 31, 0, 31, 30, ...) |
+| 0x00031040 | CDateObject::CDateObject | Arguments as above; each one is dereferenced to a fixed point and read through `ToNum` |
+| 0x00031290..0x000313e0 | getDate .. getSeconds | `FileTimeToLocalFileTime`, `FileTimeToSystemTime`, one field (`getMonth` subtracts 1) |
+| 0x00031410..0x000314f0 | getUTCDate .. getUTCSeconds | `FileTimeToSystemTime`, one field |
+| 0x00031510 | toGMTString | `%02d %s %d %02d:%02d:%02d GMT` (format at `0x00021d60`) with day, month name, year, hours, minutes, seconds in UTC |
+| 0x000315c0 | toLocaleString | Local time through `FormatTime` into 32 characters |
+| 0x00031660 | toUTCString | The GMT string ending in `UTC` (format at `0x00021d24`) |
+| 0x00031710 | SetSystemClock | See above |
+
+The month names come from a pointer table at `0x0017442c` indexed by the 1 based month (slot 0 is
+null, slot 1 is `Jan`). The FND table is at `0x0017f698` in the order the script names are listed
+there.
