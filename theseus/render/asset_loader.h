@@ -28,6 +28,8 @@ class CMeshCore
 public:
 	virtual void Render(bool bSetFVF = true) = 0;
 	virtual DWORD GetFVF() const = 0;
+	// Mesh nodes delete their CMesh through this type; without it the buffers leaked.
+	virtual ~CMeshCore() {}
 };
 
 class CMesh : public CMeshCore
