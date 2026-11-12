@@ -17,6 +17,9 @@
 #include "playlist.h"
 #include "esde_vgames.h"
 #include "udata_synth.h"
+#include "plex_client.h"
+#include "jellyfin_client.h"
+#include "xcloud_client.h"
 #include <algorithm>
 #include <strings.h>
 #include <time.h>
@@ -230,7 +233,7 @@ static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games" 
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
 
 enum GuideView { GV_ROOT, GV_PAGES, GV_PAGE, GV_ABOUT, GV_SHORTCUTS, GV_START, GV_LOGS,
-                 GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST };
+                 GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_ACCOUNTS };
 
 enum GuideAct {
     GA_NONE, GA_VIEW, GA_SETTING, GA_TOOLS, GA_RESUME, GA_QUIT,
@@ -238,6 +241,7 @@ enum GuideAct {
     GA_OPENLOGS, GA_COPYVERSION, GA_COPYLOG,
     GA_STEAM, GA_RETROARCH, GA_ESDE, GA_CHOOSEFILE, GA_CATEGORY, GA_ADDGAME,
     GA_BROWSEUP, GA_BROWSE, GA_PLAYLIST,
+    GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
 };
 
 struct GuideRow {
@@ -331,6 +335,7 @@ public:
         case GV_ADDGAME:   return new CStrObject(_T("Add a Game"));
         case GV_BROWSE:    return new CStrObject(_T("Choose a File"));
         case GV_PLAYLISTS: return new CStrObject(_T("Playlists"));
+        case GV_ACCOUNTS:  return new CStrObject(_T("Accounts"));
         case GV_PLAYLIST: {
             const Playlist* pl = Playlist_Get(m_playlist);
             return new CStrObject(pl ? pl->name.c_str() : "");
@@ -449,6 +454,23 @@ public:
             Build();
             return 2;
         }
+        // Sign in starts a code flow, A again cancels it.
+        case GA_PLEX:
+            if (Plex_PinAuthInFlight()) Plex_CancelPinAuth(); else Plex_StartPinAuth();
+            Build();
+            return 2;
+        case GA_JELLYFIN:
+            if (Jellyfin_GetServerUrl().empty()) return -1;
+            if (Jellyfin_QuickConnectInFlight()) Jellyfin_CancelQuickConnect(); else Jellyfin_StartQuickConnect();
+            Build();
+            return 2;
+        case GA_XBOX:
+            if (Xcloud_LoginInFlight()) Xcloud_CancelLogin(); else Xcloud_StartLogin();
+            Build();
+            return 2;
+        case GA_PLEXOUT:     Plex_SignOut();     SaveDesktopSettings(); Build(); return 2;
+        case GA_JELLYFINOUT: Jellyfin_SignOut(); SaveDesktopSettings(); Build(); return 2;
+        case GA_XBOXOUT:     Xcloud_SignOut();   SaveDesktopSettings(); Build(); return 2;
         case GA_PLAYLIST:
             m_stack.push_back(MakeFrame());
             m_playlist = r->arg;
@@ -493,6 +515,15 @@ public:
         if (!Setting_Cycle(d, dir < 0 ? -1 : 1)) return 0;
         if (d.apply) d.apply();
         SaveDesktopSettings();
+        Build();
+        return 1;
+    }
+
+    // Sign-in codes arrive in the background; the scene polls this and
+    // redraws on 1.
+    int Refresh()
+    {
+        if (!g_guideOpen || m_view != GV_ACCOUNTS) return 0;
         Build();
         return 1;
     }
@@ -546,6 +577,7 @@ private:
         case GV_ROOT:
             Add("Settings",  "", "Display, audio, media folders and startup.", GA_VIEW, 100 + GV_PAGES);
             Add("Games & Playlists", "", "Add a game, run the imports, see your playlists.", GA_VIEW, 100 + GV_LIBRARY);
+            Add("Accounts", "", "Plex, Jellyfin and Xbox sign in.", GA_VIEW, 100 + GV_ACCOUNTS);
             Add("Shortcuts", "", "Keys and buttons that work everywhere.", GA_VIEW, 100 + GV_SHORTCUTS);
             Add("Logs & Help", "", "Open or copy the log for a bug report.", GA_VIEW, 100 + GV_LOGS);
             Add("About",     "", "Version and credits.", GA_VIEW, 100 + GV_ABOUT);
@@ -649,6 +681,46 @@ private:
             if (m_rows.empty()) Add("Empty", "", NULL);
             break;
         }
+        case GV_ACCOUNTS: {
+            std::string help;
+            if (Plex_HasToken()) {
+                Add("Plex", "Signed in", NULL);
+                Add("Sign Out of Plex", "", NULL, GA_PLEXOUT);
+            } else if (Plex_PinAuthInFlight()) {
+                std::string code = Plex_GetPinCode();
+                Add("Plex", code.empty() ? "Asking..." : code.c_str(),
+                    "On any device go to plex.tv/link and enter the code. A cancels.", GA_PLEX);
+            } else {
+                Add("Plex", "Sign In", "Gives you a code to enter at plex.tv/link.", GA_PLEX);
+            }
+
+            if (Jellyfin_HasToken()) {
+                help = "Signed in as " + Jellyfin_GetUserName() + ".";
+                Add("Jellyfin", "Signed in", help.c_str());
+                Add("Sign Out of Jellyfin", "", NULL, GA_JELLYFINOUT);
+            } else if (Jellyfin_GetServerUrl().empty()) {
+                Add("Jellyfin", "No server", "Set the server address in Settings (F4) first.", GA_JELLYFIN);
+            } else if (Jellyfin_QuickConnectInFlight()) {
+                std::string code = Jellyfin_GetQuickConnectCode();
+                Add("Jellyfin", code.empty() ? "Asking..." : code.c_str(),
+                    "In Jellyfin's web page open your account, then Quick Connect, and enter the code.", GA_JELLYFIN);
+            } else {
+                Add("Jellyfin", "Sign In", "Quick Connect gives you a code to approve on the server.", GA_JELLYFIN);
+            }
+
+            if (Xcloud_HasToken()) {
+                std::string gt = Xcloud_GetGamertag();
+                Add("Xbox", gt.empty() ? "Signed in" : gt.c_str(), NULL);
+                Add("Sign Out of Xbox", "", NULL, GA_XBOXOUT);
+            } else if (Xcloud_LoginInFlight()) {
+                std::string code = Xcloud_GetUserCode();
+                help = "Go to " + Xcloud_GetVerificationUri() + " and enter the code. A cancels.";
+                Add("Xbox", code.empty() ? "Asking..." : code.c_str(), help.c_str(), GA_XBOX);
+            } else {
+                Add("Xbox", "Sign In", "For cloud gaming and your consoles.", GA_XBOX);
+            }
+            break;
+        }
         case GV_LOGS:
             Add("Copy Version Info", m_copied == GA_COPYVERSION ? "Copied" : "",
                 "Version, platform and renderer, ready to paste.", GA_COPYVERSION);
@@ -700,4 +772,5 @@ START_NODE_FUN(CDesktopGuide, CNode)
 	NODE_FUN_II(Select)
 	NODE_FUN_III(Adjust)
 	NODE_FUN_IV(Back)
+	NODE_FUN_IV(Refresh)
 END_NODE_FUN()

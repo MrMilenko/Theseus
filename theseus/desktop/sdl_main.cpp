@@ -399,6 +399,8 @@ bool g_showMenuBar = true;   // toggled by F10 / View > Hide Menu Bar / --no-too
 // units, so the trigger zone is the same physical size on every DPI.
 static bool MenuBarVisible()
 {
+    // The guide is the menu now; the tool bar is for development.
+    if (!g_extractedMode && g_startupMode != 2) return false;
     if (!g_showMenuBar)     return false;
     if (!g_menuBarAutoHide) return true;
 

@@ -229,4 +229,12 @@ DEF theGuideMenu Level
 		CurrentViewpoint = theGuideViewpoint;
 		DrawGuide();
 	}
+
+	// Sign-in codes turn up a moment after you ask for them.
+	behavior
+	{
+		sleep 1;
+		if (theDesktopGuide.Refresh() == 1)
+			DrawGuide();
+	}
 }
