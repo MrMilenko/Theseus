@@ -35,6 +35,8 @@ bool Host_Stat(const char* path, HostFileInfo* out);
 bool Host_StatOpenFile(FILE* f, HostFileInfo* out);
 bool Host_SetAttrs(const char* path, uint32_t attrs);
 bool Host_RenameReplace(const char* from, const char* to);
+// Pushes a closed file's data all the way to disk, so a rename after it can't land first.
+bool Host_FlushToDisk(const char* path);
 bool Host_CopyFile(const char* from, const char* to, bool failIfExists);
 bool Host_DiskSpace(const char* path, uint64_t* freeBytes, uint64_t* totalBytes);
 

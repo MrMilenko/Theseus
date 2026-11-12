@@ -797,6 +797,37 @@ inline BOOL TheseusFindClose(HANDLE h) { return FindClose(h); }
 inline BOOL TheseusMoveFile(LPCSTR src, LPCSTR dst, DWORD flags = 0) { return MoveFileEx(src, dst, flags); }
 inline BOOL TheseusCopyFile(LPCSTR src, LPCSTR dst, BOOL bFailIfExists) { return CopyFile(src, dst, bFailIfExists); }
 inline FILE* TheseusFOpen(const TCHAR* path, const TCHAR* mode) { return _tfopen(path, mode); }
+
+// Swaps a finished szNew in for szFile, keeping what it replaces as <file>.old.
+// FATX can't promise a crash-proof rename, so the new file is flushed and the
+// old one copied aside before the swap.
+inline bool TheseusReplaceFile(const TCHAR* szNew, const TCHAR* szFile)
+{
+	FSCHAR sszNew [MAX_PATH];
+	FSCHAR sszFile [MAX_PATH];
+	FSCHAR sszOld [MAX_PATH + 4];
+	CleanFilePath(sszNew, szNew);
+	CleanFilePath(sszFile, szFile);
+
+	HANDLE hFile = CreateFile(sszNew, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+		return false;
+	BOOL bFlushed = FlushFileBuffers(hFile);
+	CloseHandle(hFile);
+	if (!bFlushed)
+		return false;
+
+	sprintf(sszOld, "%s.old", sszFile);
+	bool bKept = GetFileAttributes(sszFile) == (DWORD)-1 || CopyFile(sszFile, sszOld, FALSE);
+	if (MoveFileEx(sszNew, sszFile, MOVEFILE_REPLACE_EXISTING))
+		return true;
+
+	// No replacing rename: for a moment .old is the only whole copy, so only
+	// when there is one.
+	if (!bKept || !DeleteFile(sszFile))
+		return false;
+	return MoveFileEx(sszNew, sszFile, 0) != FALSE;
+}
 #else
 HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes = 0, HANDLE hTemplateFile = NULL);
 bool TheseusCreateDirectory(LPCTSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes = NULL);
@@ -812,6 +843,7 @@ BOOL TheseusFindClose(HANDLE h);
 BOOL TheseusMoveFile(LPCSTR src, LPCSTR dst, DWORD flags = 0);
 BOOL TheseusCopyFile(LPCSTR src, LPCSTR dst, BOOL bFailIfExists);
 FILE* TheseusFOpen(const TCHAR* path, const TCHAR* mode);
+bool TheseusReplaceFile(const TCHAR* szNew, const TCHAR* szFile);
 #endif
 
 

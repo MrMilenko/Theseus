@@ -148,19 +148,50 @@ void CSettingsFile::Cancel()
 	Close();
 }
 
+// Writes <file>.new and swaps it in, so a crash or power cut mid-save leaves
+// the old file whole. Only when .new can't be created does it write in place.
 bool CSettingsFile::Save()
 {
 	if (!m_dirty)
 		return true;
 
+	int result = -1;
+	if (_tcslen(m_filePath) + 5 <= MAX_PATH)
+	{
+		TCHAR szNew [MAX_PATH];
+		_stprintf(szNew, _T("%s.new"), m_filePath);
+		result = WriteTo(szNew);
+		if (result > 0 && !TheseusReplaceFile(szNew, m_filePath))
+			result = 0;
+		if (result == 0)
+		{
+			FSCHAR sszNew [MAX_PATH];
+			CleanFilePath(sszNew, szNew);
+			TheseusDeleteFile(sszNew);
+		}
+	}
+	if (result < 0)
+		result = WriteTo(m_filePath);
+	if (result <= 0)
+		return false;
+
+	m_dirty = false;
+
+	return true;
+}
+
+// 1 when the whole file went out, 0 when a write failed, -1 when the file
+// couldn't be created.
+int CSettingsFile::WriteTo(const TCHAR* szPath)
+{
 #ifdef _UNICODE
 	if (m_unicode)
 	{
 		// Write out Unicode file...
 
-		FILE* pFile = TheseusFOpen(m_filePath, _T("w"));
+		FILE* pFile = TheseusFOpen(szPath, _T("w"));
 		if (pFile == NULL)
-			return false;
+			return -1;
 
 		CSettingsFileSection* pSection;
 		for (pSection = m_sections; pSection != NULL; pSection = pSection->m_next)
@@ -173,18 +204,20 @@ bool CSettingsFile::Save()
 			}
 		}
 	
-		fclose(pFile);
+		bool ok = fflush(pFile) == 0 && !ferror(pFile);
+		return (fclose(pFile) == 0 && ok) ? 1 : 0;
 	}
 	else
 #endif // _UNICODE
 	{
 		// Convert our Unicode stuff to ANSI on the way out...
 
-		HANDLE hFile = TheseusCreateFile(m_filePath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+		HANDLE hFile = TheseusCreateFile(szPath, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
 		if (hFile == INVALID_HANDLE_VALUE)
-			return false;
+			return -1;
 
 		DWORD dw;
+		bool ok = true;
 		CSettingsFileSection* pSection;
 		// Stream wide -> ANSI to disk in chunks. The old code reused a
 		// 1030-byte stack buffer for the whole "value\r\n" line, which
@@ -193,7 +226,8 @@ bool CSettingsFile::Save()
 		char szBuf [1024];
 		auto FlushBuf = [&](char*& pch) {
 			if (pch > szBuf) {
-				WriteFile(hFile, szBuf, (DWORD)(pch - szBuf), &dw, NULL);
+				if (!WriteFile(hFile, szBuf, (DWORD)(pch - szBuf), &dw, NULL) || dw != (DWORD)(pch - szBuf))
+					ok = false;
 				pch = szBuf;
 			}
 		};
@@ -228,12 +262,11 @@ bool CSettingsFile::Save()
 			}
 		}
 
+		if (!FlushFileBuffers(hFile))
+			ok = false;
 		CloseHandle(hFile);
+		return ok ? 1 : 0;
 	}
-
-	m_dirty = false;
-
-	return true;
 }
 
 bool CSettingsFile::Close()
