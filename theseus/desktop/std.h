@@ -20,17 +20,9 @@
 #include <new>
 #include <cerrno>
 
-// MSVC: DWORD is 'unsigned long', uint32_t is 'unsigned int'. Both are 32-bit
-// but MSVC treats them as incompatible pointer types. Win32 APIs (ReadFile,
-// WriteFile, CreateThread, etc.) expect DWORD*. This cast macro bridges the gap
-// at API boundaries so src/ files can use uint32_t consistently.
-// Both MSVC and mingw GCC treat DWORD/uint32_t as distinct types when
-// they target Windows headers, so the cast is needed for any _WIN32 build.
-#ifdef _WIN32
-#define LPDW(p) reinterpret_cast<DWORD*>(p)
-#else
+// DWORD is uint32_t on every desktop host, so uint32_t* passes straight
+// through to ReadFile and friends.
 #define LPDW(p) (p)
-#endif
 
 
 
@@ -103,7 +95,6 @@ EXTERN_C void Alert(const char* szMsg, ...);
 
 // Types not provided by platform_shim.h: GDI/RGB color helpers and
 // the device-notify stub used by Win32 device hot-plug callbacks.
-#ifndef _WIN32
 typedef void* HDEVNOTIFY;
 
 typedef struct tagRGBQUAD {
@@ -118,12 +109,6 @@ typedef RGBQUAD* LPRGBQUAD;
 
 // GetCurrentThreadId (platform_shim.h doesn't provide this one)
 inline DWORD GetCurrentThreadId() { return (DWORD)SDL_ThreadID(); }
-#else
-// Windows: RGBQUAD comes from windows.h, but LPRGBQUAD isn't always defined
-#ifndef LPRGBQUAD
-typedef RGBQUAD* LPRGBQUAD;
-#endif
-#endif // !_WIN32
 
 // D3D vertex types
 #include "vertex8.h"

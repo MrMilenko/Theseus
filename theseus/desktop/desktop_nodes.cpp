@@ -6,14 +6,7 @@
 
 #include "app_paths.h"
 #include "std.h"
-#ifdef _WIN32
-#include <io.h>
-#ifndef F_OK
-#define F_OK 0
-#endif
-// Windows wingdi.h defines GetFreeSpace as a macro; conflicts with our method
-#undef GetFreeSpace
-#endif
+#include "host.h"
 #include "dashapp.h"
 #include "node.h"
 #include "runner.h"
@@ -1346,13 +1339,6 @@ END_NODE_FUN()
 #include "media_player.h"
 #include "panel_shared.h"  // for DashAudio_MuteAll/UnmuteAll
 #include <sys/stat.h>
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#else
-#include <dirent.h>
-#include <sys/statvfs.h>
-#endif
 
 #define XBOX_BLOCK_SIZE 16384
 #define SAVED_GAME_MAX_TITLES 256
@@ -1756,32 +1742,16 @@ static bool ParseXboxMetaValue(const char* xboxPath, const char* key, char* outB
 static uint64_t GetDirectorySize(const char* dirPath)
 {
 	uint64_t total = 0;
-#ifdef _WIN32
-	char searchBuf[1024];
-	snprintf(searchBuf, sizeof(searchBuf), "%s\\*", dirPath);
-	struct _finddata_t fd;
-	intptr_t hFind = _findfirst(searchBuf, &fd);
-	if (hFind == -1) return 0;
-	do {
-		if (fd.name[0] == '.') continue;
-		if (!(fd.attrib & _A_SUBDIR))
-			total += fd.size;
-	} while (_findnext(hFind, &fd) == 0);
-	_findclose(hFind);
-#else
-	DIR* dir = opendir(dirPath);
+	HostDir* dir = Host_OpenDir(dirPath);
 	if (!dir) return 0;
-	struct dirent* ent;
-	while ((ent = readdir(dir)) != NULL) {
-		if (ent->d_name[0] == '.') continue;
-		char fullPath[1024];
-		snprintf(fullPath, sizeof(fullPath), "%s/%s", dirPath, ent->d_name);
-		struct stat st;
-		if (stat(fullPath, &st) == 0 && S_ISREG(st.st_mode))
-			total += st.st_size;
+	char name[260];
+	HostFileInfo info;
+	while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+		if (name[0] == '.') continue;
+		if (!(info.attrs & HOST_ATTR_DIR))
+			total += info.size;
 	}
-	closedir(dir);
-#endif
+	Host_CloseDir(dir);
 	return total;
 }
 
@@ -1844,100 +1814,50 @@ static void EnumerateTitles()
 		title.saveCount = 0;
 		title.totalSizeBytes = 0;
 		// Enumerate saves within this title
-#ifdef _WIN32
-		char savSearchBuf[1024];
-		snprintf(savSearchBuf, sizeof(savSearchBuf), "%s\\*", titlePath);
-		struct _finddata_t savFd;
-		intptr_t hSavFind = _findfirst(savSearchBuf, &savFd);
-		if (hSavFind != -1) {
-			do {
-				if (savFd.name[0] == '.') continue;
-				if (!(savFd.attrib & _A_SUBDIR)) continue;
-				if (title.saveCount >= SAVED_GAME_MAX_SAVES) break;
-				char savePath[1024];
-				snprintf(savePath, sizeof(savePath), "%s/%s", titlePath, savFd.name);
-				struct stat saveSt;
-				if (stat(savePath, &saveSt) != 0) continue;
-				DesktopSavedGame& save = title.saves[title.saveCount];
-				memset(&save, 0, sizeof(save));
-				strncpy(save.folderName, savFd.name, sizeof(save.folderName) - 1);
-				char xboxSaveMetaPath[256];
-				snprintf(xboxSaveMetaPath, sizeof(xboxSaveMetaPath), "E:\\UDATA\\%s\\%s\\SaveMeta.xbx", entName, savFd.name);
-				if (!ParseXboxMetaValue(xboxSaveMetaPath, "Name", save.saveName, sizeof(save.saveName)))
-					strncpy(save.saveName, savFd.name, sizeof(save.saveName) - 1);
-				save.sizeBytes = GetDirectorySize(savePath);
-				save.modTime = saveSt.st_mtime;
-				title.totalSizeBytes += save.sizeBytes;
-				title.saveCount++;
-			} while (_findnext(hSavFind, &savFd) == 0);
-			_findclose(hSavFind);
-		}
-#else
-		DIR* titleDir = opendir(titlePath);
+		HostDir* titleDir = Host_OpenDir(titlePath);
 		if (titleDir) {
-			struct dirent* saveEnt;
-			while ((saveEnt = readdir(titleDir)) != NULL && title.saveCount < SAVED_GAME_MAX_SAVES) {
-				if (saveEnt->d_name[0] == '.') continue;
+			char saveName[260];
+			HostFileInfo saveInfo;
+			while (title.saveCount < SAVED_GAME_MAX_SAVES &&
+			       Host_ReadDir(titleDir, saveName, sizeof(saveName), &saveInfo)) {
+				if (saveName[0] == '.') continue;
+				if (!(saveInfo.attrs & HOST_ATTR_DIR)) continue;
 				char savePath[1024];
-				snprintf(savePath, sizeof(savePath), "%s/%s", titlePath, saveEnt->d_name);
-				struct stat saveSt;
-				if (stat(savePath, &saveSt) != 0 || !S_ISDIR(saveSt.st_mode)) continue;
+				snprintf(savePath, sizeof(savePath), "%s/%s", titlePath, saveName);
 				DesktopSavedGame& save = title.saves[title.saveCount];
 				memset(&save, 0, sizeof(save));
-				strncpy(save.folderName, saveEnt->d_name, sizeof(save.folderName) - 1);
+				strncpy(save.folderName, saveName, sizeof(save.folderName) - 1);
 				char xboxSaveMetaPath[256];
-				snprintf(xboxSaveMetaPath, sizeof(xboxSaveMetaPath), "E:\\UDATA\\%s\\%s\\SaveMeta.xbx", entName, saveEnt->d_name);
+				snprintf(xboxSaveMetaPath, sizeof(xboxSaveMetaPath), "E:\\UDATA\\%s\\%s\\SaveMeta.xbx", entName, saveName);
 				if (!ParseXboxMetaValue(xboxSaveMetaPath, "Name", save.saveName, sizeof(save.saveName)))
-					strncpy(save.saveName, saveEnt->d_name, sizeof(save.saveName) - 1);
+					strncpy(save.saveName, saveName, sizeof(save.saveName) - 1);
 				save.sizeBytes = GetDirectorySize(savePath);
-				save.modTime = saveSt.st_mtime;
+				save.modTime = (time_t)saveInfo.mtime;
 				title.totalSizeBytes += save.sizeBytes;
 				title.saveCount++;
 			}
-			closedir(titleDir);
+			Host_CloseDir(titleDir);
 		}
-#endif
 		title.totalSizeBytes += GetDirectorySize(titlePath);
 		s_titleCount++;
 	};
 
-#ifdef _WIN32
-	char searchBuf[1024];
-	snprintf(searchBuf, sizeof(searchBuf), "%s\\*", udataPath);
-	struct _finddata_t fd;
-	intptr_t hFind = _findfirst(searchBuf, &fd);
-	if (hFind == -1) { fprintf(stderr, "[SavedGameGrid] Cannot open %s\n", udataPath); return; }
-	do { ProcessTitleEntry(fd.name); } while (_findnext(hFind, &fd) == 0);
-	_findclose(hFind);
-#else
-	DIR* dir = opendir(udataPath);
+	HostDir* dir = Host_OpenDir(udataPath);
 	if (!dir) { fprintf(stderr, "[SavedGameGrid] Cannot open %s\n", udataPath); return; }
-	struct dirent* ent;
-	while ((ent = readdir(dir)) != NULL) ProcessTitleEntry(ent->d_name);
-	closedir(dir);
-#endif
+	char entry[260];
+	while (Host_ReadDir(dir, entry, sizeof(entry), NULL)) ProcessTitleEntry(entry);
+	Host_CloseDir(dir);
 	// Sort alphabetically
 	for (int i = 0; i < s_titleCount - 1; i++)
 		for (int j = i + 1; j < s_titleCount; j++)
 			if (strcasecmp(s_titles[i].titleName, s_titles[j].titleName) > 0)
 				{ DesktopTitle tmp = s_titles[i]; s_titles[i] = s_titles[j]; s_titles[j] = tmp; }
-#ifdef _WIN32
-	{
-		ULARGE_INTEGER freeBytesAvail, totalBytes;
-		if (GetDiskFreeSpaceExA(udataPath, &freeBytesAvail, &totalBytes, NULL)) {
-			s_totalBlocks = (int)(totalBytes.QuadPart / XBOX_BLOCK_SIZE);
-			s_freeBlocks = (int)(freeBytesAvail.QuadPart / XBOX_BLOCK_SIZE);
-		} else
-			{ s_totalBlocks = 50000; s_freeBlocks = 50000; }
-	}
-#else
-	struct statvfs vfs;
-	if (statvfs(udataPath, &vfs) == 0) {
-		s_totalBlocks = (int)((uint64_t)vfs.f_blocks * vfs.f_frsize / XBOX_BLOCK_SIZE);
-		s_freeBlocks = (int)((uint64_t)vfs.f_bavail * vfs.f_frsize / XBOX_BLOCK_SIZE);
+	uint64_t freeBytes = 0, totalBytes = 0;
+	if (Host_DiskSpace(udataPath, &freeBytes, &totalBytes)) {
+		s_totalBlocks = (int)(totalBytes / XBOX_BLOCK_SIZE);
+		s_freeBlocks = (int)(freeBytes / XBOX_BLOCK_SIZE);
 	} else
 	{ s_totalBlocks = 50000; s_freeBlocks = 50000; }
-#endif
 	fprintf(stderr, "[SavedGameGrid] Enumerated %d titles from %s\n", s_titleCount, udataPath);
 }
 

@@ -41,12 +41,6 @@ static void MakeParents(const char* hostPath) {
 	Host_MakeDir(dir);
 }
 
-#ifdef THESEUS_HOST_WIN
-static void ToBackslash(char* s) {
-	for (; *s; s++) if (*s == '/') *s = '\\';
-}
-#endif
-
 static DWORD ToFileAttributes(uint32_t attrs) {
 	DWORD a = 0;
 	if (attrs & HOST_ATTR_DIR)      a |= FILE_ATTRIBUTE_DIRECTORY;
@@ -114,27 +108,12 @@ static HANDLE OpenVirtualXBE(const char* hostPath) {
 	size_t n = FillFakeXBE(buf, sizeof(buf), vg.name, tid);
 	if (!n) return INVALID_HANDLE_VALUE;
 
-#ifdef THESEUS_HOST_WIN
-	// Real HANDLEs and FILE*s aren't interchangeable here, so back it with a
-	// temp file the OS deletes on close.
-	char tempDir[MAX_PATH], tempFile[MAX_PATH];
-	DWORD len = GetTempPathA(MAX_PATH, tempDir);
-	if (len == 0 || len > MAX_PATH) return INVALID_HANDLE_VALUE;
-	if (GetTempFileNameA(tempDir, "xbe", 0, tempFile) == 0) return INVALID_HANDLE_VALUE;
-	HANDLE h = CreateFileA(tempFile, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL,
-	                       CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, NULL);
-	if (h == INVALID_HANDLE_VALUE) return INVALID_HANDLE_VALUE;
-	DWORD written = 0;
-	WriteFile(h, buf, (DWORD)n, &written, NULL);
-	SetFilePointer(h, 0, NULL, FILE_BEGIN);
-#else
-	// POSIX handles are FILE*, so an anonymous tmpfile does it.
-	FILE* f = tmpfile();
+	// File handles are FILE*s, so a temp file gone on close does it.
+	FILE* f = Host_TempFile();
 	if (!f) return INVALID_HANDLE_VALUE;
 	fwrite(buf, 1, n, f);
 	fseek(f, 0, SEEK_SET);
 	HANDLE h = (HANDLE)f;
-#endif
 	fprintf(stderr, "[xboxfs]   Virtual XBE for '%s' (TID=%08lX)\n", vg.name, tid);
 	return h;
 }
@@ -156,15 +135,6 @@ HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD access, DWORD share,
 	else        XboxPath_Translate(xboxPath, host, sizeof(host));
 	if (!host[0]) return INVALID_HANDLE_VALUE;
 
-#ifdef THESEUS_HOST_WIN
-	ToBackslash(host);
-	// Xbox flags desktop Windows can't honour: NO_BUFFERING wants sector
-	// aligned reads, OVERLAPPED wants async setup.
-	flags &= ~(FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED);
-	HANDLE h = CreateFileA(host, access, share, sa, disp, flags, templ);
-	if (h != INVALID_HANDLE_VALUE) return h;
-	return writes ? INVALID_HANDLE_VALUE : OpenVirtualXBE(host);
-#else
 	(void)share; (void)sa; (void)flags; (void)templ;
 	const char* mode = "rb";
 	if (access & GENERIC_WRITE) mode = (disp == CREATE_ALWAYS) ? "wb" : "r+b";
@@ -187,7 +157,6 @@ HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD access, DWORD share,
 		}
 	}
 	return INVALID_HANDLE_VALUE;
-#endif
 }
 
 bool TheseusCreateDirectory(LPCTSTR lpPathName, LPSECURITY_ATTRIBUTES)

@@ -19,6 +19,8 @@
 #  endif
 #  if defined(_WIN32)
 #    define THESEUS_HOST_WIN 1
+     // mingw links the Microsoft C runtime: _stricmp and friends are real.
+#    define THESEUS_CRT_MS 1
 #  elif defined(__APPLE__)
 #    define THESEUS_HOST_MAC 1
 #  elif defined(__linux__)

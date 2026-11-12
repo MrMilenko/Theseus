@@ -2,13 +2,23 @@
 
 #include "host.h"
 
+#include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
 #include <string.h>
 #include <stdlib.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <sys/sysctl.h>
+#else
+#include <sys/sysinfo.h>
+#endif
 
 static void FillInfo(const struct stat& st, HostFileInfo* out) {
 	out->attrs = S_ISDIR(st.st_mode) ? HOST_ATTR_DIR : 0;
@@ -69,6 +79,13 @@ bool Host_DiskSpace(const char* path, uint64_t* freeBytes, uint64_t* totalBytes)
 	return true;
 }
 
+FILE* Host_TempFile() { return tmpfile(); }
+
+int64_t Host_Seek(FILE* f, int64_t offset, int whence) {
+	if (!f || fseeko(f, (off_t)offset, whence) != 0) return -1;
+	return (int64_t)ftello(f);
+}
+
 struct HostDir {
 	DIR* d;
 	char path[512];
@@ -102,4 +119,45 @@ void Host_CloseDir(HostDir* dir) {
 	if (!dir) return;
 	closedir(dir->d);
 	free(dir);
+}
+
+bool Host_MemoryStatus(uint64_t* totalBytes, uint64_t* availBytes) {
+	uint64_t total = 0, avail = 0;
+#ifdef __APPLE__
+	int mib[2] = { CTL_HW, HW_MEMSIZE };
+	size_t len = sizeof(total);
+	sysctl(mib, 2, &total, &len, NULL, 0);
+	mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
+	vm_statistics_data_t vmstat;
+	if (host_statistics(mach_host_self(), HOST_VM_INFO, (host_info_t)&vmstat, &count) == KERN_SUCCESS)
+		avail = (uint64_t)vmstat.free_count * vm_page_size;
+#else
+	struct sysinfo si;
+	if (sysinfo(&si) == 0) {
+		total = (uint64_t)si.totalram * si.mem_unit;
+		avail = (uint64_t)si.freeram * si.mem_unit;
+	}
+#endif
+	if (totalBytes) *totalBytes = total;
+	if (availBytes) *availBytes = avail;
+	return total != 0;
+}
+
+// First non-loopback IPv4 interface.
+uint32_t Host_LocalIPv4(uint32_t* netmask) {
+	uint32_t addr = 0, mask = 0;
+	struct ifaddrs* ifa = NULL;
+	if (getifaddrs(&ifa) == 0) {
+		for (struct ifaddrs* cur = ifa; cur; cur = cur->ifa_next) {
+			if (!cur->ifa_addr || cur->ifa_addr->sa_family != AF_INET) continue;
+			uint32_t a = ((struct sockaddr_in*)cur->ifa_addr)->sin_addr.s_addr;
+			if ((a & 0xFF) == 127) continue;
+			addr = a;
+			mask = cur->ifa_netmask ? ((struct sockaddr_in*)cur->ifa_netmask)->sin_addr.s_addr : 0;
+			break;
+		}
+		freeifaddrs(ifa);
+	}
+	if (netmask) *netmask = mask;
+	return addr;
 }

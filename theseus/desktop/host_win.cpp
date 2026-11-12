@@ -9,6 +9,7 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <winsock2.h>
 #include <windows.h>
 
 #include <stdlib.h>
@@ -113,6 +114,21 @@ bool Host_DiskSpace(const char* path, uint64_t* freeBytes, uint64_t* totalBytes)
 	return true;
 }
 
+// The CRT's tmpfile() wants the drive root, which a normal user can't write.
+// "D" is the CRT's delete-on-close flag.
+FILE* Host_TempFile() {
+	char dir[MAX_PATH], path[MAX_PATH];
+	DWORD len = GetTempPathA(MAX_PATH, dir);
+	if (len == 0 || len > MAX_PATH) return NULL;
+	if (GetTempFileNameA(dir, "ths", 0, path) == 0) return NULL;
+	return fopen(path, "w+bD");
+}
+
+int64_t Host_Seek(FILE* f, int64_t offset, int whence) {
+	if (!f || _fseeki64(f, offset, whence) != 0) return -1;
+	return _ftelli64(f);
+}
+
 struct HostDir {
 	HANDLE find;
 	WIN32_FIND_DATAA first;
@@ -154,4 +170,25 @@ void Host_CloseDir(HostDir* dir) {
 	if (!dir) return;
 	FindClose(dir->find);
 	free(dir);
+}
+
+bool Host_MemoryStatus(uint64_t* totalBytes, uint64_t* availBytes) {
+	MEMORYSTATUSEX ms;
+	ms.dwLength = sizeof(ms);
+	if (!GlobalMemoryStatusEx(&ms)) return false;
+	if (totalBytes) *totalBytes = ms.ullTotalPhys;
+	if (availBytes) *availBytes = ms.ullAvailPhys;
+	return true;
+}
+
+// Whatever the host name resolves to first. No netmask from this route.
+uint32_t Host_LocalIPv4(uint32_t* netmask) {
+	uint32_t addr = 0;
+	char hostname[256];
+	if (gethostname(hostname, sizeof(hostname)) == 0) {
+		struct hostent* he = gethostbyname(hostname);
+		if (he && he->h_addr_list[0]) memcpy(&addr, he->h_addr_list[0], 4);
+	}
+	if (netmask) *netmask = 0;
+	return addr;
 }
