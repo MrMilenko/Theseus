@@ -1,10 +1,11 @@
-// xap_compile.cpp: XAP script compilation pipeline.
+// xap_compile.cpp: the XAP compiler.
 //
-// Tokenizer, scene graph parser, and bytecode compiler combined into a
-// single translation unit. Pipeline shape:
-//   XAP text -> tokenizer -> scene parser -> bytecode compiler -> CFunction
-// Decompiled from the 5960 retail XBE; see docs/decomp/VM.md for the
-// binary-analysis notes on opcode set, operator table, and dispatch.
+// One file holds the whole path from script text to bytecode: a character
+// scanner (SkipWhite, Token), typed value readers for node properties, the
+// statement and expression compiler (CFunctionCompiler) and the scene compiler
+// (CClassCompiler) that turns node declarations into construction ops.
+// Every body here follows the 5960 retail XBE; addresses and the decompile
+// notes are in docs/decomp/Compiler.md. Opcode numbers live in runner.h.
 #include "std.h"
 #include "theseus.h"
 #include "xap_compile.h"
@@ -12,298 +13,368 @@
 #include "runner.h"
 
 
-// =========================================================================
-// Global parse state
-// =========================================================================
-
+// Parse state shared by every compiler in flight. 5960 keeps the same four
+// globals: file name @0x17ae90, line @0x17ae94, error flag @0x17ac80 and the
+// #file name buffer @0x17ac88.
 int g_nLine;
 const TCHAR* g_szFileName;
 static TCHAR g_szFileNameBuf[MAX_PATH];
 bool g_bParseError;
 
+// The class namespace, 5960's list head @0x17ae98.
 CNameSpace* g_classes;
 
+// Every hard failure hands back an empty string so callers stop cleanly.
+// 5960 points at a shared L"" (0x201c4 / 0x21b98) the same way.
 static const TCHAR szParseError[] = _T("");
 
-#define IsAlNum(ch) (((ch) >= 'a' && (ch) <= 'z') || ((ch) >= 'A' && (ch) <= 'Z') || ((ch) >= '0' && (ch) <= '9') || (ch) == '.' || (ch) == '-' || (ch) == '_')
+static inline bool IsLetter(TCHAR ch)
+{
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z');
+}
 
-// =========================================================================
-// Section 1: Tokenizer -- character-level scanning
-// =========================================================================
+static inline bool IsDigit(TCHAR ch)
+{
+	return ch >= '0' && ch <= '9';
+}
 
+// Characters that make up a number or bare word: letters, digits, '.' and '-'.
+// 5960 also lets '_' through here; Theseus never has, so a '_' ends the run.
+static inline bool IsWordChar(TCHAR ch)
+{
+	return IsLetter(ch) || IsDigit(ch) || ch == '.' || ch == '-';
+}
+
+static inline bool IsIdentChar(TCHAR ch)
+{
+	return IsLetter(ch) || IsDigit(ch) || ch == '_';
+}
+
+static inline bool IsKeyword(const TCHAR* pchToken, int cchToken, const TCHAR* szKeyword, int cchKeyword)
+{
+	return cchToken == cchKeyword && _tcsncmp(pchToken, szKeyword, cchKeyword) == 0;
+}
+
+
+// StartParse / EndParse
+// 5960 has no separate functions for these; CClass::ParseFile @0x33d00 sets
+// file = name, line = 1, error = 0 before compiling and clears file and line
+// after. Theseus splits that into a pair so the line can start elsewhere.
 void StartParse(const TCHAR* pch, const TCHAR* szFileName, int nLine)
 {
-	g_szFileName = szFileName;
-	g_nLine = nLine;
 	g_bParseError = false;
+	g_nLine = nLine;
+	g_szFileName = szFileName;
 }
 
 void EndParse()
 {
-	g_szFileName = NULL;
 	g_nLine = 0;
+	g_szFileName = NULL;
 }
 
+
+// SyntaxError (free function)
+// Reconstructed from 5960 retail XBE @ 0x00032cf0. Ghidra decompile:
+//     vswprintf(msg, 0x200, fmt, args); msg[511] = 0;
+//     swprintf(out, <"Syntax Error ... File: %s Line: %d ... %s">, file, line, msg);
+//     g_bParseError = 1;
+// Retail builds the text and drops it; Theseus sends it to Trace so it shows up.
 void SyntaxError(const TCHAR* szMsg, ...)
 {
+	TCHAR szDetail[512];
 	va_list args;
 	va_start(args, szMsg);
-
-	TCHAR szBuffer[512];
-	_vsntprintf(szBuffer, countof(szBuffer), szMsg, args);
-
-	TCHAR szMessage[1024];
-	_stprintf(szMessage, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), g_szFileName, g_nLine, szBuffer);
-
-	Trace(_T("\007%s\n"), szMessage);
-
+	_vsntprintf(szDetail, countof(szDetail), szMsg, args);
 	va_end(args);
+
+	TCHAR szReport[1024];
+	_stprintf(szReport, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), g_szFileName, g_nLine, szDetail);
+	Trace(_T("\007%s\n"), szReport);
+
 	g_bParseError = true;
 }
 
-// Skip whitespace and comments (supports #, //, /* */ styles)
+
+// SkipWhite
+// Reconstructed from 5960 retail XBE @ 0x00032d70. Behavior: loop eating
+// control characters and spaces (counting '\n' into the line), then, if the
+// comment mask allows it, one comment: '#' or '//' runs to end of line, '/*'
+// runs to the matching '*/' counting lines. A '#' line can be a directive:
+// "#line N" sets the line so the next one reads N, "#file name" copies the
+// name (optionally quoted) into the file buffer and makes it current.
+// Returns at the first character that is neither blank nor a comment.
 const TCHAR* SkipWhite(const TCHAR* pch, COMMENT_TYPE ct)
 {
 	for (;;)
 	{
-		while (*pch != '\0' && *pch <= ' ')
+		for (; *pch != '\0' && *pch <= ' '; pch++)
 		{
 			if (*pch == '\n')
 				g_nLine++;
-			pch++;
 		}
 
-		if (((ct & pound) && *pch == '#') || ((ct & slashslash) && *pch == '/' && *(pch + 1) == '/'))
+		bool bPound = (ct & pound) && pch[0] == '#';
+		bool bSlashSlash = (ct & slashslash) && pch[0] == '/' && pch[1] == '/';
+		bool bSlashStar = (ct & slashstar) && pch[0] == '/' && pch[1] == '*';
+
+		if (bPound || bSlashSlash)
 		{
-			// Handle #line and #file directives
-			if (*pch == '#')
+			if (bPound)
 			{
-				pch++;
-				while (*pch == ' ' || *pch == '\t')
+				do
 					pch++;
+				while (*pch == ' ' || *pch == '\t');
 
 				if (_tcsncmp(pch, _T("line"), 4) == 0)
 				{
-					pch += 4;
-					while (*pch == ' ' || *pch == '\t')
-						pch++;
+					for (pch += 4; *pch == ' ' || *pch == '\t'; pch++)
+						;
 					g_nLine = _ttoi(pch) - 1;
 				}
 				else if (_tcsncmp(pch, _T("file"), 4) == 0)
 				{
-					pch += 4;
-					while (*pch == ' ' || *pch == '\t')
-						pch++;
-
-					TCHAR* pDest = g_szFileNameBuf;
+					for (pch += 4; *pch == ' ' || *pch == '\t'; pch++)
+						;
 					if (*pch == '"')
 						pch++;
-					while (*pch != '\0' && *pch != '\r' && *pch != '\n' && *pch != '"')
-						*pDest++ = *pch++;
-					*pDest = 0;
+
+					TCHAR* pchName = g_szFileNameBuf;
+					for (; *pch != '\0' && *pch != '\r' && *pch != '\n' && *pch != '"'; pch++)
+						*pchName++ = *pch;
+					*pchName = '\0';
 					g_szFileName = g_szFileNameBuf;
 				}
 			}
 
-			// Skip to end of line
 			while (*pch != '\0' && *pch != '\r' && *pch != '\n')
 				pch++;
+			continue;
 		}
-		else if ((ct & slashstar) && *pch == '/' && *(pch + 1) == '*')
+
+		if (bSlashStar)
 		{
-			pch += 2;
-			while (*pch != '\0' && !(*pch == '*' && *(pch + 1) == '/'))
+			for (pch += 2; *pch != '\0'; pch++)
 			{
+				if (pch[0] == '*' && pch[1] == '/')
+				{
+					pch += 2;
+					break;
+				}
 				if (*pch == '\n')
 					g_nLine++;
-				pch++;
 			}
-			if (*pch != '\0')
-				pch += 2;
+			continue;
 		}
-		else
-		{
-			return pch;
-		}
+
+		return pch;
 	}
 }
 
-// Extract the next token -- handles quoted strings, identifiers, numbers, operators
+
+// Token
+// Reconstructed from 5960 retail XBE @ 0x00032f70. Behavior: skip white, then
+// one of four shapes. A '"' or '\'' opens a quoted token: the token is the
+// text inside, '\\' protects the next character, and the closing quote is
+// consumed. With bAllowPaths the token is everything up to the next blank.
+// A letter or '_' starts an identifier (letters, digits, '_'). Otherwise a
+// word character starts a number or bare word, and anything else starts an
+// operator run that lasts until a blank or a word character.
 const TCHAR* Token(const TCHAR* pch, const TCHAR*& pchToken, int& cchToken, bool bAllowPaths, COMMENT_TYPE ct)
 {
 	pch = SkipWhite(pch, ct);
 
-	BOOL bQuoted = FALSE;
 	TCHAR chQuote = 0;
 	if (*pch == '"' || *pch == '\'')
-	{
-		bQuoted = TRUE;
-		chQuote = *pch;
-		pch++;
-	}
+		chQuote = *pch++;
 
 	pchToken = pch;
 
-	if (bQuoted)
+	if (chQuote != 0)
 	{
-		while (*pch != '\0' && *pch != chQuote)
+		for (; *pch != '\0' && *pch != chQuote; pch++)
 		{
-			if (*pch == '\\' && *(pch + 1) != '\0')
+			if (pch[0] == '\\' && pch[1] != '\0')
 				pch++;
-			pch++;
 		}
 	}
 	else if (bAllowPaths)
 	{
-		while (*pch != '\0' && *pch > ' ')
+		while (*pch > ' ')
 			pch++;
 	}
-	else if ((*pch >= 'a' && *pch <= 'z' || *pch >= 'A' && *pch <= 'Z' || *pch == '_'))
+	else if (IsLetter(*pch) || *pch == '_')
 	{
-		while (*pch >= 'a' && *pch <= 'z' || *pch >= 'A' && *pch <= 'Z' || *pch >= '0' && *pch <= '9' || *pch == '_')
+		while (IsIdentChar(*pch))
+			pch++;
+	}
+	else if (IsWordChar(*pch))
+	{
+		while (IsWordChar(*pch))
 			pch++;
 	}
 	else
 	{
-		BOOL bAlNum = IsAlNum(*pch);
-		if (bAlNum)
-		{
-			while (IsAlNum(*pch))
-				pch++;
-		}
-		else
-		{
-			while (*pch > ' ' && !IsAlNum(*pch))
-				pch++;
-		}
+		while (*pch > ' ' && !IsWordChar(*pch))
+			pch++;
 	}
 
 	cchToken = (int)(pch - pchToken);
 
-	if (bQuoted && *pch == chQuote)
+	if (chQuote != 0 && *pch == chQuote)
 		pch++;
 
 	return pch;
 }
 
-// Expand C-style escape sequences in a string literal
+
+// Reads exactly cDigits hex digits for \x and \u. Returns false on a bad one.
+static bool ReadHexEscape(const TCHAR*& pch, int& cch, int cDigits, TCHAR& chOut)
+{
+	int nValue = 0;
+	for (int i = 0; i < cDigits; i++)
+	{
+		TCHAR ch = *pch++;
+		cch--;
+
+		int nDigit;
+		if (ch >= '0' && ch <= '9')
+			nDigit = ch - '0';
+		else if (ch >= 'A' && ch <= 'F')
+			nDigit = ch - 'A' + 10;
+		else if (ch >= 'a' && ch <= 'f')
+			nDigit = ch - 'a' + 10;
+		else
+			return false;
+
+		nValue = nValue * 16 + nDigit;
+	}
+	chOut = (TCHAR)nValue;
+	return true;
+}
+
+// ExpandCString
+// Reconstructed from 5960 retail XBE @ 0x00033690. Behavior: copy the token
+// into the buffer turning escapes into characters. \b \f \n \r \t map to their
+// control codes, \xHH takes two hex digits, \uHHHH four, \0 not followed by an
+// octal digit is a NUL, other \ooo octal runs build one character, and any
+// other escaped character stands for itself. Fails with -1 and a syntax error
+// when the output fills, the string ends on a backslash, or a hex escape is
+// short or bad. Returns the number of characters written.
+// \u only exists in wide builds, where TCHAR can hold it (5960 is wide).
 int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int cchToken)
 {
 	TCHAR* pchOut = szString;
+	TCHAR* pchEnd = szString + cchMaxString;
+
 	while (cchToken > 0)
 	{
-		if (pchOut >= szString + cchMaxString)
+		if (pchOut >= pchEnd)
 		{
 			SyntaxError(_T("string constant is too long"));
 			return -1;
 		}
 
-		if (*pchToken == '\\')
+		TCHAR ch = *pchToken++;
+		cchToken--;
+
+		if (ch != '\\')
 		{
-			pchToken++;
-			cchToken--;
-			if (cchToken == 0)
+			*pchOut++ = ch;
+			continue;
+		}
+
+		if (cchToken == 0)
+		{
+			SyntaxError(_T("backslash at end of string"));
+			return -1;
+		}
+
+		ch = *pchToken++;
+		cchToken--;
+
+		switch (ch)
+		{
+		case 'b':
+			ch = '\b';
+			break;
+
+		case 'f':
+			ch = '\f';
+			break;
+
+		case 'n':
+			ch = '\n';
+			break;
+
+		case 'r':
+			ch = '\r';
+			break;
+
+		case 't':
+			ch = '\t';
+			break;
+
+		case 'x':
+			if (cchToken < 2)
 			{
-				SyntaxError(_T("backslash at end of string"));
+				SyntaxError(_T("Invalid hex character escape sequence"));
 				return -1;
 			}
-
-			TCHAR ch = *pchToken++;
-			cchToken--;
-			switch (ch)
+			if (!ReadHexEscape(pchToken, cchToken, 2, ch))
 			{
-			case 'b': *pchOut++ = '\b'; break;
-			case 'f': *pchOut++ = '\f'; break;
-			case 'n': *pchOut++ = '\n'; break;
-			case 'r': *pchOut++ = '\r'; break;
-			case 't': *pchOut++ = '\t'; break;
-
-			case 'x':
-				{
-					if (cchToken < 2)
-					{
-						SyntaxError(_T("Invalid hex character escape sequence"));
-						return -1;
-					}
-					ch = 0;
-					int i;
-					for (i = 0; i < 2; i++)
-					{
-						TCHAR chHex = *pchToken++;
-						cchToken--;
-						if (chHex >= '0' && chHex <= '9')      ch = 16 * ch + chHex - '0';
-						else if (chHex >= 'A' && chHex <= 'F')  ch = 16 * ch + chHex - 'A' + 10;
-						else if (chHex >= 'a' && chHex <= 'f')  ch = 16 * ch + chHex - 'a' + 10;
-						else { SyntaxError(_T("Invalid hex character")); return -1; }
-					}
-					*pchOut++ = ch;
-				}
-				break;
+				SyntaxError(_T("Invalid hex character"));
+				return -1;
+			}
+			break;
 
 #ifdef _UNICODE
-			case 'u':
-				{
-					if (cchToken < 4)
-					{
-						SyntaxError(_T("Invalid Unicode character escape sequence"));
-						return -1;
-					}
-					ch = 0;
-					int i;
-					for (i = 0; i < 4; i++)
-					{
-						TCHAR chHex = *pchToken++;
-						cchToken--;
-						if (chHex >= '0' && chHex <= '9')      ch = 16 * ch + chHex - '0';
-						else if (chHex >= 'A' && chHex <= 'F')  ch = 16 * ch + chHex - 'A' + 10;
-						else if (chHex >= 'a' && chHex <= 'f')  ch = 16 * ch + chHex - 'a' + 10;
-						else { SyntaxError(_T("Invalid Unicode character")); return -1; }
-					}
-					*pchOut++ = ch;
-				}
-				break;
+		case 'u':
+			if (cchToken < 4)
+			{
+				SyntaxError(_T("Invalid Unicode character escape sequence"));
+				return -1;
+			}
+			if (!ReadHexEscape(pchToken, cchToken, 4, ch))
+			{
+				SyntaxError(_T("Invalid Unicode character"));
+				return -1;
+			}
+			break;
 #endif
 
-			default:
-				if (ch >= '0' && ch <= '7')
-				{
-					if (ch == '0' && cchToken > 0 && (*pchToken < '0' || *pchToken > '7'))
-					{
-						*pchOut++ = '\0';
-					}
-					else
-					{
-						ch -= '0';
-						while (cchToken != 0 && *pchToken >= '0' && *pchToken <= '7')
-						{
-							ch = ch * 8 + *pchToken - '0';
-							pchToken++;
-							cchToken--;
-						}
-						*pchOut++ = ch;
-					}
-				}
-				else
-				{
-					*pchOut++ = ch;
-				}
+		default:
+			if (ch < '0' || ch > '7')
+				break;
+
+			if (ch == '0' && cchToken > 0 && (*pchToken < '0' || *pchToken > '7'))
+			{
+				ch = '\0';
 				break;
 			}
+
+			{
+				int nValue = ch - '0';
+				for (; cchToken != 0 && *pchToken >= '0' && *pchToken <= '7'; pchToken++, cchToken--)
+					nValue = nValue * 8 + (*pchToken - '0');
+				ch = (TCHAR)nValue;
+			}
+			break;
 		}
-		else
-		{
-			*pchOut++ = *pchToken++;
-			cchToken--;
-		}
+
+		*pchOut++ = ch;
 	}
 
 	return (int)(pchOut - szString);
 }
 
-// =========================================================================
-// Value parsers -- extract typed values from token stream
-// =========================================================================
 
+// ParseBoolean
+// Reconstructed from 5960 retail XBE @ 0x00033150. Ghidra decompile:
+//     pch = Token(pch, &tok, &cch);
+//     if (!wcsnicmp(tok, L"true", cch)) b = 1; else if (!wcsnicmp(tok, L"false", cch)) b = 0;
+//     else SyntaxError(L"Invalid boolean value");
+// Case-insensitive prefix compare over the token length, same as the binary.
 const TCHAR* ParseBoolean(const TCHAR* pch, bool& b)
 {
 	const TCHAR* pchToken;
@@ -320,22 +391,33 @@ const TCHAR* ParseBoolean(const TCHAR* pch, bool& b)
 	return pch;
 }
 
+// Copies a numeric token into a terminated buffer. 5960 copies blind into a
+// 64 character stack buffer; Theseus clamps long tokens and flags them.
+static void CopyNumberToken(TCHAR* szBuf, int cchBuf, const TCHAR* pchToken, int cchToken)
+{
+	if (!CHECK(cchToken < cchBuf))
+	{
+		SyntaxError(_T("Number is too long"));
+		cchToken = cchBuf - 1;
+	}
+	_tcsncpy(szBuf, pchToken, cchToken);
+	szBuf[cchToken] = '\0';
+}
+
+// ParseInteger / ParseNumber
+// Reconstructed from 5960 retail XBE @ 0x000331d0 / 0x00033250. Ghidra decompile:
+//     pch = Token(pch, &tok, &cch); wcsncpy(buf, tok, cch); buf[cch] = 0;   // buf[64]
+//     *pi = _wtol(buf);        or        *pn = (float)wcstod(buf, NULL);
+// The CHECK on the length is Theseus's bounds fix.
 const TCHAR* ParseInteger(const TCHAR* pch, int& i)
 {
 	const TCHAR* pchToken;
 	int cchToken;
 	pch = Token(pch, pchToken, cchToken);
 
-	TCHAR szBuf[64];
-	if (!CHECK(cchToken < countof(szBuf)))
-	{
-		SyntaxError(_T("Number is too long"));
-		cchToken = countof(szBuf) - 1;
-	}
-	_tcsncpy(szBuf, pchToken, cchToken);
-	szBuf[cchToken] = 0;
-	i = _ttoi(szBuf);
-
+	TCHAR szNumber[64];
+	CopyNumberToken(szNumber, countof(szNumber), pchToken, cchToken);
+	i = _ttoi(szNumber);
 	return pch;
 }
 
@@ -345,19 +427,16 @@ const TCHAR* ParseNumber(const TCHAR* pch, float& n)
 	int cchToken;
 	pch = Token(pch, pchToken, cchToken);
 
-	TCHAR szBuf[64];
-	if (!CHECK(cchToken < countof(szBuf)))
-	{
-		SyntaxError(_T("Number is too long"));
-		cchToken = countof(szBuf) - 1;
-	}
-	_tcsncpy(szBuf, pchToken, cchToken);
-	szBuf[cchToken] = 0;
-	n = (float)_tcstod(szBuf, NULL);
-
+	TCHAR szNumber[64];
+	CopyNumberToken(szNumber, countof(szNumber), pchToken, cchToken);
+	n = (float)_tcstod(szNumber, NULL);
 	return pch;
 }
 
+// ParseString
+// Reconstructed from 5960 retail XBE @ 0x000332d0. Ghidra decompile:
+//     pch = Token(pch, &tok, &cch); sz = new WCHAR[cch + 1]; memcpy(sz, tok, cch * 2); sz[cch] = 0;
+// No escape expansion: property strings are taken as written.
 const TCHAR* ParseString(const TCHAR* pch, TCHAR*& sz)
 {
 	const TCHAR* pchToken;
@@ -367,72 +446,75 @@ const TCHAR* ParseString(const TCHAR* pch, TCHAR*& sz)
 	sz = new TCHAR[cchToken + 1];
 	CopyChars(sz, pchToken, cchToken);
 	sz[cchToken] = '\0';
-
 	return pch;
 }
 
+// ParseVec3 / ParseVec4
+// Reconstructed from 5960 retail XBE @ 0x00033340 / 0x00033370. Ghidra decompile:
+//     ParseNumber(v + 0); ParseNumber(v + 1); ParseNumber(v + 2); [ParseNumber(v + 3);]
 const TCHAR* ParseVec3(const TCHAR* pch, float v[3])
 {
-	pch = ParseNumber(pch, v[0]);
-	pch = ParseNumber(pch, v[1]);
-	pch = ParseNumber(pch, v[2]);
+	for (int i = 0; i < 3; i++)
+		pch = ParseNumber(pch, v[i]);
 	return pch;
 }
 
 const TCHAR* ParseVec4(const TCHAR* pch, float v[4])
 {
-	pch = ParseNumber(pch, v[0]);
-	pch = ParseNumber(pch, v[1]);
-	pch = ParseNumber(pch, v[2]);
-	pch = ParseNumber(pch, v[3]);
+	for (int i = 0; i < 4; i++)
+		pch = ParseNumber(pch, v[i]);
 	return pch;
 }
 
+// ParseIntArray / ParseVecArray
+// Reconstructed from 5960 retail XBE @ 0x000333a0 / 0x00033490. Behavior:
+// demand '[', then walk the list twice. The first walk only counts values (a
+// group of nVecSize numbers per entry, entries split by an optional ','),
+// stopping at ']'. Then it allocates count * 4 bytes, rewinds the cursor and
+// the line counter to just after '[', and walks again storing each value.
+// Returns past the ']'. A missing '[' is a syntax error and returns "".
+// 5960 inlines the number read in ParseVecArray; Theseus calls ParseNumber so
+// the long token CHECK covers arrays too.
 const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray)
 {
 	pch = SkipWhite(pch);
 	if (*pch != '[')
 	{
 		SyntaxError(_T("Expected '[' to start array"));
-		return _T("");
+		return szParseError;
 	}
-	pch++;
 
-	const TCHAR* pchStart = pch;
-	int nLineStart = g_nLine;
-	int nValues = 0;
+	const TCHAR* pchFirst = pch + 1;
+	const int nLineFirst = g_nLine;
 
-	// First pass: count values
-	for (;;)
+	int cValues = 0;
+	for (pch = SkipWhite(pchFirst); *pch != ']'; pch = SkipWhite(pch))
 	{
+		int nIgnored;
+		pch = ParseInteger(pch, nIgnored);
+		cValues++;
+
 		pch = SkipWhite(pch);
-		if (*pch == ']') break;
-		int n;
-		pch = ParseInteger(pch, n);
-		nValues++;
-		pch = SkipWhite(pch);
-		if (*pch == ']') break;
-		if (*pch == ',') pch++;
+		if (*pch == ']')
+			break;
+		if (*pch == ',')
+			pch++;
 	}
 
-	// Second pass: read values
-	cbArray = nValues * sizeof(int);
+	cbArray = cValues * sizeof(int);
 	pbArray = new BYTE[cbArray];
-	BYTE* pb = pbArray;
+	int* pnOut = (int*)pbArray;
 
-	pch = pchStart;
-	g_nLine = nLineStart;
-	for (;;)
+	g_nLine = nLineFirst;
+	for (pch = SkipWhite(pchFirst); *pch != ']'; pch = SkipWhite(pch))
 	{
+		pch = ParseInteger(pch, *pnOut++);
+
 		pch = SkipWhite(pch);
-		if (*pch == ']') break;
-		int n;
-		pch = ParseInteger(pch, n);
-		*(int*)pb = n;
-		pb += sizeof(int);
-		pch = SkipWhite(pch);
-		if (*pch == ']') break;
-		if (*pch == ',') pch++;
+		if (*pch == ']')
+			break;
+		if (*pch == ',')
+			pch++;
 	}
 
 	return pch + 1;
@@ -446,61 +528,52 @@ const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int n
 	if (*pch != '[')
 	{
 		SyntaxError(_T("Expected '[' to start array"));
-		return _T("");
+		return szParseError;
 	}
-	pch++;
 
-	const TCHAR* pchStart = pch;
-	int nLineStart = g_nLine;
-	int nValues = 0;
+	const TCHAR* pchFirst = pch + 1;
+	const int nLineFirst = g_nLine;
 
-	// First pass: count
-	for (;;)
+	int cValues = 0;
+	for (pch = SkipWhite(pchFirst); *pch != ']'; pch = SkipWhite(pch))
 	{
-		pch = SkipWhite(pch);
-		if (*pch == ']') break;
-		int i;
-		for (i = 0; i < nVecSize; i++)
+		for (int i = 0; i < nVecSize; i++)
 		{
-			float n;
-			pch = ParseNumber(pch, n);
-			nValues++;
+			float nIgnored;
+			pch = ParseNumber(pch, nIgnored);
 		}
+		cValues += nVecSize;
+
 		pch = SkipWhite(pch);
-		if (*pch == ']') break;
-		if (*pch == ',') pch++;
+		if (*pch == ']')
+			break;
+		if (*pch == ',')
+			pch++;
 	}
 
-	// Second pass: read
-	cbArray = nValues * sizeof(float);
+	cbArray = cValues * sizeof(float);
 	pbArray = new BYTE[cbArray];
-	BYTE* pb = pbArray;
+	float* pnOut = (float*)pbArray;
 
-	pch = pchStart;
-	g_nLine = nLineStart;
-	for (;;)
+	g_nLine = nLineFirst;
+	for (pch = SkipWhite(pchFirst); *pch != ']'; pch = SkipWhite(pch))
 	{
+		for (int i = 0; i < nVecSize; i++)
+			pch = ParseNumber(pch, *pnOut++);
+
 		pch = SkipWhite(pch);
-		if (*pch == ']') break;
-		int i;
-		for (i = 0; i < nVecSize; i++)
-		{
-			float n;
-			pch = ParseNumber(pch, n);
-			*(float*)pb = n;
-			pb += sizeof(float);
-		}
-		pch = SkipWhite(pch);
-		if (*pch == ']') break;
-		if (*pch == ',') pch++;
+		if (*pch == ']')
+			break;
+		if (*pch == ',')
+			pch++;
 	}
 
 	return pch + 1;
 }
 
-// =========================================================================
-// CParser -- tokenizer wrapper with file context
-// =========================================================================
+
+// CParser is a Theseus helper with no counterpart in the 5960 binary.
+// Kept as it was.
 
 CParser::CParser(const TCHAR* szFilePath, const TCHAR* pchFile, int cchFile)
 {
@@ -542,15 +615,16 @@ void CParser::SyntaxError(const TCHAR* szMsg, ...)
 	va_end(args);
 }
 
-// =========================================================================
-// Section 2: Bytecode emitter -- CCompiler base class
-// =========================================================================
 
+// CCompiler::CCompiler / ~CCompiler
+// 5960 inlines the constructor (see the CFunctionCompiler set up in
+// ParseFunction @0x36c30: ops count, buffer, size and error all zeroed).
+// The destructor @0x000346f0 frees the op buffer.
 CCompiler::CCompiler()
 {
+	m_ops = NULL;
 	m_nop = 0;
 	m_opsSize = 0;
-	m_ops = NULL;
 	m_bError = false;
 }
 
@@ -559,50 +633,64 @@ CCompiler::~CCompiler()
 	delete[] m_ops;
 }
 
+// CCompiler::GrowTo
+// Reconstructed from 5960 retail XBE @ 0x00034590. Ghidra decompile:
+//     cb = (n + 0xfff) & ~0xfff; p = new BYTE[cb]; memcpy(p, m_ops, m_nop);
+//     delete m_ops; m_opsSize = cb; m_ops = p;
+// The buffer grows in whole 4 KB pages.
 void CCompiler::GrowTo(int nNewSize)
 {
-	int cb = ((nNewSize + 4095) & ~0xfff);
-	BYTE* ops = new BYTE[cb];
-	CopyMemory(ops, m_ops, m_nop);
+	const int cbPage = 4096;
+	int cbNew = (nNewSize + cbPage - 1) / cbPage * cbPage;
+
+	BYTE* pbNew = new BYTE[cbNew];
+	CopyMemory(pbNew, m_ops, m_nop);
 	delete[] m_ops;
-	m_ops = ops;
-	m_opsSize = cb;
+
+	m_ops = pbNew;
+	m_opsSize = cbNew;
 }
 
+// CCompiler::SyntaxError
+// Reconstructed from 5960 retail XBE @ 0x000345e0. Same report as the free
+// SyntaxError, and it also marks this compiler: m_bError = 1; g_bParseError = 1.
+// Theseus sends the text to Trace.
 void CCompiler::SyntaxError(const TCHAR* szMsg, ...)
 {
+	TCHAR szDetail[512];
 	va_list args;
 	va_start(args, szMsg);
-
-	TCHAR szBuffer[512];
-	_vsntprintf(szBuffer, countof(szBuffer), szMsg, args);
-
-	TCHAR szMessage[1024];
-	_stprintf(szMessage, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), g_szFileName, g_nLine, szBuffer);
-
-	Trace(_T("\007%s\n"), szMessage);
-
+	_vsntprintf(szDetail, countof(szDetail), szMsg, args);
 	va_end(args);
+
+	TCHAR szReport[1024];
+	_stprintf(szReport, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), g_szFileName, g_nLine, szDetail);
+	Trace(_T("\007%s\n"), szReport);
+
 	m_bError = true;
 	g_bParseError = true;
 }
 
+// CCompiler::CreateFunction
+// Reconstructed from 5960 retail XBE @ 0x00034670. Ghidra decompile:
+//     f = new(m_nop) CFunction; f->m_codeSize = m_nop; memcpy(f->m_rgop, m_ops, m_nop);
+// One allocation holds the function header and its ops.
 CFunction* CCompiler::CreateFunction()
 {
 #pragma push_macro("new")
 #undef new
 	CFunction* pFunction = new(m_nop) CFunction;
 #pragma pop_macro("new")
+
 	pFunction->m_codeSize = m_nop;
 	CopyMemory(pFunction->m_rgop, m_ops, m_nop);
 	return pFunction;
 }
 
-// =========================================================================
-// Section 3: Expression and statement compiler -- CFunctionCompiler
-// Compiles JS-like expressions and statements into bytecode opcodes
-// =========================================================================
 
+// CFunctionCompiler::CFunctionCompiler
+// Inlined in 5960 (ParseFunction @0x36c30): no locals, no pending breaks, not
+// inside a loop, loop top at 0, behavior flag from the caller.
 CFunctionCompiler::CFunctionCompiler()
 {
 	m_nFrameSize = 0;
@@ -612,7 +700,9 @@ CFunctionCompiler::CFunctionCompiler()
 	m_bBehavior = false;
 }
 
-// Operator precedence table -- maps character sequences to opcodes
+// Binary operator table, 22 entries of { ch1, ch2, ch3, priority, opcode }.
+// Read straight out of the 5960 XBE @ 0x000200e8. Scanned in order and the
+// first match wins, so the order is part of the language.
 static const DOPER rgdoper[] =
 {
 	{ '.',	0,		0,		1, opDot },
@@ -639,55 +729,69 @@ static const DOPER rgdoper[] =
 	{ '%',	'=',	0,		13, opModAssign },
 };
 
-#define LAST_PRI 14
+// ParseExpression always starts at priority 14 (0xe in every 5960 call).
+static const int nLowestPriority = 14;
 
+// CFunctionCompiler::ParseOperator
+// Reconstructed from 5960 retail XBE @ 0x00034bb0. Ghidra decompile:
+//     *ppdoper = 0; pch = SkipWhite(pch); if (*pch == 0) return pch;
+//     for (i = 0; i < 22; i++) if (t[i].ch1 == pch[0] && (!t[i].ch2 || t[i].ch2 == pch[1])) {
+//         *ppdoper = &t[i]; return pch + (t[i].ch2 ? 2 : 1); }
+//     return pch;
 const TCHAR* CFunctionCompiler::ParseOperator(const TCHAR* pch, const DOPER*& pdoper)
 {
 	pdoper = NULL;
+
 	pch = SkipWhite(pch);
 	if (*pch == '\0')
 		return pch;
 
-	for (int i = 0; i < sizeof(rgdoper) / sizeof(DOPER); i++)
+	for (const DOPER* p = rgdoper; p < rgdoper + countof(rgdoper); p++)
 	{
-		if (rgdoper[i].m_ch1 == *pch && (rgdoper[i].m_ch2 == 0 || rgdoper[i].m_ch2 == *(pch + 1)))
-		{
-			pch++;
-			if (rgdoper[i].m_ch2 != 0)
-				pch++;
-			pdoper = &rgdoper[i];
-			break;
-		}
+		if (p->m_ch1 != pch[0])
+			continue;
+		if (p->m_ch2 != 0 && p->m_ch2 != pch[1])
+			continue;
+
+		pdoper = p;
+		return pch + (p->m_ch2 != 0 ? 2 : 1);
 	}
 
 	return pch;
 }
 
-// Parse a primary expression (literal, variable, 'new', parenthesized expr)
+// CFunctionCompiler::ParseTerm
+// Reconstructed from 5960 retail XBE @ 0x00034710. Behavior: fold any run of
+// unary '-', '+' and '~' ('~' only raises "not implemented"). Then either a
+// parenthesized expression, or one token: a quoted string becomes opStr with
+// its escapes expanded; a token starting with '.', '-' or a digit becomes
+// opNum (a pending '-' is folded into the constant); true/false become opNum
+// 1/0; this and null become opThis/opNull; "new Name(args)" becomes opNew
+// with the arg count and class name; a declared local becomes opLocal with
+// its slot; anything else is a late-bound opVar by name. A '-' that wasn't
+// folded emits opNeg at the end. See docs/decomp/Compiler.md.
 const TCHAR* CFunctionCompiler::ParseTerm(const TCHAR* pch)
 {
-	bool bNeg = false;
-	bool bInvert = false;
+	bool bNegate = false;
+	bool bComplement = false;
 
-	// Handle unary +, -, ~
-	for (;;)
+	for (;; pch++)
 	{
 		pch = SkipWhite(pch);
-		if (*pch == '-')       bNeg = !bNeg;
-		else if (*pch == '+')  ;
-		else if (*pch == '~')  bInvert = !bInvert;
-		else break;
-		pch++;
+		if (*pch == '-')
+			bNegate = !bNegate;
+		else if (*pch == '~')
+			bComplement = !bComplement;
+		else if (*pch != '+')
+			break;
 	}
 
-	if (bInvert)
+	if (bComplement)
 		SyntaxError(_T("Sorry, the ~ operator has not been implemented yet!"));
 
 	if (*pch == '(')
 	{
-		// Parenthesized sub-expression
-		pch++;
-		pch = ParseExpression(pch);
+		pch = ParseExpression(pch + 1);
 		pch = SkipWhite(pch);
 		if (*pch != ')')
 		{
@@ -698,170 +802,192 @@ const TCHAR* CFunctionCompiler::ParseTerm(const TCHAR* pch)
 	}
 	else
 	{
-		bool bQuoted = *pch == '"' || *pch == '\'';
+		const bool bString = (*pch == '"' || *pch == '\'');
+
 		const TCHAR* pchToken;
 		int cchToken;
 		pch = Token(pch, pchToken, cchToken);
 
-		if (cchToken == 0 && !bQuoted)
-			return pch;
-
-		if (bQuoted)
+		if (bString)
 		{
-			// String literal
 			Write(opStr);
-			TCHAR rgchString[1024];
-			int nLen = ExpandCString(rgchString, countof(rgchString), pchToken, cchToken);
-			if (nLen < 0)
-				return _T("");
-			WriteString(rgchString, nLen);
+			TCHAR szText[1024];
+			int cchText = ExpandCString(szText, countof(szText), pchToken, cchToken);
+			if (cchText < 0)
+				return szParseError;
+			WriteString(szText, cchText);
 		}
-		else if (*pchToken == '.' || *pchToken == '-' || *pchToken >= '0' && *pchToken <= '9')
+		else if (cchToken == 0)
 		{
-			// Numeric literal
-			TCHAR szBuf[256]; // copy the token because _tcstod stupidly copies the whole string
-			if (!CHECK(cchToken < countof(szBuf)))
+			return pch;
+		}
+		else if (*pchToken == '.' || *pchToken == '-' || IsDigit(*pchToken))
+		{
+			// Theseus clamps over-long numbers; 5960 copies them blind.
+			TCHAR szNumber[256];
+			if (!CHECK(cchToken < countof(szNumber)))
 			{
 				SyntaxError(_T("Number is too long"));
-				cchToken = countof(szBuf) - 1;
+				cchToken = countof(szNumber) - 1;
 			}
-			CopyChars(szBuf, pchToken, cchToken);
-			szBuf[cchToken] = 0;
-			float n = (float)_tcstod(szBuf, NULL);
-			if (bNeg) { bNeg = false; n = -n; }
+			CopyChars(szNumber, pchToken, cchToken);
+			szNumber[cchToken] = '\0';
+
+			float nValue = (float)_tcstod(szNumber, NULL);
+			if (bNegate)
+			{
+				nValue = -nValue;
+				bNegate = false;
+			}
 			Write(opNum);
-			WriteNumber(n);
+			WriteNumber(nValue);
 		}
-		else if (cchToken == 4 && _tcsncmp(pchToken, _T("true"), 4) == 0)
+		else if (IsKeyword(pchToken, cchToken, _T("true"), 4))
 		{
 			Write(opNum);
 			WriteNumber(1.0f);
 		}
-		else if (cchToken == 5 && _tcsncmp(pchToken, _T("false"), 5) == 0)
+		else if (IsKeyword(pchToken, cchToken, _T("false"), 5))
 		{
 			Write(opNum);
 			WriteNumber(0.0f);
 		}
-		else if (cchToken == 4 && _tcsncmp(pchToken, _T("this"), 4) == 0)
+		else if (IsKeyword(pchToken, cchToken, _T("this"), 4))
 		{
 			Write(opThis);
 		}
-		else if (cchToken == 4 && _tcsncmp(pchToken, _T("null"), 4) == 0)
+		else if (IsKeyword(pchToken, cchToken, _T("null"), 4))
 		{
 			Write(opNull);
 		}
-		else if (cchToken == 3 && _tcsncmp(pchToken, _T("new"), 3) == 0)
+		else if (IsKeyword(pchToken, cchToken, _T("new"), 3))
 		{
-			// Object construction: new ClassName(args...)
-			pch = Token(pch, pchToken, cchToken);
+			const TCHAR* pchClass;
+			int cchClass;
+			pch = Token(pch, pchClass, cchClass);
 
-			int nParam = 0;
+			int cArgs = 0;
 			pch = SkipWhite(pch);
 			if (*pch == '(')
 			{
 				pch++;
-				if (*pch == ')')
-				{
-					pch++;
-				}
-				else
+				if (*pch != ')')
 				{
 					for (;;)
 					{
 						pch = ParseExpression(pch);
-						nParam++;
+						cArgs++;
 						pch = SkipWhite(pch);
-						if (*pch == ')') { pch++; break; }
-						if (*pch != ',') { SyntaxError(_T("Missing ','")); return pch; }
+						if (*pch == ')')
+							break;
+						if (*pch != ',')
+						{
+							SyntaxError(_T("Missing ','"));
+							return pch;
+						}
 						pch++;
 					}
 				}
+				pch++;
 			}
 
 			Write(opNew);
-			WriteInteger(nParam);
-			WriteString(pchToken, cchToken);
+			WriteInteger(cArgs);
+			WriteString(pchClass, cchClass);
 		}
 		else
 		{
-			// Symbol -- check local variables first, then late-bind
-			int i;
-			for (i = 0; i < m_nFrameSize; i++)
+			int iLocal = 0;
+			while (iLocal < m_nFrameSize &&
+			       !(m_rgstLocal[iLocal].cchName == cchToken && _tcsncmp(pchToken, m_rgstLocal[iLocal].pchName, cchToken) == 0))
 			{
-				if (cchToken == m_rgstLocal[i].cchName && _tcsncmp(pchToken, m_rgstLocal[i].pchName, cchToken) == 0)
-				{
-					Write(opLocal);
-					WriteInteger(i);
-					break;
-				}
+				iLocal++;
 			}
 
-			if (i == m_nFrameSize)
+			if (iLocal < m_nFrameSize)
 			{
-				// Late-bound variable reference
+				Write(opLocal);
+				WriteInteger(iLocal);
+			}
+			else
+			{
 				Write(opVar);
 				WriteString(pchToken, cchToken);
 			}
 		}
 	}
 
-	if (bNeg)
+	if (bNegate)
 		Write(opNeg);
 
 	return pch;
 }
 
+// CFunctionCompiler::ParseArray
+// Reconstructed from 5960 retail XBE @ 0x00034c20. Ghidra decompile:
+//     pch = ParseExpression(pch + 1); pch = SkipWhite(pch);
+//     if (*pch != ']') { SyntaxError(L"Missing ']'"); return pch; }
+//     Write(opArray); return pch + 1;
 const TCHAR* CFunctionCompiler::ParseArray(const TCHAR* pch)
 {
 	ASSERT(*pch == '[');
-	pch++;
 
-	pch = ParseExpression(pch);
-	pch = SkipWhite(pch);
+	pch = SkipWhite(ParseExpression(pch + 1));
 	if (*pch != ']')
 	{
 		SyntaxError(_T("Missing ']'"));
 		return pch;
 	}
-	pch++;
+
 	Write(opArray);
-	return pch;
+	return pch + 1;
 }
 
+// CFunctionCompiler::ParseCall
+// Reconstructed from 5960 retail XBE @ 0x00034c90. Ghidra decompile:
+//     n = 0; pch = SkipWhite(pch + 1);
+//     if (*pch != ')') { ParseExpression; n = 1; while (*(pch = SkipWhite) != ')') {
+//         if (*pch != ',') { SyntaxError(L"Missing ,"); return pch; } ParseExpression(pch + 1); n++; } }
+//     Write(opCall); Write((BYTE)n); return pch + 1;
+// The callee reference is already on the stack; the count is a single byte.
 const TCHAR* CFunctionCompiler::ParseCall(const TCHAR* pch)
 {
-	// we have evaluated the reference to the function already and are looking at the '('
-
-	int nArgs = 0;
-
 	ASSERT(*pch == '(');
-	pch++;
 
-	pch = SkipWhite(pch);
-
-	if (*pch == ')')
-	{
-		pch++;
-	}
-	else
+	int cArgs = 0;
+	pch = SkipWhite(pch + 1);
+	if (*pch != ')')
 	{
 		for (;;)
 		{
-			pch = ParseExpression(pch);
-			nArgs++;
-			pch = SkipWhite(pch);
-			if (*pch == ')') { pch++; break; }
-			if (*pch != ',') { SyntaxError(_T("Missing ,")); return pch; }
+			pch = SkipWhite(ParseExpression(pch));
+			cArgs++;
+			if (*pch == ')')
+				break;
+			if (*pch != ',')
+			{
+				SyntaxError(_T("Missing ,"));
+				return pch;
+			}
 			pch++;
 		}
 	}
 
 	Write(opCall);
-	Write((BYTE)nArgs);
-	return pch;
+	Write((BYTE)cArgs);
+	return pch + 1;
 }
 
-// Recursive descent expression parser with operator precedence
+// CFunctionCompiler::ParseExp
+// Reconstructed from 5960 retail XBE @ 0x00034d80 (the binary's
+// ParseExpression(pch, prio)). Ghidra decompile:
+//     if (prio == 0) return ParseTerm(pch);
+//     pch = ParseExp(pch, prio - 1);
+//     for (;;) { pch = SkipWhite(pch);
+//         if (prio == 1) { if (*pch == '(') pch = ParseCall(pch); else if (*pch == '[') pch = ParseArray(pch); }
+//         p = ParseOperator(pch, &op); if (!op || op->pri != prio) return pch;
+//         pch = ParseExp(p, prio - 1); Write(op->op); }
+// Left-associative precedence climbing; calls and indexing bind at level 1.
 const TCHAR* CFunctionCompiler::ParseExp(const TCHAR* pch, int nPrio)
 {
 	if (nPrio == 0)
@@ -881,231 +1007,272 @@ const TCHAR* CFunctionCompiler::ParseExp(const TCHAR* pch, int nPrio)
 				pch = ParseArray(pch);
 		}
 
-		const TCHAR* pchOper = pch;
 		const DOPER* pdoper;
-		pch = ParseOperator(pch, pdoper);
+		const TCHAR* pchRight = ParseOperator(pch, pdoper);
 		if (pdoper == NULL || pdoper->m_pri != nPrio)
-			return pchOper;
+			return pch;
 
-		pch = ParseExp(pch, nPrio - 1);
+		pch = ParseExp(pchRight, nPrio - 1);
 		Write(pdoper->m_op);
 	}
 }
 
 const TCHAR* CFunctionCompiler::ParseExpression(const TCHAR* pch)
 {
-	return ParseExp(pch, LAST_PRI);
+	return ParseExp(pch, nLowestPriority);
 }
 
-// =========================================================================
-// Statement parsers -- if, while, for, do, break, continue, return, sleep
-// =========================================================================
-
+// CFunctionCompiler::ParseIF
+// Reconstructed from 5960 retail XBE @ 0x00034ea0. Ghidra decompile:
+//     '(' expr ')' or SyntaxError(L"expected '('" / L"expected ')'") and return;
+//     Write(opCond); fix = m_nop; WriteInteger(0); pch = ParseStatement(pch);
+//     pch = Token(pch, &tok, &cch);
+//     if (cch == 4 && !wcsncmp(tok, L"else", 4)) { Write(opJump); fix2 = m_nop; WriteInteger(0);
+//         patch(fix) = m_nop; pch = ParseStatement(pch); patch(fix2) = m_nop; return pch; }
+//     patch(fix) = m_nop; return tok;
+// With no else the cursor goes back to the start of the peeked token.
 const TCHAR* CFunctionCompiler::ParseIF(const TCHAR* pch)
 {
 	pch = SkipWhite(pch);
-	if (*pch != '(') { SyntaxError(_T("expected '('")); return pch; }
-	pch++;
+	if (*pch != '(')
+	{
+		SyntaxError(_T("expected '('"));
+		return pch;
+	}
 
-	pch = ParseExpression(pch);
-
-	pch = SkipWhite(pch);
-	if (*pch != ')') { SyntaxError(_T("expected ')'")); return pch; }
-	pch++;
+	pch = SkipWhite(ParseExpression(pch + 1));
+	if (*pch != ')')
+	{
+		SyntaxError(_T("expected ')'"));
+		return pch;
+	}
 
 	Write(opCond);
-	UINT nop = GetAddress();
+	UINT nopSkipThen = GetAddress();
 	WriteInteger(0);
 
-	pch = ParseStatement(pch);
+	pch = ParseStatement(pch + 1);
 
-	// Check for else
 	const TCHAR* pchToken;
 	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
-
-	if (cchToken == 4 && _tcsncmp(pchToken, _T("else"), cchToken) == 0)
+	const TCHAR* pchAfter = Token(pch, pchToken, cchToken);
+	if (!IsKeyword(pchToken, cchToken, _T("else"), 4))
 	{
-		Write(opJump);
-		UINT nopElse = GetAddress();
-		WriteInteger(0);
-		Fixup(nop, GetAddress());
-		pch = ParseStatement(pch);
-		Fixup(nopElse, GetAddress());
-	}
-	else
-	{
-		pch = pchToken; // back up
-		Fixup(nop, GetAddress());
+		Fixup(nopSkipThen, GetAddress());
+		return pchToken;
 	}
 
+	Write(opJump);
+	UINT nopSkipElse = GetAddress();
+	WriteInteger(0);
+
+	Fixup(nopSkipThen, GetAddress());
+	pch = ParseStatement(pchAfter);
+	Fixup(nopSkipElse, GetAddress());
 	return pch;
 }
 
+// CFunctionCompiler::ParseWHILE
+// Reconstructed from 5960 retail XBE @ 0x00034fe0. Behavior: save the break
+// list and loop top, open a breakable scope, then '(' cond ')' with the loop
+// top at the start of the condition. Emits opCond (forward fixup), the body,
+// opJump back to the top, patches the exit and every break to here, and
+// restores the outer loop state. A missing paren is a syntax error and "".
 const TCHAR* CFunctionCompiler::ParseWHILE(const TCHAR* pch)
 {
-	BREAK* pOldBreaks = m_breaks;
+	BREAK* pOuterBreaks = m_breaks;
 	m_breaks = NULL;
 	m_nBreakables++;
 
 	pch = SkipWhite(pch);
-	if (*pch != '(') { SyntaxError(_T("expected '('")); return _T(""); }
-	pch++;
+	if (*pch != '(')
+	{
+		SyntaxError(_T("expected '('"));
+		return szParseError;
+	}
 
-	int nopOldTop = m_nopTopOfLoop;
+	int nopOuterTop = m_nopTopOfLoop;
 	m_nopTopOfLoop = GetAddress();
-	pch = ParseExpression(pch);
 
-	pch = SkipWhite(pch);
-	if (*pch != ')') { SyntaxError(_T("expected ')'")); return _T(""); }
-	pch++;
+	pch = SkipWhite(ParseExpression(pch + 1));
+	if (*pch != ')')
+	{
+		SyntaxError(_T("expected ')'"));
+		return szParseError;
+	}
 
 	Write(opCond);
-	UINT nopFixup = GetAddress();
+	UINT nopExit = GetAddress();
 	WriteInteger(0);
 
-	pch = ParseStatement(pch);
+	pch = ParseStatement(pch + 1);
 
 	Write(opJump);
 	WriteInteger(m_nopTopOfLoop);
 
-	Fixup(nopFixup, GetAddress());
+	Fixup(nopExit, GetAddress());
 	FixupBreaks();
 
-	m_breaks = pOldBreaks;
+	m_breaks = pOuterBreaks;
 	m_nBreakables--;
-	m_nopTopOfLoop = nopOldTop;
-
+	m_nopTopOfLoop = nopOuterTop;
 	return pch;
 }
 
+// CFunctionCompiler::ParseDO
+// Reconstructed from 5960 retail XBE @ 0x00035170. Behavior: same loop
+// bookkeeping as while, with the top at the body. Steps one character past
+// the "do" keyword, compiles the body, then demands while '(' cond ')' ';'.
+// Emits opCond to the exit, then an unconditional opJump back to the top
+// (the condition is checked once per pass that way), patches exit and breaks.
 const TCHAR* CFunctionCompiler::ParseDO(const TCHAR* pch)
 {
-	BREAK* pOldBreaks = m_breaks;
+	BREAK* pOuterBreaks = m_breaks;
 	m_breaks = NULL;
 	m_nBreakables++;
 
-	pch++;
-
-	int nopOldTop = m_nopTopOfLoop;
+	int nopOuterTop = m_nopTopOfLoop;
 	m_nopTopOfLoop = GetAddress();
 
-	pch = ParseStatement(pch);
+	pch = ParseStatement(pch + 1);
 
 	const TCHAR* pchToken;
 	int cchToken;
 	pch = Token(pch, pchToken, cchToken);
-	if (cchToken != 5 || _tcsncmp(pchToken, _T("while"), 5) != 0)
+	if (!IsKeyword(pchToken, cchToken, _T("while"), 5))
 	{
 		SyntaxError(_T("expected 'while'"));
-		return _T("");
+		return szParseError;
 	}
 
 	pch = SkipWhite(pch);
-	if (*pch != '(') { SyntaxError(_T("expected '('")); return _T(""); }
-	pch++;
+	if (*pch != '(')
+	{
+		SyntaxError(_T("expected '('"));
+		return szParseError;
+	}
 
-	pch = ParseExpression(pch);
+	pch = SkipWhite(ParseExpression(pch + 1));
+	if (*pch != ')')
+	{
+		SyntaxError(_T("expected ')'"));
+		return szParseError;
+	}
 
-	pch = SkipWhite(pch);
-	if (*pch != ')') { SyntaxError(_T("expected ')'")); return _T(""); }
-	pch++;
-
-	pch = SkipWhite(pch);
-	if (*pch != ';') { SyntaxError(_T("expected ';'")); return _T(""); }
-	pch++;
+	pch = SkipWhite(pch + 1);
+	if (*pch != ';')
+	{
+		SyntaxError(_T("expected ';'"));
+		return szParseError;
+	}
 
 	Write(opCond);
-	UINT nopFixup = GetAddress();
+	UINT nopExit = GetAddress();
 	WriteInteger(0);
 
 	Write(opJump);
 	WriteInteger(m_nopTopOfLoop);
 
-	Fixup(nopFixup, GetAddress());
+	Fixup(nopExit, GetAddress());
 	FixupBreaks();
 
-	m_breaks = pOldBreaks;
+	m_breaks = pOuterBreaks;
 	m_nBreakables--;
-	m_nopTopOfLoop = nopOldTop;
-
-	return pch;
+	m_nopTopOfLoop = nopOuterTop;
+	return pch + 1;
 }
 
+// CFunctionCompiler::ParseFOR
+// Reconstructed from 5960 retail XBE @ 0x000352f0. Behavior: '(' then the
+// init clause: "var ..." (read from three characters past the paren, handled
+// by ParseLocalVar which eats the ';') or an expression + opDrop + ';'. The
+// loop top is the condition. The step clause is compiled once and thrown
+// away just to find the ')', then compiled for real after the body, followed
+// by opDrop and opJump back to the top. Exit and breaks are patched last.
 const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 {
-	BREAK* pOldBreaks = m_breaks;
+	BREAK* pOuterBreaks = m_breaks;
 	m_breaks = NULL;
 	m_nBreakables++;
 
 	pch = SkipWhite(pch);
-	if (*pch != '(') { SyntaxError(_T("expected '('")); return _T(""); }
+	if (*pch != '(')
+	{
+		SyntaxError(_T("expected '('"));
+		return szParseError;
+	}
 	pch++;
 
-	// Initializer
 	const TCHAR* pchToken;
 	int cchToken;
 	Token(pch, pchToken, cchToken);
-	if (cchToken == 3 && _tcsncmp(pchToken, _T("var"), cchToken) == 0)
+	if (IsKeyword(pchToken, cchToken, _T("var"), 3))
 	{
-		pch += 3;
-		pch = ParseLocalVar(pch);
+		pch = ParseLocalVar(pch + 3);
 	}
 	else
 	{
 		pch = ParseExpression(pch);
 		Write(opDrop);
 		pch = SkipWhite(pch);
-		if (*pch != ';') { SyntaxError(_T("expected ';'")); return _T(""); }
+		if (*pch != ';')
+		{
+			SyntaxError(_T("expected ';'"));
+			return szParseError;
+		}
 		pch++;
 	}
 
-	// Condition
-	int nopOldTop = m_nopTopOfLoop;
+	int nopOuterTop = m_nopTopOfLoop;
 	m_nopTopOfLoop = GetAddress();
-	pch = ParseExpression(pch);
 
-	pch = SkipWhite(pch);
-	if (*pch != ';') { SyntaxError(_T("expected ';'")); return _T(""); }
-	pch++;
+	pch = SkipWhite(ParseExpression(pch));
+	if (*pch != ';')
+	{
+		SyntaxError(_T("expected ';'"));
+		return szParseError;
+	}
 
-	// Save third expression position, parse it, then rewind
-	int nopExp3 = GetAddress();
-	const TCHAR* pchExp3 = pch;
-	pch = ParseExpression(pch);
+	const TCHAR* pchStep = pch + 1;
+	UINT nopStep = GetAddress();
+	pch = ParseExpression(pchStep);
 	Write(opDrop);
-	m_nop = nopExp3;
+	m_nop = nopStep;
 
 	pch = SkipWhite(pch);
-	if (*pch != ')') { SyntaxError(_T("expected ')'")); return _T(""); }
-	pch++;
+	if (*pch != ')')
+	{
+		SyntaxError(_T("expected ')'"));
+		return szParseError;
+	}
 
 	Write(opCond);
-	UINT nopFixup = GetAddress();
+	UINT nopExit = GetAddress();
 	WriteInteger(0);
 
-	pch = ParseStatement(pch);
+	pch = ParseStatement(pch + 1);
 
-	// Generate the third expression code
-	ParseExpression(pchExp3);
+	ParseExpression(pchStep);
 	Write(opDrop);
-
 	Write(opJump);
 	WriteInteger(m_nopTopOfLoop);
 
-	Fixup(nopFixup, GetAddress());
+	Fixup(nopExit, GetAddress());
 	FixupBreaks();
 
-	m_breaks = pOldBreaks;
+	m_breaks = pOuterBreaks;
 	m_nBreakables--;
-	m_nopTopOfLoop = nopOldTop;
-
+	m_nopTopOfLoop = nopOuterTop;
 	return pch;
 }
 
+// CFunctionCompiler::FixupBreaks
+// Reconstructed from 5960 retail XBE @ 0x00035510. Ghidra decompile:
+//     for (b = m_breaks; b; b = next) { next = b->next; *(int*)(m_ops + b->nop) = m_nop; delete b; }
 void CFunctionCompiler::FixupBreaks()
 {
-	for (BREAK* pBreak = m_breaks; pBreak != NULL; )
+	BREAK* pBreak = m_breaks;
+	while (pBreak != NULL)
 	{
 		BREAK* pNext = pBreak->m_next;
 		Fixup(pBreak->m_nop, GetAddress());
@@ -1114,104 +1281,155 @@ void CFunctionCompiler::FixupBreaks()
 	}
 }
 
+// CFunctionCompiler::ParseBREAK
+// Reconstructed from 5960 retail XBE @ 0x00035540. Ghidra decompile:
+//     pch = SkipWhite(pch); if (*pch != ';') { SyntaxError(L"Missing ';'"); return L""; }
+//     if (!m_nBreakables) { SyntaxError(L"unexpected 'break'"); return L""; }
+//     Write(opJump); b = new BREAK; b->next = m_breaks; m_breaks = b; b->nop = m_nop;
+//     WriteInteger(0); return pch + 1;
 const TCHAR* CFunctionCompiler::ParseBREAK(const TCHAR* pch)
 {
 	pch = SkipWhite(pch);
-	if (*pch != ';') { SyntaxError(_T("Missing ';'")); return _T(""); }
-	pch++;
-
-	if (m_nBreakables == 0) { SyntaxError(_T("unexpected 'break'")); return _T(""); }
+	if (*pch != ';')
+	{
+		SyntaxError(_T("Missing ';'"));
+		return szParseError;
+	}
+	if (m_nBreakables == 0)
+	{
+		SyntaxError(_T("unexpected 'break'"));
+		return szParseError;
+	}
 
 	Write(opJump);
+
 	BREAK* pBreak = new BREAK;
+	pBreak->m_nop = GetAddress();
 	pBreak->m_next = m_breaks;
 	m_breaks = pBreak;
-	pBreak->m_nop = GetAddress();
-	WriteInteger(0);
 
-	return pch;
+	WriteInteger(0);
+	return pch + 1;
 }
 
+// CFunctionCompiler::ParseCONTINUE
+// Reconstructed from 5960 retail XBE @ 0x00035610. Same checks as break
+// (L"unexpected 'continue'"), then: Write(opJump); WriteInteger(m_nopTopOfLoop).
 const TCHAR* CFunctionCompiler::ParseCONTINUE(const TCHAR* pch)
 {
 	pch = SkipWhite(pch);
-	if (*pch != ';') { SyntaxError(_T("Missing ';'")); return _T(""); }
-	pch++;
-
-	if (m_nBreakables == 0) { SyntaxError(_T("unexpected 'continue'")); return _T(""); }
+	if (*pch != ';')
+	{
+		SyntaxError(_T("Missing ';'"));
+		return szParseError;
+	}
+	if (m_nBreakables == 0)
+	{
+		SyntaxError(_T("unexpected 'continue'"));
+		return szParseError;
+	}
 
 	Write(opJump);
 	WriteInteger(m_nopTopOfLoop);
+	return pch + 1;
+}
 
-	return pch;
+// CFunctionCompiler::ParseRETURN / ParseSLEEP
+// Reconstructed from 5960 retail XBE @ 0x000356c0 / 0x00035760. Ghidra decompile:
+//     pch = SkipWhite(pch);
+//     if (*pch == ';') Write(opNull);
+//     else { pch = SkipWhite(ParseExpression(pch)); if (*pch != ';') { SyntaxError(L"Missing ';'"); return L""; } }
+//     Write(opRet or opSleep); return pch + 1;
+// The two are the same shape and differ only in the closing opcode.
+static const TCHAR* ParseValueThenOp(CFunctionCompiler* pCompiler, const TCHAR* pch, BYTE op)
+{
+	pch = SkipWhite(pch);
+	if (*pch == ';')
+	{
+		pCompiler->Write(opNull);
+	}
+	else
+	{
+		pch = SkipWhite(pCompiler->ParseExpression(pch));
+		if (*pch != ';')
+		{
+			pCompiler->SyntaxError(_T("Missing ';'"));
+			return szParseError;
+		}
+	}
+
+	pCompiler->Write(op);
+	return pch + 1;
 }
 
 const TCHAR* CFunctionCompiler::ParseRETURN(const TCHAR* pch)
 {
-	pch = SkipWhite(pch);
-	if (*pch == ';')
-		Write(opNull);
-	else
-	{
-		pch = ParseExpression(pch);
-		pch = SkipWhite(pch);
-		if (*pch != ';') { SyntaxError(_T("Missing ';'")); return _T(""); }
-	}
-	pch++;
-	Write(opRet);
-	return pch;
+	return ParseValueThenOp(this, pch, opRet);
 }
 
 const TCHAR* CFunctionCompiler::ParseSLEEP(const TCHAR* pch)
 {
-	pch = SkipWhite(pch);
-	if (*pch == ';')
-		Write(opNull);
-	else
-	{
-		pch = ParseExpression(pch);
-		pch = SkipWhite(pch);
-		if (*pch != ';') { SyntaxError(_T("Missing ';'")); return _T(""); }
-	}
-	pch++;
-	Write(opSleep);
-	return pch;
+	return ParseValueThenOp(this, pch, opSleep);
 }
 
+// CFunctionCompiler::ParseBlock
+// Reconstructed from 5960 retail XBE @ 0x00035800. Ghidra decompile:
+//     brace = (*pch == '{'); if (brace) pch++;
+//     base = m_nFrameSize; Write(opFrame); fix = m_nop; WriteInteger(0);
+//     while (*pch && !(brace && *pch == '}')) pch = ParseStatement(pch);
+//     if (brace) { if (*pch != '}') { SyntaxError(L"expected '}'"); return pch; } pch++; }
+//     patch(fix) = m_nFrameSize - base; Write(opEndFrame); WriteInteger(m_nFrameSize - base);
+//     m_nFrameSize = base;
+// Locals declared inside the block live exactly as long as its frame.
 const TCHAR* CFunctionCompiler::ParseBlock(const TCHAR* pch)
 {
-	bool bBrace = (*pch == '{');
-	if (bBrace)
+	const bool bBraced = (*pch == '{');
+	if (bBraced)
 		pch++;
 
-	int nFrameSize = m_nFrameSize;
+	const int nFrameBase = m_nFrameSize;
 
 	Write(opFrame);
-	UINT nopFrameFixup = GetAddress();
+	UINT nopFrameSize = GetAddress();
 	WriteInteger(0);
 
-	while (*pch != '\0' && (!bBrace || *pch != '}'))
+	while (*pch != '\0' && !(bBraced && *pch == '}'))
 		pch = ParseStatement(pch);
 
-	if (bBrace)
+	if (bBraced)
 	{
-		if (*pch != '}') { SyntaxError(_T("expected '}'")); return pch; }
+		if (*pch != '}')
+		{
+			SyntaxError(_T("expected '}'"));
+			return pch;
+		}
 		pch++;
 	}
 
-	Fixup(nopFrameFixup, m_nFrameSize - nFrameSize);
+	const int cLocals = m_nFrameSize - nFrameBase;
+	Fixup(nopFrameSize, cLocals);
 	Write(opEndFrame);
-	WriteInteger(m_nFrameSize - nFrameSize);
+	WriteInteger(cLocals);
 
-	m_nFrameSize = nFrameSize;
+	m_nFrameSize = nFrameBase;
 	return pch;
 }
 
+// CFunctionCompiler::ParseStatement
+// Reconstructed from 5960 retail XBE @ 0x00035960. Behavior: skip white; a
+// '}' is left for the caller and a '{' opens a block. Otherwise read one
+// token, emit opStatement with the current line, and dispatch on keyword
+// (grouped by length in the binary): var, for, if, do, while, break,
+// continue, return, and sleep inside behaviors only. Anything else is an
+// expression statement compiled from the start of that token, followed by
+// opDrop and a ';' (which may be missing at the very end of the text).
 const TCHAR* CFunctionCompiler::ParseStatement(const TCHAR* pch)
 {
 	pch = SkipWhite(pch);
-	if (*pch == '}') return pch;
-	if (*pch == '{') return ParseBlock(pch);
+	if (*pch == '}')
+		return pch;
+	if (*pch == '{')
+		return ParseBlock(pch);
 
 	const TCHAR* pchToken;
 	int cchToken;
@@ -1220,57 +1438,78 @@ const TCHAR* CFunctionCompiler::ParseStatement(const TCHAR* pch)
 	Write(opStatement);
 	WriteInteger(g_nLine);
 
-	if (cchToken == 3 && _tcsncmp(pchToken, _T("var"), cchToken) == 0)
-		return ParseLocalVar(pch);
-	if (cchToken == 2 && _tcsncmp(pchToken, _T("if"), cchToken) == 0)
-		return ParseIF(pch);
-	if (cchToken == 5 && _tcsncmp(pchToken, _T("while"), cchToken) == 0)
-		return ParseWHILE(pch);
-	if (cchToken == 3 && _tcsncmp(pchToken, _T("for"), cchToken) == 0)
-		return ParseFOR(pch);
-	if (cchToken == 2 && _tcsncmp(pchToken, _T("do"), cchToken) == 0)
-		return ParseDO(pch);
-	if (cchToken == 5 && _tcsncmp(pchToken, _T("break"), cchToken) == 0)
-		return ParseBREAK(pch);
-	if (cchToken == 8 && _tcsncmp(pchToken, _T("continue"), cchToken) == 0)
-		return ParseCONTINUE(pch);
-	if (cchToken == 6 && _tcsncmp(pchToken, _T("return"), cchToken) == 0)
-		return ParseRETURN(pch);
-	if (m_bBehavior && cchToken == 5 && _tcsncmp(pchToken, _T("sleep"), cchToken) == 0)
-		return ParseSLEEP(pch);
+	switch (cchToken)
+	{
+	case 2:
+		if (_tcsncmp(pchToken, _T("if"), 2) == 0)
+			return ParseIF(pch);
+		if (_tcsncmp(pchToken, _T("do"), 2) == 0)
+			return ParseDO(pch);
+		break;
 
-	// Expression statement
+	case 3:
+		if (_tcsncmp(pchToken, _T("var"), 3) == 0)
+			return ParseLocalVar(pch);
+		if (_tcsncmp(pchToken, _T("for"), 3) == 0)
+			return ParseFOR(pch);
+		break;
+
+	case 5:
+		if (_tcsncmp(pchToken, _T("while"), 5) == 0)
+			return ParseWHILE(pch);
+		if (_tcsncmp(pchToken, _T("break"), 5) == 0)
+			return ParseBREAK(pch);
+		if (m_bBehavior && _tcsncmp(pchToken, _T("sleep"), 5) == 0)
+			return ParseSLEEP(pch);
+		break;
+
+	case 6:
+		if (_tcsncmp(pchToken, _T("return"), 6) == 0)
+			return ParseRETURN(pch);
+		break;
+
+	case 8:
+		if (_tcsncmp(pchToken, _T("continue"), 8) == 0)
+			return ParseCONTINUE(pch);
+		break;
+	}
+
 	pch = ParseExpression(pchToken);
 	Write(opDrop);
 
-	if (*pch != 0)
+	if (*pch == '\0')
+		return pch;
+	if (*pch != ';')
 	{
-		if (*pch != ';') { SyntaxError(_T("expected ';'")); return _T(""); }
-		pch++;
+		SyntaxError(_T("expected ';'"));
+		return szParseError;
 	}
-
-	return pch;
+	return pch + 1;
 }
 
+// CFunctionCompiler::ParseLocalVar
+// Reconstructed from 5960 retail XBE @ 0x00035bf0. Behavior: for each name in
+// a ','-separated list, record it in the next local slot; with "= expr" emit
+// opLocal slot, the expression, opAssign, opDrop. Ends at ';' (consumed) or
+// raises "Expected a ';'" and leaves the cursor where it stopped.
 const TCHAR* CFunctionCompiler::ParseLocalVar(const TCHAR* pch)
 {
 	for (;;)
 	{
-		const TCHAR* pchToken;
-		int cchToken;
-		pch = Token(pch, pchToken, cchToken);
+		const TCHAR* pchName;
+		int cchName;
+		pch = Token(pch, pchName, cchName);
 
-		m_rgstLocal[m_nFrameSize].pchName = pchToken;
-		m_rgstLocal[m_nFrameSize].cchName = (short)cchToken;
-		m_nFrameSize++;
+		const int iSlot = m_nFrameSize++;
+		m_rgstLocal[iSlot].pchName = pchName;
+		m_rgstLocal[iSlot].cchName = (short)cchName;
 
 		pch = SkipWhite(pch);
 		if (*pch == '=')
 		{
-			pch++;
 			Write(opLocal);
-			WriteInteger(m_nFrameSize - 1);
-			pch = ParseExpression(pch);
+			WriteInteger(iSlot);
+			pch = ParseExpression(pch + 1);
 			Write(opAssign);
 			Write(opDrop);
 			pch = SkipWhite(pch);
@@ -1282,87 +1521,125 @@ const TCHAR* CFunctionCompiler::ParseLocalVar(const TCHAR* pch)
 	}
 
 	if (*pch != ';')
+	{
 		SyntaxError(_T("Expected a ';'"));
-	else
-		pch++;
-
-	return pch;
+		return pch;
+	}
+	return pch + 1;
 }
 
-// =========================================================================
-// Section 4: XAP scene graph parser -- CClassCompiler
-// Parses VRML97-like node declarations, properties, and inline scripts
-// =========================================================================
 
+// CClassCompiler::CClassCompiler
+// Inlined in 5960 (CClass::ParseClassBody @0x33d60): a zeroed compiler
+// pointed at the class being built.
 CClassCompiler::CClassCompiler(CClass* pClass)
 {
 	ASSERT(pClass != NULL);
 	m_targetClass = pClass;
 }
 
+// CClassCompiler::Compile
+// Reconstructed from 5960 retail XBE @ 0x00035e50. Ghidra decompile:
+//     pch = SkipWhite(pch); while (*pch && *pch != '}') { ParseNode(pch); pch = SkipWhite(...); }
+//     Write(0); return pch;
+// The trailing 0 is opNull, the end marker of a class body.
 const TCHAR* CClassCompiler::Compile(const TCHAR* pch)
 {
-	for (;;)
-	{
-		pch = SkipWhite(pch);
-		if (*pch == '\0' || *pch == '}')
-			break;
+	for (pch = SkipWhite(pch); *pch != '\0' && *pch != '}'; pch = SkipWhite(pch))
 		pch = ParseNode(pch);
-	}
 
-	Write(0);
+	Write((BYTE)0);
 	return pch;
 }
 
+// Copies a name token into a terminated buffer for error text, cut to fit.
+static void CopyNameForMessage(TCHAR* szName, int cchMax, const TCHAR* pchName, int cchName)
+{
+	if (cchName > cchMax - 1)
+		cchName = cchMax - 1;
+	CopyChars(szName, pchName, cchName);
+	szName[cchName] = '\0';
+}
+
+// Reports an unknown name by briefly terminating the token in place, the way
+// 5960 does it for "Unknown class" and "Unknown property".
+static void ReportUnknown(CCompiler* pCompiler, const TCHAR* szFormat, const TCHAR* pchName, int cchName)
+{
+	TCHAR* pchEnd = (TCHAR*)pchName + cchName;
+	TCHAR chSaved = *pchEnd;
+	*pchEnd = '\0';
+	pCompiler->SyntaxError(szFormat, pchName);
+	*pchEnd = chSaved;
+}
+
+// CClassCompiler::ParseNode
+// Reconstructed from 5960 retail XBE @ 0x00035ec0. Behavior, by first token:
+//   DEF name node   new CMember in the next variable slot, opDefNode slot,
+//                   then the node itself.
+//   USE name        opUseNode with the slot of an existing member, or
+//                   "Undefined USE".
+//   behavior {...}  compiled as a behavior and set as a class member.
+//   function n(..)  compiled and set as member n ("behavior" is refused).
+//   var a, b;       class member variables.
+//   class N {...}   nested class, defined in the class namespace.
+//   import N, url   loads another class file under name N.
+//   otherwise       a node: script class or built-in node class by name,
+//                   opNewNode name, optional { props }, opEndNode.
+// One trailing ',' after the item is eaten. See docs/decomp/Compiler.md.
+// Theseus additions: the import trace line, and the "Expected a '}'" text
+// (5960 has a typo there).
 const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 {
 	const TCHAR* pchToken;
 	int cchToken;
 	pch = Token(pch, pchToken, cchToken);
 
-	if (cchToken == 3 && _tcsncmp(pchToken, _T("DEF"), cchToken) == 0)
+	if (IsKeyword(pchToken, cchToken, _T("DEF"), 3))
 	{
-		pch = Token(pch, pchToken, cchToken, true);
+		const TCHAR* pchName;
+		int cchName;
+		pch = Token(pch, pchName, cchName, true);
 
 		CMember* pMember = new CMember;
 		pMember->m_memberIndex = m_targetClass->m_nVarCount++;
-		m_targetClass->AddMember(pchToken, cchToken, pMember);
+		m_targetClass->AddMember(pchName, cchName, pMember);
 
 		Write(opDefNode);
 		WriteInteger(pMember->m_memberIndex);
 
 		pch = ParseNode(pch);
 	}
-	else if (cchToken == 3 && _tcsncmp(pchToken, _T("USE"), cchToken) == 0)
+	else if (IsKeyword(pchToken, cchToken, _T("USE"), 3))
 	{
-		pch = Token(pch, pchToken, cchToken, true);
+		const TCHAR* pchName;
+		int cchName;
+		pch = Token(pch, pchName, cchName, true);
 
-		CMember* pMember = (CMember*)m_targetClass->GetMember(pchToken, cchToken);
+		CMember* pMember = (CMember*)m_targetClass->GetMember(pchName, cchName);
 		if (pMember == NULL || pMember->m_obj != objMember)
 		{
-			TCHAR szBuf[256];
-			if (cchToken > 255) cchToken = 255;
-			CopyChars(szBuf, pchToken, cchToken);
-			szBuf[cchToken] = 0;
-			SyntaxError(_T("Undefined USE '%s'"), szBuf);
+			TCHAR szName[256];
+			CopyNameForMessage(szName, countof(szName), pchName, cchName);
+			SyntaxError(_T("Undefined USE '%s'"), szName);
 			return szParseError;
 		}
 
 		Write(opUseNode);
 		WriteInteger(pMember->m_memberIndex);
 	}
-	else if (cchToken == 8 && _tcsncmp(pchToken, _T("behavior"), cchToken) == 0)
+	else if (IsKeyword(pchToken, cchToken, _T("behavior"), 8))
 	{
-		CFunction* pFunction;
-		pch = ParseFunction(pch, pFunction, true);
-		if (pFunction != NULL)
-			m_targetClass->SetMember(pchToken, cchToken, pFunction);
+		CFunction* pBehavior;
+		pch = ParseFunction(pch, pBehavior, true);
+		if (pBehavior != NULL)
+			m_targetClass->SetMember(pchToken, cchToken, pBehavior);
 	}
-	else if (cchToken == 8 && _tcsncmp(pchToken, _T("function"), cchToken) == 0)
+	else if (IsKeyword(pchToken, cchToken, _T("function"), 8))
 	{
-		pch = Token(pch, pchToken, cchToken);
-
-		if (cchToken == 8 && _tcsncmp(_T("behavior"), pchToken, cchToken) == 0)
+		const TCHAR* pchName;
+		int cchName;
+		pch = Token(pch, pchName, cchName);
+		if (IsKeyword(pchName, cchName, _T("behavior"), 8))
 		{
 			SyntaxError(_T("invalid function name"));
 			return szParseError;
@@ -1371,58 +1648,55 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 		CFunction* pFunction;
 		pch = ParseFunction(pch, pFunction);
 		if (pFunction != NULL)
-		{
-			m_targetClass->SetMember(pchToken, cchToken, pFunction);
-		}
+			m_targetClass->SetMember(pchName, cchName, pFunction);
 	}
-	else if (cchToken == 3 && _tcsncmp(pchToken, _T("var"), cchToken) == 0)
+	else if (IsKeyword(pchToken, cchToken, _T("var"), 3))
 	{
 		pch = ParseMemberVar(pch);
 	}
-	else if (cchToken == 5 && _tcsncmp(pchToken, _T("class"), cchToken) == 0)
+	else if (IsKeyword(pchToken, cchToken, _T("class"), 5))
 	{
 		pch = ParseClass(pch);
 	}
-	else if (cchToken == 6 && _tcsncmp(pchToken, _T("import"), cchToken) == 0)
+	else if (IsKeyword(pchToken, cchToken, _T("import"), 6))
 	{
-		pch = Token(pch, pchToken, cchToken);
+		const TCHAR* pchName;
+		int cchName;
+		pch = Token(pch, pchName, cchName);
+
 		pch = SkipWhite(pch);
-		if (*pch != ',') { SyntaxError(_T("Expected ','")); return szParseError; }
-		pch++;
+		if (*pch != ',')
+		{
+			SyntaxError(_T("Expected ','"));
+			return szParseError;
+		}
 
 		const TCHAR* pchURL;
 		int cchURL;
-		pch = Token(pch, pchURL, cchURL);
+		pch = Token(pch + 1, pchURL, cchURL);
 
 		TCHAR szURL[MAX_PATH];
 		CopyChars(szURL, pchURL, cchURL);
 		szURL[cchURL] = '\0';
 
-		CClass* pClass = new CClass;
-
+		CClass* pImported = new CClass;
 		TRACE(_T("Importing "), szURL);
-
-		if (!pClass->Load(szURL))
+		if (!pImported->Load(szURL))
 		{
-			delete pClass;
+			delete pImported;
 			return szParseError;
 		}
 
-		g_classes->Define(pchToken, cchToken, (CNode*)pClass);
+		g_classes->Define(pchName, cchName, (CNode*)pImported);
 	}
 	else
 	{
-		// Node instantiation
 		CNodeClass* pNodeClass = LookupClass(pchToken, cchToken);
 		if (pNodeClass == NULL)
 			pNodeClass = CNodeClass::FindByName(pchToken, cchToken);
-
 		if (pNodeClass == NULL)
 		{
-			TCHAR chSav = pchToken[cchToken];
-			((TCHAR*)pchToken)[cchToken] = '\0';
-			SyntaxError(_T("Unknown class: %s"), pchToken);
-			((TCHAR*)pchToken)[cchToken] = chSav;
+			ReportUnknown(this, _T("Unknown class: %s"), pchToken, cchToken);
 			return szParseError;
 		}
 
@@ -1430,11 +1704,9 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 		WriteString(pchToken, cchToken);
 
 		pch = SkipWhite(pch);
-
 		if (*pch == '{')
 		{
-			pch++;
-			pch = ParseProps(pch, pNodeClass);
+			pch = ParseProps(pch + 1, pNodeClass);
 			if (*pch != '}')
 			{
 				SyntaxError(_T("Expected a '}'"));
@@ -1449,159 +1721,193 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 	pch = SkipWhite(pch);
 	if (*pch == ',')
 		pch++;
-
 	return pch;
 }
 
+// CClassCompiler::ParseChildren
+// Reconstructed from 5960 retail XBE @ 0x000363c0. Ghidra decompile:
+//     pch = SkipWhite(pch); if (*pch != '[') return ParseNode(pch);
+//     pch = SkipWhite(pch + 1); while (*pch && *pch != '}' && *pch != ']') { ParseNode; SkipWhite; }
+//     if (*pch != ']') { SyntaxError(...); return pch; } return pch + 1;
+// A children value is either one node or a bracketed list of them.
 const TCHAR* CClassCompiler::ParseChildren(const TCHAR* pch)
 {
 	pch = SkipWhite(pch);
+	if (*pch != '[')
+		return ParseNode(pch);
 
-	if (*pch == '[')
-	{
-		pch++;
-		pch = SkipWhite(pch);
-
-		for (;;)
-		{
-			pch = SkipWhite(pch);
-			if (*pch == '\0' || *pch == '}' || *pch == ']')
-				break;
-			pch = ParseNode(pch);
-		}
-
-		if (*pch == ']')
-			pch++;
-		else
-			SyntaxError(_T("Expected a ']'"));
-	}
-	else
-	{
+	for (pch = SkipWhite(pch + 1); *pch != '\0' && *pch != '}' && *pch != ']'; pch = SkipWhite(pch))
 		pch = ParseNode(pch);
-	}
 
-	return pch;
+	if (*pch != ']')
+	{
+		SyntaxError(_T("Expected a ']'"));
+		return pch;
+	}
+	return pch + 1;
 }
 
+// CClassCompiler::ParseProps
+// Reconstructed from 5960 retail XBE @ 0x00036440. Behavior: until '}' or the
+// end of text, read a name. "behavior" and "function name" compile an inline
+// function, append it to the class's instance functions and emit opFunction
+// with the name and its index. Any other name must be a property of the node
+// class or it's "Unknown property". children / node arrays emit opInitArray
+// with the property offset, the child list, opEndArray. A node property emits
+// opNewNodeProp, the PRD, and the node. Everything else is read by type
+// (bool, int, float, string, vec3/color, vec4/quaternion, int and vector
+// arrays) and emitted as opInitProp, the PRD, then the value: strings as
+// length + characters, the rest as byte count + bytes.
+// See docs/decomp/Compiler.md for the type to reader table.
 const TCHAR* CClassCompiler::ParseProps(const TCHAR* pch, CNodeClass* pNodeClass)
 {
-	for (;;)
+	for (pch = SkipWhite(pch); *pch != '\0' && *pch != '}'; pch = SkipWhite(pch))
 	{
-		pch = SkipWhite(pch);
-		if (*pch == '\0' || *pch == '}')
-			break;
+		const TCHAR* pchName;
+		int cchName;
+		pch = Token(pch, pchName, cchName);
 
-		const TCHAR* pchToken;
-		int cchToken;
-		pch = Token(pch, pchToken, cchToken);
-
-		// Inline behavior
-		if (cchToken == 8 && _tcsncmp(_T("behavior"), pchToken, cchToken) == 0)
+		const bool bBehavior = IsKeyword(pchName, cchName, _T("behavior"), 8);
+		if (bBehavior || IsKeyword(pchName, cchName, _T("function"), 8))
 		{
+			if (!bBehavior)
+			{
+				pch = Token(pch, pchName, cchName);
+				if (IsKeyword(pchName, cchName, _T("behavior"), 8))
+				{
+					SyntaxError(_T("invalid function name"));
+					return szParseError;
+				}
+			}
+
 			CFunction* pFunction;
-			pch = ParseFunction(pch, pFunction, true);
+			pch = ParseFunction(pch, pFunction, bBehavior);
 			if (pFunction != NULL)
 			{
-				int nFunction = m_targetClass->m_instanceFunctions.GetLength();
+				int iFunction = m_targetClass->m_instanceFunctions.GetLength();
 				m_targetClass->m_instanceFunctions.AddNode((CNode*)pFunction);
 				Write(opFunction);
-				WriteString(pchToken, cchToken);
-				WriteInteger(nFunction);
+				WriteString(pchName, cchName);
+				WriteInteger(iFunction);
 			}
 			continue;
 		}
 
-		// Inline function
-		if (cchToken == 8 && _tcsncmp(_T("function"), pchToken, cchToken) == 0)
-		{
-			pch = Token(pch, pchToken, cchToken);
-			if (cchToken == 8 && _tcsncmp(_T("behavior"), pchToken, cchToken) == 0)
-			{
-				SyntaxError(_T("invalid function name"));
-				return szParseError;
-			}
-
-			CFunction* pFunction;
-			pch = ParseFunction(pch, pFunction);
-			if (pFunction != NULL)
-			{
-				int nFunction = m_targetClass->m_instanceFunctions.GetLength();
-				m_targetClass->m_instanceFunctions.AddNode((CNode*)pFunction);
-				Write(opFunction);
-				WriteString(pchToken, cchToken);
-				WriteInteger(nFunction);
-			}
-			continue;
-		}
-
-		// Property assignment
-		const PRD* pprd = pNodeClass->FindProp(pchToken, cchToken);
-
+		const PRD* pprd = pNodeClass->FindProp(pchName, cchName);
 		if (pprd == NULL)
 		{
-			TCHAR chSav = pchToken[cchToken];
-			((TCHAR*)pchToken)[cchToken] = '\0';
-			SyntaxError(_T("Unknown property: %s"), pchToken);
-			((TCHAR*)pchToken)[cchToken] = chSav;
+			ReportUnknown(this, _T("Unknown property: %s"), pchName, cchName);
 			return szParseError;
 		}
 
-		if (pprd->nType == pt_children || pprd->nType == pt_nodearray)
+		switch (pprd->nType)
 		{
+		case pt_children:
+		case pt_nodearray:
 			Write(opInitArray);
 			WriteInteger(PTR2INT(pprd->pbOffset));
 			pch = ParseChildren(pch);
 			Write(opEndArray);
-		}
-		else if (pprd->nType == pt_node)
-		{
+			continue;
+
+		case pt_node:
 			Write(opNewNodeProp);
 			Write(pprd, sizeof(PRD));
 			pch = ParseNode(pch);
+			continue;
+
+		default:
+			break;
+		}
+
+		union
+		{
+			bool b;
+			int i;
+			float n;
+			float v[4];
+			TCHAR* sz;
+		} value;
+		BYTE* pbArray = NULL;
+		int cbValue = 0;
+
+		switch (pprd->nType)
+		{
+		case pt_integer:
+			pch = ParseInteger(pch, value.i);
+			cbValue = sizeof(int);
+			break;
+
+		case pt_boolean:
+			pch = ParseBoolean(pch, value.b);
+			cbValue = sizeof(bool);
+			break;
+
+		case pt_number:
+			pch = ParseNumber(pch, value.n);
+			cbValue = sizeof(float);
+			break;
+
+		case pt_vec3:
+		case pt_color:
+			pch = ParseVec3(pch, value.v);
+			cbValue = 3 * sizeof(float);
+			break;
+
+		case pt_vec4:
+		case pt_quaternion:
+			pch = ParseVec4(pch, value.v);
+			cbValue = 4 * sizeof(float);
+			break;
+
+		case pt_string:
+			pch = ParseString(pch, value.sz);
+			cbValue = _tcslen(value.sz);
+			break;
+
+		case pt_intarray:
+			pch = ParseIntArray(pch, pbArray, cbValue);
+			break;
+
+		case pt_numarray:
+			pch = ParseVecArray(pch, pbArray, cbValue, 1);
+			break;
+
+		case pt_vec2array:
+			pch = ParseVecArray(pch, pbArray, cbValue, 2);
+			break;
+
+		case pt_vec3array:
+			pch = ParseVecArray(pch, pbArray, cbValue, 3);
+			break;
+
+		case pt_vec4array:
+			pch = ParseVecArray(pch, pbArray, cbValue, 4);
+			break;
+
+		default:
+			break;
+		}
+
+		Write(opInitProp);
+		Write(pprd, sizeof(PRD));
+
+		if (pprd->nType == pt_string)
+		{
+			WriteString(value.sz, cbValue);
+			delete[] value.sz;
 		}
 		else
 		{
-			union { bool b; int i; float n; float v[4]; TCHAR* s; } value;
-			BYTE* pbArray = NULL;
-			int cbValue = 0;
-
-			switch (pprd->nType)
+			WriteInteger(cbValue);
+			if (pbArray != NULL)
 			{
-			case pt_boolean:    pch = ParseBoolean(pch, value.b); cbValue = sizeof(bool); break;
-			case pt_integer:    pch = ParseInteger(pch, value.i); cbValue = sizeof(int); break;
-			case pt_number:     pch = ParseNumber(pch, value.n); cbValue = sizeof(float); break;
-			case pt_string:     pch = ParseString(pch, value.s); cbValue = _tcslen(value.s); break;
-			case pt_vec3:
-			case pt_color:      pch = ParseVec3(pch, value.v); cbValue = sizeof(D3DXVECTOR3); break;
-			case pt_vec4:
-			case pt_quaternion: pch = ParseVec4(pch, value.v); cbValue = sizeof(D3DXVECTOR4); break;
-			case pt_intarray:   pch = ParseIntArray(pch, pbArray, cbValue); break;
-			case pt_numarray:   pch = ParseVecArray(pch, pbArray, cbValue, 1); break;
-			case pt_vec2array:  pch = ParseVecArray(pch, pbArray, cbValue, 2); break;
-			case pt_vec3array:  pch = ParseVecArray(pch, pbArray, cbValue, 3); break;
-			case pt_vec4array:  pch = ParseVecArray(pch, pbArray, cbValue, 4); break;
-			}
-
-			Write(opInitProp);
-			Write(pprd, sizeof(PRD));
-
-			if (pprd->nType == pt_string)
-			{
-				WriteString(value.s, cbValue);
-				delete[] value.s;
+				Write(pbArray, cbValue);
+				delete[] pbArray;
 			}
 			else
 			{
-				WriteInteger(cbValue);
-				if (pbArray != NULL)
-				{
-					Write(pbArray, cbValue);
-					delete[] pbArray;
-				}
-				else
-				{
-					Write(&value, cbValue);
-				}
+				Write(&value, cbValue);
 			}
 		}
 	}
@@ -1609,23 +1915,26 @@ const TCHAR* CClassCompiler::ParseProps(const TCHAR* pch, CNodeClass* pNodeClass
 	return pch;
 }
 
+// CClassCompiler::ParseMemberVar
+// Reconstructed from 5960 retail XBE @ 0x00036ad0. Behavior: for each name in
+// a ','-separated list, add a CMember in the next variable slot. An '='
+// initializer is refused ("not implemented") and stops the parse. Ends at ';'
+// or raises "Expected a ';'" leaving the cursor where it stopped.
 const TCHAR* CClassCompiler::ParseMemberVar(const TCHAR* pch)
 {
 	for (;;)
 	{
-		const TCHAR* pchToken;
-		int cchToken;
-		pch = Token(pch, pchToken, cchToken);
+		const TCHAR* pchName;
+		int cchName;
+		pch = Token(pch, pchName, cchName);
 
 		CMember* pMember = new CMember;
 		pMember->m_memberIndex = m_targetClass->m_nVarCount++;
-		m_targetClass->AddMember(pchToken, cchToken, pMember);
+		m_targetClass->AddMember(pchName, cchName, pMember);
 
 		pch = SkipWhite(pch);
-
 		if (*pch == '=')
 		{
-			pch++;
 			SyntaxError(_T("Sorry, class member initializers have not been implemented yet!"));
 			return szParseError;
 		}
@@ -1636,48 +1945,47 @@ const TCHAR* CClassCompiler::ParseMemberVar(const TCHAR* pch)
 	}
 
 	if (*pch != ';')
+	{
 		SyntaxError(_T("Expected a ';'"));
-	else
-		pch++;
-
-	return pch;
+		return pch;
+	}
+	return pch + 1;
 }
 
+// CClassCompiler::ParseFunction
+// Reconstructed from 5960 retail XBE @ 0x00036c30. Behavior: set up a fresh
+// CFunctionCompiler (behavior flag from the caller). A function needs a
+// parameter list: '(' names split by ',' ')', each name becoming the next
+// local; no '(' just returns with no function, a bad list is "expected ')'".
+// Behaviors take no list. The body must start with '{' or there's no
+// function. The block is compiled, opNull opRet is appended as the implicit
+// "return null;" and the ops become the CFunction.
 const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFunction, bool bBehavior)
 {
-	CFunctionCompiler compiler;
-	compiler.m_bBehavior = bBehavior;
+	CFunctionCompiler body;
+	body.m_bBehavior = bBehavior;
 
 	pFunction = NULL;
 	pch = SkipWhite(pch);
 
 	if (!bBehavior)
 	{
-		// Parse parameter list
 		if (*pch != '(')
-		{
 			return pch;
-		}
-		pch++;
 
-		for (;;)
+		for (pch = SkipWhite(pch + 1); *pch != '\0' && *pch != ')'; pch = SkipWhite(pch + 1))
 		{
-			pch = SkipWhite(pch);
-			if (*pch == '\0' || *pch == ')')
-				break;
+			const TCHAR* pchName;
+			int cchName;
+			pch = Token(pch, pchName, cchName);
 
-			const TCHAR* pchToken;
-			int cchToken;
-			pch = Token(pch, pchToken, cchToken);
-
-			compiler.m_rgstLocal[compiler.m_nFrameSize].pchName = pchToken;
-			compiler.m_rgstLocal[compiler.m_nFrameSize].cchName = (short)cchToken;
-			compiler.m_nFrameSize++;
+			ST& local = body.m_rgstLocal[body.m_nFrameSize++];
+			local.pchName = pchName;
+			local.cchName = (short)cchName;
 
 			pch = SkipWhite(pch);
 			if (*pch != ',')
 				break;
-			pch++;
 		}
 
 		if (*pch != ')')
@@ -1688,39 +1996,37 @@ const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFuncti
 		pch++;
 	}
 
-	// Parse function body
-	{
-		pch = SkipWhite(pch);
-		if (*pch != '{')
-		{
-			return pch;
-		}
-		pch = compiler.ParseBlock(pch);
-	}
+	pch = SkipWhite(pch);
+	if (*pch != '{')
+		return pch;
 
-	compiler.Write(opNull);
-	compiler.Write(opRet);
+	pch = body.ParseBlock(pch);
+	body.Write(opNull);
+	body.Write(opRet);
 
-	pFunction = compiler.CreateFunction();
+	pFunction = body.CreateFunction();
 	return pch;
 }
 
+// CClassCompiler::ParseClass
+// Reconstructed from 5960 retail XBE @ 0x00036e50. Ghidra decompile:
+//     Token(pch, &name, &cch); pch = SkipWhite(...); if (*pch != '{') { SyntaxError; return L""; }
+//     c = new CClass; pch = c->ParseClassBody(pch + 1);
+//     if (*pch != '}') { SyntaxError; return L""; } g_classes->Define(name, cch, c); return pch + 1;
+// The debug trace of the class name is Theseus's.
 const TCHAR* CClassCompiler::ParseClass(const TCHAR* pch)
 {
-	const TCHAR* pchToken;
-	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
+	const TCHAR* pchName;
+	int cchName;
+	pch = Token(pch, pchName, cchName);
 
 #ifdef _DEBUG
 	{
-		TCHAR chSav = pchToken[cchToken];
-		((TCHAR*)pchToken)[cchToken] = '\0';
-		TRACE(_T("class %s\n"), pchToken);
-		((TCHAR*)pchToken)[cchToken] = chSav;
+		TCHAR szName[256];
+		CopyNameForMessage(szName, countof(szName), pchName, cchName);
+		TRACE(_T("class %s\n"), szName);
 	}
 #endif
-
-	// TODO: base class? interfaces?
 
 	pch = SkipWhite(pch);
 	if (*pch != '{')
@@ -1728,26 +2034,24 @@ const TCHAR* CClassCompiler::ParseClass(const TCHAR* pch)
 		SyntaxError(_T("Expected '{'\n"));
 		return szParseError;
 	}
-	pch++;
 
 	CClass* pClass = new CClass;
-	pch = pClass->ParseClassBody(pch);
-
+	pch = pClass->ParseClassBody(pch + 1);
 	if (*pch != '}')
 	{
 		SyntaxError(_T("Expected '}'"));
 		return szParseError;
 	}
-	pch++;
 
-	g_classes->Define(pchToken, cchToken, (CNode*)pClass);
-	return pch;
+	g_classes->Define(pchName, cchName, (CNode*)pClass);
+	return pch + 1;
 }
 
-// =========================================================================
-// Class namespace init/cleanup
-// =========================================================================
 
+// Class_Init / Class_Exit
+// Reconstructed from 5960 retail XBE @ 0x00036f00 / 0x00036f30. Ghidra decompile:
+//     g_classes = new CNameSpace;        // one word: the list head, zeroed
+//     delete g_classes;                  // walks the list releasing each class
 void Class_Init()
 {
 	g_classes = new CNameSpace;
