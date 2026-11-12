@@ -671,7 +671,7 @@ int DeltaField::CalcSome()
 
 	if (mCurrentY > 0 && mCurrentY < mHeight - 1)
 	{
-		mY_Cord = 0.5f * mYScale * (mHeight - 2 * mCurrentY);
+		mY_Cord = (mHeight - mCurrentY * 2) * mYScale * 0.5f;
 		float toFixedX = 32.0f / mXScale;
 		float toFixedY = 32.0f / mYScale;
 
@@ -680,7 +680,7 @@ int DeltaField::CalcSome()
 
 		for (long px = 1; px < mWidth - 1; px++, cell += 3)
 		{
-			mX_Cord = 0.5f * mXScale * (2 * px - mWidth);
+			mX_Cord = (px * 2 - mWidth) * mXScale * 0.5f;
 			if (mHasRTerm)
 				mR_Cord = sqrtf(mX_Cord * mX_Cord + mY_Cord * mY_Cord);
 			if (mHasThetaTerm)
@@ -754,19 +754,19 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 	case 2:
 		if (bInit)
 			A0 = trunc(8.0f * rnd(5.0f)) * pi;
-		X = ((1.0f + sinf(A0 * theta)) * 0.5f * 0.06f + 0.92f) * r;
+		X = ((sinf(A0 * theta) + 1.0f) * 0.5f * 0.06f + 0.92f) * r;
 		Y = theta;
 		return;
 
 	case 3:
 		if (bInit)
 		{
-			A0 = 2.0f + rnd(16.0f);
-			A1 = 0.01f + rnd(0.05f);
-			A2 = 0.002f + rnd(0.006f);
+			A0 = rnd(16.0f) + 2.0f;
+			A1 = rnd(0.05f) + 0.01f;
+			A2 = rnd(0.006f) + 0.002f;
 		}
 		X = pos(r - A2);
-		Y = theta + A1 * sinf(A0 * r);
+		Y = sinf(A0 * r) * A1 + theta;
 		return;
 
 	case 4:
@@ -782,11 +782,11 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 	case 6:
 		if (bInit)
 		{
-			A0 = 2.0f + rnd(16.0f);
-			A1 = 0.01f + rnd(0.05f);
+			A0 = rnd(16.0f) + 2.0f;
+			A1 = rnd(0.05f) + 0.01f;
 		}
-		X = x + A1 * sinf(A0 * y);
-		Y = y + A1 * sinf(A0 * x);
+		X = sinf(A0 * y) * A1 + x;
+		Y = sinf(A0 * x) * A1 + y;
 		bPolar = false;
 		return;
 
@@ -805,8 +805,8 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		if (bInit)
 		{
 			A0 = rnd(0.0045f);
-			A1 = 0.1f + rnd(0.06f);
-			A2 = 0.003f + (m_nStyle == 9 ? rnd(0.005f) : rnd(0.006f));
+			A1 = rnd(0.06f) + 0.1f;
+			A2 = (m_nStyle == 9 ? rnd(0.005f) : rnd(0.006f)) + 0.003f;
 		}
 		X = (0.99f - A1 * powf(fabsf(m_nStyle == 9 ? x : y), 1.3f)) * r - rnd(A0);
 		Y = m_nStyle == 9 ? theta - A2 : theta + A2;
@@ -823,16 +823,16 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		return;
 
 	case 13:
-		X = x + rnd(0.01f) - 0.005f;
-		Y = y - rnd(0.01f) - 0.005f - (y - 1.3f) * 0.04f;
+		X = rnd(0.01f) + x - 0.005f;
+		Y = y - rnd(0.01f) - 0.005f - 0.04f * (y - 1.3f);
 		bPolar = false;
 		return;
 
 	case 14:
 		if (bInit)
-			A0 = 0.95f + rnd(0.06f);
+			A0 = rnd(0.06f) + 0.95f;
 		X = r * A0;
-		Y = theta - pos(1.0f - r) * 0.035f;
+		Y = theta - 0.035f * pos(1.0f - r);
 		return;
 
 	case 15:
@@ -841,14 +841,14 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		return;
 
 	case 16:
-		X = 0.9f * x + rnd(0.008f) - 0.004f;
-		Y = 0.9f * y + rnd(0.008f) - 0.004f;
+		X = rnd(0.008f) + x * 0.9f - 0.004f;
+		Y = rnd(0.008f) + y * 0.9f - 0.004f;
 		bPolar = false;
 		return;
 
 	case 17:
-		X = x + 0.1f * (rnd(2.0f) - 1.0f);
-		Y = y + 0.1f * (rnd(2.0f) - 1.0f);
+		X = (rnd(2.0f) - 1.0f) * 0.1f + x;
+		Y = (rnd(2.0f) - 1.0f) * 0.1f + y;
 		bPolar = false;
 		return;
 
@@ -858,17 +858,17 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		return;
 
 	case 19:
-		X = (0.92f + rnd(0.05f)) * r;
+		X = (rnd(0.05f) + 0.92f) * r;
 		Y = theta + 0.003f;
 		return;
 
 	case 20:
-		X = r + 0.04f * sinf(6.2831853f * r);
+		X = sinf(r * 6.2831853f) * 0.04f + r;
 		Y = theta + 0.015f;
 		return;
 
 	case 21:
-		X = r * (0.87f + 0.05f * (1.0f + sinf(r * 15.0f)));
+		X = ((sinf(r * 15.0f) + 1.0f) * 0.05f + 0.87f) * r;
 		Y = theta;
 		return;
 
@@ -876,17 +876,17 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		if (bInit)
 		{
 			A0 = rnd(0.1f);
-			A1 = 3.0f + rnd(7.0f);
-			A2 = 0.9f + rnd(0.3f);
+			A1 = rnd(7.0f) + 3.0f;
+			A2 = rnd(0.3f) + 0.9f;
 		}
-		X = r * (1.0f + 0.13f * (r - A2));
-		Y = theta + A0 * sinf(A1 * r);
+		X = ((r - A2) * 0.13f + 1.0f) * r;
+		Y = sinf(A1 * r) * A0 + theta;
 		return;
 
 	case 23:
 		if (bInit)
 			A0 = trunc(1.0f + rnd(2.1f)) * pi;
-		X = ((1.0f + cosf(A0 * theta)) * 0.5f * 0.1f + 0.89f) * r;
+		X = ((cosf(A0 * theta) + 1.0f) * 0.5f * 0.1f + 0.89f) * r;
 		Y = theta + 0.005f;
 		return;
 
@@ -894,7 +894,7 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		m_nStyle = 0;
 		// fall through
 	case 0:
-		X = r * (1.0f + 0.16f * atanf(0.55f - r));
+		X = (atanf(0.55f - r) * 0.16f + 1.0f) * r;
 		Y = theta - 0.01f;
 		return;
 	}
