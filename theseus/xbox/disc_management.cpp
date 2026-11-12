@@ -93,9 +93,13 @@ CNodeArray CDiscDrive::c_drives;
 
 IMPLEMENT_NODE("DiscDrive", CDiscDrive, CNode)
 
+// 5960 PRD @ 0x00174550: discType (string, +0x1c), locked (bool, +0x24),
+// bDeferNotification (bool, +0x2c). Scripts clear the deferred flag to drop
+// a disc change that landed while the drive was locked.
 START_NODE_PROPS(CDiscDrive, CNode)
 NODE_PROP(pt_string, CDiscDrive, discType)
 NODE_PROP(pt_boolean, CDiscDrive, locked)
+NODE_PROP(pt_boolean, CDiscDrive, bDeferNotification)
 END_NODE_PROPS()
 
 #define _FND_CLASS CDiscDrive

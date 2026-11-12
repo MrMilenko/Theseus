@@ -74,6 +74,10 @@ public:
     bool m_enableRemote;
     bool m_enableGamepad;
 
+    // 5960's LastActivePort (PRD 0x001747e8) is the Xbox port that last gave
+    // input. Desktop folds the pad and keyboard into one player, so it stays 0.
+    int m_LastActivePort;
+
     void Advance(float nSeconds);
     bool OnSetProperty(const PRD *pprd, const void *pvValue);
 
@@ -148,6 +152,7 @@ NODE_PROP(pt_string, CJoystick, secretKey)
 NODE_PROP(pt_boolean, CJoystick, enableSecretKey)
 NODE_PROP(pt_boolean, CJoystick, enableGamepad)
 NODE_PROP(pt_boolean, CJoystick, enableRemote)
+NODE_PROP(pt_integer, CJoystick, LastActivePort)
 END_NODE_PROPS()
 
 #undef _FND_CLASS
@@ -185,6 +190,7 @@ CJoystick::CJoystick() : m_frequency(20.0f),
                          m_eatSecretKey(false),
                          m_enableRemote(true),
                          m_enableGamepad(true),
+                         m_LastActivePort(0),
                          m_isBound(false),
                          m_prevMediaKeys(0)
 {

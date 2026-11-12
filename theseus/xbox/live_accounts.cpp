@@ -48,12 +48,16 @@ public:
     CStrObject* GetNumberOfFriendsOnline();
     int InternalLogon(int index, const TCHAR* passcode);
     bool LoadFromHD();
+    void FindNewAccountFromMU(const XONLINE_USER_HD *previous, DWORD numPrevious);
     // 5960 additions
     int GetLastLogonUser();
     CStrObject* GetResult();
     void LaunchDashUpdate();
     int m_nCurrentIndex;
     bool m_bLogon;
+
+    int m_currentAccount;
+    int m_newAccountFromMU;
     
     bool m_fLogOnSuccess;
     bool m_fLogOnInProgress;
@@ -70,6 +74,10 @@ START_NODE_PROPS(CLiveAccounts, CNode)
     NODE_PROP(pt_boolean, CLiveAccounts, fLogOnSuccess)
     NODE_PROP(pt_boolean, CLiveAccounts, fLogOnInProgress)
     NODE_PROP(pt_integer, CLiveAccounts, nCurrentIndex)
+    // 5960 PRD @ 0x00176234 also has currentAccount (int, +0x24) and
+    // newAccountFromMU (int, +0x2c); both start at -1.
+    NODE_PROP(pt_integer, CLiveAccounts, currentAccount)
+    NODE_PROP(pt_integer, CLiveAccounts, newAccountFromMU)
 END_NODE_PROPS()
 
 #define _FND_CLASS CLiveAccounts
@@ -99,7 +107,9 @@ START_NODE_FUN(CLiveAccounts, CNode)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-CLiveAccounts::CLiveAccounts() {}
+// The 5960 reset helper @ 0x00068fe0 starts currentAccount and
+// newAccountFromMU at -1.
+CLiveAccounts::CLiveAccounts() : m_currentAccount(-1), m_newAccountFromMU(-1) {}
 CLiveAccounts::~CLiveAccounts() {}
 
 XONLINE_USER_HD g_Users[XONLINE_MAX_STORED_ONLINE_USERS] = { 0 };
@@ -183,10 +193,16 @@ bool CLiveAccounts::LoadFromHD()
     if (!g_bStarted && !XboxLive_Startup())
         return false;
 
+    XONLINE_USER_HD previous[XONLINE_MAX_STORED_ONLINE_USERS];
+    DWORD numPrevious = g_NumUsers;
+    CopyMemory(previous, g_Users, sizeof(previous));
+
     ZeroMemory(g_Users, sizeof(g_Users));
     g_NumUsers = 0;
 
     HRESULT hr = _XOnlineGetUsersFromHD(g_Users, &g_NumUsers);
+    if (SUCCEEDED(hr))
+        FindNewAccountFromMU(previous, numPrevious);
     TCHAR buf[128];
     if (FAILED(hr) || g_NumUsers == 0)
     {
@@ -206,6 +222,34 @@ bool CLiveAccounts::LoadFromHD()
     }
 
     return true;
+}
+
+// newAccountFromMU, from CLiveAccounts::EnumerateAccounts @ 0x00069470:
+//     newAccountFromMU = -1;
+//     if (oldCount != 0) for each new user i:
+//         if ((options & 0x80000000) && FindByGamertag(old, name, 16) < 0)
+//             newAccountFromMU = i;
+// An account that came from an MU and wasn't in the last list is new. The
+// last one found wins. Theseus reads the hard drive list, where the MU bit
+// doesn't appear, so this stays -1 until the list includes MU accounts.
+void CLiveAccounts::FindNewAccountFromMU(const XONLINE_USER_HD *previous, DWORD numPrevious)
+{
+    m_newAccountFromMU = -1;
+    if (numPrevious == 0)
+        return;
+
+    for (DWORD i = 0; i < g_NumUsers; i++)
+    {
+        if ((g_Users[i].dwUserOptions & XONLINE_USER_OPTION_CAME_FROM_MU) == 0)
+            continue;
+
+        bool bKnown = false;
+        for (DWORD j = 0; j < numPrevious && !bKnown; j++)
+            bKnown = strncmp(g_Users[i].name, previous[j].name, sizeof(g_Users[i].name)) == 0;
+
+        if (!bKnown)
+            m_newAccountFromMU = (int)i;
+    }
 }
 
 int CLiveAccounts::GetNumberOfAccounts()
@@ -295,6 +339,7 @@ int CLiveAccounts::InternalLogon(int index, const TCHAR* passcode)
     OutputDebugString(buf);
 
     m_nCurrentIndex = index;
+    m_currentAccount = index;
     m_bLogon = true;
     m_fLogOnSuccess = true;
     m_fLogOnInProgress = false;
@@ -330,6 +375,7 @@ void CLiveAccounts::Logoff()
     OutputDebugString(_T("[LiveAccounts] Logoff() called\n"));
     m_bLogon = false;
     m_nCurrentIndex = -1;
+    m_currentAccount = -1;
 }
 
 int CLiveAccounts::IsPasswordVerified()

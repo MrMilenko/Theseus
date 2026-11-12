@@ -67,6 +67,8 @@ public:
     bool m_enableRemote;
     bool m_enableGamepad;
 
+    int m_LastActivePort;
+
     void Advance(float nSeconds);
     bool OnSetProperty(const PRD *pprd, const void *pvValue);
 
@@ -139,6 +141,7 @@ NODE_PROP(pt_string, CJoystick, secretKey)
 NODE_PROP(pt_boolean, CJoystick, enableSecretKey)
 NODE_PROP(pt_boolean, CJoystick, enableGamepad)
 NODE_PROP(pt_boolean, CJoystick, enableRemote)
+NODE_PROP(pt_integer, CJoystick, LastActivePort)
 END_NODE_PROPS()
 
 #define _FND_CLASS CJoystick
@@ -176,6 +179,7 @@ CJoystick::CJoystick() : m_frequency(20.0f),
                          m_eatSecretKey(false),
                          m_enableRemote(true),
                          m_enableGamepad(true),
+                         m_LastActivePort(0),
                          m_isBound(false),
                          m_remoteIdleTime(0.0f),
                          m_timeRemoteRemoved(0.0f),
@@ -429,6 +433,30 @@ void CJoystick::EnableGlobalInput(int bEnable)
 // Threshold for analog buttons
 #define XINPUT_ANALOGBUTTONTHRESHOLD 32
 
+static float ConvertThumb(SHORT sThumb);
+
+// LastActivePort, 5960 PRD @ 0x001747e8 (int, +0x94), written by
+// CJoystick::Advance @ 0x00041040 and its pad merge @ 0x00040e00:
+//     remote: a key that maps to a script function -> port
+//     pad:    wButtons != 0, an analog button > 0x20, or a thumb past
+//             the 0.9 dead zone -> port
+// 5960 merges all pads before testing; Theseus walks them one at a time,
+// so the last port that's active in a poll wins either way.
+static bool IsPadActive(const XINPUT_GAMEPAD *pad)
+{
+    if (pad->wButtons != 0)
+        return true;
+
+    for (int i = 0; i < 8; i++)
+    {
+        if (pad->bAnalogButtons[i] > 0x20)
+            return true;
+    }
+
+    return ConvertThumb(pad->sThumbLX) != 0.0f || ConvertThumb(pad->sThumbLY) != 0.0f ||
+           ConvertThumb(pad->sThumbRX) != 0.0f || ConvertThumb(pad->sThumbRY) != 0.0f;
+}
+
 static float ConvertThumb(SHORT sThumb)
 {
     float axis = (float)sThumb / 32767.0f;
@@ -671,6 +699,7 @@ void CJoystick::Advance(float nSeconds)
                     const REMOTE_CODE_TABLE *pFunction = GetCodeFunction(state.IrRemote.wKeyCode);
                     if (pFunction != NULL)
                     {
+                        m_LastActivePort = nJoypad;
                         TRACE(_T("IR Code: 0x%04x %s\n"), state.IrRemote.wKeyCode, pFunction->szFunction1);
 
                         CallFunction(pFunction->szFunction1, true);
@@ -693,6 +722,9 @@ void CJoystick::Advance(float nSeconds)
             continue;
             //			return;
         }
+
+        if (IsPadActive(&joystate.Gamepad))
+            m_LastActivePort = nJoypad;
 
         if (!EqualGamepads(&joystate.Gamepad, &m_joystate[nJoypad].Gamepad) /*memcmp(&joystate.Gamepad, &m_joystate[nJoypad].Gamepad, sizeof (XINPUT_GAMEPAD)) != 0*/)
         {

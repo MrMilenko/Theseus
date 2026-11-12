@@ -1201,7 +1201,7 @@ class CDiscDrive : public CNode
 public:
 	static CDiscDrive* s_instance;
 
-	CDiscDrive() : m_discType(NULL), m_locked(false), m_pollTimer(2.0f) {
+	CDiscDrive() : m_discType(NULL), m_locked(false), m_bDeferNotification(false), m_pollTimer(2.0f) {
 		m_discType = strdup("none");
 		s_instance = this;
 	}
@@ -1211,10 +1211,22 @@ public:
 	DECLARE_NODE_FUNCTIONS()
 	TCHAR* m_discType;
 	bool   m_locked;
+	bool   m_bDeferNotification;
 	float  m_pollTimer;
+
+	// CDiscDrive::Advance, 5960 @ 0x00039f20: a change seen while locked sets
+	// bDeferNotification; once unlocked the next frame clears it and fires
+	// OnDiscInserted, or OnDiscRemoved when the drive is empty.
+	void FireDeferred() {
+		if (!m_bDeferNotification || m_locked) return;
+		m_bDeferNotification = false;
+		bool isNone = !m_discType || strcmp(m_discType, "none") == 0;
+		CallFunction(this, isNone ? "OnDiscRemoved" : "OnDiscInserted");
+	}
 
 	void Advance(float nSeconds) {
 		CNode::Advance(nSeconds);
+		FireDeferred();
 		m_pollTimer += nSeconds;
 		if (m_pollTimer < 2.0f) return;
 		m_pollTimer = 0.0f;
@@ -1240,6 +1252,8 @@ public:
 				CallFunction(this, "OnDiscInserted");
 			else if (isNone && !wasNone)
 				CallFunction(this, "OnDiscRemoved");
+		} else if (isNone != wasNone) {
+			m_bDeferNotification = true;
 		}
 	}
 
@@ -1308,13 +1322,17 @@ void DiscDrive_SetDiscType(const char* type) {
 		// Audio CD (or anything else): let the XAP script decide via OnDiscInserted
 		if (!dd->m_locked)
 			CallFunction(dd, "OnDiscInserted");
+		else
+			dd->m_bDeferNotification = true;
 		fprintf(stderr, "[DiscDrive] discType='%s', fired OnDiscInserted\n", type);
 	}
 }
 
+// 5960 PRD @ 0x00174550: discType, locked, bDeferNotification.
 START_NODE_PROPS(CDiscDrive, CNode)
 	NODE_PROP(pt_string, CDiscDrive, discType)
 	NODE_PROP(pt_boolean, CDiscDrive, locked)
+	NODE_PROP(pt_boolean, CDiscDrive, bDeferNotification)
 END_NODE_PROPS()
 
 #undef _FND_CLASS
@@ -2731,7 +2749,8 @@ END_NODE_FUN()
 class CLiveAccounts : public CNode
 {
 public:
-	CLiveAccounts() : m_nCurrentIndex(0), m_bLogon(false), m_fLogOnSuccess(false), m_fLogOnInProgress(false) {}
+	CLiveAccounts() : m_nCurrentIndex(0), m_bLogon(false), m_fLogOnSuccess(false), m_fLogOnInProgress(false),
+	                  m_currentAccount(-1), m_newAccountFromMU(-1) {}
 
 	DECLARE_NODE(CLiveAccounts, CNode)
 	DECLARE_NODE_PROPS()
@@ -2739,6 +2758,11 @@ public:
 
 	int m_nCurrentIndex;
 	bool m_bLogon, m_fLogOnSuccess, m_fLogOnInProgress;
+
+	// 5960 PRD @ 0x00176234: currentAccount and newAccountFromMU, both -1
+	// until a logon or an MU account shows up. Desktop has neither.
+	int m_currentAccount;
+	int m_newAccountFromMU;
 
 	int GetNumberOfAccounts() { return 0; }
 	int GetNumAccountsOnHD() { return 0; }
@@ -2767,6 +2791,8 @@ START_NODE_PROPS(CLiveAccounts, CNode)
 	NODE_PROP(pt_boolean, CLiveAccounts, fLogOnSuccess)
 	NODE_PROP(pt_boolean, CLiveAccounts, fLogOnInProgress)
 	NODE_PROP(pt_integer, CLiveAccounts, nCurrentIndex)
+	NODE_PROP(pt_integer, CLiveAccounts, currentAccount)
+	NODE_PROP(pt_integer, CLiveAccounts, newAccountFromMU)
 END_NODE_PROPS()
 
 #undef _FND_CLASS
