@@ -314,9 +314,10 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Animation Nodes | [AnimationNodes.md](AnimationNodes.md) | 4 functions |
 | Audio System | [AudioSystem.md](AudioSystem.md) | 12 functions |
 | Camera | [Camera.md](Camera.md) | not yet started |
-| Date | [Date.md](Date.md) | 7 functions |
+| Date | [Date.md](Date.md) | 30 functions |
 | Math | [Math.md](Math.md) | 5 functions |
 | File Operations | [FileOps.md](FileOps.md) | 7 functions |
+| File Utilities | [FileUtil.md](FileUtil.md) | 10 functions: paths, URL resolving, block counts |
 | Disc | (no doc yet, narrative TODO) | 1 function |
 | HUD & Picture | [HudNode.md](HudNode.md) | 9 functions |
 | Keyboard | [Keyboard.md](Keyboard.md) | 22 functions |

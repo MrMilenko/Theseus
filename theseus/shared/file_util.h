@@ -19,11 +19,7 @@ void CleanFilePath(TCHAR* szPath, const TCHAR* szSrcPath);
 
 void UpdateCurDirFromFile(const TCHAR* szURL);
 void MakeAbsoluteURL2(TCHAR* szBuf, const TCHAR* szBase, const TCHAR* szURL);
-void MakeAbsoluteURL(TCHAR* szBuf, const TCHAR* szBase, const TCHAR* szURL);
 void MakeAbsoluteURL(TCHAR* szBuf, const TCHAR* szURL);
-
-DWORD GetUniqueFile(const TCHAR* szBase, TCHAR* szPath/*=NULL*/);
-DWORD CreateUniqueDir(const TCHAR* szBase);
 
 void FindFilePath(TCHAR* szFullPath/*[MAX_PATH]*/, const TCHAR* szFile);
 int GetFileSize(const TCHAR* szFilePath);
