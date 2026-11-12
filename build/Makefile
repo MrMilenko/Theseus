@@ -875,6 +875,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/settings_schema.cpp \
 	$(THESEUS_SRC)/desktop/desktop_settings.cpp \
 	$(THESEUS_SRC)/desktop/guide_node.cpp \
+	$(THESEUS_SRC)/desktop/log_redact.cpp \
 	$(THESEUS_SRC)/desktop/launch.cpp \
 	$(THESEUS_SRC)/desktop/app_paths.cpp \
 	$(THESEUS_SRC)/desktop/osk.cpp \

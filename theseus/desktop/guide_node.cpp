@@ -12,6 +12,8 @@
 #include "host.h"
 #include "app_paths.h"
 #include "preloader.h"
+#include "log_redact.h"
+#include <bgfx/bgfx.h>
 #include <unistd.h>
 #include <errno.h>
 #include <SDL.h>
@@ -46,6 +48,45 @@ static void RestartWithMode(const char* flag)
     args.push_back(NULL);
     execv(g_argv[0], args.data());
     fprintf(stderr, "[Guide] restart failed: %s\n", strerror(errno));
+}
+
+static const char* ShippedVersion();
+
+static std::string VersionLine()
+{
+    char line[256];
+    const bgfx::Caps* caps = bgfx::getCaps();
+    snprintf(line, sizeof(line), "UIX Desktop %s (%s, %s)", ShippedVersion(), Host_Name(),
+             caps ? bgfx::getRendererName(caps->rendererType) : "no renderer");
+    return line;
+}
+
+static const char* HomeDir()
+{
+    const char* h = getenv("HOME");
+    if (!h || !*h) h = getenv("USERPROFILE");
+    return h;
+}
+
+// This run's log, home folder as ~ and addresses masked, onto the clipboard.
+static bool CopyLog()
+{
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/theseus.log", Plat_UserDataDir());
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    // The tail is what matters, and a clipboard is no place for megabytes.
+    const long kMax = 512 * 1024;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    long from = size > kMax ? size - kMax : 0;
+    fseek(f, from, SEEK_SET);
+    std::string text((size_t)(size - from), '\0');
+    size_t got = fread(&text[0], 1, text.size(), f);
+    fclose(f);
+    text.resize(got);
+    std::string out = VersionLine() + "\n\n" + Log_Redact(text, HomeDir());
+    return SDL_SetClipboardText(out.c_str()) == 0;
 }
 
 // Somewhere to put things on a fresh install: Movies, TV Shows and ROMs next
@@ -116,11 +157,12 @@ static const char* SettingHelp(const SettingDef& d)
 static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games" };
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
 
-enum GuideView { GV_ROOT, GV_PAGES, GV_PAGE, GV_ABOUT, GV_SHORTCUTS, GV_START };
+enum GuideView { GV_ROOT, GV_PAGES, GV_PAGE, GV_ABOUT, GV_SHORTCUTS, GV_START, GV_LOGS };
 
 enum GuideAct {
     GA_NONE, GA_VIEW, GA_SETTING, GA_TOOLS, GA_RESUME, GA_QUIT,
     GA_DEVMODE, GA_FOLDERS, GA_OPENFOLDERS,
+    GA_OPENLOGS, GA_COPYVERSION, GA_COPYLOG,
 };
 
 struct GuideRow {
@@ -133,7 +175,8 @@ class CDesktopGuide : public CNode
 {
 public:
     CDesktopGuide() : m_view(GV_ROOT), m_page(0), m_cursor(0), m_backTo(NULL),
-                      m_startChecked(false), m_startShown(false), m_foldersDone(false) {}
+                      m_startChecked(false), m_startShown(false), m_foldersDone(false),
+                      m_copied(GA_NONE) {}
     DECLARE_NODE(CDesktopGuide, CNode)
     DECLARE_NODE_PROPS()
     DECLARE_NODE_FUNCTIONS()
@@ -168,6 +211,7 @@ public:
         g_guideOpen = true;
         m_view = GV_ROOT;
         m_cursor = 0;
+        m_copied = GA_NONE;
         m_stack.clear();
         Build();
     }
@@ -207,6 +251,7 @@ public:
         case GV_PAGE:      return new CStrObject(kPages[m_page]);
         case GV_ABOUT:     return new CStrObject(_T("About"));
         case GV_SHORTCUTS: return new CStrObject(_T("Shortcuts"));
+        case GV_LOGS:      return new CStrObject(_T("Logs & Help"));
         case GV_START:     return new CStrObject(g_welcomeDone ? _T("Start") : _T("Welcome"));
         default:           return new CStrObject(_T("UIX Desktop"));
         }
@@ -251,6 +296,19 @@ public:
         case GA_OPENFOLDERS:
             Plat_OpenInFileManager(AppPath_Tree("Library"));
             return 0;
+        case GA_OPENLOGS:
+            Host_OpenFolder(Plat_UserDataDir());
+            return 0;
+        case GA_COPYVERSION:
+            if (SDL_SetClipboardText(VersionLine().c_str()) != 0) return -1;
+            m_copied = GA_COPYVERSION;
+            Build();
+            return 2;
+        case GA_COPYLOG:
+            if (!CopyLog()) return -1;
+            m_copied = GA_COPYLOG;
+            Build();
+            return 2;
         case GA_QUIT: {
             SDL_Event quit;
             quit.type = SDL_QUIT;
@@ -297,6 +355,7 @@ private:
     std::vector<GuideRow> m_rows;
     CLevel* m_backTo;
     bool m_startChecked, m_startShown, m_foldersDone;
+    int m_copied;   // which Copy row says Copied
 
     const GuideRow* Row(int i) const
     {
@@ -318,6 +377,7 @@ private:
         case GV_ROOT:
             Add("Settings",  "", "Display, audio, media folders and startup.", GA_VIEW, 100 + GV_PAGES);
             Add("Shortcuts", "", "Keys and buttons that work everywhere.", GA_VIEW, 100 + GV_SHORTCUTS);
+            Add("Logs & Help", "", "Open or copy the log for a bug report.", GA_VIEW, 100 + GV_LOGS);
             Add("About",     "", "Version and credits.", GA_VIEW, 100 + GV_ABOUT);
             if (g_padModeEnabled)
                 Add("Desktop Tools", "", "Title Maker, HDD Browser and Playlist Maker with the pad.", GA_TOOLS);
@@ -374,6 +434,14 @@ private:
             }
             break;
         }
+        case GV_LOGS:
+            Add("Copy Version Info", m_copied == GA_COPYVERSION ? "Copied" : "",
+                "Version, platform and renderer, ready to paste.", GA_COPYVERSION);
+            Add("Copy Log", m_copied == GA_COPYLOG ? "Copied" : "",
+                "This run's log. Your home folder shows as ~ and IP addresses are hidden.", GA_COPYLOG);
+            Add("Open Logs Folder", "", "theseus.log is this run, theseus.prev.log the one before.", GA_OPENLOGS);
+            Add("Report a Problem", "", "Paste the version and the log into an issue on GitHub.");
+            break;
         case GV_SHORTCUTS:
             Add("Guide button, LT+B or F7", "Guide", "Opens and closes this guide.");
             Add("F3",  "Title Maker", NULL);
