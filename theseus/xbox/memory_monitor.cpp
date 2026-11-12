@@ -421,6 +421,9 @@ int CMemoryMonitor::HaveDeviceBottom(int nDevice)
 
 bool CMemoryMonitor::GetTotalAndFreeBlocks(int devUnit, int *pnTotalBlocks, int *pnFreeBlocks)
 {
+	if (devUnit < Dev1Unit1 || devUnit > Dev4Unit2)
+		return false;
+
 	char szPath[4];
 
 	if (devUnit == Dev0)
@@ -860,7 +863,8 @@ float CMemoryMonitor::GetFreeTotalRatio(int devUnit)
 	if (!GetTotalAndFreeBlocks(devUnit, &nTotalBlocks, &nFreeBlocks))
 		return 0.0f;
 
-	ASSERT(nTotalBlocks != 0);
+	if (nTotalBlocks == 0)
+		return 0.0f;
 
 	static float nLast[9];
 	float nReturn = (float)nFreeBlocks / nTotalBlocks;
@@ -892,6 +896,14 @@ void CMemoryMonitor::SetMUName(int devUnit, const TCHAR *szName)
 
 void CMemoryMonitor::FormatMemoryUnit(int devUnit)
 {
+	// Scripts reach this directly, and Dev0 is a real selection that sits one
+	// past the end of the mount arrays. Only memory units can be formatted.
+	if (devUnit < Dev1Unit1 || devUnit > Dev4Unit2)
+	{
+		TRACE(_T("\001FormatMemoryUnit: %d is not a memory unit\n"), devUnit);
+		return;
+	}
+
 	if (m_rgchMount[devUnit] != 0)
 	{
 		XUnmountMU(devUnit / 2, devUnit & 1);

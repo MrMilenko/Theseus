@@ -372,7 +372,7 @@ int GetDiscType()
             hDevice = CreateFileA("cdrom0:", GENERIC_READ, FILE_SHARE_READ, NULL,
                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
-            if (hDevice != NULL)
+            if (hDevice != INVALID_HANDLE_VALUE && hDevice != NULL)
             {
                 BOOL fReturn;
                 DWORD cbReturned;

@@ -436,6 +436,8 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 			VERIFY(LoadGlyph(nGlyphIndex));
 
 			CGlyphShape* pGlyphShape = m_rgGlyphObjects[nGlyphIndex].m_glyphShape;
+			if (!pGlyphShape)
+				continue;
 			pGlyphShape->m_nGlyphIndex = nGlyphIndex;
 
 			if (nVerts + pGlyphShape->m_nVertexCount > 65535)
@@ -669,6 +671,18 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 			}
 
 			CGlyphShape* pGlyphShape = m_rgGlyphObjects[nGlyphIndex].m_glyphShape;
+			if (!pGlyphShape)
+				continue;
+
+			// The mesh was sized by the counting pass. If this pass ever walks
+			// the string differently it would write straight past the buffers,
+			// so stop at the edge and drop the rest of the line.
+			if (nCurVertex + pGlyphShape->m_nVertexCount > nVerts ||
+				nCurIndex + pGlyphShape->m_nIndexCount > nFaces * 3)
+			{
+				nChars = ich - 1;
+				break;
+			}
 
 			int j;
 			for (j = 0; j < pGlyphShape->m_nIndexCount; j += 1)

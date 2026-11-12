@@ -1,0 +1,217 @@
+# Theseus, original Xbox build.
+#
+# The toolchain lives in OXDK. This file says what Theseus is made of and
+# where its own quirks are; everything about how to drive clang, lld-link and
+# cxbe for an Xbox target comes from $(OXDK_DIR)/oxdk.mk. Fixes to OXDK's
+# flags reach Theseus by updating OXDK, not by hand-editing a second copy.
+#
+# Not invoked directly, normally. `make debug` / `make retail` in build/
+# delegate here. Driving it by hand works too:
+#
+#   make -f Makefile.xbox CONFIG=retail
+#
+# Requires: clang + lld-link on PATH, OXDK cloned, and an XDK tree at
+# $(XDK_DIR) (headers in include/, libs in lib/). cxbe builds itself.
+
+THESEUS_SRC ?= ../theseus
+BUILDS_ROOT ?= $(HOME)/builds/theseus
+CONFIG      ?= debug
+
+# ------------------------------------------------------------------
+# OXDK
+# ------------------------------------------------------------------
+# Prefer a vendored copy so a fresh clone needs nothing extra, then a
+# sibling checkout, then the conventional ~/OXDK.
+OXDK_DIR ?= $(firstword $(wildcard $(THESEUS_SRC)/third-party/oxdk/oxdk.mk \
+                                   ../OXDK/oxdk.mk \
+                                   $(HOME)/OXDK/oxdk.mk))
+OXDK_DIR := $(patsubst %/oxdk.mk,%,$(OXDK_DIR))
+
+ifeq ($(strip $(OXDK_DIR)),)
+$(error OXDK not found. Clone it next to Theseus or into $$HOME: \
+git clone https://github.com/MrMilenko/OXDK ~/OXDK \
+-- or set OXDK_DIR=/path/to/OXDK. cxbe builds itself from there.)
+endif
+
+# OXDK reads headers from $(XDK_DIR)/include and libs from $(XDK_DIR)/lib,
+# which is the layout theseus/xdk already has.
+XDK_DIR ?= $(THESEUS_SRC)/xdk
+
+ifeq ($(wildcard $(XDK_DIR)/include),)
+$(error No XDK at $(XDK_DIR). theseus/xdk is a gitignored symlink to a local \
+XDK tree with include/ and lib/ -- point it at yours, or pass XDK_DIR=/path)
+endif
+
+# ------------------------------------------------------------------
+# Config
+# ------------------------------------------------------------------
+ifeq ($(CONFIG),retail)
+  OUTPUT_DIR := $(BUILDS_ROOT)/xbox-retail
+  XBE_MODE   := RETAIL
+  # Release libs. no debug asserts, no XBDM dependency.
+  XGRAPHICS_LIB := xgraphics.lib
+  XAPILIB       := xapilib.lib
+  XNET_LIB      := xnet.lib
+  XONLINE_LIB   := xonline.lib
+  CRT_LIB       := libcmt.lib
+  CRTCPP_LIB    := libcpmt.lib
+  XBDM_LIB      :=
+  OXDK_OPT      := -O0
+else
+  OUTPUT_DIR := $(BUILDS_ROOT)/xbox-debug
+  XBE_MODE   := DEBUG
+  # Debug libs, except dsound: debug dsound asserts without a debugger attached.
+  XGRAPHICS_LIB := xgraphicsd.lib
+  XAPILIB       := xapilibd.lib
+  XNET_LIB      := xnetd.lib
+  XONLINE_LIB   := xonlined.lib
+  CRT_LIB       := libcmtd.lib
+  CRTCPP_LIB    := libcpmtd.lib
+  XBDM_LIB      := xbdm.lib
+  OXDK_OPT      := -O0 -g
+endif
+
+# OXDK defaults to -O2, which is right for a 733MHz console but wrong here:
+# clang's optimizer miscompiles this codebase for Xbox and the retail XBE
+# crashes on hardware. Both configs stay at -O0 until that is tracked down.
+# Set OXDK_OPT on the command line to experiment.
+
+XBE_TITLE := theseus
+XBE_NAME  := Theseus
+
+# ------------------------------------------------------------------
+# Sources
+# ------------------------------------------------------------------
+include xbox-sources.mk
+
+# d3d_compat.cpp lives beside this Makefile, not under theseus/.
+SRCS := $(addprefix $(THESEUS_SRC)/,$(ALL_SRCS)) d3d_compat.cpp
+
+# theseuslib: the private-API helpers and the xiso/xip parsers, built as a
+# static lib so outside consumers can link it on its own.
+THESEUSLIB_DIR  := ../theseuslib
+THESEUSLIB_SRCS := theseuslib.c xiso.c xip_archive.c
+THESEUSLIB_OBJS := $(addprefix $(OUTPUT_DIR)/theseuslib/,$(THESEUSLIB_SRCS:.c=.obj))
+THESEUSLIB_DEPS := $(THESEUSLIB_OBJS:.obj=.d)
+THESEUSLIB_LIB  := $(OUTPUT_DIR)/theseuslib.lib
+
+# ------------------------------------------------------------------
+# Theseus-specific flags, layered on top of OXDK's
+# ------------------------------------------------------------------
+# -MMD -MP: OXDK does not track header deps, and we want incremental builds.
+# xdk_compat.h: Theseus's own shim. It maps the public XDK headers onto the
+# NT types this code expects, which is why no private XDK tree is required.
+THESEUS_XBOX_FLAGS = \
+	-MMD -MP \
+	-D_UNICODE \
+	-DUNICODE \
+	-D_LIGHTS \
+	-D_MAC_CROSS_COMPILE \
+	-include xdk_compat.h \
+	-I. \
+	-iquote $(THESEUS_SRC)/xbox \
+	-iquote $(THESEUS_SRC) \
+	-iquote $(THESEUS_SRC)/engine \
+	-iquote $(THESEUS_SRC)/shared \
+	-iquote $(THESEUS_SRC)/render \
+	-I$(THESEUS_SRC)/xbox/compat
+
+# Machine-local settings, never committed. Set DASH_IDENTITY_XBE there to a
+# retail dashboard XBE and the built XBE takes its certificate identity (see
+# xbe_identity.py). Without it the XBE keeps cxbe's defaults.
+-include local.mk
+
+# Experiment switches from the command line, e.g. EXTRA_DEFINES=-DTHESEUS_PUSHBUFFER_KB=2048
+THESEUS_XBOX_FLAGS += $(EXTRA_DEFINES)
+
+CFLAGS   += $(THESEUS_XBOX_FLAGS)
+# OXDK leaves RTTI on because libcmt can support it. Theseus does not use
+# dynamic_cast or typeid and the dashboard has no room for the tables.
+CXXFLAGS += $(THESEUS_XBOX_FLAGS) -fno-rtti
+
+# Dashboard-only imports, on top of the kernel set OXDK already declares.
+LDFLAGS += \
+	/map:$(OUTPUT_DIR)/$(XBE_TITLE).map \
+	/alternatename:__imp__KeDelayExecutionThread=__imp__KeDelayExecutionThread@12 \
+	/alternatename:_ExReadWriteRefurbInfo=_ExReadWriteRefurbInfo@12 \
+	/alternatename:_MU_CreateDeviceObject=_MU_CreateDeviceObject@12 \
+	/alternatename:_MU_CloseDeviceObject=_MU_CloseDeviceObject@8 \
+	/alternatename:_XcHMAC=_XcHMAC@28 \
+	/alternatename:___CxxFrameHandler3=___CxxFrameHandler \
+	/alternatename:_XapiDeleteCachePartition=_XapiDeleteCachePartition@4 \
+	/alternatename:?vswprintf@@YAHPA_WIPB_WPAD@Z=_vswprintf \
+	/alternatename:_mp3dec_init@4=_mp3dec_init \
+	/alternatename:_mp3dec_decode_frame@20=_mp3dec_decode_frame \
+	/alternatename:_mp3_decode_full@20=_mp3_decode_full
+
+# Full lib list, not OXDK's default: the config split above picks debug or
+# release variants, and xapilib.lib follows $(XAPILIB) deliberately so the
+# debug build still resolves the retail-only entry points.
+OXDK_LIBS := \
+	xboxkrnl.lib \
+	$(XAPILIB) \
+	xapilib.lib \
+	d3d8.lib \
+	d3dx8.lib \
+	$(XGRAPHICS_LIB) \
+	dsound.lib \
+	$(XNET_LIB) \
+	$(XONLINE_LIB) \
+	$(CRT_LIB) \
+	$(CRTCPP_LIB) \
+	$(XBDM_LIB)
+
+LIBS += $(THESEUSLIB_LIB)
+
+# ------------------------------------------------------------------
+# OXDK supplies the rules from here down
+# ------------------------------------------------------------------
+include $(OXDK_DIR)/oxdk.mk
+
+# The XBE cannot link until theseuslib.lib exists. Prerequisite-only rule:
+# OXDK owns the recipe.
+$(OUTPUT_DIR)/$(XBE_TITLE).exe: $(THESEUSLIB_LIB)
+
+$(THESEUSLIB_LIB): $(THESEUSLIB_OBJS)
+	$(LLD_LINK) /lib /nologo /out:$@ $^
+
+# theseuslib's own headers are included with angle brackets, so they need a
+# real -I. The -iquote paths above deliberately do not cover them, which is
+# what keeps its <xip_archive.h> from resolving to theseus/engine's.
+$(OUTPUT_DIR)/theseuslib/%.obj: $(THESEUSLIB_DIR)/src/%.c | $(OUTPUT_DIR)/theseuslib
+	$(CLANG) $(OXDK_CFLAGS) $(CFLAGS) -I$(THESEUSLIB_DIR)/include -o $@ $<
+
+$(OUTPUT_DIR)/theseuslib:
+	@mkdir -p $@
+
+# minimp3 compiles in isolation: no XDK headers, no xdk_compat.h force-include,
+# and no stdcall default. It only wants the CRT headers. Overriding both flag
+# variables for this one object reproduces that, and it is why the
+# _mp3dec_*@N alternatenames above exist -- its symbols stay cdecl while every
+# caller is stdcall.
+MINIMP3_OBJ := $(call oxdk_obj,$(THESEUS_SRC)/engine/minimp3_decode.cpp)
+$(MINIMP3_OBJ): OXDK_CXXFLAGS := $(OXDK_TARGET_FLAGS) -c $(OXDK_OPT)
+$(MINIMP3_OBJ): CXXFLAGS := -MMD -MP -fno-rtti \
+	-I$(THESEUS_SRC)/engine -I$(XDK_DIR)/include -Wno-typedef-redefinition
+
+# Experiment: HOT_O2=1 builds only the per-draw render files at -O2 and leaves
+# the rest at -O0. If it boots and holds, the -O2 crash lives elsewhere; use a
+# separate BUILDS_ROOT so it never mixes with the -O0 objects.
+ifdef HOT_O2
+HOT_O2_OBJS := $(foreach f,render/text.cpp render/widget_draw.cpp render/asset_loader.cpp \
+                             render/shape_render.cpp xbox/xip_archive.cpp,$(call oxdk_obj,$(THESEUS_SRC)/$(f)))
+$(HOT_O2_OBJS): OXDK_OPT := -O2
+endif
+
+# Present as the Xbox Dashboard: same title ID, version and keys as the
+# retail XBE in DASH_IDENTITY_XBE. Re-applied whenever default.xbe is rebuilt.
+ifneq ($(strip $(DASH_IDENTITY_XBE)),)
+IDENTITY_STAMP := $(OUTPUT_DIR)/.identity-applied
+all: $(IDENTITY_STAMP)
+$(IDENTITY_STAMP): $(OUTPUT_DIR)/default.xbe $(DASH_IDENTITY_XBE) xbe_identity.py
+	python3 xbe_identity.py --from "$(DASH_IDENTITY_XBE)" --to $<
+	@touch $@
+endif
+
+-include $(THESEUSLIB_DEPS)
+-include $(OBJS:.obj=.d)

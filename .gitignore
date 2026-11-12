@@ -70,3 +70,6 @@ theseus/third-party/bgfx/.build/
 # xiptool writes <folder>.xip next to the source folder on create. The packed
 # artifact belongs in Data/Xips/, not here.
 xips-source/*.xip
+
+# Machine-local build settings (paths to retail XBEs)
+build/local.mk

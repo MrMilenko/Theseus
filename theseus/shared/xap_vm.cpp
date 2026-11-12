@@ -952,6 +952,12 @@ bool CRunner::Step(CObject** ppRetObj)
 			int nFrameSize = FetchInt();
 			LOCALTRACE(_T("opFrame: %d\n"), nFrameSize);
 
+			if (nFrameSize < 0 || m_sp + (UINT)nFrameSize > countof(m_stack))
+			{
+				Error(_T("script stack overflow"));
+				return false;
+			}
+
 #ifdef _DEBUG
 			// Make sure everything on the stack has been cleaned up!
 			{
@@ -961,7 +967,6 @@ bool CRunner::Step(CObject** ppRetObj)
 #endif
 			m_sp += nFrameSize;
 			m_spBase = m_sp;
-			ASSERT(m_sp < sizeof (m_stack) / sizeof (CObject*));
 		}
 		break;
 

@@ -205,7 +205,13 @@ CXipFile* LoadXIP(const TCHAR* szURL, bool bSync, bool isSkin)
 		}
 	}
 
-	ASSERT(c_nXipFileCount < countof(c_rgXipFile));
+	if (c_nXipFileCount >= (int)countof(c_rgXipFile))
+	{
+		TRACE(_T("\001LoadXIP: XIP pool full (%d), cannot load %s\n"),
+			(int)countof(c_rgXipFile), szBuf);
+		return NULL;
+	}
+
 	CXipFile* pXip = &c_rgXipFile[c_nXipFileCount];
 
 	if (!pXip->Open(szBuf))
@@ -216,7 +222,13 @@ CXipFile* LoadXIP(const TCHAR* szURL, bool bSync, bool isSkin)
 	// Load synchronously or spawn a background thread
 	if (bSync)
 	{
-		pXip->Load();
+		// A caller that waited for the load wants to know it failed. The slot
+		// stays spent: whoever asked for a sync XIP is about to give up anyway.
+		if (!pXip->Load())
+		{
+			TRACE(_T("\001LoadXIP: %s failed to load\n"), szBuf);
+			return NULL;
+		}
 	}
 	else
 	{
@@ -271,9 +283,12 @@ void* FindObjectInXIP(const TCHAR* szURL, const TCHAR* szFilename, int nType)
 	// Skin directory override: check for loose texture files first
 	if (nType == XIP_TYPE_TEXTURE && TheseusGetSkinDir() != NULL && szFilename != NULL)
 	{
+		// Skin dir plus an archive-supplied filename, either of which can be
+		// long enough on its own.
 		TCHAR szSkinPath[MAX_PATH];
-		_tcscpy(szSkinPath, TheseusGetSkinDir());
-		_tcscat(szSkinPath, szFilename);
+		_sntprintf(szSkinPath, countof(szSkinPath) - 1, _T("%s%s"),
+			TheseusGetSkinDir(), szFilename);
+		szSkinPath[countof(szSkinPath) - 1] = 0;
 
 		char ansiPath[MAX_PATH];
 		Ansi(ansiPath, szSkinPath, MAX_PATH);
@@ -383,6 +398,38 @@ DWORD CALLBACK CXipFile::StartLoadThread(LPVOID pvContext)
 	return 0;
 }
 
+// Read returns the byte count, or -1 when the file is short or unreadable.
+// Callers want "did I get all of it", so ask that question directly.
+static bool ReadExact(CFileBuffer& file, void* pv, int cb)
+{
+	return cb >= 0 && file.Read(pv, cb) == cb;
+}
+
+// CreateObjects walks the data section in order with no seeking, so anything
+// we decline to store still has to come off the stream or every entry after
+// it reads from the wrong place.
+static void DiscardBytes(CFileBuffer& file, int cb)
+{
+	BYTE rgb[512];
+	while (cb > 0)
+	{
+		int n = cb < (int)sizeof(rgb) ? cb : (int)sizeof(rgb);
+		if (file.Read(rgb, n) != n)
+			return;
+		cb -= n;
+	}
+}
+
+// A XIP that fails to load is never read again, so let go of its handle.
+static void CloseXipHandle(CFileBuffer& file)
+{
+	if (file.m_handle != INVALID_HANDLE_VALUE)
+	{
+		CloseHandle(file.m_handle);
+		file.m_handle = INVALID_HANDLE_VALUE;
+	}
+}
+
 bool CXipFile::Load()
 {
 #ifdef _DEBUG
@@ -405,36 +452,57 @@ bool CXipFile::Load()
 	m_file.SetFile(m_fileName, hFile);
 
 	// Read and validate header
-	if (!m_file.Read(&m_header, sizeof(XIPHEADER)))
+	if (!ReadExact(m_file, &m_header, sizeof(XIPHEADER)))
+	{
+		CloseXipHandle(m_file);
 		return false;
+	}
 
 	if (m_header.m_magic != XIP_MAGIC)
 	{
 #ifdef _DEBUG
 		TRACE(_T("\001CXipFile::Open (%s.xip) not a valid XIP file!\n"), szDirPath);
 #endif
+		CloseXipHandle(m_file);
+		return false;
+	}
+
+	// The tables sit between the header and the data section, so the name pool
+	// is whatever is left over. A corrupt dataStart makes that negative, and
+	// every real archive ends exactly where the header says it does.
+	const int cbTables = (int)(m_header.m_fileCount * sizeof(FILEDATA))
+		+ (int)(m_header.m_nameCount * sizeof(FILENAME));
+	const int cbNames = (int)m_header.m_dataStart - (int)sizeof(XIPHEADER) - cbTables;
+
+	if (cbNames <= 0
+		|| GetFileSize(m_file.m_handle, NULL) != m_header.m_dataStart + m_header.m_dataSize)
+	{
+		TRACE(_T("\001CXipFile::Load (%s) header does not describe this file\n"), m_fileName);
+		CloseXipHandle(m_file);
 		return false;
 	}
 
 	// Read file table, directory, and name pool
 	m_filedata = new FILEDATA[m_header.m_fileCount];
-	if (!m_file.Read(m_filedata, m_header.m_fileCount * sizeof(FILEDATA)))
+	if (!ReadExact(m_file, m_filedata, (int)(m_header.m_fileCount * sizeof(FILEDATA))))
+	{
+		CloseXipHandle(m_file);
 		return false;
+	}
 
 	m_directory = new FILENAME[m_header.m_nameCount];
-	if (!m_file.Read(m_directory, m_header.m_nameCount * sizeof(FILENAME)))
+	if (!ReadExact(m_file, m_directory, (int)(m_header.m_nameCount * sizeof(FILENAME))))
+	{
+		CloseXipHandle(m_file);
 		return false;
-
-	int cbNames = m_header.m_dataStart
-		- sizeof(XIPHEADER)
-		- m_header.m_fileCount * sizeof(FILEDATA)
-		- m_header.m_nameCount * sizeof(FILENAME);
+	}
 
 	m_names = new char[cbNames];
-	if (!m_file.Read(m_names, cbNames))
+	if (!ReadExact(m_file, m_names, cbNames))
+	{
+		CloseXipHandle(m_file);
 		return false;
-
-	ASSERT(GetFileSize(m_file.m_handle, NULL) == m_header.m_dataStart + m_header.m_dataSize);
+	}
 
 	CreateObjects();
 	m_loaded = true;
@@ -447,8 +515,22 @@ bool CXipFile::Load()
 
 static LPDIRECT3DTEXTURE8 ReadTextureFromXPR(CFileBuffer& file, int nBytes)
 {
+	// Everything below indexes pbRaw using sizes the archive supplies, so the
+	// entry has to be big enough to hold a header and a texture struct before
+	// any of them can be trusted.
+	if (nBytes < (int)(sizeof(XPR_HEADER) + sizeof(IDirect3DTexture8)))
+	{
+		TRACE(_T("\001ReadTextureFromXPR: entry too small (%d bytes)\n"), nBytes);
+		DiscardBytes(file, nBytes);
+		return NULL;
+	}
+
 	BYTE* pbRaw = new BYTE[nBytes];
-	file.Read(pbRaw, nBytes);
+	if (!ReadExact(file, pbRaw, nBytes))
+	{
+		delete[] pbRaw;
+		return NULL;
+	}
 
 	const XPR_HEADER* pxpr = (const XPR_HEADER*)pbRaw;
 	if (pxpr->dwMagic != XPR_MAGIC_VALUE)
@@ -458,7 +540,25 @@ static LPDIRECT3DTEXTURE8 ReadTextureFromXPR(CFileBuffer& file, int nBytes)
 		return NULL;
 	}
 
+	// dwHeaderSize is where the pixels start and dwTotalSize is where they
+	// end; both have to land inside the bytes we actually read.
+	if (pxpr->dwHeaderSize < sizeof(XPR_HEADER)
+		|| pxpr->dwTotalSize < pxpr->dwHeaderSize
+		|| pxpr->dwTotalSize > (DWORD)nBytes)
+	{
+		TRACE(_T("\001ReadTextureFromXPR: header describes %d..%d of %d bytes\n"),
+			(int)pxpr->dwHeaderSize, (int)pxpr->dwTotalSize, nBytes);
+		delete[] pbRaw;
+		return NULL;
+	}
+
 	int cbData = pxpr->dwTotalSize - pxpr->dwHeaderSize;
+	if (cbData <= 0)
+	{
+		TRACE(_T("\001ReadTextureFromXPR: no pixel data\n"));
+		delete[] pbRaw;
+		return NULL;
+	}
 
 	// Allocate the D3D texture header in system memory
 	IDirect3DTexture8* pTex = (IDirect3DTexture8*)TheseusD3D_AllocNoncontiguousMemory(sizeof(D3DBaseTexture));
@@ -513,10 +613,19 @@ void CXipFile::CreateObjects()
 
 		case XIP_TYPE_MESH_REFERENCE:
 			{
+				// Top byte of the offset, so the archive can name any slot up
+				// to 255 whether or not we have that many.
+				const UINT iBuffer = m_filedata[i].m_dataOffset >> 24;
+				if (iBuffer >= MAX_MESHBUFFER)
+				{
+					TRACE(_T("\001CreateObjects: mesh ref %d out of range in %s\n"),
+						(int)iBuffer, m_fileName);
+					break;
+				}
+
 				CMeshRef* pRef = new CMeshRef;
 				pRef->m_xipFile = this;
-				pRef->m_meshBufferIndex = m_filedata[i].m_dataOffset >> 24;
-				ASSERT(pRef->m_meshBufferIndex < MAX_MESHBUFFER);
+				pRef->m_meshBufferIndex = iBuffer;
 				pRef->m_firstIndex = m_filedata[i].m_dataOffset & 0x00ffffff;
 				pRef->m_primitiveCount = m_filedata[i].m_size;
 				m_objects[i] = pRef;
@@ -524,13 +633,23 @@ void CXipFile::CreateObjects()
 			break;
 
 		case XIP_TYPE_INDEXBUFFER:
-			ASSERT(m_indexBufferCount < MAX_MESHBUFFER);
+			if (m_indexBufferCount >= MAX_MESHBUFFER)
+			{
+				TRACE(_T("\001CreateObjects: too many index buffers in %s\n"), m_fileName);
+				DiscardBytes(m_file, m_filedata[i].m_size);
+				break;
+			}
 			ReadIndexBuffer(i, m_vertexBufferCount);
 			m_indexBufferCount++;
 			break;
 
 		case XIP_TYPE_VERTEXBUFFER:
-			ASSERT(m_vertexBufferCount < MAX_MESHBUFFER);
+			if (m_vertexBufferCount >= MAX_MESHBUFFER)
+			{
+				TRACE(_T("\001CreateObjects: too many vertex buffers in %s\n"), m_fileName);
+				DiscardBytes(m_file, m_filedata[i].m_size);
+				break;
+			}
 			ReadVertexBuffer(i, m_vertexBufferCount);
 			m_vertexBufferCount++;
 			break;
@@ -640,6 +759,12 @@ void CXipFile::ReadVertexBuffer(int nFileIndex, int nBuffer)
 	m_file.Read(&fvf, sizeof(DWORD));
 
 	int cbVerts = m_filedata[nFileIndex].m_size - 8;
+	if (nVerts <= 0 || cbVerts <= 0)
+	{
+		TRACE(_T("\001ReadVertexBuffer: bad vertex count %d in %s\n"), nVerts, m_fileName);
+		DiscardBytes(m_file, cbVerts > 0 ? cbVerts : 0);
+		return;
+	}
 	pBuf->m_vertexStride = cbVerts / nVerts;
 
 	TheseusCreateVertexBuffer(cbVerts, D3DUSAGE_DYNAMIC, fvf, D3DPOOL_DEFAULT, &pBuf->m_vertexBuffer);

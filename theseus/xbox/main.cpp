@@ -858,8 +858,14 @@ static void InitSkin()
 		if (pSkinXBX->GetValue(_T("Dashboard Settings"), _T("Current Skin"), CurrentSkinFile, MAX_PATH))
 		{
 			pSkinXBX->Close();
-			_stprintf(SkinString, _T("Q:\\Skins\\%s\\"), CurrentSkinFile);
-			_stprintf(WorkerString, _T("%s%s.xbx"), SkinString, CurrentSkinFile);
+
+			// CurrentSkinFile comes straight out of Config.ini and can be as
+			// long as the buffer itself, so both of these have to be bounded.
+			// _sntprintf leaves the string unterminated when it truncates.
+			_sntprintf(SkinString, countof(SkinString) - 1, _T("Q:\\Skins\\%s\\"), CurrentSkinFile);
+			SkinString[countof(SkinString) - 1] = 0;
+			_sntprintf(WorkerString, countof(WorkerString) - 1, _T("%s%s.xbx"), SkinString, CurrentSkinFile);
+			WorkerString[countof(WorkerString) - 1] = 0;
 
 			if (pSkinXBX->Open(WorkerString))
 			{
@@ -1073,7 +1079,8 @@ bool InitApp()
 	GetStartupClassFile(szFileToLoad);           BootMark("GetStartupClassFile");
 
 	if (!LoadXIP(_T("Q:\\Xips\\default.xip"), true))
-		TheseusPanic(_T("Q:\\Xips\\default.xip is missing or unreadable."));
+		TheseusPanic(_T("Q:\\Xips\\default.xip is missing or unreadable."),
+		             _T("Copy default.xip back into Q:\\Xips over FTP, then restart."));
 	BootMark("LoadXIP default.xip (sync)");
 
 	Class_Init();                                BootMark("Class_Init");
@@ -1088,14 +1095,22 @@ bool InitApp()
 		          g_bParseError ? _T("Parse error in %s")
 		                        : _T("Cannot open %s"),
 		          szFileToLoad);
-		TheseusPanic(reason);
+		TheseusPanic(reason,
+		             _T("Replace the file named above over FTP, then restart."));
 	}
 	BootMark("g_pClass->Load(startup XAP)");
 
 	g_pObject = (CInstance *)g_pClass->CreateNode();
+	if (g_pObject == NULL)
+		TheseusPanic(_T("The startup scene could not be created."),
+		             _T("Replace Q:\\Xips over FTP, then restart."));
 	BootMark("CreateNode");
 
-	VERIFYHR(D3DXCreateMatrixStack(0, &g_worldStack));
+	// VERIFYHR still runs the call in retail but throws the result away, and a
+	// null matrix stack takes the first frame down with no explanation.
+	if (FAILED(D3DXCreateMatrixStack(0, &g_worldStack)) || g_worldStack == NULL)
+		TheseusPanic(_T("Out of memory setting up the renderer."),
+		             _T("Restart the console. If it repeats, reinstall Theseus."));
 	BootMark("D3DXCreateMatrixStack");
 
 	CallFunction(g_pObject, _T("initialize"));
@@ -1207,7 +1222,9 @@ LONG XdashUnhandledExceptionFilter(LPEXCEPTION_POINTERS pEx)
 {
 	// Drop into panic mode so the user gets a recovery screen with FTP
 	// info and a crash log on disk, instead of a silent reboot.
-	TheseusPanic(_T("Unhandled exception in dashboard."), pEx);
+	TheseusPanic(_T("Unhandled exception in dashboard."),
+	             _T("Restart the console. If it repeats, send Q:\\Logs\\panic-*.txt to us."),
+	             pEx);
 
 	// TheseusPanic doesn't return, but if D3D was unavailable it will
 	// have rebooted on its own. This line is the unreachable safety net.

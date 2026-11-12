@@ -31,6 +31,7 @@ CSettingsFile::CSettingsFile()
 	m_filePath = NULL;
 	m_sections = NULL;
 	m_dirty = false;
+	m_batching = false;
 #ifdef _UNICODE
 	m_unicode = false;
 #endif
@@ -326,7 +327,8 @@ void CSettingsFile::SetValue(const TCHAR* szSection, const TCHAR* szName, const 
 	if (pSection->SetValue(szName, szValue))
 	{
 		m_dirty = true;
-		Save();
+		if (!m_batching)
+			Save();
 	}
 }
 

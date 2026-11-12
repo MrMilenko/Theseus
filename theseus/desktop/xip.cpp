@@ -210,7 +210,12 @@ CXipFile* LoadXIP(const char* szURL, bool bSync, bool isSkin )
 		}
 	}
 
-	ASSERT(c_nXipFileCount < countof(c_rgXipFile));
+	if (c_nXipFileCount >= (int)countof(c_rgXipFile))
+	{
+		TRACE("\001LoadXIP: XIP pool full (%d)\n", (int)countof(c_rgXipFile));
+		return NULL;
+	}
+
 	CXipFile* pXipFile = &c_rgXipFile[c_nXipFileCount];
 
 	if (!pXipFile->Open(szBuf))
@@ -392,6 +397,20 @@ DWORD CALLBACK CXipFile::StartLoadThread(LPVOID pvContext)
 	return 0;
 }
 
+// Read returns the byte count, or -1 when the file is short or unreadable, so
+// "did I get all of it" has to be asked directly.
+static bool XipReadExact(CFileBuffer& file, void* pv, int cb)
+{
+	return cb >= 0 && file.Read(pv, cb) == cb;
+}
+
+// Every real archive ends exactly where dataStart + dataSize says it does.
+static bool XipSizeMatches(CFileBuffer& file, const XIPHEADER& hdr)
+{
+	DWORD cbFile = GetFileSize(file.m_hFile, NULL);
+	return cbFile != (DWORD)-1 && cbFile == hdr.m_dwDataStart + hdr.m_dwDataSize;
+}
+
 bool CXipFile::Load()
 {
 	char szDirPath [MAX_PATH];
@@ -410,26 +429,36 @@ bool CXipFile::Load()
 
 	m_file.SetFile(m_szXipFileName, hFile);
 
-	if (!m_file.Read(&m_header, sizeof (XIPHEADER)))
+	if (!XipReadExact(m_file, &m_header, sizeof (XIPHEADER)))
 		return false;
 
 	if (m_header.m_dwMagic != XIP_MAGIC)
 		return false;
 
+	// The tables sit between the header and the data section, so the name pool
+	// is the remainder. A corrupt dataStart makes that negative, and a real
+	// archive ends exactly where its header says it does.
+	const int cbTables = (int)(m_header.m_wFileCount * sizeof (FILEDATA))
+		+ (int)(m_header.m_wNameCount * sizeof (FILENAME));
+	const int cbNames = (int)m_header.m_dwDataStart - (int)sizeof (XIPHEADER) - cbTables;
+
+	if (cbNames <= 0 || !XipSizeMatches(m_file, m_header))
+	{
+		TRACE("\001CXipFile::Load (%s) header does not describe this file\n", m_szXipFileName);
+		return false;
+	}
+
 	m_filedata = new FILEDATA [m_header.m_wFileCount];
-	if (!m_file.Read(m_filedata, m_header.m_wFileCount * sizeof (FILEDATA)))
+	if (!XipReadExact(m_file, m_filedata, (int)(m_header.m_wFileCount * sizeof (FILEDATA))))
 		return false;
 
 	m_directory = new FILENAME [m_header.m_wNameCount];
-	if (!m_file.Read(m_directory, m_header.m_wNameCount * sizeof (FILENAME)))
+	if (!XipReadExact(m_file, m_directory, (int)(m_header.m_wNameCount * sizeof (FILENAME))))
 		return false;
 
-	{
-		int cbNames = m_header.m_dwDataStart - (sizeof (XIPHEADER) + m_header.m_wFileCount * sizeof (FILEDATA) + m_header.m_wNameCount * sizeof (FILENAME));
-		m_names = new char [cbNames];
-		if (!m_file.Read(m_names, cbNames))
-			return false;
-	}
+	m_names = new char [cbNames];
+	if (!XipReadExact(m_file, m_names, cbNames))
+		return false;
 
 	CreateObjects();
 
@@ -655,6 +684,12 @@ void CXipFile::ReadVertexBuffer(int nFileIndex, int nVertexBuffer)
 	m_file.Read(&nVertexCount, sizeof (int));
 	m_file.Read(&fvf, sizeof (DWORD));
 	
+	if (nVertexCount <= 0 || m_filedata[nFileIndex].m_dwSize < 8)
+	{
+		TRACE("\001ReadVertexBuffer: bad vertex count %d\n", nVertexCount);
+		return;
+	}
+
 	pMeshBuffer->m_nVertexStride = (m_filedata[nFileIndex].m_dwSize - 8) / nVertexCount;
 
 	TheseusCreateVertexBuffer(m_filedata[nFileIndex].m_dwSize - 8, D3DUSAGE_DYNAMIC, fvf, D3DPOOL_DEFAULT, &pMeshBuffer->m_pVertexBuffer);
