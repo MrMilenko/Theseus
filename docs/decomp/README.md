@@ -299,6 +299,31 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x00050b60 | `CCameraPath_Advance` | `CCameraPath::Advance` (camera.cpp) | [Camera](Camera.md) | Samples the two interpolators at the path's time and snaps the camera there. |
 | 0x00050c90 | `CCameraPath_OnSetProperty` | `CCameraPath::OnSetProperty` (camera.cpp) | [Camera](Camera.md) | Writing isActive restamps the start time. |
 | 0x00053ed0 | `CFont::LoadGlyph` | `CFont::LoadGlyph` (text.cpp) | [Text](Text.md) | Decompresses a single glyph bitmap from the XTF cache table. |
+| 0x00056110 | `GenerateRadialAlphaMask` | `GenerateRadialAlphaMask` (materials.cpp) | [Materials](Materials.md) | Draws the round alpha falloff the four mask textures use. |
+| 0x000562d0 | `GetRadialAlphaMask` | `GetRadialAlphaMask` (materials.cpp) | [Materials](Materials.md) | Plain round mask texture, built once. |
+| 0x000563a0 | `GetRadialAVAlphaMask` | `GetRadialAVAlphaMask` (materials.cpp) | [Materials](Materials.md) | Round mask squeezed into the top left 0.6875. |
+| 0x00056470 | `GetRadialEdgeAlphaMask` | `GetRadialEdgeAlphaMask` (materials.cpp) | [Materials](Materials.md) | Steep edge mask; icons use it. |
+| 0x00056540 | `GetRadialEdgeAlphaMainMask` | `GetRadialEdgeAlphaMainMask` (materials.cpp) | [Materials](Materials.md) | Softer edge mask for the main panels. |
+| 0x00056610 | `CInnerWallMatInfo_Setup` | `CInnerWallMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Textured falloff drawn from both sides. |
+| 0x000567d0 | `CFreeSpaceMatInfo_Setup` | `CFreeSpaceMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Memory gauge: slides the texture by the material's param. |
+| 0x00056940 | `CMaskTextureMatInfo_Setup` | `CMaskTextureMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Mesh texture cut by a mask on stage 1, faded on stage 2. |
+| 0x00056a50 | `COrangeEggGlowMatInfo_Setup` | (reference only) | [Materials](Materials.md) | Camera space texture projection with an animated offset. |
+| 0x00056c70 | `CModulateTextureMatInfo_Setup` | `CModulateTextureMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Mesh texture with a pulsing tinted alpha. |
+| 0x00056d90 | `CReflectMatInfo_Setup` | `CReflectMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Environment reflection shader. |
+| 0x00056ea0 | `CBackingMatInfo_Setup` | `CBackingMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Colored panel shaped by a mask. |
+| 0x00056f80 | `CEggGlowPulseMatInfo_Setup` | `CEggGlowPulseMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Falloff whose front alpha pulses 64..192. |
+| 0x00057000 | `CEggGlowFadeMatInfo_Setup` | `CEggGlowFadeMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Falloff glow that fades out over 1.25 seconds after param is set to 1. |
+| 0x000570c0 | `CKeyMatInfo_CKeyMatInfo` | `CKeyMatInfo::CKeyMatInfo` (materials.cpp) | [Materials](Materials.md) | Falloff fields plus the bright and text bytes. |
+| 0x00057120 | `CKeyMatInfo_Setup` | `CKeyMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Keyboard key colors from one of two palettes. |
+| 0x000572d0 | `CIconMatInfo_Setup` | `CIconMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Current or selected title image, fading in, with soft edges. |
+| 0x00057650 | `CMatInfo_Setup` | `CMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Base Setup: standard material and cull none flags. |
+| 0x000576b0 | `CSolidMatInfo_Setup` | `CSolidMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Flat texture factor color. |
+| 0x00057790 | `CFalloffMatInfo_Setup` | `CFalloffMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Side to front color falloff shader. |
+| 0x00057940 | `CFalloffTexInfo_Setup` | `CFalloffTexInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Falloff over the mesh's texture. |
+| 0x00057af0 | `CAnisoMatInfo_Setup` | `CAnisoMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Falloff through the anisotropic shader. |
+| 0x00057cb0 | `Material_Init` | `Material_Init` (materials_retail.inl) | [Materials](Materials.md) | Builds and sorts all 127 materials. |
+| 0x0005a0f0 | `CMaxMaterial_OnSetProperty` | `CMaxMaterial::OnSetProperty` (materials.cpp) | [Materials](Materials.md) | A new name rebinds; param is widened to a double. |
+| 0x0005a130 | `CMaxMaterial_Render` | `CMaxMaterial::Render` (materials.cpp) | [Materials](Materials.md) | Binds the named material and runs its Setup. |
 | 0x0005ab80 | `CKeyboard_CKeyboard` | `CKeyboard::CKeyboard` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Constructor. Zeroes every field except the cursor, which starts at -1 (whole string selected). |
 | 0x0005ac20 | `CKeyboard_dtor` | `CKeyboard::~CKeyboard` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Releases the text, frame and control nodes, frees `string`, releases the key nodearray. |
 | 0x0005acb0 | `CKeyboard_GetAsteriskFormattingState` | `CKeyboard::GetAsteriskFormattingState` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Returns the global *heading* text flag at 0x0017e74c. |
@@ -384,6 +409,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Camera | [Camera.md](Camera.md) | 9 functions |
 | Date | [Date.md](Date.md) | 7 functions |
 | Math | [Math.md](Math.md) | 19 functions |
+| Materials | [Materials.md](Materials.md) | 25 functions |
 | File Operations | [FileOps.md](FileOps.md) | 7 functions |
 | Disc | (no doc yet, narrative TODO) | 1 function |
 | HUD & Picture | [HudNode.md](HudNode.md) | 9 functions |
