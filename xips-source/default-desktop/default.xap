@@ -698,56 +698,6 @@ function GoToJellyfin()
 }
 
 ////////////////////////////////////////////////////////////////////////////
-// The guide: Guide button, LT+B or F7 from anywhere. theDesktopGuide says
-// when; Guide.xap draws it and takes you back where you were.
-
-DEF theDesktopGuide DesktopGuide
-{
-	function OnOpen()
-	{
-		GoToGuide();
-	}
-
-	function OnClose()
-	{
-		theGuideInline.children[0].CloseGuide();
-	}
-
-	// First run, or Startup Mode set to ask.
-	function OnStartup()
-	{
-		theDesktopGuide.Remember();
-		theDesktopGuide.ShowStart();
-		OpenGuideLevel();
-	}
-}
-
-DEF theGuideInline Inline
-{
-	visible false
-	url "Guide.xap"
-
-	function onLoad()
-	{
-		theGuideInline.children[0].theGuideMenu.GoTo();
-	}
-}
-
-function GoToGuide()
-{
-	theDesktopGuide.Remember();
-	OpenGuideLevel();
-}
-
-function OpenGuideLevel()
-{
-	if (theGuideInline.visible)
-		theGuideInline.children[0].theGuideMenu.GoTo();
-	else
-		theGuideInline.visible = true;
-}
-
-////////////////////////////////////////////////////////////////////////////
 
 DEF theMemoryInline Inline
 {

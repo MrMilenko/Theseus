@@ -8,6 +8,7 @@
 #include "dashapp.h"
 #include "node.h"
 #include <SDL.h>
+#include "guide.h"
 
 #define REPEAT_DELAY 0.3f
 #define REPEAT_INTERVAL 0.12f
@@ -387,22 +388,14 @@ void CJoystick::EnableGlobalInput(int bEnable)
 static bool GuideChord(SDL_GameController* gc);
 static void DevPadScript(JoySnapshot* out);
 
-void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
+// The pad's buttons and sticks as a snapshot. holdB drops the B of LT+B.
+static void ReadPad(SDL_GameController* gc, bool holdB, JoySnapshot* out)
 {
-    memset(out, 0, sizeof(*out));
-
-    // Tools have the pad: leave it zeroed and the dashboard sits still.
-    extern bool ImGui_OwnsPad();
-    if (ImGui_OwnsPad()) return;
-
-    const bool guideHoldsB = GuideChord(gc);
-
-    // --- Physical controller ---
     if (gc)
     {
         // Face buttons -> analogDown[0..3] = A,B,X,Y
         out->analogDown[0] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A);
-        out->analogDown[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) && !guideHoldsB;
+        out->analogDown[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) && !holdB;
         out->analogDown[2] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X);
         out->analogDown[3] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y);
         // Black(RB), White(LB) -> analogDown[4,5]
@@ -441,6 +434,21 @@ void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
         out->thumbRX = rx;
         out->thumbRY = ry;
     }
+}
+
+void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
+{
+    memset(out, 0, sizeof(*out));
+
+    // Tools have the pad: leave it zeroed and the dashboard sits still.
+    extern bool ImGui_OwnsPad();
+    if (ImGui_OwnsPad()) return;
+    // So does the guide, while it's open.
+    if (Guide_TakesInput()) return;
+
+    const bool guideHoldsB = GuideChord(gc);
+
+    ReadPad(gc, guideHoldsB, out);
 
     // --- Keyboard overlay (OR on top) ---
     extern bool ImGui_WantsKeyboard();
@@ -574,6 +582,52 @@ static void DevPadScript(JoySnapshot* out)
         else { extern bool g_guideRequested; static Uint32 s_last = 0;
                if (s_last != p.at) { s_last = p.at; g_guideRequested = true; } }
     }
+}
+
+// The guide's buttons: the pad, the keyboard and the dev script. Called
+// every frame, so the Guide button, LT+B and F7 work with the guide open.
+unsigned Joy_GuideButtons(int* device)
+{
+    extern SDL_Window* g_pSDLWindow;
+    extern bool ImGui_WantsKeyboard();
+    SDL_GameController* gc = CJoystick::c_controller;
+    const bool holdB = GuideChord(gc);
+
+    JoySnapshot pad;
+    memset(&pad, 0, sizeof(pad));
+    ReadPad(gc, holdB, &pad);
+    DevPadScript(&pad);
+    unsigned bits = 0;
+    if (pad.analogDown[0]) bits |= GUIDE_A;
+    if (pad.analogDown[1]) bits |= GUIDE_B;
+    if (pad.analogDown[2]) bits |= GUIDE_X;
+    if (pad.analogDown[3]) bits |= GUIDE_Y;
+    if (pad.analogDown[5]) bits |= GUIDE_LB;
+    if (pad.analogDown[4]) bits |= GUIDE_RB;
+    if (pad.digitalDown[0] || pad.thumbLY > 0.5f)  bits |= GUIDE_UP;
+    if (pad.digitalDown[1] || pad.thumbLY < -0.5f) bits |= GUIDE_DOWN;
+    if (pad.digitalDown[2] || pad.thumbLX < -0.5f) bits |= GUIDE_LEFT;
+    if (pad.digitalDown[3] || pad.thumbLX > 0.5f)  bits |= GUIDE_RIGHT;
+    if (pad.digitalDown[4]) bits |= GUIDE_START;
+    if (pad.digitalDown[5]) bits |= GUIDE_BACK;
+
+    unsigned keys = 0;
+    if (SDL_GetKeyboardFocus() == g_pSDLWindow && !ImGui_WantsKeyboard()) {
+        const Uint8* k = SDL_GetKeyboardState(NULL);
+        if (k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_KP_ENTER] || k[SDL_SCANCODE_SPACE]) keys |= GUIDE_A;
+        if (k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_BACKSPACE]) keys |= GUIDE_B;
+        if (k[SDL_SCANCODE_UP]    || k[SDL_SCANCODE_W]) keys |= GUIDE_UP;
+        if (k[SDL_SCANCODE_DOWN]  || k[SDL_SCANCODE_S]) keys |= GUIDE_DOWN;
+        if (k[SDL_SCANCODE_LEFT]  || k[SDL_SCANCODE_A]) keys |= GUIDE_LEFT;
+        if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) keys |= GUIDE_RIGHT;
+        if (k[SDL_SCANCODE_Q]) keys |= GUIDE_LB;
+        if (k[SDL_SCANCODE_E]) keys |= GUIDE_RB;
+    }
+    if (bits) *device = 1;
+    else if (keys) *device = 0;
+    // Back is B in here, like Backspace.
+    if ((bits | keys) & GUIDE_BACK) bits |= GUIDE_B;
+    return bits | keys;
 }
 
 // ============================================================================

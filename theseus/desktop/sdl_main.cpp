@@ -28,6 +28,7 @@
 #include "display.h"
 #include "esde.h"
 #include "esde_vgames.h"
+#include "guide.h"
 
 #include "host.h"
 #include <bgfx/bgfx.h>
@@ -665,6 +666,12 @@ static void PreSwapOverlays() {
         ImGui::End();
     }
 
+    {
+        int gw = 0, gh = 0;
+        Plat_GetDrawableSize(&gw, &gh);
+        Guide_Render(gw, gh);
+    }
+
     ImGui::Render();
     extern void ImGui_ImplBgfx_RenderDrawData(ImDrawData*);
     ImGui_ImplBgfx_RenderDrawData(ImGui::GetDrawData());
@@ -731,9 +738,9 @@ static void BgfxApplyReset() {
     if (w <= 0 || h <= 0) return;
     bgfx::reset((uint32_t)w, (uint32_t)h, BgfxResetFlags());
     bgfx::setViewRect(0, 0, 0, (uint16_t)w, (uint16_t)h);
-    // ImGui lives on view 2 (sharp on top of any CRT pass on view 1).
+    // ImGui lives on view 3, over the guide on 2 and any CRT pass on 1.
     // bgfx skips views with no rect set, so size it to the backbuffer.
-    bgfx::setViewRect(2, 0, 0, (uint16_t)w, (uint16_t)h);
+    bgfx::setViewRect(3, 0, 0, (uint16_t)w, (uint16_t)h);
     g_pp.BackBufferWidth  = w;
     g_pp.BackBufferHeight = h;
     g_nViewWidth          = (float)w;
@@ -1124,7 +1131,7 @@ int main(int argc, char* argv[]) {
                 // soon as we have one; placeholders here for the first
                 // frame.
                 bgfx::setViewRect(0, 0, 0, (uint16_t)initW, (uint16_t)initH);
-                bgfx::setViewRect(2, 0, 0, (uint16_t)initW, (uint16_t)initH); // ImGui
+                bgfx::setViewRect(3, 0, 0, (uint16_t)initW, (uint16_t)initH); // ImGui
 
                 // The dashboard renders D3D-style: it expects every draw
                 // to land on the framebuffer in the order it was issued,
@@ -1265,11 +1272,12 @@ int main(int argc, char* argv[]) {
         // View layout under bgfx:
         //   view 0 = dashboard 3D scene (FF emulator submits)
         //   view 1 = CRT post-process blit (only touched when g_crt.enabled)
-        //   view 2 = ImGui (menu bar, panels, libmpv via ImGui::AddImage)
-        // ImGui always lives on view 2 so it draws sharp on top of the
-        // post-processed scene, matching the GL backend's behavior.
+        //   view 2 = the guide (guide.cpp)
+        //   view 3 = ImGui (menu bar, panels, libmpv via ImGui::AddImage)
+        // ImGui stays on top so it draws sharp over the post-processed
+        // scene and the guide.
         extern bool ImGui_ImplBgfx_Init(unsigned char);
-        if (!ImGui_ImplBgfx_Init(2))
+        if (!ImGui_ImplBgfx_Init(3))
             fprintf(stderr, "ImGui_ImplBgfx_Init failed!\n");
     }
 
@@ -1396,6 +1404,7 @@ int main(int argc, char* argv[]) {
         while (SDL_PollEvent(&event)) {
             // Let ImGui handle events first
             ImGui_ImplSDL2_ProcessEvent(&event);
+            Guide_HandleEvent(&event);
 
             switch (event.type) {
                 case SDL_QUIT:
@@ -1719,6 +1728,8 @@ int main(int argc, char* argv[]) {
             ApplyEffectiveMute();
         }
 
+        Guide_Frame();
+
         if (!g_mediaFullscreen && !g_xcloudFullscreen) {
             FramePhaseScope advance(FP_ADVANCE);
             Advance();
@@ -1864,6 +1875,7 @@ int main(int argc, char* argv[]) {
 
     // Cleanup
     XapEditor_Cleanup();
+    Guide_Shutdown();
     {
         extern void ImGui_ImplBgfx_Shutdown();
         ImGui_ImplBgfx_Shutdown();

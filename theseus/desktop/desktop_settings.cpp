@@ -69,6 +69,12 @@ static const char* kRendTok[]  = { "auto", "d3d11", "vulkan", "opengl", "metal",
 static const int   kResVals[] = { 0, 720, 1080, 1440, 2160 };
 static const char* kResLbl[]  = { "Native", "720p", "1080p", "1440p (2K)", "2160p (4K)" };
 
+// The guide's palette (ui_overlay_style.cpp's themes, in their order).
+int g_guideTheme = 0;
+static const int   kThemeVals[] = { 0, 1, 2 };
+static const char* kThemeLbl[]  = { "Dashboard Green", "Blue", "Red" };
+static const char* kThemeTok[]  = { "green", "blue", "red" };
+
 static const int   kModeVals[] = { 0, 1, 2 };
 static const char* kModeLbl[]  = { "Windowed", "Borderless", "Fullscreen" };
 
@@ -122,6 +128,9 @@ static const SettingDef kDefs[] = {
       ENUM(kResVals, kResLbl, NULL), 0, 0, 0, NULL, ApplyDisplay },
     { "DisplayMode", "Desktop", "Display", "Display Mode", SK_ENUM, &g_windowMode, 0, "0", SF_STRICT,
       ENUM(kModeVals, kModeLbl, NULL), 0, 0, 0, NULL, ApplyDisplay },
+
+    { "GuideTheme", "Desktop", "Display", "Guide Color", SK_ENUM, &g_guideTheme, 0, "green", SF_STRICT,
+      ENUM(kThemeVals, kThemeLbl, kThemeTok), 0, 0, 0, NULL, NULL },
 
     S_BOOL("CRT_Enabled", "CRT", "Display", "CRT Effect", g_crt.enabled, "0", 0),
     S_CRT("CRT_Scanlines",  "Scanlines",     scanlineIntensity, "0.500", 0.0f, 1.0f),
