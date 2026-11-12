@@ -1000,7 +1000,8 @@ static void EnrichMoviesTmdb(std::vector<MovieRec>& movies, std::vector<ShowRec>
 					m.tmdbId      = tm.tmdbId;
 					hits.fetch_add(1);
 				} else {
-					m.tmdbId = -1;
+					// A failed lookup stays 0 so the next scan asks again.
+					if (!tm.failed) m.tmdbId = -1;
 					misses.fetch_add(1);
 				}
 			}
@@ -1067,7 +1068,7 @@ static void EnrichShowsTmdb(std::vector<ShowRec>& shows, std::vector<MovieRec>& 
 					s.tmdbId      = ts.tmdbId;
 					hits.fetch_add(1);
 				} else {
-					s.tmdbId = -1;
+					if (!ts.failed) s.tmdbId = -1;
 					misses.fetch_add(1);
 				}
 			}

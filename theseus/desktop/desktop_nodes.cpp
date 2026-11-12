@@ -3337,10 +3337,8 @@ public:
 	{
 		if (!Plex_HasToken()) return;
 		Plex_StartSync();
-		if (m_serverUri.empty() && Plex_ServersReady()) {
-			std::vector<PlexServer> srv = Plex_GetServers();
-			if (!srv.empty()) m_serverUri = srv[0].uri;
-		}
+		// Playback goes to the server the sync settled on, which isn't always the first listed.
+		if (Plex_SyncReady()) m_serverUri = Plex_GetActiveServerUri();
 	}
 
 	int GetCount()
@@ -3575,6 +3573,7 @@ public:
 	                   const std::string& title,
 	                   const std::string& subtitle)
 	{
+		if (m_serverUri.empty()) m_serverUri = Plex_GetActiveServerUri();
 		if (m_serverUri.empty() || ratingKey.empty()) return;
 		std::string url = Plex_ResolveStreamUrl(m_serverUri, ratingKey);
 		if (url.empty()) {

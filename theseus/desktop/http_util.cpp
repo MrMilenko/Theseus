@@ -1,7 +1,12 @@
 #include "http_util.h"
+#include "platform.h"
 #include <curl/curl.h>
 #include <stdio.h>
 #include <mutex>
+#include <atomic>
+#ifdef THESEUS_HOST_WIN
+#include <windows.h>
+#endif
 
 static std::once_flag s_initOnce;
 static void EnsureGlobalInit() {
@@ -101,17 +106,38 @@ std::string Http_GetToString(const std::string& url) {
 
 bool Http_GetToFile(const std::string& url, const std::string& outPath) {
     EnsureGlobalInit();
-    FILE* fp = fopen(outPath.c_str(), "wb");
+    // Download beside the target and rename on success, so a reader never
+    // sees half a file and a failed fetch never clobbers a good one.
+    static std::atomic<unsigned> s_partId{0};
+    std::string part = outPath + ".part" + std::to_string(s_partId.fetch_add(1));
+    FILE* fp = fopen(part.c_str(), "wb");
     if (!fp) return false;
     CURL* h = curl_easy_init();
-    if (!h) { fclose(fp); remove(outPath.c_str()); return false; }
+    if (!h) { fclose(fp); remove(part.c_str()); return false; }
     ApplyCommonOpts(h, url.c_str());
     curl_easy_setopt(h, CURLOPT_FAILONERROR, 1L);
     curl_easy_setopt(h, CURLOPT_WRITEFUNCTION, WriteToFile);
     curl_easy_setopt(h, CURLOPT_WRITEDATA, fp);
     CURLcode rc = curl_easy_perform(h);
     curl_easy_cleanup(h);
-    fclose(fp);
-    if (rc != CURLE_OK) { remove(outPath.c_str()); return false; }
+    bool wrote = (fclose(fp) == 0);
+    if (rc != CURLE_OK || !wrote) { remove(part.c_str()); return false; }
+#ifdef THESEUS_HOST_WIN
+    // MS CRT rename() won't replace an existing file.
+    bool moved = MoveFileExA(part.c_str(), outPath.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+    bool moved = rename(part.c_str(), outPath.c_str()) == 0;
+#endif
+    if (!moved) { remove(part.c_str()); return false; }
+    return true;
+}
+
+bool Http_IsSafeFileId(const std::string& id) {
+    if (id.empty() || id.size() > 128 || id[0] == '.') return false;
+    for (char c : id) {
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+        if (!ok) return false;
+    }
     return true;
 }
