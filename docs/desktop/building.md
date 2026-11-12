@@ -37,17 +37,19 @@ cd theseus/third-party/bgfx
 
 # macOS (Apple Silicon)
 ../bx/tools/bin/darwin/genie --gcc=osx-arm64 gmake
-make -C .build/projects/gmake-osx-arm64 -j bx bimg bgfx config=release
+make -C .build/projects/gmake-osx-arm64 -j$(sysctl -n hw.ncpu) bx bimg bgfx config=release
 
 # Linux
 ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
-make -C .build/projects/gmake-linux-gcc -j bx bimg bgfx config=release64
+make -C .build/projects/gmake-linux-gcc -j$(nproc) bx bimg bgfx config=release64
 
 # Windows, cross from Linux
 ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
-make -C .build/projects/gmake-mingw-gcc -j bx bimg bgfx config=release64 \
+make -C .build/projects/gmake-mingw-gcc -j$(nproc) bx bimg bgfx config=release64 \
      CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
 ```
+
+Always give `-j` a number. A bare `-j` starts every compile at once, and on a small machine that runs it out of memory and can freeze the whole desktop. If a low RAM machine with no swap still struggles, use a smaller number than the core count. The same goes for every `make` and `cmake --build` below.
 
 The `genie` that ships prebuilt in bx needs a recent glibc. On an older distro it fails with `GLIBC_2.38 not found`; build it from source and carry on:
 
@@ -70,12 +72,12 @@ cd theseus/third-party/libdatachannel
 cmake -S . -B build-mac -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
       -DNO_WEBSOCKET=1 -DNO_EXAMPLES=1 -DNO_TESTS=1 \
       -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
-cmake --build build-mac -j
+cmake --build build-mac -j$(sysctl -n hw.ncpu)
 
 # Linux
 cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
       -DNO_WEBSOCKET=1 -DNO_EXAMPLES=1 -DNO_TESTS=1
-cmake --build build-linux -j
+cmake --build build-linux -j$(nproc)
 ```
 
 The Windows cross build of it is in [Windows](#windows) below.
@@ -110,7 +112,7 @@ cmake -S theseus/third-party/libdatachannel \
       -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
       -DNO_WEBSOCKET=1 -DNO_EXAMPLES=1 -DNO_TESTS=1 \
       -DENABLE_WARNINGS_AS_ERRORS=OFF
-cmake --build theseus/third-party/libdatachannel/build-win64 -j
+cmake --build theseus/third-party/libdatachannel/build-win64 -j$(nproc)
 ```
 
 Then `make desktop-win64`. The output folder is a complete drop: the exe, every runtime DLL, and Configs/Data/Library. The `release-win64` job in `.github/workflows/release.yml` is the whole recipe end to end.
