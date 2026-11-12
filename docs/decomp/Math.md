@@ -33,3 +33,10 @@ Function names found in the binary string table:
 - All math wrappers are thin CRT calls (fabsf, sinf, cosf, etc.)
 - `atan2(y, x)` passes args reversed to match JS convention
 - `itoa` converts int to Unicode string via CRT `_itoa` + `Unicode()`
+
+## Constructor and constants
+
+`CMathClass::CMathClass` (0x00032950) registers the class as "Math" and loads E, LN2, LN10, LOG2E,
+LOG10E, PI, SQRT1_2 and SQRT2 from `0x0002c034..0x0002c04c`. LOG2E and LOG10E are stored as 1.442
+and 0.434. `round` (0x00032b60) is `(int)(n + 0.5)`, `random` (0x00032b40) is `rand() / 32767`,
+and `max`/`min` (0x00032af0, 0x00032b10) return the second argument on a tie.
