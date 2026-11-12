@@ -26,7 +26,7 @@ static void ClearStreamingEntries()
         if (g_vgames.games[i].valid && VGames_IsStreaming(g_vgames.games[i]))
             g_vgames.games[i].valid = false;
     }
-    g_vgames.generation++;
+    VGames_Compact();
 }
 
 static void Inject()

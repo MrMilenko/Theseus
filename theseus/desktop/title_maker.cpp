@@ -770,7 +770,10 @@ void RenderTitleMaker() {
         });
     };
 
-    if (s_needsScan) { DoScan(); s_needsScan = false; }
+    // Rows moved under us (ES-DE resync, xCloud refresh), so the cached indices are stale.
+    static unsigned int s_scanLayout = 0;
+    if (s_scanLayout != g_vgames.layout) s_needsScan = true;
+    if (s_needsScan) { DoScan(); s_needsScan = false; s_scanLayout = g_vgames.layout; }
 
     // Header
     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "UIX Title Maker");
@@ -1435,6 +1438,8 @@ void RenderTitleMaker() {
             s_stIconBrowserInit = true;
         }
 
+        static unsigned int s_stLayout = 0;
+        if (s_stLayout != g_vgames.layout) { s_stSelectedVi = -1; s_stLayout = g_vgames.layout; }
         if (s_stSelectedVi >= 0 &&
             (s_stSelectedVi >= g_vgames.count || !g_vgames.games[s_stSelectedVi].valid))
             s_stSelectedVi = -1;
@@ -1784,6 +1789,8 @@ void RenderTitleMaker() {
         }
 
         // Selection may have been removed; clamp.
+        static unsigned int s_raLayout = 0;
+        if (s_raLayout != g_vgames.layout) { s_raSelectedVi = -1; s_raLayout = g_vgames.layout; }
         if (s_raSelectedVi >= 0 &&
             (s_raSelectedVi >= g_vgames.count || !g_vgames.games[s_raSelectedVi].valid))
             s_raSelectedVi = -1;
