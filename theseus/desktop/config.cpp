@@ -9,7 +9,7 @@
 #include "runner.h"
 
 #include "timezone.h"
-#include "dashlocale.h"
+#include "locale_node.h"
 #include "xbe.h"
 #include "network.h"
 #include "config.h"
@@ -365,35 +365,6 @@ void CConfig::SetDST(int bObserveDST)
 // Parental Controls / Password
 // ============================================================================
 
-static uint32_t EncodePassword(const char *szPassword)
-{
-	uint32_t dwPassword = 0;
-	for (const char *pch = szPassword; *pch != 0; pch += 1)
-	{
-		dwPassword <<= 4;
-
-		switch (*pch)
-		{
-		case 'u': dwPassword += 1; break;  // up
-		case 'd': dwPassword += 2; break;  // down
-		case 'l': dwPassword += 3; break;  // left
-		case 'r': dwPassword += 4; break;  // right
-		case 'a': dwPassword += 5; break;  // A
-		case 'b': dwPassword += 6; break;  // B
-		case 'x': dwPassword += 7; break;  // X
-		case 'y': dwPassword += 8; break;  // Y
-		case 'B': dwPassword += 9; break;  // black
-		case 'W': dwPassword += 10; break; // white
-		case 'L': dwPassword += 11; break; // L trigger
-		case 'R': dwPassword += 12; break; // R trigger
-		default:
-			ASSERT(FALSE);
-		}
-	}
-
-	return dwPassword;
-}
-
 int CConfig::CheckParentPassword(const char *szCheckPassword)
 {
 	(void)szCheckPassword;
@@ -449,25 +420,15 @@ int CConfig::GetLaunchParameter2()
 	return g_bHasLaunchData ? g_dwLaunchParameter2 : 0;
 }
 
+// CConfig::CanDriveBeCleanup(drive)   [script fn 'CanDriveBeCleanup', FND 0x0017fef8, sig 3]
+// Reconstructed from 5960 retail XBE @ 0x0003b460: true for the drives a
+// game may ask the dash to clean up, any case. 5960 takes F to M, T and U;
+// Theseus has always taken H to O, T and U, which keeps the big F and G
+// partitions out of it.
 int CConfig::CanDriveBeCleanup(int Drive)
 {
-	switch (toupper(Drive))
-	{
-	case 'T':
-	case 'U':
-	case 'H':
-	case 'I':
-	case 'J':
-	case 'K':
-	case 'L':
-	case 'M':
-	case 'N':
-	case 'O':
-		return true;
-
-	default:
-		return false;
-	}
+	int letter = toupper(Drive);
+	return letter == 'T' || letter == 'U' || (letter >= 'H' && letter <= 'O');
 }
 
 DWORD CConfig::GetTitleID()

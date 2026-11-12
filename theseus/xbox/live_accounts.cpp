@@ -10,6 +10,8 @@
 #include "xonlinep.h"
 #include <xonline.h>
 
+extern bool UnloadTexture(const TCHAR* szURL);
+
 
 extern "C"
 {
@@ -313,6 +315,10 @@ void CLiveAccounts::ClearMOTDCache()
     // Delete cached MOTD files from T: drive
     DeleteFileA("T:\\motd_text.xbx");
     DeleteFileA("T:\\motd_icon.xbx");
+
+    // 5960 also drops the deleted .xbx from the texture cache (0x000614f0).
+    UnloadTexture(_T("T:\\motd_text.xbx"));
+    UnloadTexture(_T("T:\\motd_icon.xbx"));
 }
 
 void CLiveAccounts::ClearLastLogonUser()

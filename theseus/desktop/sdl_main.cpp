@@ -968,7 +968,7 @@ int main(int argc, char* argv[]) {
 #if !defined(ASAN_ACTIVE)
     // ASan installs its own SIGSEGV/SIGBUS handlers; ours would eat them.
     // Skip our handler entirely on asan builds.
-    Host_InstallCrashHandler();
+    Host_InstallCrashHandler(Plat_UserDataDir(), Plat_ShippedDir());
 #endif
 
 #undef ASAN_ACTIVE // Clean up

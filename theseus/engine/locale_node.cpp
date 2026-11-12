@@ -1,282 +1,344 @@
-// locale_node.cpp: CLocale, the dashboard's translation table for UI
-// strings. Reads xlate.ini at boot, exposes XAP-callable lookups, and
-// drives section switching for language changes. Decompiled from the
-// 5960 retail XBE.
+// locale_node.cpp: the Translator node and the dashboard's locale helpers.
+//
+// One table of "key = value" pairs for the current language, looked up by
+// every Text node and script string; plus the date, time and number formats
+// that change with region and language, and the time zone list. Rebuilt
+// function by function from the 5960 retail XBE; what the binary does is
+// written up in docs/decomp/Locale.md. Both builds compile this file. The
+// seam is the language file: 5960 loads it from an XBE section, Theseus from
+// Q:\Language\<name>.dat, and desktop turns its UTF-16 into UTF-8.
 
 #include "std.h"
 #include "theseus.h"
+#ifdef _XBOX
+#include "title_collection.h"
+#else
+#include "titlecollection.h"
+#endif
 #include "node.h"
 #include "runner.h"
 #include "locale_node.h"
 #include "xap_compile.h"
-#include "title_collection.h"
+#include "timezone.h"
 
-#define MAX_XLATE 1000 // This is the maximum number of terms in a translation file
+// 5960 holds 550 pairs (0x0017aee8); the Theseus files can be longer.
+#define MAX_XLATE 1000
 
-int g_nCurLanguage;
-int g_nCurRegion;
+int g_nCurLanguage;     // 0x0017c024
+int g_nCurRegion;       // 0x0017c020
 
-static const CHAR* rgszTranslateSection[] =
+// 5960 names an XBE section per language (pointer table at 0x001745b0, nine
+// of them); Theseus ships a .dat file for the first six.
+static const char* const s_languageFiles[LANGUAGE_COUNT] =
 {
-    "English",
-    "Japanese",
-    "German",
-    "French",
-    "Spanish",
-    "Italian"
+	"English", "Japanese", "German", "French", "Spanish", "Italian",
 };
 
-struct XLATE
+// Two letters per language, ending with Korean, Chinese and Portuguese.
+static const TCHAR s_languageCodes[] = _T("ENJADEFRESITKOTWBR");
+#define LANGUAGE_CODE_COUNT 9
+
+struct XlatePair
 {
-    TCHAR* m_szKey;
-    TCHAR* m_szValue;
+	TCHAR* key;
+	TCHAR* value;
 };
 
-static HANDLE g_hXlate;
-static TCHAR* rgchXlateData;
-static XLATE rgxlate [MAX_XLATE];
+static XlatePair s_xlate[MAX_XLATE];
+static TCHAR* s_xlateText;      // the loaded file; keys and values point into it
+
+
+// ===== Loading a language ==================================================
+
+#ifndef _XBOX
+// Desktop strings are UTF-8. out needs 3 bytes per unit plus the null.
+static void NarrowToUTF8(const WORD* in, int count, char* out)
+{
+	unsigned char* p = (unsigned char*)out;
+	for (int i = 0; i < count; i++)
+	{
+		unsigned cp = in[i];
+		if (cp >= 0xd800 && cp < 0xdc00 && i + 1 < count && in[i + 1] >= 0xdc00 && in[i + 1] < 0xe000)
+			cp = 0x10000 + ((cp - 0xd800) << 10) + (in[++i] - 0xdc00);
+
+		if (cp < 0x80)
+			*p++ = (unsigned char)cp;
+		else if (cp < 0x800)
+		{
+			*p++ = (unsigned char)(0xc0 | (cp >> 6));
+			*p++ = (unsigned char)(0x80 | (cp & 0x3f));
+		}
+		else if (cp < 0x10000)
+		{
+			*p++ = (unsigned char)(0xe0 | (cp >> 12));
+			*p++ = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+			*p++ = (unsigned char)(0x80 | (cp & 0x3f));
+		}
+		else
+		{
+			*p++ = (unsigned char)(0xf0 | (cp >> 18));
+			*p++ = (unsigned char)(0x80 | ((cp >> 12) & 0x3f));
+			*p++ = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+			*p++ = (unsigned char)(0x80 | (cp & 0x3f));
+		}
+	}
+	*p = 0;
+}
+#endif
+
+// Reads Q:\Language\<name>.dat (UTF-16LE behind a BOM) into s_xlateText,
+// null terminated and without the BOM. Desktop turns it into UTF-8.
+static bool ReadLanguageFile(const char* name)
+{
+	char path[MAX_PATH];
+	sprintf(path, "Q:\\Language\\%s.dat", name);
+	HANDLE file = TheseusCreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+		return false;
+
+	DWORD units = GetFileSize(file, NULL) / 2;
+	WORD* raw = (WORD*)malloc((units + 1) * sizeof(WORD));
+	DWORD got = 0;
+	if (raw != NULL)
+		ReadFile(file, raw, units * 2, &got, NULL);
+	CloseHandle(file);
+	if (raw == NULL)
+		return false;
+
+	units = got / 2;
+	raw[units] = 0;
+	WORD* start = (units > 0 && raw[0] == 0xfeff) ? raw + 1 : raw;
+	int count = (int)(raw + units - start);
+
+#ifdef _XBOX
+	s_xlateText = (TCHAR*)malloc((count + 1) * sizeof(TCHAR));
+	if (s_xlateText != NULL)
+	{
+		for (int i = 0; i <= count; i++)
+			s_xlateText[i] = start[i];
+	}
+#else
+	s_xlateText = (TCHAR*)malloc(count * 3 + 1);
+	if (s_xlateText != NULL)
+		NarrowToUTF8(start, count, s_xlateText);
+#endif
+	free(raw);
+	return s_xlateText != NULL;
+}
 
 static void FreeXlate()
 {
-    ASSERT(g_nCurLanguage >= 0 && g_nCurLanguage < countof(rgszTranslateSection));
-
-    if (g_hXlate != NULL && g_hXlate != INVALID_HANDLE_VALUE)
-    {
-		CloseHandle( g_hXlate );
-    }
-    rgchXlateData = NULL;
-    ZeroMemory(rgxlate, sizeof(rgxlate));
+	free(s_xlateText);
+	s_xlateText = NULL;
+	memset(s_xlate, 0, sizeof(s_xlate));
 }
 
-static void LoadXlate(const CHAR* szXlateSection)
+static inline unsigned CharCode(TCHAR ch)
 {
+#ifdef _XBOX
+	return (WORD)ch;
+#else
+	return (unsigned char)ch;
+#endif
+}
 
-	// Load language file from hard drive
+static inline bool IsBlank(TCHAR ch)
+{
+	return ch == ' ' || ch == '\t';
+}
+
+static inline TCHAR* SkipBlanks(TCHAR* p)
+{
+	while (IsBlank(*p))
+		p++;
+	return p;
+}
+
+// A quoted field, or a value, runs to a quote or the end of the line.
+static inline TCHAR* SkipField(TCHAR* p)
+{
+	while (*p != 0 && *p != '\r' && *p != '\n' && *p != '"')
+		p++;
+	return p;
+}
+
+// Steps over CR, and LF after it.
+static inline TCHAR* NextLine(TCHAR* p)
+{
+	p++;
+	if (*p == '\n')
+		p++;
+	return p;
+}
+
+// LoadXlate(section)
+// Reconstructed from 5960 retail XBE @ 0x0003c370. The binary loads the
+// language's XBE section (retrying after freeing the texture then mesh cache,
+// rebooting when out of memory), checks the FEFF mark and then reads one pair
+// per CR ended line:
+//     [blanks] ['#' comment] CR                 skipped
+//     key | "key"  [blanks] = [blanks]  value | "value"  [blanks] ['#' comment] CR
+// An unquoted key ends at a blank or '='; inside it '_' becomes ':' before
+// '=' or a space and ' ' anywhere else. The value goes through
+// ExpandCString. A missing '=' or CR stops the whole file; an empty key or
+// value skips the line. See docs/decomp/Locale.md.
+static void LoadXlate(const char* name)
+{
+	if (!ReadLanguageFile(name))
 	{
-		DWORD datOut = 0;
-		char tempPath[MAX_PATH];
-		sprintf(tempPath, "Q:\\Language\\%s.dat", szXlateSection);
-		g_hXlate = TheseusCreateFile(tempPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_SYSTEM, NULL);
-		if (g_hXlate != INVALID_HANDLE_VALUE)
-		{
-			DWORD datSize = GetFileSize(g_hXlate, NULL);
-			rgchXlateData = (TCHAR*)malloc(datSize);
-			ReadFile(g_hXlate, rgchXlateData, datSize, &datOut, NULL);
-		}
+		TRACE(_T("\001LoadXlate: failed to load %hs.dat\n"), name);
+		return;
 	}
 
-    {
-        TCHAR* pch = rgchXlateData + 1; // Skip Unicode BOM
-        int nXlate = 0;
-        int nLine = 1;
-        while (*pch != 0)
-        {
-            const TCHAR* pchKey;
-            int cchKey;
+	TCHAR* p = s_xlateText;
+	int count = 0;
+	while (*p != 0)
+	{
+		p = SkipBlanks(p);
 
-            while (*pch == ' ' || *pch == '\t')
-                pch += 1;
+		// A whole line comment runs to CR or LF.
+		if (*p == '#')
+		{
+			while (*p != 0 && *p != '\r' && *p != '\n')
+				p++;
+		}
+		if (*p == '\r')
+		{
+			p = NextLine(p);
+			continue;
+		}
 
-            if (*pch == '#')
-            {
-                pch += 1;
-                while (*pch != 0 && *pch != '\r' && *pch != '\n')
-                    pch += 1;
-            }
+		TCHAR* key;
+		if (*p == '"')
+		{
+			key = ++p;
+			p = SkipField(p);
+		}
+		else
+		{
+			key = p;
+			for (; CharCode(*p) > ' ' && *p != '='; p++)
+			{
+				if (*p == '_')
+					*p = (p[1] == '=' || p[1] == ' ') ? ':' : ' ';
+			}
+		}
+		int keyLen = (int)(p - key);
+		if (*p == '"')
+			p++;
 
-            if (*pch == '\r')
-            {
-                pch += 1;
-                if (*pch == '\n')
-                    pch += 1;
+		p = SkipBlanks(p);
+		if (*p != '=')
+			return;
+		p = SkipBlanks(p + 1);
+		if (*p == '"')
+			p++;
 
-                nLine += 1;
-                continue;
-            }
+		TCHAR* value = p;
+		p = SkipField(p);
+		int valueLen = (int)(p - value);
+		if (*p == '"')
+			p++;
 
-            if (*pch == '"')
-            {
-                pch += 1;
-                pchKey = pch;
-                while (*pch != 0 && *pch != '\r' && *pch != '\n' && *pch != '"')
-                    pch += 1;
-            }
-            else
-            {
-                pchKey = pch;
-                while ((unsigned)*pch > ' ' && *pch != '=')
-                {
-                    if (*pch == '_')
-                    {
-                        if (*(pch + 1) == '=' || *(pch + 1) == ' ')
-                            *pch = ':';
-                        else
-                            *pch = ' ';
-                    }
+		// A trailing comment runs to CR only.
+		p = SkipBlanks(p);
+		if (*p == '#')
+		{
+			while (*p != 0 && *p != '\r')
+				p++;
+		}
+		if (*p != '\r')
+			return;
+		p = NextLine(p);
 
-                    pch += 1;
-                }
-            }
-            cchKey = (int)(pch - pchKey);
+		if (keyLen == 0 || valueLen == 0)
+			continue;
 
-            if (*pch == '"')
-                pch += 1;
+		valueLen = ExpandCString(value, valueLen, value, valueLen);
+		if (valueLen < 0)
+			return;
+		key[keyLen] = 0;
+		value[valueLen] = 0;
 
-            while (*pch == ' ' || *pch == '\t')
-                pch += 1;
-
-            if (*pch != '=')
-            {
-                TRACE(_T("\001%hs(%d): invalid translation data: expected an '='\n"), szXlateSection, nLine);
-                return;
-            }
-
-            pch += 1;
-
-            const TCHAR* pchValue;
-            int cchValue;
-
-            while (*pch == ' ' || *pch == '\t')
-                pch += 1;
-
-            if (*pch == '"')
-                pch += 1;
-
-            pchValue = pch;
-            while (*pch != 0 && *pch != '\r' && *pch != '\n' && *pch != '"')
-                pch += 1;
-            cchValue = (int)(pch - pchValue);
-
-            if (*pch == '"')
-                pch += 1;
-
-            while (*pch == ' ' || *pch == '\t')
-                pch += 1;
-
-            if (*pch == '#')
-            {
-                pch += 1;
-                while (*pch != 0 && *pch != '\r')
-                    pch += 1;
-            }
-
-            if (*pch == '\r')
-            {
-                pch += 1;
-                if (*pch == '\n')
-                    pch += 1;
-
-                nLine += 1;
-            }
-            else
-            {
-                TRACE(_T("\001%hs(%d): expected end of line!\n"), szXlateSection, nLine);
-                return;
-            }
-
-            if (cchKey == 0 || cchValue == 0)
-            {
-                TRACE(_T("\001%hs(%d): missing key or value\n"), szXlateSection, nLine);
-                continue;
-            }
-
-            cchValue = ExpandCString((TCHAR*)pchValue, cchValue, pchValue, cchValue);
-            if (cchValue < 0)
-                return;
-
-            ((TCHAR*)pchKey)[cchKey] = 0;
-            ((TCHAR*)pchValue)[cchValue] = 0;
-
-    //      TRACE(_T("XLATE: \"%s\" = \"%s\"\n"), pchKey, pchValue);
-
-            if (!CHECK(nXlate < MAX_XLATE))
-                return; // the rest of the file is dropped; raise MAX_XLATE
-            rgxlate[nXlate].m_szKey = (TCHAR*)pchKey;
-            rgxlate[nXlate].m_szValue = (TCHAR*)pchValue;
-            nXlate += 1;
-        }
-    }
+		// 5960 has no bound here.
+		if (!CHECK(count < MAX_XLATE))
+			return;
+		s_xlate[count].key = key;
+		s_xlate[count].value = value;
+		count++;
+	}
 }
 
+// Translate(string, out, language)
+// Reconstructed from 5960 retail XBE @ 0x0003c620:
+//     wcscpy(out, string); p = wcschr(out, '@'); if (p) *p = '@';
+//     for (i = 0; i < 550 && table[i].key; i++)
+//         if (!wcscmp(table[i].key, out)) { wcscpy(out, table[i].value); break; }
+//     return out;
+// The '@' write puts back the character it found, so it's left out. The
+// language argument is unused, as in 5960 (it reads the current table).
 const TCHAR* Translate(const TCHAR* szString, TCHAR* szTranslate, int nLanguage/*=LANGUAGE_CURRENT*/)
 {
-    if (nLanguage == LANGUAGE_CURRENT)
-        nLanguage = g_nCurLanguage;
+	_tcscpy(szTranslate, szString);
+	for (int i = 0; i < MAX_XLATE && s_xlate[i].key != NULL; i++)
+	{
+		if (_tcscmp(s_xlate[i].key, szTranslate) == 0)
+		{
+			_tcscpy(szTranslate, s_xlate[i].value);
+			break;
+		}
+	}
+	return szTranslate;
+}
 
-    _tcscpy(szTranslate, szString);
-    TCHAR* pch = _tcschr(szTranslate, '@');
-    if (pch != NULL)
-        *pch = '@';
-
-    bool bFound = false;
-    for (int i = 0; i < MAX_XLATE; i += 1)
-    {
-        if (rgxlate[i].m_szKey == NULL)
-            break;
-
-        if (_tcscmp(rgxlate[i].m_szKey, szTranslate) == 0)
-        {
-            _tcscpy(szTranslate, rgxlate[i].m_szValue);
-            bFound = true;
-            break;
-        }
-    }
-
-#ifdef _DEBUG
-    if (!bFound)
-    {
-        for (const TCHAR* pch = szTranslate; *pch != '\0'; pch += 1)
-        {
-            if (*pch != ' ')
-            {
-                // TODO: Start ASSERTing when this warning stop happening...
-                TRACE(_T("Translate: '%s' not found in %hs\n"), szString, rgszTranslateSection[nLanguage]);
-                break;
-            }
-        }
-    }
-#endif
-
-    return szTranslate;
+void Locale_Exit()
+{
+	FreeXlate();
 }
 
 
+// ===== Translator node =====================================================
 
 class CTranslator : public CNode
 {
-    DECLARE_NODE(CTranslator, CNode)
+	DECLARE_NODE(CTranslator, CNode)
 public:
-    CTranslator();
-    ~CTranslator();
+	CTranslator();
+	~CTranslator();
 
-    void SetLanguage(int nNewLanguage);
-    CStrObject* Translate(const TCHAR* szString);
-    CStrObject* TranslateStripColon(const TCHAR* szString);
-    CStrObject* GetLanguageCode();
-    CStrObject* GetDateSeparator();
-    CStrObject* FormatNumber(int nNumber);
+	void SetLanguage(int nNewLanguage);
+	CStrObject* Translate(const TCHAR* szString);
+	CStrObject* TranslateStripColon(const TCHAR* szString);
+	CStrObject* GetLanguageCode();
+	CStrObject* GetDateSeparator();
+	CStrObject* FormatNumber(int nNumber);
 
-    int GetTimeZoneCount();
-    CStrObject* GetTimeZoneText(int nTimeZone);
+	int GetTimeZoneCount();
+	CStrObject* GetTimeZoneText(int nTimeZone);
 
-    DECLARE_NODE_FUNCTIONS()
+	DECLARE_NODE_FUNCTIONS()
 };
 
 IMPLEMENT_NODE("Translator", CTranslator, CNode)
 
+// FND at 0x00180408, same order.
 #define _FND_CLASS CTranslator
 START_NODE_FUN(CTranslator, CNode)
-    NODE_FUN_VI(SetLanguage)
-    NODE_FUN_SS(Translate)
-    NODE_FUN_SV(GetLanguageCode)
-    NODE_FUN_SV(GetDateSeparator)
-    NODE_FUN_SI(FormatNumber)
-    NODE_FUN_IV(GetTimeZoneCount)
-    NODE_FUN_SI(GetTimeZoneText)
-    NODE_FUN_SS(TranslateStripColon)
+	NODE_FUN_VI(SetLanguage)
+	NODE_FUN_SS(Translate)
+	NODE_FUN_SV(GetLanguageCode)
+	NODE_FUN_SV(GetDateSeparator)
+	NODE_FUN_SI(FormatNumber)
+	NODE_FUN_IV(GetTimeZoneCount)
+	NODE_FUN_SI(GetTimeZoneText)
+	NODE_FUN_SS(TranslateStripColon)
 END_NODE_FUN()
 #undef _FND_CLASS
 
+// CTranslator::CTranslator() / ~CTranslator()
+// Reconstructed from 5960 retail XBE @ 0x0003c690 (the factory builds a bare
+// CNode, 0x1c bytes) and @ 0x0003c700 (straight to CNode's destructor).
+// The node has no state of its own.
 CTranslator::CTranslator()
 {
 }
@@ -285,335 +347,216 @@ CTranslator::~CTranslator()
 {
 }
 
-#include "timezone.h"
-
-int CTranslator::GetTimeZoneCount()
-{
-    return TIMEZONECOUNT;
-}
-
-CStrObject* CTranslator::GetTimeZoneText(int nTimeZone)
-{
-    if (nTimeZone < 0 || nTimeZone >= TIMEZONECOUNT)
-        return new CStrObject;
-
-    return Translate(g_timezoneinfo[nTimeZone].dispname);
-}
-
-int GetTimeZoneIndex(const TIME_ZONE_INFORMATION* tzinfo)
-{
-    ASSERT(tzinfo->StandardDate.wYear == 0 &&
-           tzinfo->DaylightDate.wYear == 0);
-
-    int index, bestmatch, bestresult;
-    bestmatch = bestresult = -1;
-    for (index=0; index < TIMEZONECOUNT; index++) {
-        const struct TZINFO* srcinfo = &g_timezoneinfo[index];
-        if (srcinfo->bias == tzinfo->Bias) {
-            int match = 1;
-            if (srcinfo->stdbias == tzinfo->StandardBias &&
-                srcinfo->dltbias == tzinfo->DaylightBias) {
-                match++;
-
-                // Compare only the first 4 characters of the time zone name
-                // because that's what we store in the EEPROM.
-                // If everything matches, no need to continue searching.
-                if (wcsncmp(srcinfo->stdname, tzinfo->StandardName, 4) == 0)
-                    return index;
-            }
-
-            if (match > bestmatch) {
-                bestmatch = match;
-                bestresult = index;
-            }
-        }
-    }
-
-    return bestresult;
-}
-
-inline void TZDateToSysTime(const struct TZDATE* tzdate, SYSTEMTIME* systime)
-{
-    systime->wMonth = tzdate->month;
-    systime->wDay = tzdate->day;
-    systime->wDayOfWeek = tzdate->dayofweek;
-    systime->wHour = tzdate->hour;
-}
-
-bool GetTimeZoneInfo(int index, TIME_ZONE_INFORMATION* tzinfo)
-{
-    if (index < 0 || index >= TIMEZONECOUNT)
-        return false;
-
-    const struct TZINFO* srcinfo = &g_timezoneinfo[index];
-    memset(tzinfo, 0, sizeof(*tzinfo));
-
-    tzinfo->Bias = srcinfo->bias;
-    tzinfo->StandardBias = srcinfo->stdbias;
-    tzinfo->DaylightBias = srcinfo->dltbias;
-
-    wcsncpy(tzinfo->StandardName, srcinfo->stdname, countof(tzinfo->StandardName));
-    wcsncpy(tzinfo->DaylightName,
-            srcinfo->dltname ? srcinfo->dltname : srcinfo->stdname,
-            countof(tzinfo->DaylightName));
-
-    TZDateToSysTime(&srcinfo->stddate, &tzinfo->StandardDate);
-    TZDateToSysTime(&srcinfo->dltdate, &tzinfo->DaylightDate);
-    return true;
-}
-
-#ifdef _DEBUG
-void CycleLanguage()
-{
-    FreeXlate();
-
-    g_nCurLanguage += 1;
-    if (g_nCurLanguage >= countof(rgszTranslateSection))
-        g_nCurLanguage = 0;
-
-    LoadXlate(rgszTranslateSection[g_nCurLanguage]);
-}
-#endif
-
+// CTranslator::SetLanguage(language)   [script fn 'SetLanguage', FND 0x00180408, sig 14]
+// Reconstructed from 5960 retail XBE @ 0x0003c8f0:
+//     if ((lang != cur || !table[0].key) && lang >= 0 && lang < 9) {
+//         cur = lang; XFreeSectionByHandle(section); zero table;
+//         LoadXlate(sections[lang]);
+//         for each of the 9 title arrays: if (loaded) SetRoot(0);
+//     }
+// Theseus takes the six languages it has files for, and empties the title
+// lists through DeleteAll so their names come back in the new language.
 void CTranslator::SetLanguage(int nNewLanguage)
 {
-    if (nNewLanguage == g_nCurLanguage && rgxlate[0].m_szKey != NULL)
-        return;
+	if (nNewLanguage == g_nCurLanguage && s_xlate[0].key != NULL)
+		return;
+	if (nNewLanguage < 0 || nNewLanguage >= LANGUAGE_COUNT)
+		return;
 
-    if (nNewLanguage < 0 || nNewLanguage >= LANGUAGE_COUNT)
-    {
-        TRACE(_T("CTranslator::SetLanguage: invalid language %d\n"), nNewLanguage);
-        return;
-    }
+	g_nCurLanguage = nNewLanguage;
+	FreeXlate();
+	LoadXlate(s_languageFiles[nNewLanguage]);
 
-    g_nCurLanguage = nNewLanguage;
-    FreeXlate();
-
-    LoadXlate(rgszTranslateSection[g_nCurLanguage]);
-
-    for (int i=0; i<countof(g_titles); i++)
-    {
-        if (g_titles[i].IsValid())
-            g_titles[i].DeleteAll(false);
-    }
+	for (int i = 0; i < countof(g_titles); i++)
+	{
+		if (g_titles[i].IsValid())
+			g_titles[i].DeleteAll(false);
+	}
 }
 
+// CTranslator::Translate(string)   [script fn 'Translate', FND 0x00180420, sig 5]
+// Reconstructed from 5960 retail XBE @ 0x0003c980:
+//     WCHAR buf[1024]; return new CStrObject(Translate(string, buf));
 CStrObject* CTranslator::Translate(const TCHAR* szString)
 {
-    TCHAR sz[MAX_TRANSLATE_LEN];
-    return new CStrObject(::Translate(szString, sz));
+	TCHAR buf[MAX_TRANSLATE_LEN];
+	return new CStrObject(::Translate(szString, buf));
 }
 
+// CTranslator::TranslateStripColon(string)   [script fn 'TranslateStripColon', FND 0x001804b0, sig 5]
+// Reconstructed from 5960 retail XBE @ 0x0003ca10:
+//     Translate(string, buf); n = wcslen(buf);
+//     if (n > 0 && buf[n-1] == ':') buf[n-1] = 0; return new CStrObject(buf);
 CStrObject* CTranslator::TranslateStripColon(const TCHAR* szString)
 {
-    TCHAR sz[MAX_TRANSLATE_LEN];
-    ::Translate(szString, sz);
-
-    int cch = _tcslen(sz);
-    if (cch > 0 && sz[cch - 1] == _T(':'))
-        sz[cch - 1] = _T('\0');
-
-    return new CStrObject(sz);
+	TCHAR buf[MAX_TRANSLATE_LEN];
+	::Translate(szString, buf);
+	int len = (int)_tcslen(buf);
+	if (len > 0 && buf[len - 1] == ':')
+		buf[len - 1] = 0;
+	return new CStrObject(buf);
 }
 
-static const TCHAR rgszLangCodes [] = { _T("ENJADEFRESIT") };
-
+// GetLanguageCode(out)
+// Reconstructed from 5960 retail XBE @ 0x0003cac0:
+//     if (cur >= 0 && cur < 10) { out[0..1] = L"ENJADEFRESITKOTWBR"[cur*2..]; out[2] = 0; }
+//     else out[0] = 0;
+// The binary lets 9 through, one past "BR"; this stops at the last code.
 const TCHAR* GetLanguageCode(TCHAR* sz)
 {
-    if (g_nCurLanguage < 0 || g_nCurLanguage > countof(rgszLangCodes) / 2)
-    {
-        sz[0] = 0;
-        return sz;
-    }
-
-    sz[0] = rgszLangCodes[g_nCurLanguage * 2];
-    sz[1] = rgszLangCodes[g_nCurLanguage * 2 + 1];
-    sz[2] = 0;
-
-    return sz;
+	if (g_nCurLanguage < 0 || g_nCurLanguage >= LANGUAGE_CODE_COUNT)
+	{
+		sz[0] = 0;
+		return sz;
+	}
+	sz[0] = s_languageCodes[g_nCurLanguage * 2];
+	sz[1] = s_languageCodes[g_nCurLanguage * 2 + 1];
+	sz[2] = 0;
+	return sz;
 }
 
+// CTranslator::GetLanguageCode()   [script fn 'GetLanguageCode', FND 0x00180438, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x0003cb00: the same two letters as a
+// string object, or an empty one out of range.
 CStrObject* CTranslator::GetLanguageCode()
 {
-    if (g_nCurLanguage < 0 || g_nCurLanguage > countof(rgszLangCodes) / 2)
-        return new CStrObject; // empty string
-
-    return new CStrObject(rgszLangCodes + g_nCurLanguage * 2, 2);
+	if (g_nCurLanguage < 0 || g_nCurLanguage >= LANGUAGE_CODE_COUNT)
+		return new CStrObject;
+	return new CStrObject(s_languageCodes + g_nCurLanguage * 2, 2);
 }
 
+// GetDateSeparator()
+// Reconstructed from 5960 retail XBE @ 0x0003cbc0. The binary switches on
+// region << 16 | language: 0x10002, 0x10005, 0x20002, 0x20003, 0x20005,
+// 0x40002, 0x40003, 0x40005 give '.'; 0x10006, 0x20006, 0x40006 give '-';
+// everything else '/'. So German and Italian use dots everywhere, French
+// outside North America, and Korean dashes.
 TCHAR GetDateSeparator()
 {
-    TCHAR chSep;
+	int region = g_nCurRegion;
+	if (region != XC_GAME_REGION_NA && region != XC_GAME_REGION_JAPAN && region != XC_GAME_REGION_RESTOFWORLD)
+		return '/';
 
-    switch (LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage))
-    {
-    case LOCALE_NA_GERMAN: // Germany: d.m.y h:m
-    case LOCALE_JAPAN_GERMAN: // Germany: d.m.y h:m
-    case LOCALE_RESTOFWORLD_GERMAN: // Germany: d.m.y h:m
-    case LOCALE_NA_ITALIAN: // Italian: d.m.y h:m
-    case LOCALE_JAPAN_ITALIAN: // Italian: d.m.y h:m
-    case LOCALE_RESTOFWORLD_ITALIAN: // Italian: d.m.y h:m
-    case LOCALE_JAPAN_FRENCH: // French: d.m.y h:m
-    case LOCALE_RESTOFWORLD_FRENCH: // French: d.m.y h:m
-        chSep = '.';
-        break;
-
-    default: // the rest of the world
-        chSep = '/';
-    }
-
-    return chSep;
+	switch (g_nCurLanguage)
+	{
+	case LANGUAGE_GERMAN:
+	case LANGUAGE_ITALIAN:
+		return '.';
+	case LANGUAGE_FRENCH:
+		return region == XC_GAME_REGION_NA ? '/' : '.';
+	case 6:     // Korean
+		return '-';
+	}
+	return '/';
 }
 
+// CTranslator::GetDateSeparator()   [script fn 'GetDateSeparator', FND 0x00180450, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x0003cc40: the one character as a string.
 CStrObject* CTranslator::GetDateSeparator()
 {
-    TCHAR chSep = ::GetDateSeparator();
-    return new CStrObject(&chSep, 1);
+	TCHAR sep = ::GetDateSeparator();
+	return new CStrObject(&sep, 1);
 }
 
-CStrObject* CTranslator::FormatNumber(int nNumber)
-{
-    TCHAR szBuf [64];
-    FormatInteger(szBuf, nNumber);
-    return new CStrObject(szBuf);
-}
-
-
-
+// FormatInteger(out, number, locale)
+// 5960 has no separate copy; the script call (@ 0x0003ccb0) and the block
+// counts (@ 0x0004ca90) print with swprintf(out, L"%d", n) in place.
 void FormatInteger(TCHAR* szBuf, int nNumber, int locale/*=LOCALE_CURRENT*/)
 {
-    // Bug 7784: remove all number separator from the dash
-    _stprintf(szBuf, _T("%d"), nNumber);
-
-#if 0
-    if (locale == LOCALE_CURRENT)
-        locale = LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage);
-
-    TCHAR chSeperator;
-    switch (LANGUAGE_FROM_LOCALE(locale))
-    {
-    default:
-        chSeperator = ',';
-        break;
-
-    case LANGUAGE_FRENCH:
-        chSeperator = ' ';
-        break;
-
-    case LANGUAGE_ITALIAN:
-    case LANGUAGE_GERMAN:
-        chSeperator = '.';
-        break;
-    }
-
-    TCHAR* pch = szBuf;
-
-    if (nNumber < 0)
-    {
-        *pch++ = '-';
-        nNumber = -nNumber;
-    }
-
-    if (nNumber == 0)
-    {
-        *pch++ = '0';
-        *pch = '\0';
-        return;
-    }
-
-    bool bNonZero = false;
-    for (int nDiv = 1000000000; nDiv > 0; nDiv /= 10)
-    {
-        int nDigit = nNumber / nDiv;
-        if (nDigit != 0 || bNonZero)
-        {
-            bNonZero = true;
-            *pch++ = nDigit + '0';
-            nNumber -= nDigit * nDiv;
-
-            if (nDiv == 1000000000 || nDiv == 1000000 || nDiv == 1000)
-                *pch++ = chSeperator;
-        }
-    }
-
-    *pch = '\0';
-#endif
+	_stprintf(szBuf, _T("%d"), nNumber);
 }
 
-void FormatBlocks (TCHAR* szBuf, int nBlocks, int locale/*=LOCALE_CURRENT*/)
+// FormatBlocks(out, blocks, locale)
+// Reconstructed from the memory monitor's block text, 5960 retail XBE
+// @ 0x0004ca90: past 50000 it prints "50000+".
+void FormatBlocks(TCHAR* szBuf, int nBlocks, int locale/*=LOCALE_CURRENT*/)
 {
-    if (nBlocks > MAX_BLOCKS_TO_SHOW) {
-        FormatInteger(szBuf, MAX_BLOCKS_TO_SHOW, locale);
-        _tcscat (szBuf, TEXT("+"));
-    }
-    else {
-        FormatInteger(szBuf, nBlocks, locale);
-    }
+	if (nBlocks <= MAX_BLOCKS_TO_SHOW)
+	{
+		FormatInteger(szBuf, nBlocks, locale);
+		return;
+	}
+	FormatInteger(szBuf, MAX_BLOCKS_TO_SHOW, locale);
+	_tcscat(szBuf, _T("+"));
 }
 
+// CTranslator::FormatNumber(number)   [script fn 'FormatNumber', FND 0x00180468, sig 4]
+// Reconstructed from 5960 retail XBE @ 0x0003ccb0:
+//     WCHAR buf[64]; swprintf(buf, L"%d", n); return new CStrObject(buf);
+CStrObject* CTranslator::FormatNumber(int nNumber)
+{
+	TCHAR buf[64];
+	FormatInteger(buf, nNumber);
+	return new CStrObject(buf);
+}
+
+
+// ===== Dates and times =====================================================
+
+static inline bool KnownRegion(int region)
+{
+	return region == XC_GAME_REGION_NA || region == XC_GAME_REGION_JAPAN || region == XC_GAME_REGION_RESTOFWORLD;
+}
+
+// Japanese, Korean and Chinese (languages 1, 6, 7).
+static inline bool EastAsianLanguage(int language)
+{
+	return language == 1 || language == 6 || language == 7;
+}
+
+// The date half of FormatDate and FormatTime, with its trailing space:
+// North American English writes month first, East Asian languages year
+// first, everyone else day first.
+static void PrintDate(TCHAR* out, int size, const SYSTEMTIME* st, int locale)
+{
+	TCHAR sep = GetDateSeparator();
+	if (locale == LOCALE_NA_ENGLISH)
+		_sntprintf(out, size, _T("%02d%c%02d%c%d "), st->wMonth, sep, st->wDay, sep, st->wYear);
+	else if (KnownRegion(REGION_FROM_LOCALE(locale)) && EastAsianLanguage(LANGUAGE_FROM_LOCALE(locale)))
+		_sntprintf(out, size, _T("%d%c%02d%c%02d "), st->wYear, sep, st->wMonth, sep, st->wDay);
+	else
+		_sntprintf(out, size, _T("%02d%c%02d%c%d "), st->wDay, sep, st->wMonth, sep, st->wYear);
+	out[size - 1] = 0;
+}
+
+// FormatTime(out, size, time, locale)
+// Reconstructed from 5960 retail XBE @ 0x0003ce90. Prints the date as
+// FormatDate does, then the time: English, Japanese, Korean and Chinese in
+// the three regions get "%d:%02d %s" on a 12 hour clock (0 shows as 12, AM
+// below 12); everyone else "%d:%02d" on 24. Both parts plus 2 must fit in
+// size or it returns false without writing.
 bool FormatTime(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE_CURRENT*/)
 {
-    bool bPM;
-    int nHour;
-    TCHAR szDate[32], szTime[32];
+	if (locale == LOCALE_CURRENT)
+		locale = LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage);
 
-    if (locale == LOCALE_CURRENT)
-        locale = LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage);
+	TCHAR date[32];
+	PrintDate(date, countof(date), pst, locale);
 
-    // Format date
-    TCHAR chSep = GetDateSeparator();
+	TCHAR time[32];
+	int language = LANGUAGE_FROM_LOCALE(locale);
+	bool twelveHour = KnownRegion(REGION_FROM_LOCALE(locale)) && (language == LANGUAGE_ENGLISH || EastAsianLanguage(language));
+	if (twelveHour)
+	{
+		int hour = pst->wHour >= 12 ? pst->wHour - 12 : pst->wHour;
+		if (hour == 0)
+			hour = 12;
+		_sntprintf(time, countof(time), _T("%d:%02d %s"), hour, pst->wMinute, pst->wHour < 12 ? _T("AM") : _T("PM"));
+	}
+	else
+	{
+		_sntprintf(time, countof(time), _T("%d:%02d"), pst->wHour, pst->wMinute);
+	}
+	time[countof(time) - 1] = 0;
 
-    switch (locale)
-    {
-    case LOCALE_NA_ENGLISH: // US: mm/dd/yy
-        _sntprintf(szDate, countof(szDate), _T("%02d%c%02d%c%d "), pst->wMonth, chSep, pst->wDay, chSep, pst->wYear);
-        break;
-
-    case LOCALE_NA_JAPANESE: // Japanese: yy/mm/dd
-    case LOCALE_JAPAN_JAPANESE:
-    case LOCALE_RESTOFWORLD_JAPANESE:
-        _sntprintf(szDate, countof(szDate), _T("%d%c%02d%c%02d "), pst->wYear, chSep, pst->wMonth, chSep, pst->wDay);
-        break;
-
-    default: // Rest: dd?mm?yy
-        _sntprintf(szDate, countof(szDate), _T("%02d%c%02d%c%d "), pst->wDay, chSep, pst->wMonth, chSep, pst->wYear);
-    }
-
-    // Format time
-    switch (locale)
-    {
-    case LOCALE_NA_ENGLISH: // US: h:m ampm
-    case LOCALE_JAPAN_ENGLISH:
-    case LOCALE_RESTOFWORLD_ENGLISH:
-    case LOCALE_NA_JAPANESE: // Japanese: h:m ampm
-    case LOCALE_JAPAN_JAPANESE:
-    case LOCALE_RESTOFWORLD_JAPANESE:
-        bPM = pst->wHour >= 12;
-        nHour = pst->wHour;
-
-        if (nHour >= 12)
-            nHour -= 12;
-        if (nHour == 0)
-            nHour = 12;
-
-        _sntprintf(szTime, countof(szTime), _T("%d:%02d %s"), nHour, pst->wMinute, bPM ? _T("PM") : _T("AM"));
-        break;
-
-    default: // the rest of the world
-        _sntprintf(szTime, countof(szTime), _T("%d:%02d"), pst->wHour, pst->wMinute);
-    }
-
-    if (chLen < lstrlen(szDate) + lstrlen(szTime) + sizeof(_T('\0')))
-    {
-        return false;
-    }
-
-    lstrcpy(szBuf, szDate);
-    lstrcat(szBuf, szTime);
-    return true;
+	if (chLen < _tcslen(date) + _tcslen(time) + 2)
+		return false;
+	_tcscpy(szBuf, date);
+	_tcscat(szBuf, time);
+	return true;
 }
 
-// FormatDate(szBuf, chLen, pst, locale)
+// FormatDate(out, size, time, locale)
 // Reconstructed from 5960 retail XBE @ 0x0003cd40. Ghidra decompile, trimmed:
 //     if (locale == -1) locale = region << 16 | language;
 //     sep = GetDateSeparator();
@@ -624,31 +567,96 @@ bool FormatTime(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE
 // The Text node's <date> prefix draws this.
 bool FormatDate(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE_CURRENT*/)
 {
-    if (locale == LOCALE_CURRENT)
-        locale = LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage);
+	if (locale == LOCALE_CURRENT)
+		locale = LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage);
 
-    TCHAR chSep = GetDateSeparator();
-    int region = REGION_FROM_LOCALE(locale);
-    int language = LANGUAGE_FROM_LOCALE(locale);
-    bool bYearFirst = (region == XC_GAME_REGION_NA || region == XC_GAME_REGION_JAPAN || region == XC_GAME_REGION_RESTOFWORLD) &&
-        (language == 1 || language == 6 || language == 7);
-
-    TCHAR szDate[32];
-    if (locale == LOCALE_NA_ENGLISH)
-        _sntprintf(szDate, countof(szDate), _T("%02d%c%02d%c%d "), pst->wMonth, chSep, pst->wDay, chSep, pst->wYear);
-    else if (bYearFirst)
-        _sntprintf(szDate, countof(szDate), _T("%d%c%02d%c%02d "), pst->wYear, chSep, pst->wMonth, chSep, pst->wDay);
-    else
-        _sntprintf(szDate, countof(szDate), _T("%02d%c%02d%c%d "), pst->wDay, chSep, pst->wMonth, chSep, pst->wYear);
-
-    if (chLen < lstrlen(szDate) + 2)
-        return false;
-
-    lstrcpy(szBuf, szDate);
-    return true;
+	TCHAR date[32];
+	PrintDate(date, countof(date), pst, locale);
+	if (chLen < _tcslen(date) + 2)
+		return false;
+	_tcscpy(szBuf, date);
+	return true;
 }
 
-void Locale_Exit()
+
+// ===== Time zones ==========================================================
+
+// CTranslator::GetTimeZoneCount()   [script fn 'GetTimeZoneCount', FND 0x00180480, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x0003c710: return 75;
+int CTranslator::GetTimeZoneCount()
 {
-    FreeXlate();
+	return TIMEZONECOUNT;
+}
+
+// CTranslator::GetTimeZoneText(index)   [script fn 'GetTimeZoneText', FND 0x00180498, sig 4]
+// Reconstructed from 5960 retail XBE @ 0x0003c720:
+//     if (index >= 0 && index < 75) return Translate(zones[index].name);
+//     return new CStrObject;
+CStrObject* CTranslator::GetTimeZoneText(int nTimeZone)
+{
+	if (nTimeZone < 0 || nTimeZone >= TIMEZONECOUNT)
+		return new CStrObject;
+	return Translate(g_timezoneinfo[nTimeZone].dispname);
+}
+
+// GetTimeZoneIndex(info)
+// Reconstructed from 5960 retail XBE @ 0x0003c780. Walks the 75 zones for
+// the best match on the bias: same bias scores 1, same standard and daylight
+// bias scores 2, and when the first 4 characters of the standard name match
+// too that zone wins outright (the EEPROM keeps only 4). The first zone with
+// the top score wins; -1 when no bias matches.
+int GetTimeZoneIndex(const TIME_ZONE_INFORMATION* tzinfo)
+{
+	int best = -1;
+	int bestScore = -1;
+	for (int i = 0; i < TIMEZONECOUNT; i++)
+	{
+		const TZINFO& zone = g_timezoneinfo[i];
+		if (zone.bias != tzinfo->Bias)
+			continue;
+
+		int score = 1;
+		if (zone.stdbias == tzinfo->StandardBias && zone.dltbias == tzinfo->DaylightBias)
+		{
+			score = 2;
+			if (wcsncmp(zone.stdname, tzinfo->StandardName, 4) == 0)
+				return i;
+		}
+		if (score > bestScore)
+		{
+			bestScore = score;
+			best = i;
+		}
+	}
+	return best;
+}
+
+static void CopyChangeDate(SYSTEMTIME* out, const TZDATE& in)
+{
+	out->wMonth = in.month;
+	out->wDay = in.day;
+	out->wDayOfWeek = in.dayofweek;
+	out->wHour = in.hour;
+}
+
+// GetTimeZoneInfo(index, info)
+// Reconstructed from 5960 retail XBE @ 0x0003c820. Out of range returns
+// false. Otherwise zeroes info, copies the three biases, the standard name
+// and the daylight name (the standard one when a zone has none, both capped
+// at 32 characters), and the month, day, weekday and hour of each change.
+bool GetTimeZoneInfo(int index, TIME_ZONE_INFORMATION* tzinfo)
+{
+	if (index < 0 || index >= TIMEZONECOUNT)
+		return false;
+
+	const TZINFO& zone = g_timezoneinfo[index];
+	memset(tzinfo, 0, sizeof(*tzinfo));
+	tzinfo->Bias = zone.bias;
+	tzinfo->StandardBias = zone.stdbias;
+	tzinfo->DaylightBias = zone.dltbias;
+	wcsncpy(tzinfo->StandardName, zone.stdname, 32);
+	wcsncpy(tzinfo->DaylightName, zone.dltname != NULL ? zone.dltname : zone.stdname, 32);
+	CopyChangeDate(&tzinfo->StandardDate, zone.stddate);
+	CopyChangeDate(&tzinfo->DaylightDate, zone.dltdate);
+	return true;
 }

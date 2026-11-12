@@ -1,0 +1,90 @@
+name: Bug report
+description: Something in Theseus or UIX Desktop doesn't work the way it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. One bug per issue, please. Theseus never ships Xbox system files or game files, so please don't attach any.
+  - type: dropdown
+    id: os
+    attributes:
+      label: Where are you running it?
+      options:
+        - macOS
+        - Windows
+        - Linux
+        - Steam Deck
+        - Xbox (real hardware)
+        - Xbox (xemu)
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version and GPU
+      description: For example "macOS 15.4, M2" or "Fedora 41, RX 6700 XT". The GPU matters most for display problems.
+  - type: input
+    id: version
+    attributes:
+      label: Theseus version
+      description: Help > About UIX Desktop shows it. The download's file name carries it too.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Crash
+        - Games grid and launching
+        - Media (library, Plex, Jellyfin, playback)
+        - Music, sound or visualizer
+        - Xbox Cloud Gaming and remote play
+        - Skins, XAP scenes or XIPs
+        - Display or performance
+        - Controls
+        - Xbox dashboard
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw. Screenshots help for anything visual.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the Games grid
+        2. Pick a Steam game
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and crash reports
+      description: |
+        Drag `theseus.log` here from your user data folder. If it crashed, add the newest file from the `crashes` folder inside it, and `theseus.prev.log` if you've started Theseus again since.
+
+        - macOS: `~/Library/Application Support/Theseus`
+        - Linux and Steam Deck: `$XDG_DATA_HOME/theseus`, or `~/.local/share/theseus` when that isn't set
+        - Windows: `%APPDATA%\Theseus` (started from a terminal, the log goes to that terminal instead)
+
+        Please don't attach or paste `Configs/desktop.ini`. It holds your Plex, Jellyfin and Xbox sign in tokens.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Which download you used (app, AppImage, zip, built from source), controllers, skins, or anything that seems related.

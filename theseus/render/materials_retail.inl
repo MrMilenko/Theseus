@@ -1,7 +1,7 @@
 // materials_retail.inl: every material the 5960 dashboard builds, with its
-// retail colours. Included by render/materials.cpp and
-// desktop/materials_desktop.cpp after their CMatInfo classes, so both builds
-// bind the same names. A skin only overrides what it lists; the rest stays retail.
+// retail colours. Included by render/materials.cpp after its CMatInfo
+// classes; both builds compile that file, so they bind the same names.
+// A skin only overrides what it lists; the rest stays retail.
 
 enum MatKind
 {
@@ -32,6 +32,7 @@ struct RetailMat
 	WORD nIconSize;
 	BYTE bFadeIn, bInXIP, bSelImg;
 	BYTE bBright, bText;
+	BYTE bNoEdgeMask; // icons: skip the soft edge (only MotdIcon)
 };
 
 #define RGBA D3DCOLOR_RGBA
@@ -138,7 +139,7 @@ static const RetailMat g_rgRetailMat[] =
 	{ _T("TitleSoundtrackIcon"), MK_ICON, 0, 0, 0, 128, 0, 1, 0, 0, 0 },
 	{ _T("SavedGameIcon"), MK_ICON, 0, 0, 0, 64, 1, 0, 0, 0, 0 },
 	{ _T("SoundtrackIcon"), MK_ICON, 0, 0, 0, 64, 1, 1, 0, 0, 0 },
-	{ _T("MotdIcon"), MK_ICON, 0, 0, 0, 64, 1, 0, 0, 0, 0 },
+	{ _T("MotdIcon"), MK_ICON, 0, 0, 0, 64, 1, 0, 0, 0, 0, 1 },
 	{ _T("XboxLiveGameTitleOrbIcon"), MK_ICON, 0, 0, 0, 128, 0, 1, 0, 0, 0 },
 	{ _T("XboxLiveAccountIcon"), MK_ICON, 0, 0, 0, 64, 1, 1, 0, 0, 0 },
 	{ _T("SelectedIcon"), MK_ICON, 0, 0, 0, 128, 0, 0, 1, 0, 0 },
@@ -265,7 +266,7 @@ static void CreateMat(const RetailMat &m, D3DCOLOR a, D3DCOLOR b, const CustomCo
 	case MK_EGGGLOW:        new CEggGlowFadeMatInfo(m.szName, a, ToCustomColor(b), m.dwFlags); break;
 	case MK_EGGGLOWPULSE:   new CEggGlowPulseMatInfo(m.szName, ToCustomColor(a), ToCustomColor(b)); break;
 	case MK_KEY:            new CKeyMatInfo(m.szName, m.bBright != 0, m.bText != 0, rgKey[0], rgKey[1], rgKey[2], rgKey[3]); break;
-	case MK_ICON:           new CIconMatInfo(m.szName, m.nIconSize, m.nIconSize, m.bFadeIn != 0, m.bInXIP != 0, m.bSelImg != 0); break;
+	case MK_ICON:           new CIconMatInfo(m.szName, m.nIconSize, m.nIconSize, m.bFadeIn != 0, m.bInXIP != 0, m.bSelImg != 0, m.bNoEdgeMask == 0); break;
 	case MK_MASK:           new CMaskTextureMatInfo(m.szName, m.dwFlags); break;
 	case MK_REFLECT:        new CReflectMatInfo(m.szName); break;
 	case MK_FREESPACE:      new CFreeSpaceMatInfo(m.szName); break;

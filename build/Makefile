@@ -325,7 +325,6 @@ SRCS_SHARED_XBOX_ONLY = \
 SRCS_RENDER = \
 	render/animation_nodes.cpp \
 	render/asset_loader.cpp \
-	render/autosmooth.cpp \
 	render/camera.cpp \
 	render/hud_node.cpp \
 	render/materials.cpp \
@@ -838,11 +837,9 @@ DESKTOP_SRCS_FILE = \
 
 DESKTOP_SRCS_RENDER = \
 	$(THESEUS_SRC)/shared/screen.cpp \
-	$(THESEUS_SRC)/desktop/image.cpp \
-	$(THESEUS_SRC)/desktop/texture.cpp \
+	$(THESEUS_SRC)/render/asset_loader.cpp \
 	$(THESEUS_SRC)/render/tmap_system.cpp \
-	$(THESEUS_SRC)/desktop/materials_desktop.cpp \
-	$(THESEUS_SRC)/desktop/mesh.cpp \
+	$(THESEUS_SRC)/render/materials.cpp \
 	$(THESEUS_SRC)/render/shape_render.cpp \
 	$(THESEUS_SRC)/render/text.cpp \
 	$(THESEUS_SRC)/render/starfield.cpp \
@@ -863,11 +860,10 @@ DESKTOP_SRCS_SYSTEM = \
 	$(THESEUS_SRC)/desktop/config.cpp \
 	$(THESEUS_SRC)/desktop/joystick.cpp \
 	$(THESEUS_SRC)/shared/keyboard_node.cpp \
-	$(THESEUS_SRC)/desktop/locale.cpp \
+	$(THESEUS_SRC)/engine/locale_node.cpp \
 	$(THESEUS_SRC)/shared/timezone.cpp \
 	$(THESEUS_SRC)/desktop/debug.cpp \
-	$(THESEUS_SRC)/desktop/memutil.cpp \
-	$(THESEUS_SRC)/render/autosmooth.cpp
+	$(THESEUS_SRC)/desktop/memutil.cpp
 
 # Desktop-only platform sources (SDL window, ImGui, audio, tools)
 DESKTOP_SRCS_PLATFORM = \

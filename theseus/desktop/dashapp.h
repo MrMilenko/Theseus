@@ -42,7 +42,6 @@ extern char* g_szAppTitle;
 
 // Desktop-only free functions
 int TheseusMessageBox(const char* szText, unsigned int uType = MB_OK);
-void MakeAbsoluteURL(char* szBuf, const char* szBase, const char* szURL);
 void MakeAbsoluteURL(char* szBuf, const char* szURL);
 void UpdateCurDirFromFile(const char* szURL);
 extern int __cdecl NewFailed(size_t nBytes);
