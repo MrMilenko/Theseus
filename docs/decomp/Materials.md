@@ -140,10 +140,7 @@ A8R8G8B8 texture on first use, render the mask into a temporary buffer and swizz
 - The colors come from `materials_retail.inl` and the skin, which can override any listed
   material; Key, EggGlow and EggGlowPulse take their colors from the skin too (the retail
   values reproduce the constants above).
-- The base Setup leaves stage 0's coordinate index and transform flags alone; FreeSpace
-  leaves stage 1's coordinate index alone.
-- Icons check only the two `xboxlogo` names and always apply the edge mask.
-- The Live keys don't take the pulse clock.
-- `orangeEggGlow` is a plain solid color.
+- `orangeEggGlow` is a plain solid color; the desktop renderer has no camera space
+  texture coordinate generation for its projection yet.
 - Desktop draws the AV mask at full size.
 - The skin editor's color access (`MatInfo_ColorCount` and friends) is a Theseus addition.

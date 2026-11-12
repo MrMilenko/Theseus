@@ -282,13 +282,14 @@ public:
 class CIconMatInfo : public CMatInfo
 {
 public:
-	CIconMatInfo(const TCHAR *szName, UINT width, UINT height, bool bFadeIn = false, bool binXIP = false, bool bSelImg = false);
+	CIconMatInfo(const TCHAR *szName, UINT width, UINT height, bool bFadeIn = false, bool binXIP = false, bool bSelImg = false, bool bEdgeMask = true);
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
 	bool m_bFadeIn;
 	bool m_binXIP;
 	bool m_bSelImg;
+	bool m_bEdgeMask;
 
 private:
 	UINT m_width, m_height;
@@ -441,10 +442,12 @@ CMatInfo::CMatInfo(const TCHAR *szName, DWORD dwFlags /*=0*/)
 //     if (flags & 1) return 0;
 //     if (flags & 2) rs.CULLMODE = NONE;
 //     return 1;
-// Returning false hands the mesh back to its own material. Theseus leaves
-// stage 0's coordinate index and transform flags alone here.
+// Returning false hands the mesh back to its own material.
 bool CMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
+	TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+	TheseusSetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+
 	if (m_flags & MATINFO_STANDARD_MATERIAL)
 		return false;
 
@@ -628,8 +631,7 @@ bool CInnerWallMatInfo::Setup(CMaxMaterial *pMaxMat)
 //     tss[0].TEXTURETRANSFORMFLAGS = COUNT2; tss[0].ADDRESSV = CLAMP;
 //     return 1;
 // param is how full the unit is; the transform slides the gauge texture up
-// the bar. It never calls CMatInfo::Setup. Theseus leaves stage 1's
-// coordinate index alone.
+// the bar. It never calls CMatInfo::Setup.
 CFreeSpaceMatInfo::CFreeSpaceMatInfo(const TCHAR *szName) : CMatInfo(szName)
 {
 }
@@ -643,6 +645,7 @@ bool CFreeSpaceMatInfo::Setup(CMaxMaterial *pMaxMat)
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
 	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB(FadedAlpha(70.0f), 255, 255, 255));
 	TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	TheseusSetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 0);
 
 	float nShift = (float)((1.0 - pMaxMat->m_param) * 2.0 - 1.0);
 	D3DXMATRIX slide;
@@ -913,7 +916,7 @@ bool CEggGlowFadeMatInfo::Setup(CMaxMaterial *pMaxMat)
 //     CFalloffMatInfo::Setup();
 // g_bActiveKey picks the Live (darker) palette. Theseus builds the same
 // colors from the skin's four Keyboard colors (retail values give exactly
-// the constants above) and doesn't restart the pulse clock here.
+// the constants above).
 CKeyMatInfo::CKeyMatInfo(const TCHAR *szName, bool bBright, bool bText, CustomColor ColorA, CustomColor ColorB, CustomColor ColorC, CustomColor ColorD) : CFalloffMatInfo(szName, D3DCOLOR_RGBA(0, 0, 0, 0), D3DCOLOR_RGBA(0, 0, 0, 0), 0)
 {
 	Color1 = ColorA;
@@ -940,6 +943,12 @@ bool CKeyMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
 	if (g_bActiveKey)
 	{
+		if (pMaxMat != g_pLastPulseMaxMat && g_nEffectAlpha > 0.0f)
+		{
+			g_pLastPulseMaxMat = pMaxMat;
+			g_pulseStartTime = TheseusGetNow();
+		}
+
 		m_colorSide = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, Color1.a);
 		m_colorFront = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, Color1.a - 65);
 
@@ -988,22 +997,31 @@ bool CKeyMatInfo::Setup(CMaxMaterial *pMaxMat)
 //     if (this->edgeMask) { SetTexture(1, GetRadialEdgeAlphaMask()); tss[1]:
 //         TEXCOORDINDEX 0, ALPHAOP MODULATE (CURRENT, TEXTURE), COLOROP ADD (CURRENT, TEXTURE); }
 //     return 1;
-// Without an image the quad draws clear. Theseus checks only the two
-// xboxlogo names and always applies the edge mask.
-CIconMatInfo::CIconMatInfo(const TCHAR *szName, UINT width, UINT height, bool bFadeIn /*=false*/, bool binXIP /*=false*/, bool bSelImg) : CMatInfo(szName)
+// Without an image the quad draws clear. The edge mask byte (0x0f) is set
+// on every retail icon but MotdIcon.
+CIconMatInfo::CIconMatInfo(const TCHAR *szName, UINT width, UINT height, bool bFadeIn /*=false*/, bool binXIP /*=false*/, bool bSelImg, bool bEdgeMask) : CMatInfo(szName)
 {
 	m_bFadeIn = bFadeIn;
 	m_binXIP = binXIP;
 	m_bSelImg = bSelImg;
+	m_bEdgeMask = bEdgeMask;
 	m_width = width;
 	m_height = height;
 }
 
-// The stock logos ship inside the dashboard's XIPs rather than on disk.
-static bool IsStockLogo(const TCHAR *szImage)
+// The stock logos ship inside the dashboard's XIPs rather than on disk; the
+// two lists differ by which icon asks.
+static bool IsStockLogo(const TCHAR *szImage, bool bSelected)
 {
-	return _tcsicmp(szImage, _T("xboxlogo64.xbx")) == 0 ||
-		_tcsicmp(szImage, _T("xboxlogo128.xbx")) == 0;
+	if (_tcsicmp(szImage, _T("xboxlogo64.xbx")) == 0 ||
+		_tcsicmp(szImage, _T("xboxlogo128.xbx")) == 0)
+		return true;
+
+	if (!bSelected)
+		return _tcsicmp(szImage, _T("xboxlogo64a.xbx")) == 0;
+
+	return _tcsicmp(szImage, _T("XboxLiveAccount64.tga")) == 0 ||
+		_tcsicmp(szImage, _T("XboxLiveAccount128.tga")) == 0;
 }
 
 bool CIconMatInfo::Setup(CMaxMaterial *pMaxMat)
@@ -1019,7 +1037,7 @@ bool CIconMatInfo::Setup(CMaxMaterial *pMaxMat)
 
 	if (szImage != NULL)
 	{
-		bool bInXIP = m_binXIP || IsStockLogo(szImage);
+		bool bInXIP = m_binXIP || IsStockLogo(szImage, m_bSelImg);
 
 		XTIME timeLoaded = 0.0;
 		pImage = GetTexture(szImage, &timeLoaded, m_width, m_height, bInXIP);
@@ -1041,6 +1059,7 @@ bool CIconMatInfo::Setup(CMaxMaterial *pMaxMat)
 
 		TheseusSetTexture(0, pImage);
 		TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+		TheseusSetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
 		TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
 		TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
 		TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
@@ -1056,6 +1075,9 @@ bool CIconMatInfo::Setup(CMaxMaterial *pMaxMat)
 		TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
 		TheseusSetRenderState(D3DRS_TEXTUREFACTOR, 0);
 	}
+
+	if (!m_bEdgeMask)
+		return true;
 
 	TheseusSetTexture(1, GetRadialEdgeAlphaMask());
 	TheseusSetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 0);
