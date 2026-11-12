@@ -170,7 +170,7 @@ void Set2DOverlayState(IDirect3DDevice8* dev)
     TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
     TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 }
 
 // Procedural background. Two stacked quads draw a vertical gradient from

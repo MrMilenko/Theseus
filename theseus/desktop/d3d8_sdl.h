@@ -2456,11 +2456,14 @@ inline HRESULT D3DXCreateMeshFVF(DWORD numFaces, DWORD numVerts, DWORD opts, DWO
 }
 
 // ID3DXMesh::DrawSubset - renders mesh through the device
+extern bool theseus_desktop_vs_valid;
 inline HRESULT ID3DXMesh::DrawSubset(DWORD attr) {
     (void)attr;
     if (!m_dev || !m_vbData || !m_ibData || m_numFaces == 0 || m_numVerts == 0)
         return S_OK;
+    // Sets the FVF behind TheseusSetVertexShader's back, so its cache can't be trusted after.
     m_dev->SetVertexShader(m_fvf);
+    theseus_desktop_vs_valid = false;
     m_dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, m_numVerts, m_numFaces,
         m_ibData, D3DFMT_INDEX16, m_vbData, m_vertStride);
     return S_OK;

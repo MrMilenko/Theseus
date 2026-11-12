@@ -99,6 +99,16 @@ bool Host_RenameReplace(const char* from, const char* to) {
 	return MoveFileExA(f, t, MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED) != FALSE;
 }
 
+bool Host_FlushToDisk(const char* path) {
+	char p[MAX_PATH];
+	ToWin(p, sizeof(p), path);
+	HANDLE h = CreateFileA(p, GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (h == INVALID_HANDLE_VALUE) return false;
+	bool ok = FlushFileBuffers(h) != FALSE;
+	CloseHandle(h);
+	return ok;
+}
+
 bool Host_CopyFile(const char* from, const char* to, bool failIfExists) {
 	char f[MAX_PATH], t[MAX_PATH];
 	ToWin(f, sizeof(f), from);

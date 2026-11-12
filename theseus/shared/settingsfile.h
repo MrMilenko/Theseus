@@ -74,6 +74,7 @@ public:
 	bool m_batching;
 
 protected:
+	int WriteTo(const TCHAR* szPath);
 
 #ifdef _UNICODE
 	bool m_unicode;

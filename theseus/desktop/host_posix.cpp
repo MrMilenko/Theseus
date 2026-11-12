@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <string.h>
@@ -54,6 +55,18 @@ bool Host_SetAttrs(const char*, uint32_t) { return true; }
 
 bool Host_RenameReplace(const char* from, const char* to) {
 	return rename(from, to) == 0;
+}
+
+bool Host_FlushToDisk(const char* path) {
+	int fd = open(path, O_RDWR);
+	if (fd < 0) return false;
+	bool ok = fsync(fd) == 0;
+#ifdef F_FULLFSYNC
+	// macOS fsync stops at the drive's cache; this goes past it.
+	if (ok) fcntl(fd, F_FULLFSYNC);
+#endif
+	close(fd);
+	return ok;
 }
 
 bool Host_CopyFile(const char* from, const char* to, bool failIfExists) {

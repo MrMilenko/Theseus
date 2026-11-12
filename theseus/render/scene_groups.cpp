@@ -1420,8 +1420,8 @@ void CLayer::Render()
     TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 
-    TheseusGetD3DDev()->SetStreamSource(0, m_vb, sizeof(WashVertex));
-    TheseusGetD3DDev()->SetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+    TheseusSetStreamSource(0, m_vb, sizeof(WashVertex));
+    TheseusSetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE);
     TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 
     TheseusSetTransform(D3DTS_PROJECTION, &outerProjection);
@@ -1690,8 +1690,8 @@ void CBackground::RenderBackdrop()
     TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
     TheseusSetRenderState(D3DRS_TEXTUREFACTOR, (DWORD)(int)(m_alpha * 255.0f) << 24);
 
-    TheseusGetD3DDev()->SetStreamSource(0, m_vb, sizeof(D3DVERTEX));
-    TheseusGetD3DDev()->SetVertexShader(D3DFVF_VERTEX);
+    TheseusSetStreamSource(0, m_vb, sizeof(D3DVERTEX));
+    TheseusSetVertexShader(D3DFVF_VERTEX);
     TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 
     TheseusSetRenderState(D3DRS_LIGHTING, lighting);

@@ -186,13 +186,77 @@ static WORD UpperKey(WORD c)
 	return c;
 }
 
-// Desktop keys are single bytes, so there y diaeresis stays lowercase.
-static TCHAR KeyUpper(TCHAR ch)
+// The edit buffer holds UTF-16 like 5960's. Desktop strings are UTF-8, so
+// they convert wherever text crosses into or out of the keyboard.
+#ifdef _XBOX
+typedef TCHAR KEYCHAR;
+#else
+typedef WORD KEYCHAR;
+
+// BMP only, like the text node; a stray byte reads as Latin-1.
+static int DecodeUTF8(const char* s, KEYCHAR* out, int max)
 {
-	if (sizeof(TCHAR) > 1)
-		return (TCHAR)UpperKey((WORD)ch);
-	WORD up = UpperKey((unsigned char)ch);
-	return (up > 0xff) ? ch : (TCHAR)up;
+	int n = 0;
+	const unsigned char* p = (const unsigned char*)s;
+	while (*p != 0 && n < max)
+	{
+		unsigned int cp = *p;
+		int len = 1;
+		if ((cp & 0xe0) == 0xc0) { cp &= 0x1f; len = 2; }
+		else if ((cp & 0xf0) == 0xe0) { cp &= 0x0f; len = 3; }
+		else if ((cp & 0xf8) == 0xf0) { cp &= 0x07; len = 4; }
+		int k = 1;
+		for (; k < len && (p[k] & 0xc0) == 0x80; k++)
+			cp = (cp << 6) | (p[k] & 0x3f);
+		if (k < len)
+		{
+			cp = *p;
+			len = 1;
+		}
+		p += len;
+		if (cp <= 0xffff)
+			out[n++] = (KEYCHAR)cp;
+	}
+	return n;
+}
+
+static int EncodeUTF8(KEYCHAR ch, char* out)
+{
+	if (ch < 0x80)
+	{
+		out[0] = (char)ch;
+		return 1;
+	}
+	if (ch < 0x800)
+	{
+		out[0] = (char)(0xc0 | (ch >> 6));
+		out[1] = (char)(0x80 | (ch & 0x3f));
+		return 2;
+	}
+	out[0] = (char)(0xe0 | (ch >> 12));
+	out[1] = (char)(0x80 | ((ch >> 6) & 0x3f));
+	out[2] = (char)(0x80 | (ch & 0x3f));
+	return 3;
+}
+
+// Encodes up to count characters, stopping at a null, into out (3 * count + 1
+// bytes). Returns the byte length.
+static int EncodeUTF8(const KEYCHAR* src, int count, char* out)
+{
+	int n = 0;
+	for (int i = 0; i < count && src[i] != 0; i++)
+		n += EncodeUTF8(src[i], out + n);
+	out[n] = 0;
+	return n;
+}
+#endif
+
+static int KeyLen(const KEYCHAR* s)
+{
+	int n = 0;
+	while (s[n] != 0)
+		n++;
+	return n;
 }
 
 // The last USB keyboard keystroke: a HID key code and the character it typed
@@ -260,7 +324,7 @@ public:
 	bool OnSetProperty(const PRD* pprd, const void* pvValue);
 
 protected:
-	TCHAR m_edit[EDIT_MAX + 1];
+	KEYCHAR m_edit[EDIT_MAX + 1];
 	int m_editLen;
 	int m_cursor;       // -1 means the whole string is selected
 	int m_row;
@@ -373,7 +437,7 @@ void CKeyboard::TakeSelection()
 // Shifts the tail from `at` right by `count` characters.
 void CKeyboard::OpenGap(int at, int count)
 {
-	MoveMemory(m_edit + at + count, m_edit + at, (m_editLen - at) * sizeof(TCHAR));
+	MoveMemory(m_edit + at + count, m_edit + at, (m_editLen - at) * sizeof(KEYCHAR));
 }
 
 
@@ -541,13 +605,18 @@ void CKeyboard::activate()
 		for (int end = m_editLen - 1; m_edit[end] == ' '; end--)
 			m_edit[end] = 0;
 		if (lead > 0)
-			MoveMemory(m_edit, m_edit + lead, (_tcslen(m_edit + lead) + 1) * sizeof(TCHAR));
+			MoveMemory(m_edit, m_edit + lead, (KeyLen(m_edit + lead) + 1) * sizeof(KEYCHAR));
 
 		// The copy keeps the untrimmed length, so trimmed spaces come along as nulls.
 		delete [] m_string;
+#ifdef _XBOX
 		m_string = new TCHAR[m_editLen + 1];
 		CopyChars(m_string, m_edit, m_editLen);
 		m_string[m_editLen] = 0;
+#else
+		m_string = new TCHAR[m_editLen * 3 + 1];
+		EncodeUTF8(m_edit, m_editLen, m_string);
+#endif
 		CallFunction(this, _T("OnDone"));
 		return;
 	}
@@ -566,7 +635,7 @@ void CKeyboard::activate()
 		if (m_editLen >= EDIT_MAX)
 			break;
 		OpenGap(m_cursor, 1);
-		m_edit[m_cursor++] = (m_caps != m_shift) ? KeyUpper((TCHAR)key) : (TCHAR)key;
+		m_edit[m_cursor++] = (KEYCHAR)((m_caps != m_shift) ? UpperKey(key) : key);
 		m_editLen++;
 		m_shift = false;
 		return;
@@ -659,7 +728,7 @@ void CKeyboard::Backspace()
 		CallFunction(this, _T("OnError"));
 		return;
 	}
-	MoveMemory(m_edit + m_cursor - 1, m_edit + m_cursor, (m_editLen - m_cursor) * sizeof(TCHAR));
+	MoveMemory(m_edit + m_cursor - 1, m_edit + m_cursor, (m_editLen - m_cursor) * sizeof(KEYCHAR));
 	m_cursor--;
 	m_editLen--;
 }
@@ -739,14 +808,20 @@ void CKeyboard::CycleMode()
 void CKeyboard::Insert(const TCHAR* szInsert)
 {
 	TakeSelection();
+#ifdef _XBOX
+	const KEYCHAR* insert = szInsert;
 	int count = (int)_tcslen(szInsert);
+#else
+	KEYCHAR insert[EDIT_MAX + 1];
+	int count = DecodeUTF8(szInsert, insert, EDIT_MAX + 1);
+#endif
 	if (m_editLen + count > EDIT_MAX)
 	{
 		CallFunction(this, _T("OnError"));
 		return;
 	}
 	OpenGap(m_cursor, count);
-	CopyChars(m_edit + m_cursor, szInsert, count);
+	MoveMemory(m_edit + m_cursor, insert, count * sizeof(KEYCHAR));
 	m_cursor += count;
 	m_editLen += count;
 	m_shift = false;
@@ -784,10 +859,14 @@ bool CKeyboard::OnSetProperty(const PRD* pprd, const void* pvValue)
 	const TCHAR* szValue = *(const TCHAR* const*)pvValue;
 	if (szValue == NULL)
 		szValue = _T("");
+#ifdef _XBOX
 	int count = (int)_tcslen(szValue);
 	if (count > EDIT_MAX)
 		count = EDIT_MAX;
 	CopyChars(m_edit, szValue, count);
+#else
+	int count = DecodeUTF8(szValue, m_edit, EDIT_MAX);
+#endif
 	m_editLen = count;
 	m_cursor = -1;
 	return true;
@@ -861,8 +940,23 @@ void CKeyboard::Render()
 	if (m_text != NULL)
 	{
 		m_edit[m_editLen] = 0;
+#ifdef _XBOX
 		g_szText = m_edit;
 		g_nTextChar = m_cursor;
+#else
+		// The text node counts bytes and puts the cursor before the character
+		// whose last byte is g_nTextChar, so the cursor moves into bytes too.
+		TCHAR text[EDIT_MAX * 3 + 1];
+		g_szText = text;
+		g_nTextChar = m_cursor;
+		if (m_cursor >= 0)
+		{
+			int len = KeyLen(m_edit);
+			int bytes = EncodeUTF8(m_edit, m_cursor < len ? m_cursor + 1 : len, text);
+			g_nTextChar = m_cursor < len ? bytes - 1 : bytes + m_cursor - len;
+		}
+		EncodeUTF8(m_edit, m_editLen, text);
+#endif
 		m_text->Render();
 		g_nTextChar = -1;
 	}
@@ -876,7 +970,7 @@ void CKeyboard::Render()
 	if (!japanese)
 		highlighted = MergedCell(highlighted);
 
-	TCHAR label[2];
+	TCHAR label[4];
 	int node = 0;
 	for (int cell = 0; cell < cells; cell++)
 	{
@@ -893,10 +987,13 @@ void CKeyboard::Render()
 		}
 		else
 		{
-			label[0] = (TCHAR)key;
-			if (!japanese && m_caps != m_shift)
-				label[0] = KeyUpper(label[0]);
+			WORD ch = (!japanese && m_caps != m_shift) ? UpperKey(key) : key;
+#ifdef _XBOX
+			label[0] = (TCHAR)ch;
 			label[1] = 0;
+#else
+			label[EncodeUTF8((KEYCHAR)ch, label)] = 0;
+#endif
 			g_szText = label;
 		}
 

@@ -252,6 +252,28 @@ BOOL TheseusCopyFile(LPCSTR src, LPCSTR dst, BOOL bFailIfExists)
 	return Host_CopyFile(s, d, bFailIfExists != FALSE);
 }
 
+// Swaps a finished szNew in for szFile with one rename, keeping what it
+// replaces as <file>.old.
+bool TheseusReplaceFile(const TCHAR* szNew, const TCHAR* szFile)
+{
+	if (!szNew || !szFile) return false;
+	char xboxNew[MAX_PATH], xboxFile[MAX_PATH];
+	CleanFilePath(xboxNew, szNew);
+	CleanFilePath(xboxFile, szFile);
+	char n[512], f[512];
+	if (!XboxPath_TranslateForWrite(xboxNew, n, sizeof(n)) || !n[0]) return false;
+	if (!XboxPath_TranslateForWrite(xboxFile, f, sizeof(f)) || !f[0]) return false;
+
+	if (!Host_FlushToDisk(n)) return false;
+	HostFileInfo info;
+	if (Host_Stat(f, &info)) {
+		char old[520];
+		snprintf(old, sizeof(old), "%s.old", f);
+		Host_CopyFile(f, old, false);
+	}
+	return Host_RenameReplace(n, f);
+}
+
 FILE* TheseusFOpen(const TCHAR* path, const TCHAR* mode)
 {
 	if (!path || !mode) return NULL;

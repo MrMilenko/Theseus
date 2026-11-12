@@ -536,6 +536,11 @@ inline BOOL WriteFile(HANDLE h, const void* buf, DWORD nBytes, DWORD* nWritten, 
     return !ferror((FILE*)h);
 }
 
+// Desktop handles are FILE*s; this only empties the CRT buffer, reporting a failed write.
+inline BOOL FlushFileBuffers(HANDLE h) {
+    return h && h != INVALID_HANDLE_VALUE && fflush((FILE*)h) == 0;
+}
+
 // SetFileTime stub (no-op on desktop)
 inline BOOL SetFileTime(HANDLE h, const FILETIME* c, const FILETIME* a, const FILETIME* w) {
     (void)h; (void)c; (void)a; (void)w;
