@@ -183,15 +183,24 @@ static float Measure(int font, float size, const char* text)
     return w;
 }
 
+// Text is drawn at a whole pixel size, so it's measured at that size too;
+// a cursor placed by a width then lands where the glyphs did.
+static float LayoutWidth(int font, float size, const char* text)
+{
+    if (ov.scale <= 0.0f) return Measure(font, size, text);
+    float px = floorf(size * ov.scale + 0.5f);
+    return px < 4.0f ? Measure(font, size, text) : Measure(font, px, text) / ov.scale;
+}
+
 float ui_overlay_text_width(int font, float size, const char* text)
 {
-    return text ? Measure(font, size, text) : 0.0f;
+    return text ? LayoutWidth(font, size, text) : 0.0f;
 }
 
 static float AddText(int font, float size, float x, float y, int align, unsigned int color, const char* text)
 {
     int len = (int)strlen(text);
-    float w = Measure(font, size, text);
+    float w = LayoutWidth(font, size, text);
     if (ov.textCount >= MAX_TEXTS || ov.textUsed + len + 1 > MAX_TEXT) return w;
     Text& t = ov.texts[ov.textCount++];
     t.font = font; t.align = align; t.layer = ov.layer;

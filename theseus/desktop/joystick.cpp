@@ -643,10 +643,12 @@ static void DevEventScript()
             ev.wheel.preciseY = (float)ev.wheel.y;
             SDL_PushEvent(&ev);
         } else if (e.kind == "text") {
+            // sdl2-compat can't queue text, so it goes to the guide directly.
             ev.type = SDL_TEXTINPUT;
+            ev.text.timestamp = SDL_GetTicks();
             ev.text.windowID = win;
             snprintf(ev.text.text, sizeof(ev.text.text), "%s", e.value.c_str());
-            SDL_PushEvent(&ev);
+            Guide_HandleEvent(&ev);
         } else if (e.kind == "key") {
             std::string name = e.value;
             Uint16 mod = 0;
@@ -694,7 +696,7 @@ unsigned Joy_GuideButtons(int* device)
     if (pad.digitalDown[5]) bits |= GUIDE_BACK;
 
     unsigned keys = 0;
-    if (SDL_GetKeyboardFocus() == g_pSDLWindow && !ImGui_WantsKeyboard()) {
+    if (SDL_GetKeyboardFocus() == g_pSDLWindow && !ImGui_WantsKeyboard() && !Guide_Typing()) {
         const Uint8* k = SDL_GetKeyboardState(NULL);
         if (k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_KP_ENTER] || k[SDL_SCANCODE_SPACE]) keys |= GUIDE_A;
         if (k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_BACKSPACE]) keys |= GUIDE_B;
@@ -747,6 +749,8 @@ void CJoystick::ProcessMediaKeys()
     // Fire on rising edges only
     uint32_t pressed = cur & ~m_prevMediaKeys;
     m_prevMediaKeys = cur;
+    // The guide has the keys while it's up; a 1 typed there isn't On1.
+    if (Guide_TakesInput()) return;
 
     if (pressed & (1 << 0))  CallFunction("OnReverse");
     if (pressed & (1 << 1))  CallFunction("OnForward");
