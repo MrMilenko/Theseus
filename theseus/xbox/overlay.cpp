@@ -135,7 +135,7 @@ static void DrawOverlayImage(IDirect3DTexture8 *tex, float x, float y, float wid
     TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
     TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     TheseusSetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
     OverlayVertex quad[4] = {
         {x, y, 0.0f, 1.0f, 0xFFFFFFFF, 0.0f, 0.0f},
@@ -149,7 +149,7 @@ static void DrawOverlayImage(IDirect3DTexture8 *tex, float x, float y, float wid
     TheseusSetTexture(0, NULL);
     TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
     TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 }
 
 // ============================================================================
@@ -2664,7 +2664,7 @@ void DrawCubeOverlay()
     TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
     TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 
     const int sw = g_nViewWidth;
     const int sh = g_nViewHeight;

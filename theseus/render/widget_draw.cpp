@@ -21,7 +21,7 @@ void DrawSolidRect(int x, int y, int width, int height, D3DCOLOR color)
     IDirect3DDevice8 *dev = g_pD3DDev;
     if (!dev) return;
     Frame_Count(FC_DRAW_SOLID);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
     Frame_PhaseBegin(FP_UP_DRAW);
     dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(Vertex));
     Frame_PhaseEnd(FP_UP_DRAW);
@@ -39,7 +39,7 @@ void DrawTexturedRect(IDirect3DTexture8* tex, float x, float y, float width, flo
     TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
     TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     TheseusSetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
     TVert quad[4] = {
         {x,         y,          0.0f, 1.0f, 0xFFFFFFFF, 0.0f, 0.0f},
@@ -58,5 +58,5 @@ void DrawTexturedRect(IDirect3DTexture8* tex, float x, float y, float width, flo
     TheseusSetTexture(0, NULL);
     TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
     TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 }

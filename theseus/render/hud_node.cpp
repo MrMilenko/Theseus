@@ -329,8 +329,8 @@ void CPicture::Render()
         m_pVB->Unlock();
 
         LPDIRECT3DDEVICE8 dev = TheseusGetD3DDev();
-        dev->SetStreamSource(0, m_pVB, sizeof(PictureVertex));
-        dev->SetVertexShader(kPictureFVF);
+        TheseusSetStreamSource(0, m_pVB, sizeof(PictureVertex));
+        TheseusSetVertexShader(kPictureFVF);
         dev->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
     }
 

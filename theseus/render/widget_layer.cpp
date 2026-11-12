@@ -91,7 +91,7 @@ void DrawWidgets()
     TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
     TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
     TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 
     const int sw = (int)g_nViewWidth;
     const int sh = (int)g_nViewHeight;

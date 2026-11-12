@@ -681,8 +681,8 @@ void Draw()
 		TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
 		TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 
-		VERIFYHR(TheseusGetD3DDev()->SetStreamSource(0, m_pVB, sizeof(COLORVERTEX)));
-		VERIFYHR(TheseusGetD3DDev()->SetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE));
+		TheseusSetStreamSource(0, m_pVB, sizeof(COLORVERTEX));
+		TheseusSetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE);
 		VERIFYHR(TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
 
 		TheseusSetTransform(D3DTS_PROJECTION, &matProjectionSave);
