@@ -54,7 +54,7 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0001eddc | `_classCNavigationInfo` | `CNavigationInfo::class` (animation_nodes.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for VRML97 NavigationInfo (camera control mode). |
 | 0x0001eed0 | `_classCCameraPath` | `CCameraPath::class` (camera.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the camera-spline node. |
 | 0x0001efd8 | `_classCHud` | `CHud::class` (hud_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the heads-up overlay node. |
-| 0x0001f004 | `_classCPicture` | `CPicture::class` (asset_loader.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the textured-quad picture node. |
+| 0x0001f004 | `_classCPicture` | `CPicture::class` (hud_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the textured-quad picture node. |
 | 0x0001f300 | `_classCMaxMaterial` | `CMaxMaterial::class` (materials.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the 3ds Max material translator node. |
 | 0x0001f33c | `_classCLayer` | `CLayer::class` (scene_groups.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the 2D-overlay layer node. |
 | 0x0001f368 | `_classCKeyboard` | `CKeyboard::class` (keyboard_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the on-screen keyboard node. |
@@ -279,6 +279,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Math | [Math.md](Math.md) | 5 functions |
 | File Operations | [FileOps.md](FileOps.md) | 7 functions |
 | Disc | (no doc yet, narrative TODO) | 1 function |
+| HUD & Picture | [HudNode.md](HudNode.md) | 9 functions |
 | Keyboard | [Keyboard.md](Keyboard.md) | 6 functions |
 | Locale | (no doc yet, narrative TODO) | 1 function |
 | NtIoSvc | [NtIoSvc.md](NtIoSvc.md) | 1 function |
