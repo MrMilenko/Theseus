@@ -7,7 +7,9 @@ name: release
 #                    replaces the last one)
 # Only commits on main get released. Each job builds and hands its files to
 # `publish`, which writes SHA256SUMS.txt and makes the release in one go once
-# every platform built.
+# every platform built. The notes come from release-notes/<tag without the v>.md
+# (release-notes/0.5.0.md for v0.5.0) when that commit has one, otherwise
+# GitHub writes them.
 
 on:
   push:
@@ -590,6 +592,8 @@ jobs:
           if [ "$CHANNEL" = nightly ]; then
             gh release delete nightly --cleanup-tag --yes || true
             NOTES=(--notes "Nightly build of main at $SHA. Not a release, expect rough edges.")
+          elif [ -f "release-notes/${TAG#v}.md" ]; then
+            NOTES=(--notes-file "release-notes/${TAG#v}.md")
           else
             NOTES=(--generate-notes)
           fi
