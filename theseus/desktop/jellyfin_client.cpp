@@ -613,10 +613,13 @@ static void ArtWorker(std::string itemId, std::string tag,
 void Jellyfin_QueueArtDownload(const std::string& itemId, const std::string& tag)
 {
     if (itemId.empty()) return;
+    // Workers erase from the map on other threads, so it is only touched under the lock.
+    std::atomic<bool>* flag;
     {
         std::lock_guard<std::mutex> lk(s_artMtx);
         if (s_artInFlight.count(itemId)) return;
-        s_artInFlight[itemId] = new std::atomic<bool>(false);
+        flag = new std::atomic<bool>(false);
+        s_artInFlight[itemId] = flag;
     }
-    std::thread(ArtWorker, itemId, tag, s_artInFlight[itemId]).detach();
+    std::thread(ArtWorker, itemId, tag, flag).detach();
 }

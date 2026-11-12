@@ -670,10 +670,13 @@ static void ArtWorker(std::string ratingKey, std::string url,
 void Plex_QueueArtDownload(const std::string& ratingKey, const std::string& url)
 {
     if (ratingKey.empty() || url.empty()) return;
+    // Workers erase from the map on other threads, so it is only touched under the lock.
+    std::atomic<bool>* flag;
     {
         std::lock_guard<std::mutex> lk(s_artMtx);
         if (s_artInFlight.count(ratingKey)) return;
-        s_artInFlight[ratingKey] = new std::atomic<bool>(false);
+        flag = new std::atomic<bool>(false);
+        s_artInFlight[ratingKey] = flag;
     }
-    std::thread(ArtWorker, ratingKey, url, s_artInFlight[ratingKey]).detach();
+    std::thread(ArtWorker, ratingKey, url, flag).detach();
 }

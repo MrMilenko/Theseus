@@ -918,12 +918,15 @@ static void ArtWorker(std::string titleId, std::string url, std::atomic<bool>* f
 void Xcloud_QueueArtDownload(const std::string& titleId, const std::string& url)
 {
     if (titleId.empty() || url.empty()) return;
+    // Workers erase from the map on other threads, so it is only touched under the lock.
+    std::atomic<bool>* flag;
     {
         std::lock_guard<std::mutex> lk(s_artMtx);
         if (s_artInFlight.count(titleId)) return;
-        s_artInFlight[titleId] = new std::atomic<bool>(false);
+        flag = new std::atomic<bool>(false);
+        s_artInFlight[titleId] = flag;
     }
-    std::thread(ArtWorker, titleId, url, s_artInFlight[titleId]).detach();
+    std::thread(ArtWorker, titleId, url, flag).detach();
 }
 
 void Xcloud_StartStreamSession(const std::string& type, const std::string& id)
