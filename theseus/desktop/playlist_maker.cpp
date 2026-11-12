@@ -130,9 +130,8 @@ static void DrawItemsPane() {
     ImGui::Spacing();
     ImGui::Separator();
 
-    // No outer lock: count getters self-lock; iterators race with scans
-    // the same way menu_bar.cpp's media counts do. Scans are explicit
-    // refresh actions, not background sweeps, so the race is benign.
+    // Counts self-lock. The listing below holds the DB lock, since a scan
+    // swaps the vectors out from under the C string getters.
     int movieCount = MediaDB_GetMovieCount();
     int showCount  = MediaDB_GetShowCount();
 
@@ -150,6 +149,7 @@ static void DrawItemsPane() {
         return;
     }
 
+    MediaDB_Lock();
     int movieAvail = 0;
     for (int i = 0; i < movieCount; i++)
         if (!inPlaylist.count(MediaDB_GetMoviePathC(i))) movieAvail++;
@@ -234,6 +234,7 @@ static void DrawItemsPane() {
             ImGui::PopID();
         }
     }
+    MediaDB_Unlock();
 }
 
 void RenderPlaylistMaker() {
