@@ -5,7 +5,9 @@
 // the skin overrides live in materials_retail.inl.
 //
 // XIPs bind materials by name, so the names, the CMatInfo classes and the
-// MATINFO_* flags are fixed. Change a variant here and both builds see it.
+// MATINFO_* flags are fixed. Both builds compile this file; the only
+// desktop differences are the two NV2A antialias states, which the desktop
+// renderer has no use for, and the skin editor hooks.
 
 #include "std.h"
 #include "theseus.h"
@@ -410,11 +412,14 @@ static BYTE FadedAlpha(float nAlpha)
 	return (BYTE)(int)(nAlpha * g_nEffectAlpha);
 }
 
-// Edge AA on, multisample off: what most Setups end with.
+// Edge AA on, multisample off: what most Setups end with. These two are
+// NV2A states; desktop sets antialiasing up once with the window.
 static void UseEdgeAntialias()
 {
+#ifdef _XBOX
 	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, TRUE);
 	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
+#endif
 }
 
 // CMatInfo::CMatInfo(szName, dwFlags)
@@ -475,8 +480,10 @@ bool CSolidMatInfo::Setup(CMaxMaterial *pMaxMat)
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
 
 	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB(FadedAlpha(m_a), m_r, m_g, m_b));
+#ifdef _XBOX
 	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, (m_flags & MATINFO_NO_EDGE_AA) ? FALSE : TRUE);
 	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
+#endif
 
 	return CMatInfo::Setup(pMaxMat);
 }
@@ -1225,8 +1232,10 @@ void CMaxMaterial::Render()
 			return;
 	}
 
+#ifdef _XBOX
 	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, FALSE);
 	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
+#endif
 
 	g_bEdgeAntialiasOverride =
 		_tcscmp(m_name, _T("Tubes")) == 0 ||
@@ -1235,4 +1244,11 @@ void CMaxMaterial::Render()
 		_tcscmp(m_name, _T("Tube")) == 0;
 
 	m_pMatInfo->Setup(this);
+
+#ifdef THESEUS_DESKTOP
+	// The skin editor highlights the materials drawn this frame.
+	extern IDirect3DDevice8* g_pD3DDev;
+	if (g_pD3DDev != NULL)
+		m_pMatInfo->m_lastUsedFrame = g_pD3DDev->m_frameNumber;
+#endif
 }

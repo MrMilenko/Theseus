@@ -1,7 +1,7 @@
 // materials_retail.inl: every material the 5960 dashboard builds, with its
-// retail colours. Included by render/materials.cpp and
-// desktop/materials_desktop.cpp after their CMatInfo classes, so both builds
-// bind the same names. A skin only overrides what it lists; the rest stays retail.
+// retail colours. Included by render/materials.cpp after its CMatInfo
+// classes; both builds compile that file, so they bind the same names.
+// A skin only overrides what it lists; the rest stays retail.
 
 enum MatKind
 {

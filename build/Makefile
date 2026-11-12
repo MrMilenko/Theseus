@@ -840,7 +840,7 @@ DESKTOP_SRCS_RENDER = \
 	$(THESEUS_SRC)/desktop/image.cpp \
 	$(THESEUS_SRC)/desktop/texture.cpp \
 	$(THESEUS_SRC)/render/tmap_system.cpp \
-	$(THESEUS_SRC)/desktop/materials_desktop.cpp \
+	$(THESEUS_SRC)/render/materials.cpp \
 	$(THESEUS_SRC)/desktop/mesh.cpp \
 	$(THESEUS_SRC)/render/shape_render.cpp \
 	$(THESEUS_SRC)/render/text.cpp \
