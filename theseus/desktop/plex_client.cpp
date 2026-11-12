@@ -595,6 +595,13 @@ std::vector<PlexItem> Plex_Cache_GetItems(const std::string& sectionKey)
     return it->second;
 }
 
+// A server refresh swaps s_servers on a worker, so copy under the lock.
+static std::string FirstServerUri()
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_servers.empty() ? std::string() : s_servers.front().uri;
+}
+
 bool Plex_Cache_GetSeasons(const std::string& showRatingKey,
                            std::vector<PlexSeason>& out)
 {
@@ -607,9 +614,8 @@ bool Plex_Cache_GetSeasons(const std::string& showRatingKey,
         }
     }
     // Not cached, fire a fetch; SeasonsWorker promotes the result.
-    if (!s_servers.empty()) {
-        Plex_FetchSeasons(s_servers.front().uri, showRatingKey);
-    }
+    std::string uri = FirstServerUri();
+    if (!uri.empty()) Plex_FetchSeasons(uri, showRatingKey);
     return false;
 }
 
@@ -624,9 +630,8 @@ bool Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
             return true;
         }
     }
-    if (!s_servers.empty()) {
-        Plex_FetchEpisodes(s_servers.front().uri, seasonRatingKey);
-    }
+    std::string uri = FirstServerUri();
+    if (!uri.empty()) Plex_FetchEpisodes(uri, seasonRatingKey);
     return false;
 }
 
