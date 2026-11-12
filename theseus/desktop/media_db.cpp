@@ -12,6 +12,7 @@
 #include "tmdb.h"
 #include "playlist.h"
 #include "media_db.h"
+#include "host.h"
 
 // ============================================================================
 // CMediaCollection - filesystem-backed library of movies + TV shows.
@@ -19,7 +20,6 @@
 // a stateful query API to XAP (SetCurrentShow / GetSeasonName / etc.).
 // ============================================================================
 
-#include <dirent.h>
 #include <sys/stat.h>
 #include <vector>
 #include <string>
@@ -263,28 +263,28 @@ static void SortEpisodes(std::vector<EpisodeRec>& eps)
 // Season folder or similar sitting under the title folder.
 static std::string FindFirstVideoFile(const std::string& dir, int depth = 1)
 {
-	DIR* d = opendir(dir.c_str());
+	HostDir* d = Host_OpenDir(dir.c_str());
 	if (!d) return "";
 	std::vector<std::string> subdirs;
 	std::string out;
-	struct dirent* e;
-	while ((e = readdir(d)))
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
 	{
-		if (e->d_name[0] == '.') continue;
-		if (IsVideoExt(e->d_name))
+		if (eName[0] == '.') continue;
+		if (IsVideoExt(eName))
 		{
-			out = dir + "/" + e->d_name;
+			out = dir + "/" + eName;
 			break;
 		}
 		if (depth > 1)
 		{
-			std::string sub = dir + "/" + e->d_name;
+			std::string sub = dir + "/" + eName;
 			struct stat st;
 			if (stat(sub.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
 				subdirs.push_back(sub);
 		}
 	}
-	closedir(d);
+	Host_CloseDir(d);
 	if (!out.empty()) return out;
 
 	// Files win over folders, so only descend once this level came up empty.
@@ -302,21 +302,21 @@ static std::string FindFirstVideoFile(const std::string& dir, int depth = 1)
 static void ScanMoviesInto(std::vector<MovieRec>& out)
 {
 	out.clear();
-	DIR* d = opendir(kMoviesRoot);
+	HostDir* d = Host_OpenDir(kMoviesRoot);
 	if (!d) return;
-	struct dirent* e;
-	while ((e = readdir(d)))
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
 	{
-		if (e->d_name[0] == '.') continue;
-		std::string folder = std::string(kMoviesRoot) + "/" + e->d_name;
+		if (eName[0] == '.') continue;
+		std::string folder = std::string(kMoviesRoot) + "/" + eName;
 		struct stat st;
 		if (stat(folder.c_str(), &st) != 0) continue;
 
 		std::string videoPath;
-		std::string title = e->d_name;
+		std::string title = eName;
 		if (S_ISDIR(st.st_mode)) {
 			videoPath = FindFirstVideoFile(folder, 2);
-		} else if (IsVideoExt(e->d_name)) {
+		} else if (IsVideoExt(eName)) {
 			// Movies dropped straight in the root, no folder per title.
 			videoPath = folder;
 			size_t dot = title.find_last_of('.');
@@ -333,40 +333,40 @@ static void ScanMoviesInto(std::vector<MovieRec>& out)
 		BumpProgress(n);
 		if ((n % 50) == 0) printf("[MediaDB] Movies: %d found\n", n);
 	}
-	closedir(d);
+	Host_CloseDir(d);
 	printf("[MediaDB] Movie scan done: %d total\n", (int)out.size());
 }
 
 static void ScanShowSeasons(ShowRec& show)
 {
-	DIR* d = opendir(show.path.c_str());
+	HostDir* d = Host_OpenDir(show.path.c_str());
 	if (!d) return;
-	struct dirent* e;
-	while ((e = readdir(d)))
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
 	{
-		if (e->d_name[0] == '.') continue;
-		std::string seasonDir = show.path + "/" + e->d_name;
+		if (eName[0] == '.') continue;
+		std::string seasonDir = show.path + "/" + eName;
 		struct stat st;
 		if (stat(seasonDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
-		if (strncasecmp(e->d_name, "Season", 6) != 0 &&
-		    strncasecmp(e->d_name, "Specials", 8) != 0) continue;
+		if (strncasecmp(eName, "Season", 6) != 0 &&
+		    strncasecmp(eName, "Specials", 8) != 0) continue;
 
 		SeasonRec s;
-		s.name = e->d_name;
+		s.name = eName;
 
-		DIR* sd = opendir(seasonDir.c_str());
+		HostDir* sd = Host_OpenDir(seasonDir.c_str());
 		if (!sd) continue;
-		struct dirent* se;
-		while ((se = readdir(sd)))
+		char seName[260];
+		while (Host_ReadDir(sd, seName, sizeof(seName), NULL))
 		{
-			if (se->d_name[0] == '.') continue;
-			if (!IsVideoExt(se->d_name)) continue;
+			if (seName[0] == '.') continue;
+			if (!IsVideoExt(seName)) continue;
 			EpisodeRec ep;
-			ep.path = seasonDir + "/" + se->d_name;
-			ep.title = ParseEpisodeTitle(se->d_name, ep.season, ep.episode);
+			ep.path = seasonDir + "/" + seName;
+			ep.title = ParseEpisodeTitle(seName, ep.season, ep.episode);
 			s.episodes.push_back(ep);
 		}
-		closedir(sd);
+		Host_CloseDir(sd);
 
 		// Sort episodes by episode number.
 		for (size_t i = 1; i < s.episodes.size(); i++)
@@ -379,7 +379,7 @@ static void ScanShowSeasons(ShowRec& show)
 
 		show.seasons.push_back(s);
 	}
-	closedir(d);
+	Host_CloseDir(d);
 
 	// Episodes sitting straight in the show folder, no Season dirs. Common
 	// enough that dropping the show entirely just looks like nothing loaded.
@@ -387,19 +387,19 @@ static void ScanShowSeasons(ShowRec& show)
 	{
 		SeasonRec s;
 		s.name = "Season 1";
-		DIR* fd = opendir(show.path.c_str());
+		HostDir* fd = Host_OpenDir(show.path.c_str());
 		if (!fd) return;
-		struct dirent* fe;
-		while ((fe = readdir(fd)))
+		char feName[260];
+		while (Host_ReadDir(fd, feName, sizeof(feName), NULL))
 		{
-			if (fe->d_name[0] == '.') continue;
-			if (!IsVideoExt(fe->d_name)) continue;
+			if (feName[0] == '.') continue;
+			if (!IsVideoExt(feName)) continue;
 			EpisodeRec ep;
-			ep.path = show.path + "/" + fe->d_name;
-			ep.title = ParseEpisodeTitle(fe->d_name, ep.season, ep.episode);
+			ep.path = show.path + "/" + feName;
+			ep.title = ParseEpisodeTitle(feName, ep.season, ep.episode);
 			s.episodes.push_back(ep);
 		}
-		closedir(fd);
+		Host_CloseDir(fd);
 		SortEpisodes(s.episodes);
 		if (!s.episodes.empty()) show.seasons.push_back(s);
 	}
@@ -408,13 +408,13 @@ static void ScanShowSeasons(ShowRec& show)
 static void ScanShowsInto(std::vector<ShowRec>& out)
 {
 	out.clear();
-	DIR* d = opendir(kTvRoot);
+	HostDir* d = Host_OpenDir(kTvRoot);
 	if (!d) return;
-	struct dirent* e;
-	while ((e = readdir(d)))
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
 	{
-		if (e->d_name[0] == '.') continue;
-		std::string folder = std::string(kTvRoot) + "/" + e->d_name;
+		if (eName[0] == '.') continue;
+		std::string folder = std::string(kTvRoot) + "/" + eName;
 		struct stat st;
 		if (stat(folder.c_str(), &st) != 0) continue;
 
@@ -423,8 +423,8 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 		{
 			// A loose episode in the root. Its own one episode show, so it
 			// is at least reachable instead of invisible.
-			if (!IsVideoExt(e->d_name)) continue;
-			std::string title = e->d_name;
+			if (!IsVideoExt(eName)) continue;
+			std::string title = eName;
 			size_t dot = title.find_last_of('.');
 			if (dot != std::string::npos) title.erase(dot);
 
@@ -432,7 +432,7 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 			s.name = "Season 1";
 			EpisodeRec ep;
 			ep.path  = folder;
-			ep.title = ParseEpisodeTitle(e->d_name, ep.season, ep.episode);
+			ep.title = ParseEpisodeTitle(eName, ep.season, ep.episode);
 			s.episodes.push_back(ep);
 
 			// Keyed on the file itself so every loose show stays its own entry.
@@ -444,7 +444,7 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 			continue;
 		}
 
-		sh.title = e->d_name;
+		sh.title = eName;
 		sh.path  = folder;
 		ScanShowSeasons(sh);
 		if (!sh.seasons.empty()) {
@@ -454,7 +454,7 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 			if ((n % 10) == 0) printf("[MediaDB] Shows: %d found\n", n);
 		}
 	}
-	closedir(d);
+	Host_CloseDir(d);
 	printf("[MediaDB] Show scan done: %d total\n", (int)out.size());
 }
 
@@ -540,12 +540,7 @@ static void WriteCacheTo(const std::vector<MovieRec>& movies,
 	}
 
 	fclose(f);
-#ifdef THESEUS_HOST_WIN
-	// MS CRT rename() won't replace an existing file.
-	MoveFileExA(tmp.c_str(), path, MOVEFILE_REPLACE_EXISTING);
-#else
-	rename(tmp.c_str(), path);
-#endif
+	Host_RenameReplace(tmp.c_str(), path);
 	printf("[MediaDB] Saved cache: %u movies, %u shows\n", nMovies, nShows);
 }
 
@@ -1000,7 +995,8 @@ static void EnrichMoviesTmdb(std::vector<MovieRec>& movies, std::vector<ShowRec>
 					m.tmdbId      = tm.tmdbId;
 					hits.fetch_add(1);
 				} else {
-					m.tmdbId = -1;
+					// A failed lookup stays 0 so the next scan asks again.
+					if (!tm.failed) m.tmdbId = -1;
 					misses.fetch_add(1);
 				}
 			}
@@ -1067,7 +1063,7 @@ static void EnrichShowsTmdb(std::vector<ShowRec>& shows, std::vector<MovieRec>& 
 					s.tmdbId      = ts.tmdbId;
 					hits.fetch_add(1);
 				} else {
-					s.tmdbId = -1;
+					if (!ts.failed) s.tmdbId = -1;
 					misses.fetch_add(1);
 				}
 			}

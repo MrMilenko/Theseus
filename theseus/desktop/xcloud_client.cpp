@@ -897,6 +897,7 @@ static std::string Xcloud_ArtCacheHostPath(const std::string& titleId)
 // Xbox-style path for the XAP; xboxfs maps E:\ onto Library/.
 std::string Xcloud_ArtCachePath(const std::string& titleId)
 {
+    if (!Http_IsSafeFileId(titleId)) return "";
     return "E:\\Xcloud\\" + titleId + ".jpg";
 }
 
@@ -917,7 +918,8 @@ static void ArtWorker(std::string titleId, std::string url, std::atomic<bool>* f
 
 void Xcloud_QueueArtDownload(const std::string& titleId, const std::string& url)
 {
-    if (titleId.empty() || url.empty()) return;
+    // The id comes off the server and ends up in a file path.
+    if (!Http_IsSafeFileId(titleId) || url.empty()) return;
     // Workers erase from the map on other threads, so it is only touched under the lock.
     std::atomic<bool>* flag;
     {

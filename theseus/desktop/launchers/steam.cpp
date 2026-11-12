@@ -21,9 +21,8 @@
 #include <cstring>
 #include <sys/stat.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include "platform.h"
+#include "host.h"
 
 namespace {
 
@@ -53,24 +52,14 @@ bool DirExists(const char* path) {
 int CollectCandidateRoots(char outRoots[][512], int maxRoots) {
 	int n = 0;
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 	// Windows registry: HKCU\Software\Valve\Steam\SteamPath is
 	// what the Steam installer writes. Most reliable for non-
 	// default installs (e.g. user picked D:\Steam).
 	{
-		HKEY hKey;
-		if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Valve\\Steam",
-		                  0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-			char buf[512];
-			DWORD bufSize = sizeof(buf);
-			DWORD type = 0;
-			if (RegQueryValueExA(hKey, "SteamPath", NULL, &type,
-			                     (BYTE*)buf, &bufSize) == ERROR_SUCCESS &&
-			    (type == REG_SZ || type == REG_EXPAND_SZ)) {
-				if (n < maxRoots) n = AppendUnique(outRoots, n, maxRoots, buf);
-			}
-			RegCloseKey(hKey);
-		}
+		char buf[512];
+		if (Host_RegistryString("Software\\Valve\\Steam", "SteamPath", buf, sizeof(buf)))
+			n = AppendUnique(outRoots, n, maxRoots, buf);
 	}
 	// Default Windows install paths.
 	{
@@ -85,7 +74,7 @@ int CollectCandidateRoots(char outRoots[][512], int maxRoots) {
 			n = AppendUnique(outRoots, n, maxRoots, path);
 		}
 	}
-#elif defined(__APPLE__)
+#elif defined(THESEUS_HOST_MAC)
 	// macOS: official installer puts it under ~/Library/Application Support.
 	const char* home = getenv("HOME");
 	if (home && *home) {

@@ -1,3 +1,4 @@
+#include "platform.h"
 #include "esde.h"
 #include "platform_env.h"
 #include "app_paths.h"
@@ -6,7 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 #include <io.h>
 #define strcasecmp _stricmp
 #else
@@ -196,7 +197,7 @@ bool Esde_LastScanFoundSystemsXml(void)
 template <typename F>
 static void ForEachEntry(const char* dir, F cb)
 {
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     char pattern[1024];
     snprintf(pattern, sizeof(pattern), "%s/*", dir);
     struct _finddata_t fd;

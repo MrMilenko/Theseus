@@ -13,13 +13,8 @@
 #include <cstring>
 #include <sys/stat.h>
 #include <stdint.h>
-#ifdef _WIN32
-#include <direct.h>
-#define UDS_MKDIR(p) _mkdir(p)
-#else
-#include <unistd.h>
-#define UDS_MKDIR(p) mkdir((p), 0755)
-#endif
+#include "host.h"
+#define UDS_MKDIR(p) Host_MakeDir(p)
 
 namespace {
 

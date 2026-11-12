@@ -1,13 +1,12 @@
-// std.h: universal prelude header. Every .cpp file includes this
-// first; sets up the type system, CRT headers, D3D types, and
-// debug infrastructure for whichever platform we're building on.
-//
-//   _XBOX            : XDK kernel + XTL + D3D8 (original Xbox hardware)
-//   !_XBOX + _WIN32  : Win32 API + SDL + OpenGL (Windows desktop)
-//   !_XBOX + !_WIN32 : POSIX shims + SDL + OpenGL (macOS / Linux)
+// std.h: the Xbox build's prelude. Every Xbox .cpp includes this first;
+// it sets up the XDK kernel + XTL, CRT headers, D3D8 types and debug
+// infrastructure. The desktop has its own in desktop/std.h.
 
 // Check Configuration Options
 #include "platform.h"
+#ifdef THESEUS_DESKTOP
+#error "xbox/std.h is the Xbox prelude. Desktop code includes desktop/std.h."
+#endif
 #include "stdcfg.h"
 
 // Flag so toolbox/xboxinternals.h knows kernel types are already available
@@ -61,12 +60,6 @@ typedef char FSCHAR;
 #include <d3d8perf.h>
 #include "vertex8.h"
 #endif
-
-#else // !_XBOX
-// --- Desktop: SDL platform shim + D3D8-to-OpenGL ---
-
-#include "platform_shim.h"
-#include "d3d8_sdl.h"
 
 #endif // _XBOX
 

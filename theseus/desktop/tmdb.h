@@ -17,6 +17,7 @@ struct TmdbMovie
 {
     bool        ready;       // true once fetch resolved (cache or net)
     bool        found;       // true if TMDB had a hit
+    bool        failed;      // no usable answer (network, bad key), so try again later
     std::string title;       // canonical title from TMDB
     std::string overview;    // plot synopsis
     int         year;        // release year (0 = unknown)
@@ -28,6 +29,7 @@ struct TmdbShow
 {
     bool        ready;
     bool        found;
+    bool        failed;
     std::string title;
     std::string overview;
     int         year;        // first air year

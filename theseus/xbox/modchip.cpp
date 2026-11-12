@@ -4,7 +4,6 @@
 
 #include "std.h"
 
-#ifdef _XBOX
 #include "xkflash.h"
 typedef unsigned char  uint8_t;
 typedef unsigned short uint16_t;
@@ -88,11 +87,3 @@ const TCHAR* DetectModchip()
     return szModchip;
 }
 
-#else // desktop: no LPC bus, no flash chip to probe.
-
-const TCHAR* DetectModchip()
-{
-    return _T("N/A (Desktop)");
-}
-
-#endif // _XBOX

@@ -11,17 +11,7 @@
 
 #include <SDL.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <shellapi.h>
-#else
-#include <unistd.h>
-#include <sys/wait.h>
-#include <sys/stat.h>
-#include <signal.h>
-#include <errno.h>
-#include <ctype.h>
-#endif
+#include "host.h"
 
 #include "virtual_games.h"
 #include "stb_image.h"
@@ -47,47 +37,6 @@ static bool IsSteamUrl(const char* s)
 	return strncmp(s, "steam://", 8) == 0;
 }
 
-#ifndef _WIN32
-// Put back the LD_LIBRARY_PATH AppRun stashed, so a spawned /bin/sh doesn't
-// load the AppImage's bundled readline. No-op outside an AppImage.
-static void RestoreHostLibraryPath()
-{
-	const char* host = getenv("THESEUS_HOST_LD_LIBRARY_PATH");
-	if (!host) return;
-	if (*host) setenv("LD_LIBRARY_PATH", host, 1);
-	else       unsetenv("LD_LIBRARY_PATH");
-}
-
-// Build the argv for execlp/execl based on dispatch rules. Caller forks
-// first; this runs in the child and never returns on success.
-static void ExecLaunch(const char* spec)
-{
-	if (IsSteamUrl(spec))
-	{
-#ifdef __APPLE__
-		// macOS: system handler works fine for steam://
-		execlp("open", "open", spec, (char*)NULL);
-#else
-		// Linux: bypass xdg-open/KIO; steam binary takes the URL directly.
-		execlp("steam", "steam", spec, (char*)NULL);
-#endif
-	}
-	else if (IsUrl(spec))
-	{
-#ifdef __APPLE__
-		execlp("open", "open", spec, (char*)NULL);
-#else
-		execlp("xdg-open", "xdg-open", spec, (char*)NULL);
-#endif
-	}
-	else
-	{
-		// Raw command line: shell parses paths, args, scripts, etc.
-		execl("/bin/sh", "sh", "-c", spec, (char*)NULL);
-	}
-}
-#endif
-
 // Last-launch diagnostic captured by Launch_DoSpawn so Title Maker's
 // "Test Launch" button can surface it as a status toast instead of users
 // having to dig in stderr.
@@ -112,13 +61,8 @@ static void TrimOuterQuotes(char* s)
 
 static bool IsExistingFile(const char* path)
 {
-#ifdef _WIN32
-	DWORD attr = GetFileAttributesA(path);
-	return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
-#else
-	struct stat st;
-	return stat(path, &st) == 0 && S_ISREG(st.st_mode);
-#endif
+	HostFileInfo info;
+	return Host_Stat(path, &info) && !(info.attrs & HOST_ATTR_DIR);
 }
 
 // Parent dir of the program being spawned. Tries quoted path, then whole
@@ -177,78 +121,11 @@ static bool Launch_DoSpawn(const char* expanded)
 	char workdir[1024];
 	bool haveWorkdir = DeriveWorkDir(spec, workdir, sizeof(workdir));
 
-#ifdef _WIN32
-	// URLs go through ShellExecute. Raw commands run through cmd /C; no
-	// /S, so cmd preserves outer quotes for the 2-quote/exists case and
-	// strips first/last otherwise.
-	if (IsUrl(spec))
-	{
-		HINSTANCE rc = ShellExecuteA(NULL, "open", spec, NULL,
-		                             haveWorkdir ? workdir : NULL, SW_SHOWNORMAL);
-		if ((INT_PTR)rc <= 32) {
-			snprintf(g_launchLastResult, sizeof(g_launchLastResult),
-			         "ShellExecute failed (code %ld): %s", (long)(INT_PTR)rc, spec);
-			fprintf(stderr, "[launch] %s\n", g_launchLastResult);
-			return false;
-		}
-	}
-	else
-	{
-		STARTUPINFOA si = {};
-		si.cb = sizeof(si);
-		PROCESS_INFORMATION pi = {};
-		char cmd[2048];
-		// Quoted .exe spec skips cmd entirely. CreateProcessA with
-		// lpApplicationName=NULL parses the first quoted token as the
-		// exe with no shell quote-mangling. cmd's strip-first-and-last
-		// rule eats our outer wrapper otherwise. .bat / .cmd / etc.
-		// stay on the cmd path because they need a shell to interpret.
-		bool directExe = false;
-		if (spec[0] == '"') {
-			const char* exeEnd = strchr(spec + 1, '"');
-			if (exeEnd && exeEnd - spec >= 5 &&
-			    strncasecmp(exeEnd - 4, ".exe", 4) == 0) {
-				directExe = true;
-			}
-		}
-		if (directExe) {
-			strncpy(cmd, spec, sizeof(cmd) - 1);
-			cmd[sizeof(cmd) - 1] = 0;
-		} else {
-			snprintf(cmd, sizeof(cmd), "cmd /C \"%s\"", spec);
-		}
-		if (!CreateProcessA(NULL, cmd, NULL, NULL, FALSE,
-		                    DETACHED_PROCESS, NULL,
-		                    haveWorkdir ? workdir : NULL,
-		                    &si, &pi))
-		{
-			DWORD err = GetLastError();
-			snprintf(g_launchLastResult, sizeof(g_launchLastResult),
-			         "CreateProcess failed (error %lu): %s", err, spec);
-			fprintf(stderr, "[launch] %s\n", g_launchLastResult);
-			return false;
-		}
-		CloseHandle(pi.hProcess);
-		CloseHandle(pi.hThread);
-	}
-#else
-	pid_t pid = fork();
-	if (pid == 0)
-	{
-		if (haveWorkdir) (void)chdir(workdir);
-		RestoreHostLibraryPath();
-		ExecLaunch(spec);
-		_exit(127);
-	}
-	else if (pid < 0)
-	{
-		snprintf(g_launchLastResult, sizeof(g_launchLastResult),
-		         "fork() failed: %s", strerror(errno));
+	if (!Host_Spawn(spec, IsUrl(spec), IsSteamUrl(spec), haveWorkdir ? workdir : NULL,
+	                g_launchLastResult, sizeof(g_launchLastResult))) {
 		fprintf(stderr, "[launch] %s\n", g_launchLastResult);
 		return false;
 	}
-	// Parent: don't wait. Fire-and-forget.
-#endif
 
 	snprintf(g_launchLastResult, sizeof(g_launchLastResult),
 	         "Launched: %s", spec);
