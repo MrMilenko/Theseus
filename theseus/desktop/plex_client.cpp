@@ -64,6 +64,7 @@ static std::atomic<bool>       s_serversReady{false};
 static std::vector<PlexServer> s_servers;
 static std::thread             s_serversThread;
 static std::string             s_activeServerName;
+static std::string             s_activeServerUri;
 
 // TV drill. One worker thread per season/episode fetch; results land in the
 // pre-stage cache below.
@@ -126,6 +127,7 @@ void Plex_SignOut()
     std::lock_guard<std::mutex> lk(g_mtx);
     s_servers.clear();   s_serversReady   = false;
     s_activeServerName.clear();
+    s_activeServerUri.clear();
     s_cacheLibs.clear();
     s_cacheItems.clear();
     s_cacheSeasons.clear();
@@ -276,6 +278,7 @@ static void ServersWorker()
         if (gen != s_syncGen) return;   // signed out meanwhile
         s_servers = std::move(servers);
         s_activeServerName = s_servers.empty() ? std::string() : s_servers[0].name;
+        s_activeServerUri  = s_servers.empty() ? std::string() : s_servers[0].uri;
     }
     s_serversReady = true;
     fprintf(stderr, "[Plex] discovered %zu server(s)\n", n);
@@ -293,6 +296,12 @@ void Plex_FetchServers()
     JoinIf(s_serversThread);
     s_serversReady = false;
     s_serversThread = std::thread(ServersWorker);
+}
+
+std::string Plex_GetActiveServerUri()
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_activeServerUri;
 }
 
 std::vector<PlexServer> Plex_GetServers()
@@ -504,7 +513,10 @@ static void SyncWorker()
         serverUri = servers[si].uri;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
-            if (gen == s_syncGen) s_activeServerName = servers[si].name;
+            if (gen == s_syncGen) {
+                s_activeServerName = servers[si].name;
+                s_activeServerUri  = servers[si].uri;
+            }
         }
         fprintf(stderr, "[Plex] using %s (%s)\n",
                 servers[si].name.c_str(), serverUri.c_str());
@@ -612,13 +624,6 @@ std::vector<PlexItem> Plex_Cache_GetItems(const std::string& sectionKey)
     return it->second;
 }
 
-// A server refresh swaps s_servers on a worker, so copy under the lock.
-static std::string FirstServerUri()
-{
-    std::lock_guard<std::mutex> lk(g_mtx);
-    return s_servers.empty() ? std::string() : s_servers.front().uri;
-}
-
 bool Plex_Cache_GetSeasons(const std::string& showRatingKey,
                            std::vector<PlexSeason>& out)
 {
@@ -631,7 +636,8 @@ bool Plex_Cache_GetSeasons(const std::string& showRatingKey,
         }
     }
     // Not cached, fire a fetch; SeasonsWorker promotes the result.
-    std::string uri = FirstServerUri();
+    // Same server the library came from, not just the first one listed.
+    std::string uri = Plex_GetActiveServerUri();
     if (!uri.empty()) Plex_FetchSeasons(uri, showRatingKey);
     return false;
 }
@@ -647,7 +653,7 @@ bool Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
             return true;
         }
     }
-    std::string uri = FirstServerUri();
+    std::string uri = Plex_GetActiveServerUri();
     if (!uri.empty()) Plex_FetchEpisodes(uri, seasonRatingKey);
     return false;
 }

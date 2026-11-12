@@ -60,6 +60,8 @@ void                       Plex_FetchServers();
 std::vector<PlexServer>    Plex_GetServers();
 bool                       Plex_ServersReady();
 std::string                Plex_GetActiveServerName();
+// Address of the server the sync actually reached. Empty until one answers.
+std::string                Plex_GetActiveServerUri();
 
 // TV drill. Results land in the pre-stage cache (Plex_Cache_GetSeasons/Episodes).
 void                       Plex_FetchSeasons(const std::string& serverUri,
