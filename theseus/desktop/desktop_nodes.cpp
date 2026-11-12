@@ -3020,6 +3020,16 @@ public:
 		MediaPlayer_RenderToScreen(0, 0);
 	}
 
+	// 5960 ends each user op on the navigator's answer (helper @ 0x000669f0
+	// and its inlined copies through 0x00067f00):
+	//     hr == 0x87840001 (UOP prohibited) or 0x80034013 -> OnProhibited
+	//     anything else                                   -> OnUserOpAllowed
+	// mpv takes every transport op; the disc menu, select and angle ops have
+	// nothing to act on in a file, so they report prohibited.
+	void ReportUserOp(bool bAllowed) {
+		CallFunction(this, bAllowed ? "OnUserOpAllowed" : "OnProhibited");
+	}
+
 	// === Transport ===
 	void init() {}
 
@@ -3033,6 +3043,7 @@ public:
 		}
 		MediaPlayer_Play();
 		m_playbackMode = 3;  // DPM_PLAYING
+		ReportUserOp(true);
 	}
 
 	void stop() {
@@ -3048,7 +3059,7 @@ public:
 		MediaPlayer_Stop();
 	}
 
-	void pause() { MediaPlayer_Pause(); }
+	void pause() { MediaPlayer_Pause(); ReportUserOp(true); }
 	void playOrPause() {
 		// If scanning, stop scan and resume normal playback
 		if (m_playbackMode == 5 || m_playbackMode == 8 || m_scanSpeed > 1 || m_bScanBackward) {
@@ -3059,11 +3070,13 @@ public:
 			MediaPlayer_SetSpeed(1.0);
 			MediaPlayer_Play();
 			m_playbackMode = 3;  // DPM_PLAYING
+			ReportUserOp(true);
 			return;
 		}
 		MediaPlayer_TogglePause();
+		ReportUserOp(true);
 	}
-	void resume() { MediaPlayer_Play(); }
+	void resume() { MediaPlayer_Play(); ReportUserOp(true); }
 
 	// === Scanning (fast forward/rewind with speed ramp) ===
 	void forwardScan() {
@@ -3089,6 +3102,7 @@ public:
 			MediaPlayer_SetSpeed((double)m_scanSpeed);
 		}
 		m_playbackMode = 5;  // DPM_SCANNING
+		ReportUserOp(true);
 	}
 
 	void backwardScan() {
@@ -3116,6 +3130,7 @@ public:
 		}
 		m_backScanAccum = 0.0f;
 		m_playbackMode = 5;  // DPM_SCANNING
+		ReportUserOp(true);
 	}
 
 	void stopScan() {
@@ -3126,48 +3141,53 @@ public:
 		MediaPlayer_SetSpeed(1.0);
 		MediaPlayer_Play();
 		m_playbackMode = 3;  // DPM_PLAYING
+		ReportUserOp(true);
 	}
 
 	// === Frame stepping ===
 	void frameAdvance() {
 		MediaPlayer_FrameStep();
 		m_playbackMode = 8;  // DPM_TRICKPLAY
+		ReportUserOp(true);
 	}
 
 	void frameReverse() {
 		MediaPlayer_FrameBackStep();
 		m_playbackMode = 8;  // DPM_TRICKPLAY
+		ReportUserOp(true);
 	}
 
 	// === Chapter navigation ===
-	void startChapter() { MediaPlayer_Seek(0); }
-	void nextChapter() { MediaPlayer_NextChapter(); }
-	void prevChapter() { MediaPlayer_PrevChapter(); }
+	void startChapter() { MediaPlayer_Seek(0); ReportUserOp(true); }
+	void nextChapter() { MediaPlayer_NextChapter(); ReportUserOp(true); }
+	void prevChapter() { MediaPlayer_PrevChapter(); ReportUserOp(true); }
 
 	// === Track selection ===
 	void nextAudioStream() {
 		MediaPlayer_NextAudioTrack();
 		UpdateTrackLanguages();  // refresh language strings after track change
 		CallFunction(this, "OnAudioChange");
+		ReportUserOp(true);
 	}
 
 	void nextSubtitle() {
 		MediaPlayer_NextSubtitleTrack();
 		UpdateTrackLanguages();  // refresh language strings after track change
 		CallFunction(this, "OnSubTitleChange");
+		ReportUserOp(true);
 	}
 
-	void nextAngle() {} // N/A for file playback
+	void nextAngle() { ReportUserOp(false); } // N/A for file playback
 
-	// === DVD menu navigation (no-ops for file playback) ===
-	void selectUp() {}
-	void selectDown() {}
-	void selectRight() {}
-	void selectLeft() {}
-	void activate() {}
-	void goUp() {}
-	void menu() {}
-	void titleMenu() {}
+	// === DVD menu navigation (nothing to navigate in a file) ===
+	void selectUp() { ReportUserOp(false); }
+	void selectDown() { ReportUserOp(false); }
+	void selectRight() { ReportUserOp(false); }
+	void selectLeft() { ReportUserOp(false); }
+	void activate() { ReportUserOp(false); }
+	void goUp() { ReportUserOp(false); }
+	void menu() { ReportUserOp(false); }
+	void titleMenu() { ReportUserOp(false); }
 
 	// === Zoom ===
 	void setScale(float scale) {
@@ -3194,6 +3214,7 @@ public:
 			MediaPlayer_ClearABLoop();
 			m_abRepeatState = 0;
 		}
+		ReportUserOp(true);
 	}
 
 	// === Digit entry (chapter jump) ===
