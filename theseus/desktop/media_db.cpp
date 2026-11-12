@@ -282,8 +282,7 @@ static bool IsMainVideo(const char* name)
 	return IsVideoExt(name) && !IsExtraVideo(name);
 }
 
-// A folder is a movie when the movie sits right in it. Subfolders are extras,
-// or something that isn't a movie at all, so they never make one.
+// The first movie sitting right in dir. Subfolders are a movie's extras.
 static std::string FindFirstVideoFile(const std::string& dir)
 {
 	HostDir* d = Host_OpenDir(dir.c_str());
@@ -306,6 +305,38 @@ static std::string FindFirstVideoFile(const std::string& dir)
 
 // Filesystem scan ------------------------------------------------------------
 
+static void AddMovie(std::vector<MovieRec>& out, const std::string& title, const std::string& path)
+{
+	MovieRec m;
+	m.title = title;
+	m.path  = path;
+	m.year  = ParseYearFromTitle(m.title);
+	out.push_back(m);
+	int n = (int)out.size();
+	BumpProgress(n);
+	if ((n % 50) == 0) printf("[MediaDB] Movies: %d found\n", n);
+}
+
+// A folder with a movie right in it is that movie. One without is a
+// collection (Action/Die Hard/Die Hard.mkv): each subfolder holding a movie
+// is its own movie and the collection itself isn't listed. Only one level.
+static void ScanMovieCollection(std::vector<MovieRec>& out, const std::string& dir)
+{
+	HostDir* d = Host_OpenDir(dir.c_str());
+	if (!d) return;
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
+	{
+		if (eName[0] == '.') continue;
+		std::string sub = dir + "/" + eName;
+		struct stat st;
+		if (stat(sub.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+		std::string videoPath = FindFirstVideoFile(sub);
+		if (!videoPath.empty()) AddMovie(out, eName, videoPath);
+	}
+	Host_CloseDir(d);
+}
+
 static void ScanMoviesInto(std::vector<MovieRec>& out)
 {
 	out.clear();
@@ -319,26 +350,17 @@ static void ScanMoviesInto(std::vector<MovieRec>& out)
 		struct stat st;
 		if (stat(folder.c_str(), &st) != 0) continue;
 
-		std::string videoPath;
-		std::string title = eName;
 		if (S_ISDIR(st.st_mode)) {
-			videoPath = FindFirstVideoFile(folder);
+			std::string videoPath = FindFirstVideoFile(folder);
+			if (!videoPath.empty()) AddMovie(out, eName, videoPath);
+			else ScanMovieCollection(out, folder);
 		} else if (IsMainVideo(eName)) {
 			// Movies dropped straight in the root, no folder per title.
-			videoPath = folder;
+			std::string title = eName;
 			size_t dot = title.find_last_of('.');
 			if (dot != std::string::npos) title.erase(dot);
+			AddMovie(out, title, folder);
 		}
-		if (videoPath.empty()) continue;
-
-		MovieRec m;
-		m.title = title;
-		m.path  = videoPath;
-		m.year  = ParseYearFromTitle(m.title);
-		out.push_back(m);
-		int n = (int)out.size();
-		BumpProgress(n);
-		if ((n % 50) == 0) printf("[MediaDB] Movies: %d found\n", n);
 	}
 	Host_CloseDir(d);
 	printf("[MediaDB] Movie scan done: %d total\n", (int)out.size());
