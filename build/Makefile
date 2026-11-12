@@ -325,7 +325,6 @@ SRCS_SHARED_XBOX_ONLY = \
 SRCS_RENDER = \
 	render/animation_nodes.cpp \
 	render/asset_loader.cpp \
-	render/autosmooth.cpp \
 	render/camera.cpp \
 	render/hud_node.cpp \
 	render/materials.cpp \
@@ -866,8 +865,7 @@ DESKTOP_SRCS_SYSTEM = \
 	$(THESEUS_SRC)/desktop/locale.cpp \
 	$(THESEUS_SRC)/shared/timezone.cpp \
 	$(THESEUS_SRC)/desktop/debug.cpp \
-	$(THESEUS_SRC)/desktop/memutil.cpp \
-	$(THESEUS_SRC)/render/autosmooth.cpp
+	$(THESEUS_SRC)/desktop/memutil.cpp
 
 # Desktop-only platform sources (SDL window, ImGui, audio, tools)
 DESKTOP_SRCS_PLATFORM = \
