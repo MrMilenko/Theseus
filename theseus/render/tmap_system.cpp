@@ -548,16 +548,20 @@ void CSurfx::Line(int sx, int sy, int ex, int ey, unsigned char color)
 
 
 // ===== DeltaField ===========================================================
-// Computes a 2D displacement vector field for pixel warping effects.
-// 24 preset warp styles (polar and cartesian).
+// Builds the per-pixel "pull from here" map that CImageFader warps the
+// surface with. 24 warp styles, each a small formula in polar or x/y space.
 
-#define DEC_SIZE 5
+#define DELTA_ZERO	0x7E07E0	// both offsets at the bias, so "stay put"
 
+// DeltaField::DeltaField()
+// Reconstructed from the inline construction in CImageFader_RenderDynamicTexture @ 0x0005e120:
+//     style = 0; currentY = -1; width = height = 0; field = {negY 0, buffer NULL}
 DeltaField::DeltaField()
 {
-	mWidth = mHeight = 0;
-	mCurrentY = -1;
 	m_nStyle = 0;
+	mCurrentY = -1;
+	mWidth = 0;
+	mHeight = 0;
 }
 
 DeltaFieldData::DeltaFieldData()
@@ -566,176 +570,193 @@ DeltaFieldData::DeltaFieldData()
 	mField = NULL;
 }
 
+// DeltaFieldData::~DeltaFieldData()
+// Reconstructed from 5960 retail XBE @ 0x0005e110: free(field).
 DeltaFieldData::~DeltaFieldData()
 {
 	delete [] mField;
 }
 
+// DeltaField::GetField()
+// Reconstructed from the tail of CImageFader_RenderDynamicTexture @ 0x0005e120:
+//     if (currentY >= 0 && currentY != height) do CalcSome(); while (currentY != height);
+// Finishes the field on demand. Returning NULL for a field that was never sized
+// is a Theseus guard; the binary never reaches here in that state.
 DeltaFieldData* DeltaField::GetField()
 {
-	if (mCurrentY >= 0)
-	{
-		while (!IsCalculated())
-			CalcSome();
+	if (mCurrentY < 0)
+		return NULL;
 
-		return &mFieldData;
-	}
+	while (mCurrentY != mHeight)
+		CalcSome();
 
-	return NULL;
+	return &mFieldData;
 }
 
+// DeltaField::Assign()
+// Reconstructed from 5960 retail XBE @ 0x0005e4e0:
+//     aspect1to1 = 1; polar = hasR = hasTheta = 1; then the SetSize body, forced.
 void DeltaField::Assign()
 {
 	mAspect1to1 = true;
 	mPolar = true;
 	mHasRTerm = true;
 	mHasThetaTerm = true;
-
 	SetSize(mWidth, mHeight, true);
 }
 
+// DeltaField::SetSize(w, h, force)
+// Reconstructed from 5960 retail XBE, inlined at 0x0005e4e0 and twice in
+// CImageFader_RenderDynamicTexture @ 0x0005e120:
+//     if (w != width || h != height || force) {
+//         width = w; height = h; free(buf); buf = new[w * h * 3 + 0x40];
+//         xs = 2.0 / w; ys = 2.0 / h; if (aspect1to1) xs = ys = max(xs, ys);
+//         ys *= -1.0; currentY = 0; negY = 0; }
+// The y scale is flipped so +y points up in the warp formulas.
 void DeltaField::SetSize(long inWidth, long inHeight, bool inForceRegen)
 {
-	if (inWidth != mWidth || inHeight != mHeight || inForceRegen)
+	if (inWidth == mWidth && inHeight == mHeight && !inForceRegen)
+		return;
+
+	mWidth = inWidth;
+	mHeight = inHeight;
+
+	delete [] mFieldData.mField;
+	mFieldData.mField = new char [mWidth * mHeight * 3 + 64];
+
+	mXScale = 2.0f / (float)mWidth;
+	mYScale = 2.0f / (float)mHeight;
+	if (mAspect1to1)
 	{
-		mWidth = inWidth;
-		mHeight = inHeight;
-
-		delete [] mFieldData.mField;
-		mFieldData.mField = new char [3 * mWidth * mHeight + 64];
-
-		mXScale = 2.0f / ((float)mWidth);
-		mYScale = 2.0f / ((float)mHeight);
-
-		if (mAspect1to1)
-		{
-			if (mYScale > mXScale)
-				mXScale = mYScale;
-			else
-				mYScale = mXScale;
-		}
-
-		mCurrentY = 0;
-		mNegYExtents = 0;
-
-		// Win32 flips Y coordinates
-		mYScale *= -1;
+		if (mYScale > mXScale)
+			mXScale = mYScale;
+		else
+			mYScale = mXScale;
 	}
+	mYScale *= -1.0f;
+
+	mCurrentY = 0;
+	mNegYExtents = 0;
 }
 
-#define __encode(x, y)	sx = x + 0x7E0;					\
-						sy = y + 0x7E0;					\
-						*((unsigned long*)g) = (sx << 12) | (sy);	\
-						g += 3;
+static inline void WriteDelta(char* cell, unsigned long code)
+{
+	cell[0] = (char)code;
+	cell[1] = (char)(code >> 8);
+	cell[2] = (char)(code >> 16);
+}
 
+// DeltaField::CalcSome()
+// Reconstructed from 5960 retail XBE @ 0x0005e570. Computes one row per call
+// (two when it starts on the top border row) and returns rows still to go.
+// Border rows and the first and last cell of every row are DELTA_ZERO. For an
+// inner cell the pixel position maps to x, y in -1..1 (aspect corrected),
+// r and theta are filled in when the style needs them, GetXY gives the source
+// point (converted from polar when it says so), and the offset in 1/32 pixel
+// steps is clamped so the pull stays inside the image. The most negative y
+// offset sizes the fade's ring buffer: negY = 1 - (minDy >> 5).
+// See docs/decomp/TmapSystem.md.
 int DeltaField::CalcSome()
 {
-	float xscale2, yscale2, r, fx, fy;
-	long px, sx, sy, t;
-	char* g;
-
-	g = mFieldData.mField + 3 * mWidth * mCurrentY;
+	char* cell = mFieldData.mField + mCurrentY * mWidth * 3;
 
 	if (mCurrentY == 0 || mCurrentY == mHeight - 1)
 	{
-		for (px = 0; px < mWidth; px++)
-		{
-			__encode(0, 0)
-		}
-
+		for (long x = 0; x < mWidth; x++, cell += 3)
+			WriteDelta(cell, DELTA_ZERO);
 		mCurrentY++;
 	}
 
 	if (mCurrentY > 0 && mCurrentY < mHeight - 1)
 	{
 		mY_Cord = 0.5f * mYScale * (mHeight - 2 * mCurrentY);
+		float toFixedX = 32.0f / mXScale;
+		float toFixedY = 32.0f / mYScale;
 
-		xscale2 = ((float)(1 << DEC_SIZE)) / mXScale;
-		yscale2 = ((float)(1 << DEC_SIZE)) / mYScale;
+		WriteDelta(cell, DELTA_ZERO);
+		cell += 3;
 
-		__encode(0, 0)
-
-		for (px = 1; px < mWidth - 1; px++)
+		for (long px = 1; px < mWidth - 1; px++, cell += 3)
 		{
 			mX_Cord = 0.5f * mXScale * (2 * px - mWidth);
-
 			if (mHasRTerm)
 				mR_Cord = sqrtf(mX_Cord * mX_Cord + mY_Cord * mY_Cord);
 			if (mHasThetaTerm)
 				mT_Cord = atan2f(mY_Cord, mX_Cord);
 
-			GetXY(mR_Cord, mT_Cord, mX_Cord, mY_Cord, fx, fy, mPolar, px == 1 && mCurrentY == 1);
-
+			float srcX, srcY;
+			GetXY(mR_Cord, mT_Cord, mX_Cord, mY_Cord, srcX, srcY, mPolar, px == 1 && mCurrentY == 1);
 			if (mPolar)
 			{
-				r = fx;
-				fx = r * cosf(fy);
-				fy = r * sinf(fy);
+				float radius = srcX;
+				srcX = radius * cosf(srcY);
+				srcY = radius * sinf(srcY);
 			}
 
-			sx = (long)(xscale2 * (fx - mX_Cord));
-			sy = (long)(yscale2 * (mY_Cord - fy));
+			long dx = (long)(toFixedX * (srcX - mX_Cord));
+			long dy = (long)(toFixedY * (mY_Cord - srcY));
 
-			t = px + (sx >> DEC_SIZE);
-			if (t >= mWidth - 1)
-				sx = ((mWidth - 1 - px) << DEC_SIZE);
-			else if (t < 0)
-				sx = ((-px) << DEC_SIZE);
+			long landX = px + (dx >> 5);
+			if (landX >= mWidth - 1)
+				dx = (mWidth - 1 - px) * 32;
+			else if (landX < 0)
+				dx = -px * 32;
 
-			t = mCurrentY + (sy >> DEC_SIZE);
-			if (t >= mHeight - 1)
-				sy = ((mHeight - 1 - mCurrentY) << DEC_SIZE);
-			else if (t < 0)
-				sy = ((-mCurrentY) << DEC_SIZE);
+			long landY = mCurrentY + (dy >> 5);
+			if (landY >= mHeight - 1)
+				dy = (mHeight - 1 - mCurrentY) * 32;
+			else if (landY < 0)
+				dy = -mCurrentY * 32;
 
-			if (sy < mNegYExtents)
-				mNegYExtents = sy;
+			if (dy < mNegYExtents)
+				mNegYExtents = dy;
 
-			__encode(sx, sy)
+			WriteDelta(cell, ((dx + 0x7E0) << 12) | (dy + 0x7E0));
 		}
 
-		__encode(0, 0)
-
-		mCurrentY += 1;
+		WriteDelta(cell, DELTA_ZERO);
+		mCurrentY++;
 	}
 
-	if (IsCalculated())
-	{
-		mFieldData.mNegYExtents = 1 - (mNegYExtents >> DEC_SIZE);
-	}
+	if (mCurrentY == mHeight)
+		mFieldData.mNegYExtents = 1 - (mNegYExtents >> 5);
 
 	return mHeight - mCurrentY;
 }
 
+// DeltaField::GetXY(r, theta, x, y, X, Y, bPolar, bInit)
+// Reconstructed from 5960 retail XBE @ 0x0005e7d0 (a 24 way switch). Each
+// style returns a source point, as (radius, angle) unless it clears bPolar.
+// bInit is true on the first inner cell of a field; the random styles roll
+// their shared parameters A0..A2 (globals 0x00188f60/5c/58) there. Where the
+// binary multiplies rand() by a folded constant such as 0x0002bff0 =
+// 16/32767, that is written here as rnd(16). A few styles had their constant
+// products folded (0.5 * 0.06 -> 0.03 at 0x0002bff8, 0.5 * 0.1 -> 0.05); the
+// product is kept spelled out, which can differ from the folded value in the
+// last float bit. Out of range styles snap back to 0. The formulas are the
+// binary's; constants are listed per style in docs/decomp/TmapSystem.md.
 void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& Y, bool& bPolar, bool bInit)
 {
 	static float A0, A1, A2;
+	const float pi = 3.141592653f;
+
 	bPolar = true;
 
 	switch (m_nStyle)
 	{
-	default:
-		m_nStyle = 0;
-		// FALL THROUGH
-
-	case 0: // Radial Breakaway
-		X = r * (1.0f + 0.16f * atanf(0.55f - r));
-		Y = theta - 0.01f;
-		break;
-
-	case 1: // Hip-no-therapy
+	case 1:
 		X = r * 0.87f;
 		Y = theta - 0.075f;
-		break;
+		return;
 
-	case 2: // Sunburst - Many
+	case 2:
 		if (bInit)
-			A0 = trunc(8.0f * rnd(5.0f)) * 3.141592653f;
+			A0 = trunc(8.0f * rnd(5.0f)) * pi;
 		X = ((1.0f + sinf(A0 * theta)) * 0.5f * 0.06f + 0.92f) * r;
 		Y = theta;
-		break;
+		return;
 
-	case 3: // Theta Divergence
+	case 3:
 		if (bInit)
 		{
 			A0 = 2.0f + rnd(16.0f);
@@ -744,19 +765,19 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		}
 		X = pos(r - A2);
 		Y = theta + A1 * sinf(A0 * r);
-		break;
+		return;
 
-	case 4: // Turbo Flow Out
-		X = 0.87f * r;
+	case 4:
+		X = r * 0.87f;
 		Y = theta - 0.009f;
-		break;
+		return;
 
-	case 5: // Turbo Flow Out - More
-		X = 0.8f * r;
+	case 5:
+		X = r * 0.8f;
 		Y = theta - 0.008f;
-		break;
+		return;
 
-	case 6: // Boxilite
+	case 6:
 		if (bInit)
 		{
 			A0 = 2.0f + rnd(16.0f);
@@ -765,101 +786,91 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		X = x + A1 * sinf(A0 * y);
 		Y = y + A1 * sinf(A0 * x);
 		bPolar = false;
-		break;
+		return;
 
-	case 7: // Collapse & Turn
-		X = 1.01f * r;
+	case 7:
+		X = r * 1.01f;
 		Y = theta + 0.021f;
-		break;
+		return;
 
-	case 8: // Constant Out
+	case 8:
 		X = r - 0.01f;
 		Y = theta;
-		break;
+		return;
 
-	case 9: // Directrix Expand - X
+	case 9:
+	case 10:
 		if (bInit)
 		{
 			A0 = rnd(0.0045f);
-			A1 = 0.10f + rnd(0.06f);
-			A2 = 0.003f + rnd(0.005f);
+			A1 = 0.1f + rnd(0.06f);
+			A2 = 0.003f + (m_nStyle == 9 ? rnd(0.005f) : rnd(0.006f));
 		}
-		X = (0.99f - A1 * powf(fabsf(x), 1.3f)) * r - rnd(A0);
-		Y = theta - A2;
-		break;
+		X = (0.99f - A1 * powf(fabsf(m_nStyle == 9 ? x : y), 1.3f)) * r - rnd(A0);
+		Y = m_nStyle == 9 ? theta - A2 : theta + A2;
+		return;
 
-	case 10: // Directrix Expand - Y
-		if (bInit)
-		{
-			A0 = rnd(0.0045f);
-			A1 = 0.10f + rnd(0.06f);
-			A2 = 0.003f + rnd(0.006f);
-		}
-		X = (0.99f - A1 * powf(fabsf(y), 1.3f)) * r - rnd(A0);
-		Y = theta + A2;
-		break;
-
-	case 11: // Equalateral Hyperbola
+	case 11:
 		X = r - 0.18f * x * y;
 		Y = theta - 0.005f;
-		break;
+		return;
 
-	case 12: // Expand & Turn
-		X = 0.96f * r;
+	case 12:
+		X = r * 0.96f;
 		Y = theta - 0.021f;
-		break;
+		return;
 
-	case 13: // Gravity
+	case 13:
 		X = x + rnd(0.01f) - 0.005f;
 		Y = y - rnd(0.01f) - 0.005f - (y - 1.3f) * 0.04f;
 		bPolar = false;
-		break;
+		return;
 
-	case 14: // In or Out, Inner Turn
+	case 14:
 		if (bInit)
 			A0 = 0.95f + rnd(0.06f);
 		X = r * A0;
 		Y = theta - pos(1.0f - r) * 0.035f;
-		break;
+		return;
 
-	case 15: // Left turn & Flow Out
-		X = 0.94f * r;
+	case 15:
+		X = r * 0.94f;
 		Y = theta - 0.007f;
-		break;
+		return;
 
-	case 16: // Linear Spread
+	case 16:
 		X = 0.9f * x + rnd(0.008f) - 0.004f;
 		Y = 0.9f * y + rnd(0.008f) - 0.004f;
 		bPolar = false;
-		break;
+		return;
 
-	case 17: // Noise Field
+	case 17:
 		X = x + 0.1f * (rnd(2.0f) - 1.0f);
 		Y = y + 0.1f * (rnd(2.0f) - 1.0f);
 		bPolar = false;
-		break;
+		return;
 
-	case 18: // Right Turn
+	case 18:
 		X = r * 0.99f;
 		Y = theta + 0.009f;
-		break;
+		return;
 
-	case 19: // Scattered Flow Out
+	case 19:
 		X = (0.92f + rnd(0.05f)) * r;
 		Y = theta + 0.003f;
-		break;
+		return;
 
-	case 20: // Simple Sine-Sphere
+	case 20:
 		X = r + 0.04f * sinf(6.2831853f * r);
 		Y = theta + 0.015f;
-		break;
+		return;
 
-	case 21: // Sine Multi-Circ
+	case 21:
 		X = r * (0.87f + 0.05f * (1.0f + sinf(r * 15.0f)));
 		Y = theta;
-		break;
+		return;
 
-	case 22: // Sphere
+	case 22:
 		if (bInit)
 		{
 			A0 = rnd(0.1f);
@@ -868,14 +879,22 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 		}
 		X = r * (1.0f + 0.13f * (r - A2));
 		Y = theta + A0 * sinf(A1 * r);
-		break;
+		return;
 
-	case 23: // Sunburst - Few
+	case 23:
 		if (bInit)
-			A0 = trunc(1.0f + rnd(2.1f)) * 3.141592653f;
+			A0 = trunc(1.0f + rnd(2.1f)) * pi;
 		X = ((1.0f + cosf(A0 * theta)) * 0.5f * 0.1f + 0.89f) * r;
 		Y = theta + 0.005f;
-		break;
+		return;
+
+	default:
+		m_nStyle = 0;
+		// fall through
+	case 0:
+		X = r * (1.0f + 0.16f * atanf(0.55f - r));
+		Y = theta - 0.01f;
+		return;
 	}
 }
 
