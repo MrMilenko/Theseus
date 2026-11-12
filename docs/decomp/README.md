@@ -377,6 +377,7 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x000611f0 | `FUN_000611f0` | `CBackgroundTexture::~CBackgroundTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Clears the cache slot's loading flag. |
 | 0x00061210 | `FUN_00061210` | `CBackgroundTexture::OnComplete` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Parses the loaded file into the cache slot; a 64 or 128 wide request that fails gets the Xbox logo. |
 | 0x00061290 | `CleanupTextureCache` | `CleanupTextureCache` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Frees the least recently used texture that isn't locked or loading. First stop of every out of memory retry. |
+| 0x000614f0 | `FUN_000614f0` | `UnloadTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Drops every cache slot holding a url and says whether there was one. Called by the MOTD clear. |
 | 0x000615a0 | `FindTexture` | `FindTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Cache lookup by url; a miss takes a free or the oldest slot and loads now or in the background. |
 | 0x00061760 | `GetTexture` | `CImageTexture::Load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Swaps the surface for the cached texture of a url, synchronously, and takes its size. |
 | 0x00061820 | `CImageTexture_OnSetProperty` | `CImageTexture::OnSetProperty` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | A new url marks the texture dirty. |
@@ -452,7 +453,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Music Collection | (no doc yet, narrative TODO) | 5 verified Theseus mappings (FormatSoundtrackSongTime, GetUpdateString + 3 stubs: AddSoundtrack, ClearCopyList, DeleteSoundtrack) + 3 binary-only anchors (global ::DeleteSoundtrack, ::DeleteAllSoundtracks, ThreadProc); more labeling pending |
 | Render | (no doc yet, narrative TODO) | 1 function |
 | App Shell | (no doc yet, narrative TODO) | 9 functions |
-| Asset Loader | [AssetLoader.md](AssetLoader.md) | 29 functions |
+| Asset Loader | [AssetLoader.md](AssetLoader.md) | 30 functions |
 | DVD Playback | (reference-only, no doc) | 1 function |
 | Original WMA Pump | (reference-only, folded into AudioSystem.md) | 1 function |
 | Original CDDA Streamer | (reference-only, folded into AudioSystem.md) | 1 function |

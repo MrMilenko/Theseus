@@ -478,6 +478,28 @@ CachedTexture* FindTexture(const TCHAR* szURL, bool bAsync, UINT width, UINT hei
 	return pFree;
 }
 
+// UnloadTexture(url)
+// Reconstructed from 5960 retail XBE @ 0x000614f0. Ghidra decompile:
+//     found = 0;
+//     for each slot: if (slot.url && !wcsicmp(slot.url, url))
+//         { found = 1; free(slot.url); Release(slot.texture); zero slot; }
+//     return found;
+// The MOTD clear calls this after deleting the cached files on T:.
+bool UnloadTexture(const TCHAR* szURL)
+{
+	bool bFound = false;
+	for (int i = 0; i < countof(g_textureCache); i++)
+	{
+		CachedTexture* pSlot = &g_textureCache[i];
+		if (pSlot->m_url != NULL && _tcsicmp(pSlot->m_url, szURL) == 0)
+		{
+			EmptySlot(pSlot);
+			bFound = true;
+		}
+	}
+	return bFound;
+}
+
 // GetTexture(url, &timeLoaded, width, height, inXIP)
 // 5960 has no function for this; CIconMatInfo_Setup (0x000572d0) calls
 // FindTexture(url, 1, width, height, inXIP) and reads the slot itself.

@@ -39,7 +39,7 @@ mesh at 0x30, whether it owns that mesh at 0x34, and a link to the next mesh nod
 | 0x000611f0 | CBackgroundTexture dtor | Clears the slot's loading flag |
 | 0x00061210 | CBackgroundTexture::OnComplete | Loader vtable `0x0002a4ac` slot 1 |
 | 0x00061290 | CleanupTextureCache | Frees the oldest texture |
-| 0x000614f0 | (unload by url) | Drops every slot holding a url; only the MOTD clear calls it |
+| 0x000614f0 | UnloadTexture | Drops every slot holding a url; only the MOTD clear calls it |
 | 0x000615a0 | FindTexture | The cache |
 | 0x00061760 | CImageTexture::Load | Surface from the cache |
 | 0x00061820 | CImageTexture::OnSetProperty | |
