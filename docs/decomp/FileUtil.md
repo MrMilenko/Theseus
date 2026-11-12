@@ -50,3 +50,18 @@ empty folder still takes its own block) and 0 otherwise. The count starts at 1 f
 file adds `(size + block - 1) / block`; with recursion on, each subfolder whose name doesn't start
 with `.` adds its own count. The cancel event is checked before every entry and stops the walk with
 -1. The handle is closed with `CloseHandle`.
+
+## CActiveFile
+
+A file pulled into memory by URL: URL at +4, content at +8, size at +0xc, write time at +0x10 and
+an in-XIP flag at +0x18.
+
+| Address | Name | What it does |
+|---------|------|--------------|
+| 0x0002e560 | Reset | Frees the URL and the content (`LocalFree`) and zeroes size and time |
+| 0x0002e5a0 | Fetch | Resets and copies the URL. Empty succeeds with nothing. `string:` (any case) makes the rest the content. A relative URL is resolved with MakeAbsoluteURL and tried in the XIPs; failing that, with the search flag set and no such file, it becomes app folder + URL. Then the XIPs again with the final URL, then FetchFile |
+| 0x0002e750 | FetchFile | Opens for sequential reading; with the try flag set, gives up unless size + 1 MB of physical memory is free; reads it all, writes two zero bytes after it and takes the write time |
+| 0x0002e840 | MakeUnicode | Content starting FF FE has the mark moved off; anything else is widened byte by byte (stopping at a zero byte), terminated, and the size becomes `(bytes + 1) * 2` |
+
+Theseus also counts a host path starting with `/` as absolute on desktop, closes the file on the
+memory check, and frees the new buffer when GetFileTime fails (5960 frees the old content there).
