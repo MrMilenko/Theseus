@@ -40,7 +40,6 @@
 
 class CLevel;
 extern CLevel* g_pCurLevel;
-extern bool g_bLevelTransition;
 extern bool g_padModeEnabled, g_padModeActive;
 extern bool g_mediaFullscreen, g_xcloudFullscreen;
 extern void* g_pActiveKeyboard_void();
@@ -528,7 +527,6 @@ static void ShowSection(int section)
 
 static void Open(bool welcome)
 {
-    fprintf(stderr, "[Guide] open%s\n", welcome ? " (welcome)" : "");
     g.open = true;
     g.welcome = welcome;
     g.inPanel = welcome;
@@ -840,8 +838,8 @@ void Guide_Frame()
     if (g.swallow && !held) g.swallow = false;
 
     // First run, or Startup is "Ask": once the dashboard is up, the
-    // welcome offers the ways in.
-    if (!g.startChecked && g_pCurLevel && !g_bLevelTransition) {
+    // welcome offers the ways in. Neither waits for the scene to settle.
+    if (!g.startChecked && g_pCurLevel) {
         g.startChecked = true;
         if (!g_welcomeDone || g_startupMode == 0) {
             Open(true);
@@ -849,7 +847,7 @@ void Guide_Frame()
         }
     }
 
-    if (g_guideRequested && !g_bLevelTransition) {
+    if (g_guideRequested) {
         g_guideRequested = false;
         // Fullscreen video and a text field keep the buttons for themselves.
         if (g.open) Close();
