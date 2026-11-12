@@ -561,7 +561,10 @@ void CKeyboard::activate()
 	case KEY_BS:       Backspace(); break;
 
 	case KEY_SPACE:
-		InsertChar(_T(' '));
+		// Space on a full string is ignored without the error sound.
+		ClearSelection();
+		if (m_nLength < KB_MAX_LENGTH)
+			InsertChar(_T(' '));
 		break;
 
 	default:
