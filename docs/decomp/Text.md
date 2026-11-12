@@ -183,8 +183,8 @@ Then with a positive format width: a single column takes the whole width; two co
 it shrink the first to `width - col2` and turn fading on. Without a width fading is off; otherwise
 fading starts as the don't-break flag.
 
-`XAppCreateMeshFVF(faces, verts, D3DXMESH_MANAGED (0x220), 0x52)` (`0x0003d2f0`, which frees
-caches and retries on out of memory), then both buffers are locked and written without checks.
+The mesh create helper (`0x0003d2f0`) makes it with D3DXMESH_MANAGED (0x220) and FVF 0x52, freeing
+caches and retrying on out of memory. Then both buffers are locked and written without checks.
 
 Second pass. Color is white with the blue byte from a float that headings set to 0.5 and their
 closing `*` sets back to 1.0: `0xffffff00 | (int)(blue * 255)`. x starts at the indent width.

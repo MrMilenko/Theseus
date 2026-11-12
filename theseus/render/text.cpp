@@ -865,7 +865,7 @@ static TCHAR* CopyString(const TCHAR* sz)
 //         else { fonts[count].face = face; fonts[count].file = copy(path); count++; }
 //         CloseHandle;
 // Theseus looks in its one font directory and takes XTF0 only, since that's
-// all CFont reads. A bad header still closes the file (5960 leaks it).
+// all CFont reads. A bad header still closes the file (5960 leaves it open).
 static void InitFontTable()
 {
 	const TCHAR* szDir = TheseusGetFontDir();
