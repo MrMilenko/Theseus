@@ -42,6 +42,9 @@ struct VirtualGameDB {
     // Bumps on every mutation so consumers can cache filtered slices keyed on
     // it and auto refresh when games.ini changes.
     unsigned int generation;
+    // Bumps when a compact moves rows to new indices, so anything holding on
+    // to an index knows to drop it.
+    unsigned int layout;
 };
 
 extern VirtualGameDB g_vgames;
@@ -112,6 +115,21 @@ inline void VGames_Load() {
 
 inline bool VGames_IsLive(const VirtualGame& g) {
     return g.valid && (g.transient || VGames_IsStreaming(g));
+}
+
+// Close the gaps left by invalid rows so their slots can be used again.
+// Shifts indices, same as a reload does.
+inline void VGames_Compact() {
+    int w = 0;
+    for (int r = 0; r < g_vgames.count; r++) {
+        if (!g_vgames.games[r].valid) continue;
+        if (w != r) g_vgames.games[w] = g_vgames.games[r];
+        w++;
+    }
+    g_vgames.generation++;
+    if (w == g_vgames.count) return;
+    g_vgames.count = w;
+    g_vgames.layout++;
 }
 
 // Injected rows (xCloud, ES-DE) aren't in games.ini, so carry them across.
