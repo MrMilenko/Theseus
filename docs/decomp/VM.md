@@ -230,3 +230,39 @@ Matched by length, then by text: `EnableInput` (1 arg, else `Invalid parameter`)
 `CProperty::Deref` (0x38b00) wraps integer, boolean and number fields as numbers, vec3 as a `Vector3`, node fields as the node itself, strings as a new string, and children / node array fields as a `CNodeArrayObject` over the field. Anything else is `Unknown property type`.
 
 `CProperty::Assign` (0x38d70) refuses null for everything but node fields (`Illegal null assignement`, spelled that way in the binary). Integers truncate, booleans test against 0.0, a vec3 field only takes a `Vector3`, and other types are ignored.
+
+## Array (0x30440..0x30e70)
+
+`CArrayObject` is the script's `Array`: object type 15, 0x20 bytes, length at 0x14,
+allocated slots at 0x18, element pointers at 0x1c. Its function table at `0x0017f5d8`
+holds `concat` (sig 17), `join` (5), `reverse` (15), `slice` (0, raw parameter list) and
+`sort` (15).
+
+- **Script constructor (`0x00030630`).** With one argument the argument is dereferenced
+  until it stops changing, written back into the parameter slot, converted with `ToNum`
+  and truncated: `new Array(5)` is five nulls. With two or more, the length is the
+  argument count and each argument is stored with an AddRef. No arguments, no block.
+- **Native constructor (`0x00030770`).** `n` zeroed slots, or none for 0.
+- **Destructor (`0x00030800`).** Releases each non-null element, frees the block.
+- **Grow (`0x000308e0`).** Only grows. When the new length passes the allocation it
+  allocates `n + 16` slots, copies the old length over and frees the old block. The new
+  tail is zeroed.
+- **Dot (`0x00030970`).** A variable named `length` gives a new number; a number gives a
+  `CArrayElementReference` for `(int)n`; anything else goes to the base Dot.
+- **Element reference.** Holds an AddRef on the array (`0x00030440`, released at
+  `0x000304c0`). `Assign` (`0x00030520`) grows to `index + 1` when `length <= index`,
+  releases the old slot and stores the new object with an AddRef. `Deref` (`0x00030570`)
+  reports `Array reference out of bounds` for a negative or too large index; otherwise it
+  AddRefs the element, releases the reference itself and returns the element.
+- **concat (`0x00030a70`).** Errors with `object is not an array` unless the argument is
+  type 15; otherwise a new array of both arrays' elements.
+- **join (`0x00030b80`).** Builds a new string: each element's `ToStr` text (an empty
+  string when it has none), `[null]` for an empty slot, and the separator between
+  elements. `ToStr` (`0x00030960`) is `join(",")`.
+- **reverse (`0x00030c40`)** and **sort (`0x00030e70`)** return new arrays. Sort is the
+  CRT `qsort` with the comparator at `0x00030e00`: two nulls are equal, a null sorts
+  first, otherwise `wcscmp` of the two `ToStr` texts.
+- **slice (`0x00030cd0`).** Takes one or two parameters, else `invalid number of
+  parameters`. Start is `(int)` of the first; end is the second or -1. A negative end
+  becomes `end + length + 1`, so the default means "through the last element". The count
+  is `end - start`, floored at 0. Start is never range checked.

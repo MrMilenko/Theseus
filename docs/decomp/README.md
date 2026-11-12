@@ -35,7 +35,7 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x00014b3c | `_classCBillboard` | `CBillboard::class` (scene_groups.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the camera-facing quad node. |
 | 0x0001a06c | `_classCXAppNode` | `CXAppNode::class` (main.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the application root node type. |
 | 0x0001a098 | `_classCTimeDepNode` | `CTimeDepNode::class` (animation_nodes.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for time-dependent node base. |
-| 0x0001a0f0 | `_classCArrayObject` | `CArrayObject::class` (xap_vm.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Array type. |
+| 0x0001a0f0 | `_classCArrayObject` | `CArrayObject::class` (array.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Array type. |
 | 0x0001a1b0 | `_classCDateObject` | `CDateObject::class` (date_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Date type. |
 | 0x0001a408 | `_classCFile` | `CFile::class` (file_ops.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the File node. |
 | 0x0001a94c | `_classCVec3Object` | `CVec3Object::class` (xap_vm.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Vec3 type. |
@@ -70,8 +70,22 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0002def0 | `XAppCreateFile` | `TheseusCreateFile` in `main.cpp` | [App Shell](#app-shell) | Wrapper around `CreateFileA` with dashboard-specific share/disposition defaults. |
 | 0x0002ea20 | `CNodeClass::FindByName` | `CNodeClass::FindByName` in `node_system.cpp` | [Scene Graph](Node.md) | Walks the static class registration list (built from `_classCXxxx_CXxxx__2VCNodeClass__A` entries in .data) looking for a UTF-16 class name match. The XAP compiler uses this when binding `DEF` declarations. |
 | 0x0002ee60 | `CXAppNode::Advance` | tick loop in `main.cpp` | [Scene Graph](Node.md) | Per-frame tick on the application root node. Drives the time-dependent node graph. |
-| 0x00030570 | `CArrayElementReference::Deref` | `CArrayElementReference::Deref` (xap_vm.cpp) | [Script VM](VM.md) | Dereferences an `array[index]` LHS. Allocates the slot if missing for assignment paths. |
-| 0x00030e70 | `CArrayObject::concat` | `CArrayObject::concat` (xap_vm.cpp) | [Script VM](VM.md) | Array concatenation builtin invoked from script via `Array.concat(...)`. |
+| 0x00030440 | `CArrayElementReference_CArrayElementReference` | `CArrayElementReference::CArrayElementReference` (array.cpp) | [Script VM](VM.md) | Holds the array and index an `array[i]` expression names. |
+| 0x000304c0 | `CArrayElementReference_dtor` | `CArrayElementReference::~CArrayElementReference` (array.cpp) | [Script VM](VM.md) | Releases the array. |
+| 0x00030520 | `CArrayElementReference_Assign` | `CArrayElementReference::Assign` (array.cpp) | [Script VM](VM.md) | Stores into the slot, growing the array when the index is past the end. |
+| 0x00030570 | `CArrayElementReference::Deref` | `CArrayElementReference::Deref` (array.cpp) | [Script VM](VM.md) | Reads the slot; out of range is "Array reference out of bounds". |
+| 0x00030630 | `CArrayObject_CArrayObject` | `CArrayObject::CArrayObject` (array.cpp) | [Script VM](VM.md) | `new Array(n)` makes n nulls, `new Array(a, b, ...)` holds the arguments. |
+| 0x00030770 | `CArrayObject_CArrayObject_Len` | `CArrayObject::CArrayObject(int)` (array.cpp) | [Script VM](VM.md) | Native constructor for an array of n nulls. |
+| 0x00030800 | `CArrayObject_dtor` | `CArrayObject::~CArrayObject` (array.cpp) | [Script VM](VM.md) | Releases every element and frees the block. |
+| 0x000308e0 | `CArrayObject_Grow` | `CArrayObject::Grow` (array.cpp) | [Script VM](VM.md) | Extends the length, reallocating with 16 spare slots when needed. |
+| 0x00030960 | `CArrayObject_ToStr` | `CArrayObject::ToStr` (array.cpp) | [Script VM](VM.md) | `join(",")`. |
+| 0x00030970 | `CArrayObject_Dot` | `CArrayObject::Dot` (array.cpp) | [Script VM](VM.md) | `length`, or an element reference for a number. |
+| 0x00030a70 | `CArrayObject_concat` | `CArrayObject::concat` (array.cpp) | [Script VM](VM.md) | Script `concat`: new array of both arrays' elements. |
+| 0x00030b80 | `CArrayObject_join` | `CArrayObject::join` (array.cpp) | [Script VM](VM.md) | Script `join`: elements as text, nulls as "[null]". |
+| 0x00030c40 | `CArrayObject_reverse` | `CArrayObject::reverse` (array.cpp) | [Script VM](VM.md) | Script `reverse`: reversed copy. |
+| 0x00030cd0 | `CArrayObject_slice` | `CArrayObject::slice` (array.cpp) | [Script VM](VM.md) | Script `slice(start[, end])`; a negative end counts from one past the last element. |
+| 0x00030e00 | `LAB_00030e00` | `CompareAsText` (array.cpp) | [Script VM](VM.md) | Sort comparator: nulls first, then wide string order of ToStr. |
+| 0x00030e70 | `CArrayObject_sort` | `CArrayObject::sort` (array.cpp) | [Script VM](VM.md) | Script `sort`: sorted copy. |
 | 0x00031040 | `CDateObject::Construct` | `CDateObject::Construct` (date_node.cpp) | [Script VM](VM.md) | Date object constructor. Initializes from current system time when called with no args, or parses string/numeric input. |
 | 0x00031450 | `CDateObject::getDate` | `CDateObject::getDate` (date_node.cpp) | [Script VM](VM.md) | Returns the day-of-month component of the bound date. |
 | 0x00031510 | `CDateObject::toGMTString` | `CDateObject::toGMTString` (date_node.cpp) | [Script VM](VM.md) | Formats date as RFC 1123 UTC string. |
