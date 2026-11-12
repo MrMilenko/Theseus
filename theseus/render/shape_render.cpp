@@ -411,8 +411,8 @@ CBox::~CBox()
 //     if (!ib) { create 0x48 byte ib; copy 0x12 dwords of indices into it; }
 //     if (vb && ib) { SetStreamSource(0, vb, 0x20); SetIndices(ib, 0);
 //                     SetVertexShader(0x112); draw 36 indices as a triangle list; }
-// The binary's create helper retries until it gets memory, so the copies
-// never check what they got.
+// The binary's create helper retries until it gets memory. Theseus's can fail,
+// so a buffer that won't create or lock is dropped and retried next frame.
 void CBox::Render()
 {
 	if (m_dirty)
@@ -426,17 +426,37 @@ void CBox::Render()
 	if (m_pVB == NULL)
 	{
 		TheseusCreateVertexBuffer(sizeof (m_vertices), D3DUSAGE_DYNAMIC, D3DFVF_VERTEX, D3DPOOL_MANAGED, &m_pVB);
-		m_pVB->Lock(0, sizeof (m_vertices), &pDst, 0);
-		memcpy(pDst, m_vertices, sizeof (m_vertices));
-		m_pVB->Unlock();
+		if (m_pVB != NULL)
+		{
+			if (FAILED(m_pVB->Lock(0, sizeof (m_vertices), &pDst, 0)))
+			{
+				m_pVB->Release();
+				m_pVB = NULL;
+			}
+			else
+			{
+				memcpy(pDst, m_vertices, sizeof (m_vertices));
+				m_pVB->Unlock();
+			}
+		}
 	}
 
 	if (m_pIB == NULL)
 	{
 		TheseusCreateIndexBuffer(sizeof (m_indices), D3DUSAGE_DYNAMIC, D3DFMT_INDEX16, D3DPOOL_MANAGED, &m_pIB);
-		m_pIB->Lock(0, sizeof (m_indices), &pDst, 0);
-		memcpy(pDst, m_indices, sizeof (m_indices));
-		m_pIB->Unlock();
+		if (m_pIB != NULL)
+		{
+			if (FAILED(m_pIB->Lock(0, sizeof (m_indices), &pDst, 0)))
+			{
+				m_pIB->Release();
+				m_pIB = NULL;
+			}
+			else
+			{
+				memcpy(pDst, m_indices, sizeof (m_indices));
+				m_pIB->Unlock();
+			}
+		}
 	}
 
 	if (m_pVB == NULL || m_pIB == NULL)
