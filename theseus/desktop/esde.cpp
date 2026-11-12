@@ -142,7 +142,8 @@ static bool FindSystemsXml(const char* esdeRoot, char* out, size_t outSz)
 
     // Pointed straight at the file.
     size_t rl = strlen(esdeRoot);
-    if (rl > 15 && strcasecmp(esdeRoot + rl - 15, "es_systems.xml") == 0 &&
+    const size_t kName = sizeof("es_systems.xml") - 1;
+    if (rl >= kName && strcasecmp(esdeRoot + rl - kName, "es_systems.xml") == 0 &&
         stat(esdeRoot, &st) == 0) {
         snprintf(out, outSz, "%s", esdeRoot);
         return true;
