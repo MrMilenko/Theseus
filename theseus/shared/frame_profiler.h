@@ -14,8 +14,14 @@ enum FramePhase
 	FP_TICKS,         // desktop: media, milkdrop, xCloud
 	FP_SCENE_SETUP,   // projection, lights, backdrop
 	FP_SCENE_TREE,    // g_pObject->Render()
+	FP_TREE_MATERIAL, //   inside the tree: appearance / material setup per shape
+	FP_TREE_WORLD,    //   inside the tree: falloff shader constants per world change
+	FP_TREE_DRAW,     //   inside the tree: geometry render per shape
+	FP_DIP,           //   the device DrawIndexedPrimitive call alone, anywhere
 	FP_SCENE_END,
 	FP_WIDGETS,
+	FP_WIDGET_TICK,   //   inside widgets: TickWidgets
+	FP_UP_DRAW,       //   HUD / overlay DrawPrimitiveUP calls alone; the rest is text building
 	FP_OVERLAY,
 	FP_IMGUI,         // desktop
 	FP_PRESENT,
@@ -35,7 +41,15 @@ enum FrameCounter
 	FC_STATE_CALLS,   // render state, texture stage state, texture
 	FC_STATE_REPEATS, // ...that set the value already there
 	FC_DISK_QUERIES,
+	FC_TRIANGLES,     // primitives submitted through TheseusDrawIndexedPrimitive
+	FC_INDICES,       // ...and the indices that implies
 	FC_COUNTER_COUNT
+};
+
+struct FrameMeshTop
+{
+	TCHAR label[24];
+	float tris;       // per frame
 };
 
 struct FrameSnapshot
@@ -54,6 +68,9 @@ struct FrameSnapshot
 	// XAP compile on Inline load.
 	float lastLoadMs;
 	float maxLoadMs;
+
+	// The three shapes submitting the most triangles.
+	FrameMeshTop topMesh[3];
 };
 
 extern int g_frameCount[FC_COUNTER_COUNT];
@@ -72,6 +89,9 @@ void Frame_RequestGpuTiming();
 long long Frame_Now();
 float Frame_Ms(long long ticks);
 void Frame_NoteLoad(float ms);
+
+// Which shapes carry the triangles. key identifies the shape, label names it.
+void Frame_TallyMesh(const void* key, const TCHAR* label, int triangles);
 
 #ifdef THESEUS_DESKTOP
 void Frame_AddHostStats(float gpuMs, float gpuWaitMs, int draws, int transientVbBytes, int transientIbBytes);

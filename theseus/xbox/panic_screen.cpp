@@ -152,21 +152,24 @@ void WritePanicLog(const TCHAR* reason, LPEXCEPTION_POINTERS pEx)
 // and the diffuse-coloured glyphs render invisible.
 void Set2DOverlayState(IDirect3DDevice8* dev)
 {
-    dev->SetRenderState(D3DRS_ZENABLE, FALSE);
-    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
-    dev->SetTexture(0, NULL);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    // A crash can land between a cache update and the device call, so
+    // nothing the skip caches remember is trusted here.
+    TheseusInvalidateStateCache();
+    TheseusSetRenderState(D3DRS_ZENABLE, FALSE);
+    TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
+    TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    TheseusSetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    TheseusSetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    TheseusSetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    TheseusSetRenderState(D3DRS_COLORVERTEX, TRUE);
+    TheseusSetTexture(0, NULL);
+    TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
     dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 }
 

@@ -22,7 +22,9 @@ void DrawSolidRect(int x, int y, int width, int height, D3DCOLOR color)
     if (!dev) return;
     Frame_Count(FC_DRAW_SOLID);
     dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    Frame_PhaseBegin(FP_UP_DRAW);
     dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, verts, sizeof(Vertex));
+    Frame_PhaseEnd(FP_UP_DRAW);
 }
 
 void DrawTexturedRect(IDirect3DTexture8* tex, float x, float y, float width, float height)
@@ -33,10 +35,10 @@ void DrawTexturedRect(IDirect3DTexture8* tex, float x, float y, float width, flo
 
     struct TVert { float x, y, z, rhw; DWORD color; float u, v; };
 
-    dev->SetTexture(0, tex);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    TheseusSetTexture(0, tex);
+    TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
     dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
     TVert quad[4] = {
@@ -47,12 +49,14 @@ void DrawTexturedRect(IDirect3DTexture8* tex, float x, float y, float width, flo
     };
 
     Frame_Count(FC_DRAW_SOLID);
+    Frame_PhaseBegin(FP_UP_DRAW);
     dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(TVert));
+    Frame_PhaseEnd(FP_UP_DRAW);
 
     // Restore diffuse-only stage state so subsequent DrawSolidRect /
     // text draws keep working without each having to re-establish it.
-    dev->SetTexture(0, NULL);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    TheseusSetTexture(0, NULL);
+    TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
     dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 }

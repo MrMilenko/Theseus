@@ -65,9 +65,18 @@ void CShape::Render()
 	}
 
 	if (m_appearance != NULL)
+	{
+		FramePhaseScope material(FP_TREE_MATERIAL);
 		m_appearance->Render();
+	}
 
-	m_geometry->Render();
+	{
+		FramePhaseScope draw(FP_TREE_DRAW);
+		int trisBefore = g_frameCount[FC_TRIANGLES];
+		m_geometry->Render();
+		if (pMeshNode)
+			Frame_TallyMesh(this, pMeshNode->m_url, g_frameCount[FC_TRIANGLES] - trisBefore);
+	}
 
 	g_pRenderMeshNode = NULL;
 
@@ -903,6 +912,7 @@ void SetReflectShaderFrameValues()
 
 void SetFalloffShaderFrameValues()
 {
+	FramePhaseScope world(FP_TREE_WORLD);
 	D3DXMATRIX mat, worldView;
 
 	D3DXMatrixMultiply(&worldView, TheseusGetWorld(), &g_matView);

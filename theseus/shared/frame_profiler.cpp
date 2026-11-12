@@ -23,7 +23,11 @@ static float     s_lastLoadMs;
 static float     s_maxLoadMs;
 static FrameSnapshot s_snap;
 
+struct MeshTally { const void* key; TCHAR label[24]; long long tris; };
+static MeshTally s_mesh[512];     // open addressing on the shape pointer
+
 #ifdef _XBOX
+bool theseus_xbox_rs_sent[256];
 DWORD theseus_xbox_tss_shadow[8 * 32];
 bool theseus_xbox_tss_seen[8 * 32];
 LPDIRECT3DTEXTURE8 theseus_xbox_tex_shadow[8];
@@ -77,6 +81,33 @@ void Frame_NoteLoad(float ms)
 {
 	s_lastLoadMs = ms;
 	if (ms > s_maxLoadMs) s_maxLoadMs = ms;
+}
+
+void Frame_TallyMesh(const void* key, const TCHAR* label, int triangles)
+{
+	if (!key || triangles <= 0) return;
+	unsigned int h = ((unsigned int)(size_t)key >> 4) & 511;
+	for (int probe = 0; probe < 512; probe++, h = (h + 1) & 511)
+	{
+		MeshTally& t = s_mesh[h];
+		if (t.key == key) { t.tris += triangles; return; }
+		if (t.key == 0)
+		{
+			t.key = key;
+			t.tris = triangles;
+			int i = 0;
+			// keep the tail of the url; the file name is the useful part
+			if (label)
+			{
+				int n = 0;
+				while (label[n]) n++;
+				const TCHAR* src = label + (n > 23 ? n - 23 : 0);
+				for (; src[i] && i < 23; i++) t.label[i] = src[i];
+			}
+			t.label[i] = 0;
+			return;
+		}
+	}
 }
 
 #ifdef THESEUS_DESKTOP
@@ -172,6 +203,22 @@ void Frame_End()
 
 	snap.lastLoadMs = s_lastLoadMs;
 	snap.maxLoadMs  = s_maxLoadMs;
+
+	for (int i = 0; i < 512; i++)
+	{
+		const MeshTally& t = s_mesh[i];
+		if (!t.key) continue;
+		float per = (float)t.tris * inv;
+		for (int r = 0; r < 3; r++)
+		{
+			if (per <= snap.topMesh[r].tris) continue;
+			for (int k = 2; k > r; k--) snap.topMesh[k] = snap.topMesh[k - 1];
+			memcpy(snap.topMesh[r].label, t.label, sizeof(t.label));
+			snap.topMesh[r].tris = per;
+			break;
+		}
+	}
+	memset(s_mesh, 0, sizeof(s_mesh));
 	s_snap = snap;
 
 	memset(s_phaseSum, 0, sizeof(s_phaseSum));

@@ -260,6 +260,7 @@ void CConfig::SetVideoMode(int nVideoMode)
 		g_bStretchWidescreen = bWideScreen;
 		D3D__AvInfo = 0;
 		TheseusGetD3DDev()->Reset(&g_pp);
+		TheseusInvalidateStateCache();
 	}
 
 	g_bProjectionDirty = true;
@@ -302,6 +303,7 @@ void CConfig::Set480Support(int bEnable)
 		{
 			D3D__AvInfo = 0;
 			TheseusGetD3DDev()->Reset(&g_pp);
+			TheseusInvalidateStateCache();
 		}
 	}
 }

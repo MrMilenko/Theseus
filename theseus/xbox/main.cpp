@@ -369,6 +369,11 @@ void XboxInitRenderState()
 
 bool InitD3D()
 {
+#ifdef THESEUS_PUSHBUFFER_KB
+	// Experiment: a bigger push buffer so the per-frame index stream doesn't
+	// stall the CPU waiting for the GPU to free space. Must precede CreateDevice.
+	Direct3D_SetPushBufferSize(THESEUS_PUSHBUFFER_KB * 1024, 64 * 1024);
+#endif
 	g_pD3D = Direct3DCreate8(D3D_SDK_VERSION);
 	if (g_pD3D == NULL)
 	{
@@ -801,7 +806,9 @@ void Draw()
 	Frame_PhaseEnd(FP_SCENE_END);
 	Frame_PhaseBegin(FP_WIDGETS);
 	TheseusSetRenderState(D3DRS_SWATHWIDTH, D3DSWATH_OFF);
+	Frame_PhaseBegin(FP_WIDGET_TICK);
 	TickWidgets();
+	Frame_PhaseEnd(FP_WIDGET_TICK);
 	DrawWidgets();
 	Frame_PhaseEnd(FP_WIDGETS);
 	Frame_PhaseBegin(FP_OVERLAY);

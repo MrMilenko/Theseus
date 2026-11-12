@@ -1077,8 +1077,10 @@ float OverlayFontDraw(const TCHAR* text, float screenX, float screenY, float pix
 		{
 			dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 			Frame_Count(FC_DRAW_TEXT);
+		Frame_PhaseBegin(FP_UP_DRAW);
 		dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, nVerts, nIndices / 3,
 				s_ovlIndices, D3DFMT_INDEX16, s_ovlVerts, sizeof(OverlayTextVert));
+		Frame_PhaseEnd(FP_UP_DRAW);
 			nVerts = 0;
 			nIndices = 0;
 		}
@@ -1106,8 +1108,10 @@ float OverlayFontDraw(const TCHAR* text, float screenX, float screenY, float pix
 	{
 		Frame_Count(FC_DRAW_TEXT);
 		dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+		Frame_PhaseBegin(FP_UP_DRAW);
 		dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, nVerts, nIndices / 3,
 			s_ovlIndices, D3DFMT_INDEX16, s_ovlVerts, sizeof(OverlayTextVert));
+		Frame_PhaseEnd(FP_UP_DRAW);
 	}
 
 	return curX * scale;

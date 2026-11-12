@@ -227,7 +227,10 @@ void* TheseusD3D_AllocNoncontiguousMemory(DWORD Size);
 #ifdef _XBOX // cache eliminates GetRenderState round-trips on Xbox
 extern DWORD theseus_rgdwRenderStateCache [256];
 extern bool theseus_rgbRenderStateCache [256];
-// Shadows for the profiler's repeat count. Nothing is skipped on Xbox.
+// What the device was last sent. Render state and texture stage state skip
+// repeats; textures are only counted, since a freed texture's address can
+// come back as a different texture.
+extern bool theseus_xbox_rs_sent [256];
 extern DWORD theseus_xbox_tss_shadow [8 * 32];
 extern bool theseus_xbox_tss_seen [8 * 32];
 extern LPDIRECT3DTEXTURE8 theseus_xbox_tex_shadow [8];
@@ -302,13 +305,21 @@ inline void TheseusInvalidateWrapperCaches()
 inline void TheseusSetRenderState(D3DRENDERSTATETYPE dwRenderStateType, DWORD dwRenderState)
 {
 	Frame_Count(FC_STATE_CALLS);
+#ifdef THESEUS_EXPERIMENT_NO_EDGEAA
+	// Measurement only: what does edge antialiasing cost the GPU?
+	if (dwRenderStateType == D3DRS_EDGEANTIALIAS)
+		dwRenderState = FALSE;
+#endif
 #ifdef _XBOX // cache eliminates GetRenderState round-trips on Xbox
 	ASSERT((UINT)dwRenderStateType < countof (theseus_rgdwRenderStateCache));
-	if (theseus_rgbRenderStateCache[(UINT)dwRenderStateType] &&
-	    theseus_rgdwRenderStateCache[(UINT)dwRenderStateType] == dwRenderState)
-		Frame_Count(FC_STATE_REPEATS);   // counted, still sent
+	if (theseus_xbox_rs_sent[(UINT)dwRenderStateType] &&
+	    theseus_rgdwRenderStateCache[(UINT)dwRenderStateType] == dwRenderState) {
+		Frame_Count(FC_STATE_REPEATS);
+		return;
+	}
 	theseus_rgdwRenderStateCache[(UINT)dwRenderStateType] = dwRenderState;
 	theseus_rgbRenderStateCache[(UINT)dwRenderStateType] = true;
+	theseus_xbox_rs_sent[(UINT)dwRenderStateType] = true;
 #else
 	// Wrapper-level dedup. Skip the virtual call if value unchanged.
 	if ((UINT)dwRenderStateType < 256) {
@@ -346,11 +357,12 @@ inline void TheseusSetTextureStageState(DWORD dwStage, D3DTEXTURESTAGESTATETYPE 
 {
 	Frame_Count(FC_STATE_CALLS);
 #ifdef _XBOX
-	// Shadow copy for the repeat count only; every call still goes through.
 	if (dwStage < 8 && (DWORD)dwState < 32) {
 		int idx = (int)dwStage * 32 + (int)dwState;
-		if (theseus_xbox_tss_seen[idx] && theseus_xbox_tss_shadow[idx] == dwValue)
+		if (theseus_xbox_tss_seen[idx] && theseus_xbox_tss_shadow[idx] == dwValue) {
 			Frame_Count(FC_STATE_REPEATS);
+			return;
+		}
 		theseus_xbox_tss_shadow[idx] = dwValue;
 		theseus_xbox_tss_seen[idx] = true;
 	}
@@ -408,6 +420,16 @@ inline void TheseusSetTexture(DWORD dwStage, LPDIRECT3DTEXTURE8 lpTexture)
 	}
 #endif
 	VERIFYHR(TheseusGetD3DDev()->SetTexture(dwStage, lpTexture));
+}
+
+// The device forgets everything on Reset; the skip caches have to forget too.
+inline void TheseusInvalidateStateCache()
+{
+#ifdef _XBOX
+	memset(theseus_xbox_rs_sent, 0, sizeof(theseus_xbox_rs_sent));
+	memset(theseus_xbox_tss_seen, 0, sizeof(theseus_xbox_tss_seen));
+	memset(theseus_xbox_tex_seen, 0, sizeof(theseus_xbox_tex_seen));
+#endif
 }
 
 inline void TheseusSetMaterial(D3DMATERIAL8* lpMaterial)
@@ -559,7 +581,13 @@ inline void TheseusSetIndices(IDirect3DIndexBuffer8* pIndexData, UINT BaseVertex
 
 inline void TheseusDrawIndexedPrimitive(D3DPRIMITIVETYPE Type, UINT MinIndex, UINT NumVertices, UINT StartIndex, UINT PrimitiveCount)
 {
+	// On Xbox the runtime copies every index into the push buffer, so
+	// cost follows indices, not draws.
+	Frame_Count(FC_TRIANGLES, (int)PrimitiveCount);
+	Frame_Count(FC_INDICES, (int)(Type == D3DPT_TRIANGLELIST ? PrimitiveCount * 3 : PrimitiveCount + 2));
+	Frame_PhaseBegin(FP_DIP);
 	VERIFYHR(TheseusGetD3DDev()->DrawIndexedPrimitive(Type, MinIndex, NumVertices, StartIndex, PrimitiveCount));
+	Frame_PhaseEnd(FP_DIP);
 }
 
 extern int __cdecl NewFailed(size_t nBytes);

@@ -11,7 +11,7 @@
 namespace {
 
 const int PERF_WIDGET_W = 220;
-const int PERF_WIDGET_H = 240;
+const int PERF_WIDGET_H = 400;
 
 void perfWidgetDraw(int x, int y, DWORD argb)
 {
@@ -55,6 +55,11 @@ void perfWidgetDraw(int x, int y, DWORD argb)
     line[39] = 0;
     OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
 
+    _sntprintf(line, 40, _T("tris %.0fk  idx %.0fk"),
+               f.count[FC_TRIANGLES] / 1000.0f, f.count[FC_INDICES] / 1000.0f);
+    line[39] = 0;
+    OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
+
     _sntprintf(line, 40, _T("disk %.1f  load %.0f/%.0f ms"),
                f.count[FC_DISK_QUERIES], f.lastLoadMs, f.maxLoadMs);
     line[39] = 0;
@@ -64,8 +69,14 @@ void perfWidgetDraw(int x, int y, DWORD argb)
         { FP_ADVANCE,     _T("advance ") },
         { FP_SCENE_SETUP, _T("setup   ") },
         { FP_SCENE_TREE,  _T("tree    ") },
+        { FP_TREE_MATERIAL, _T(" matl   ") },
+        { FP_TREE_WORLD,  _T(" world  ") },
+        { FP_TREE_DRAW,   _T(" draw   ") },
+        { FP_DIP,         _T("  dip   ") },
         { FP_SCENE_END,   _T("end     ") },
         { FP_WIDGETS,     _T("widgets ") },
+        { FP_WIDGET_TICK, _T(" tick   ") },
+        { FP_UP_DRAW,     _T(" updraw ") },
         { FP_OVERLAY,     _T("overlay ") },
         { FP_PRESENT,     _T("present ") },
         { FP_GPU_WAIT,    _T("gpu wait") },
@@ -73,6 +84,16 @@ void perfWidgetDraw(int x, int y, DWORD argb)
     for (int i = 0; i < (int)(sizeof(kRows) / sizeof(kRows[0])); i++)
     {
         _sntprintf(line, 40, _T("%s  %5.2f"), kRows[i].label, f.phaseMs[kRows[i].phase]);
+        line[39] = 0;
+        OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
+    }
+
+    // Heaviest shapes by triangles.
+    yy += 4;
+    for (int i = 0; i < 3; i++)
+    {
+        if (f.topMesh[i].tris <= 0.0f) break;
+        _sntprintf(line, 40, _T("%.0fk %s"), f.topMesh[i].tris / 1000.0f, f.topMesh[i].label);
         line[39] = 0;
         OverlayFontDraw(line, (float)(x + 8), (float)yy, 12.0f, argb); yy += rowH;
     }

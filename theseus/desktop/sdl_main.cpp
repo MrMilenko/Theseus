@@ -1024,6 +1024,8 @@ static void PreSwapOverlays() {
             ImGui::Text("Scene:   %.2f  (setup %.2f, tree %.2f)",
                         f.phaseMs[FP_SCENE_SETUP] + f.phaseMs[FP_SCENE_TREE] + f.phaseMs[FP_SCENE_END],
                         f.phaseMs[FP_SCENE_SETUP], f.phaseMs[FP_SCENE_TREE]);
+            ImGui::Text("  material %.2f  world %.2f  draw %.2f",
+                        f.phaseMs[FP_TREE_MATERIAL], f.phaseMs[FP_TREE_WORLD], f.phaseMs[FP_TREE_DRAW]);
             ImGui::Text("ImGui:   %.2f ms", f.phaseMs[FP_IMGUI]);
             ImGui::Text("Ticks:   %.2f ms", f.phaseMs[FP_TICKS]);
             ImGui::Text("Present: %.2f ms", f.phaseMs[FP_PRESENT]);

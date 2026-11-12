@@ -131,10 +131,10 @@ static void DrawOverlayImage(IDirect3DTexture8 *tex, float x, float y, float wid
     IDirect3DDevice8 *dev = g_pD3DDev;
 
     // Switch to textured mode
-    dev->SetTexture(0, tex);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+    TheseusSetTexture(0, tex);
+    TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
     dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
 
     OverlayVertex quad[4] = {
@@ -146,9 +146,9 @@ static void DrawOverlayImage(IDirect3DTexture8 *tex, float x, float y, float wid
     dev->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(OverlayVertex));
 
     // Restore diffuse-only state
-    dev->SetTexture(0, NULL);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    TheseusSetTexture(0, NULL);
+    TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
     dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 }
 
@@ -2650,20 +2650,20 @@ void DrawCubeOverlay()
     IDirect3DDevice8 *dev = g_pD3DDev;
 
     // Full D3D state setup. Override any leftover scene state.
-    dev->SetRenderState(D3DRS_ZENABLE, FALSE);
-    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
-    dev->SetTexture(0, NULL);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    TheseusSetRenderState(D3DRS_ZENABLE, FALSE);
+    TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
+    TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    TheseusSetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    TheseusSetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    TheseusSetRenderState(D3DRS_COLORVERTEX, TRUE);
+    TheseusSetTexture(0, NULL);
+    TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
     dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 
     const int sw = g_nViewWidth;
