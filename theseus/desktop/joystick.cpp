@@ -3,6 +3,7 @@
 // OnMoveUp, etc.). Counterpart to xbox/input.cpp.
 
 #include "std.h"
+#include <vector>
 #include "dashapp.h"
 #include "node.h"
 #include <SDL.h>
@@ -379,6 +380,9 @@ void CJoystick::EnableGlobalInput(int bEnable)
 // ============================================================================
 // Input Polling
 // ============================================================================
+static bool GuideChord(SDL_GameController* gc);
+static void DevPadScript(JoySnapshot* out);
+
 void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
 {
     memset(out, 0, sizeof(*out));
@@ -387,12 +391,14 @@ void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
     extern bool ImGui_OwnsPad();
     if (ImGui_OwnsPad()) return;
 
+    const bool guideHoldsB = GuideChord(gc);
+
     // --- Physical controller ---
     if (gc)
     {
         // Face buttons -> analogDown[0..3] = A,B,X,Y
         out->analogDown[0] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A);
-        out->analogDown[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B);
+        out->analogDown[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) && !guideHoldsB;
         out->analogDown[2] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X);
         out->analogDown[3] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y);
         // Black(RB), White(LB) -> analogDown[4,5]
@@ -494,6 +500,75 @@ void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
             if (keys[SDL_SCANCODE_W]) out->thumbLY = 1.0f;
             else if (keys[SDL_SCANCODE_S]) out->thumbLY = -1.0f;
         }
+    }
+
+    DevPadScript(out);
+}
+
+// Guide button, LT+B or F7 asks for the guide. The B of LT+B never reaches
+// the scene, or it would also back out of whatever is under the guide.
+static bool GuideChord(SDL_GameController* gc)
+{
+    extern bool g_guideRequested;
+    extern SDL_Window* g_pSDLWindow;
+    static bool s_guide = false, s_chord = false, s_f7 = false;
+    static bool s_holdB = false;
+
+    bool guide = false, chord = false, b = false;
+    if (gc) {
+        guide = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_GUIDE) != 0;
+        b = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) != 0;
+        chord = b && SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000;
+    }
+    extern bool ImGui_WantsKeyboard();
+    const bool f7 = SDL_GetKeyboardFocus() == g_pSDLWindow && !ImGui_WantsKeyboard() &&
+                    SDL_GetKeyboardState(NULL)[SDL_SCANCODE_F7];
+
+    if ((guide && !s_guide) || (chord && !s_chord) || (f7 && !s_f7))
+        g_guideRequested = true;
+    if (chord && !s_chord) s_holdB = true;
+    s_guide = guide; s_chord = chord; s_f7 = f7;
+
+    if (s_holdB && !b) s_holdB = false;
+    return s_holdB;
+}
+
+// Development only: UIX_DEV_PAD="14:guide 16:down 17.5:a" presses pad buttons
+// at those seconds after start, so screens can be captured without a pad.
+static void DevPadScript(JoySnapshot* out)
+{
+    struct Press { Uint32 at; int kind, idx; };
+    static std::vector<Press> s_presses;
+    static bool s_parsed = false;
+    if (!s_parsed) {
+        s_parsed = true;
+        const char* env = getenv("UIX_DEV_PAD");
+        static const struct { const char* name; int kind, idx; } kNames[] = {
+            { "a", 0, 0 }, { "b", 0, 1 }, { "x", 0, 2 }, { "y", 0, 3 },
+            { "black", 0, 4 }, { "white", 0, 5 }, { "lt", 0, 6 }, { "rt", 0, 7 },
+            { "up", 1, 0 }, { "down", 1, 1 }, { "left", 1, 2 }, { "right", 1, 3 },
+            { "start", 1, 4 }, { "back", 1, 5 }, { "guide", 2, 0 },
+        };
+        while (env && *env) {
+            float t = 0; char name[16] = "";
+            int used = 0;
+            if (sscanf(env, " %f:%15[a-z]%n", &t, name, &used) != 2) break;
+            env += used;
+            for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++)
+                if (strcmp(kNames[i].name, name) == 0) {
+                    Press p = { (Uint32)(t * 1000.0f), kNames[i].kind, kNames[i].idx };
+                    s_presses.push_back(p);
+                }
+        }
+    }
+    const Uint32 now = SDL_GetTicks();
+    for (size_t i = 0; i < s_presses.size(); i++) {
+        const Press& p = s_presses[i];
+        if (now < p.at || now > p.at + 150) continue;
+        if (p.kind == 0) out->analogDown[p.idx] = true;
+        else if (p.kind == 1) out->digitalDown[p.idx] = true;
+        else { extern bool g_guideRequested; static Uint32 s_last = 0;
+               if (s_last != p.at) { s_last = p.at; g_guideRequested = true; } }
     }
 }
 

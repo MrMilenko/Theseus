@@ -18,6 +18,7 @@ Most of `Data/Xips/` is UIX Lite's XIP set, carried forward so community skins a
 | `music/` | `music2.xip`, `music_copy3.xip`, `music_playedit2.xip` | Music screens |
 | `mediaplayer/` | `mediaplayer.xip`, `mediaplayer_action.xip` | The media library browser and action menu ([README](mediaplayer/README.md)) |
 | `plex/`, `jellyfin/` | `plex.xip`, `jellyfin.xip` | Plex and Jellyfin browsers |
+| `guide/` | `guide.xip` | The desktop guide (Guide button, LT+B or F7): settings, shortcuts and about. Built from the settings panel's meshes; `default-desktop/Guide.xap` drives it |
 
 The desktop and Xbox `default.xip` are separate because a few scenes reference nodes that only exist on one build, and a scene that names an unknown node fails to load. When you change one, check whether the other needs the same change.
 

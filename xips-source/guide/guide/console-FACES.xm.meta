@@ -1,0 +1,4 @@
+type=mesh_reference
+mesh_buffer=0
+first_index=6000
+primitive_count=5835

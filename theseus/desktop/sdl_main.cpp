@@ -405,16 +405,8 @@ static bool MenuBarVisible()
     static bool s_shown = false;
     ImGuiIO& io = ImGui::GetIO();
 
-    // No pointer on a pad, so no top edge to reach for. LT+B is the same
-    // chord as the Xbox overlay; here the overlay is ImGui.
-    if (g_padModeEnabled &&
-        ImGui::IsKeyDown(ImGuiKey_GamepadL2) &&
-        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
-        g_padModeActive = !g_padModeActive;
-        // Give nav somewhere to land, otherwise the bar is up but dead.
-        if (g_padModeActive) ImGui::SetWindowFocus("##MainMenuBar");
-    }
-    // Pad mode has its own menu, so the pointer bar steps aside.
+    // Pad mode (the guide's Desktop Tools) has its own menu, so the pointer
+    // bar steps aside.
     if (g_padModeActive)
         return false;
 

@@ -1,0 +1,229 @@
+// Guide.xap: the desktop guide. Settings, shortcuts and about, over whatever
+// you were doing. theDesktopGuide (default.xap) owns the rows; this draws
+// them and passes the buttons on. B backs out, and out of the top level
+// returns you to the screen you came from.
+
+var nGuideCursor;
+var nGuideScroll;
+var nGuideRows;
+var nGuideCount;
+var bGuideLoaded;
+
+function initialize()
+{
+	nGuideCursor = 0;
+	nGuideScroll = 0;
+	nGuideRows   = 9;
+	nGuideCount  = 0;
+	bGuideLoaded = false;
+}
+
+function StartGuideLevel()
+{
+	var c = theGuideMenu.children[0].children[0];
+	c.MU_L3_panel_tracklist_overlay.visible = true;
+	c.ConsoleIcon.visible = true;
+
+	// Nine rows over the list underlay, spaced like the settings panel's.
+	var YStart = -25.55;
+	var YStep  = 1.18;
+	for (var i = 0; i < 12; i = i + 1)
+	{
+		var TransLS = c.theLeftSlots.children[i].translation;
+		var TransRS = c.theRightSlots.children[i].translation;
+		var Y = YStart - (i * YStep);
+		c.theLeftSlots.children[i].SetTranslation(parseTrans(TransLS,"X"), Y, parseTrans(TransLS,"Z"));
+		c.theRightSlots.children[i].SetTranslation(parseTrans(TransRS,"X"), Y, parseTrans(TransRS,"Z"));
+		c.theLeftSlots.children[i].visible  = (i < nGuideRows);
+		c.theRightSlots.children[i].visible = (i < nGuideRows);
+	}
+	bGuideLoaded = true;
+	DrawGuide();
+}
+
+function DrawGuide()
+{
+	if (bGuideLoaded == false)
+		return;
+	var c = theGuideMenu.children[0].children[0];
+
+	nGuideCount  = theDesktopGuide.GetCount();
+	nGuideCursor = theDesktopGuide.GetCursor();
+	if (nGuideCursor < nGuideScroll)
+		nGuideScroll = nGuideCursor;
+	else if (nGuideCursor >= nGuideScroll + nGuideRows)
+		nGuideScroll = nGuideCursor - (nGuideRows - 1);
+	if ((nGuideScroll > 0) & (nGuideScroll + nGuideRows > nGuideCount))
+		nGuideScroll = Math.max(0, nGuideCount - nGuideRows);
+
+	for (var i = 0; i < nGuideRows; i = i + 1)
+	{
+		var n = nGuideScroll + i;
+		var left  = c.theLeftSlots.children[i].children[0];
+		var right = c.theRightSlots.children[i].children[0];
+		if (n < nGuideCount)
+		{
+			left.geometry.text  = theDesktopGuide.GetLabel(n);
+			right.geometry.text = theDesktopGuide.GetValue(n);
+			if (n == nGuideCursor)
+				left.appearance.name = "GameHilite";
+			else
+				left.appearance.name = "Material #1335";
+		}
+		else
+		{
+			left.geometry.text  = "";
+			right.geometry.text = "";
+		}
+	}
+
+	c.theConfigHeader.children[0].geometry.text = theDesktopGuide.GetTitle();
+	c.theBuildInfo.children[0].geometry.text    = theDesktopGuide.GetHelp(nGuideCursor);
+	c.theUpArrow.visible   = (nGuideScroll > 0);
+	c.theDownArrow.visible = (nGuideScroll + nGuideRows < nGuideCount);
+}
+
+function MoveGuideCursor(nTo)
+{
+	if (nTo < 0)
+		nTo = 0;
+	if (nTo > nGuideCount - 1)
+		nTo = nGuideCount - 1;
+	if (nTo == nGuideCursor)
+		return;
+	PlaySoundMenuChange();
+	theDesktopGuide.SetCursor(nTo);
+	DrawGuide();
+}
+
+function CloseGuide()
+{
+	if (theDesktopGuide.ReturnToDashboard() == 0)
+		theMainMenu.GoBackTo();
+}
+
+DEF theGuideMenu Level
+{
+	archive "guide.xip"
+	children
+	[
+		Inline
+		{
+			url "guide/default.xap"
+			function onLoad()
+			{
+				StartGuideLevel();
+			}
+		}
+	]
+
+	shell Transform
+	{
+		scale 12 12 12
+		translation 109.8 1.622000 -223.050006
+		children
+		[
+			DEF theGuideWaver Waver
+			{
+				rpm 0.75
+				children
+				[
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_01" }
+							texture ImageTexture
+							{
+								alpha true
+								url "cellwall.bmp"
+							}
+						}
+						geometry Mesh { url "Inner_cell-FACES.xm" }
+					}
+					Shape
+					{
+						appearance Appearance
+						{
+							material MaxMaterial { name "InnerWall_02" }
+						}
+						geometry Sphere { radius 1.0 }
+					}
+				]
+			}
+		]
+	}
+
+	path DEF theGuideViewpoint Viewpoint
+	{
+		position 107.8 1.422000 -219.050006
+		orientation 0.03682 0.9993 0.00299 -0.1622
+		fieldOfView 1.287
+		jump false
+	}
+
+	control Joystick
+	{
+		function OnADown()
+		{
+			var c = theGuideMenu.children[0].children[0];
+			c.MU_select_pod_HL.children[0].appearance.material.param = 1;
+			var r = theDesktopGuide.Select(nGuideCursor);
+			if (r == -1)
+			{
+				PlaySoundError();
+				return;
+			}
+			PlaySoundA();
+			if (r == 3)
+				CloseGuide();
+			else
+				DrawGuide();
+		}
+
+		function OnBDown()
+		{
+			var c = theGuideMenu.children[0].children[0];
+			c.MU_back_pod_HL.children[0].appearance.material.param = 1;
+			PlaySoundB();
+			if (theDesktopGuide.Back() == 0)
+				CloseGuide();
+			else
+				DrawGuide();
+		}
+
+		function OnMoveUp()    { MoveGuideCursor(nGuideCursor - 1); }
+		function OnMoveDown()  { MoveGuideCursor(nGuideCursor + 1); }
+		function OnLeftDown()  { MoveGuideCursor(nGuideCursor - nGuideRows); }
+		function OnRightDown() { MoveGuideCursor(nGuideCursor + nGuideRows); }
+
+		function OnMoveLeft()
+		{
+			if (theDesktopGuide.Adjust(nGuideCursor, -1) == 1)
+			{
+				PlaySoundMenuChange();
+				DrawGuide();
+			}
+		}
+
+		function OnMoveRight()
+		{
+			if (theDesktopGuide.Adjust(nGuideCursor, 1) == 1)
+			{
+				PlaySoundMenuChange();
+				DrawGuide();
+			}
+		}
+	}
+
+	function OnArrival()
+	{
+		EnableInput(true);
+	}
+
+	function OnActivate()
+	{
+		CurrentViewpoint = theGuideViewpoint;
+		DrawGuide();
+	}
+}
