@@ -259,41 +259,48 @@ static void SortEpisodes(std::vector<EpisodeRec>& eps)
 	});
 }
 
-// First video at or below dir. depth 1 is this level only; 2 also covers a
-// Season folder or similar sitting under the title folder.
-static std::string FindFirstVideoFile(const std::string& dir, int depth = 1)
+// Trailers and samples ride along with movies, games and episodes alike:
+// "trailer.mp4", "Movie-trailer.mkv", "Show.S01E01.sample.mkv".
+static bool IsExtraVideo(const char* name)
+{
+	const char* dot = strrchr(name, '.');
+	size_t n = dot ? (size_t)(dot - name) : strlen(name);
+	static const char* kTags[] = { "trailer", "sample" };
+	for (size_t t = 0; t < sizeof(kTags) / sizeof(kTags[0]); t++)
+	{
+		size_t k = strlen(kTags[t]);
+		if (n < k || strncasecmp(name + n - k, kTags[t], k) != 0) continue;
+		if (n == k) return true;
+		char before = name[n - k - 1];
+		if (before == '-' || before == '.' || before == '_' || before == ' ') return true;
+	}
+	return false;
+}
+
+static bool IsMainVideo(const char* name)
+{
+	return IsVideoExt(name) && !IsExtraVideo(name);
+}
+
+// A folder is a movie when the movie sits right in it. Subfolders are extras,
+// or something that isn't a movie at all, so they never make one.
+static std::string FindFirstVideoFile(const std::string& dir)
 {
 	HostDir* d = Host_OpenDir(dir.c_str());
 	if (!d) return "";
-	std::vector<std::string> subdirs;
 	std::string out;
 	char eName[260];
 	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
 	{
 		if (eName[0] == '.') continue;
-		if (IsVideoExt(eName))
+		if (IsMainVideo(eName))
 		{
 			out = dir + "/" + eName;
 			break;
 		}
-		if (depth > 1)
-		{
-			std::string sub = dir + "/" + eName;
-			struct stat st;
-			if (stat(sub.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
-				subdirs.push_back(sub);
-		}
 	}
 	Host_CloseDir(d);
-	if (!out.empty()) return out;
-
-	// Files win over folders, so only descend once this level came up empty.
-	for (size_t i = 0; i < subdirs.size(); i++)
-	{
-		out = FindFirstVideoFile(subdirs[i], depth - 1);
-		if (!out.empty()) return out;
-	}
-	return "";
+	return out;
 }
 
 
@@ -315,8 +322,8 @@ static void ScanMoviesInto(std::vector<MovieRec>& out)
 		std::string videoPath;
 		std::string title = eName;
 		if (S_ISDIR(st.st_mode)) {
-			videoPath = FindFirstVideoFile(folder, 2);
-		} else if (IsVideoExt(eName)) {
+			videoPath = FindFirstVideoFile(folder);
+		} else if (IsMainVideo(eName)) {
 			// Movies dropped straight in the root, no folder per title.
 			videoPath = folder;
 			size_t dot = title.find_last_of('.');
@@ -360,7 +367,7 @@ static void ScanShowSeasons(ShowRec& show)
 		while (Host_ReadDir(sd, seName, sizeof(seName), NULL))
 		{
 			if (seName[0] == '.') continue;
-			if (!IsVideoExt(seName)) continue;
+			if (!IsMainVideo(seName)) continue;
 			EpisodeRec ep;
 			ep.path = seasonDir + "/" + seName;
 			ep.title = ParseEpisodeTitle(seName, ep.season, ep.episode);
@@ -393,7 +400,7 @@ static void ScanShowSeasons(ShowRec& show)
 		while (Host_ReadDir(fd, feName, sizeof(feName), NULL))
 		{
 			if (feName[0] == '.') continue;
-			if (!IsVideoExt(feName)) continue;
+			if (!IsMainVideo(feName)) continue;
 			EpisodeRec ep;
 			ep.path = show.path + "/" + feName;
 			ep.title = ParseEpisodeTitle(feName, ep.season, ep.episode);
@@ -423,7 +430,7 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 		{
 			// A loose episode in the root. Its own one episode show, so it
 			// is at least reachable instead of invisible.
-			if (!IsVideoExt(eName)) continue;
+			if (!IsMainVideo(eName)) continue;
 			std::string title = eName;
 			size_t dot = title.find_last_of('.');
 			if (dot != std::string::npos) title.erase(dot);
