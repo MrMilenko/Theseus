@@ -58,10 +58,6 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0001f300 | `_classCMaxMaterial` | `CMaxMaterial::class` (materials.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the 3ds Max material translator node. |
 | 0x0001f33c | `_classCLayer` | `CLayer::class` (scene_groups.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the 2D-overlay layer node. |
 | 0x0001f368 | `_classCKeyboard` | `CKeyboard::class` (keyboard_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the on-screen keyboard node. |
-| 0x000223e4 | `CMathClass_floor` | `CMathClass::floor` (math_node.cpp) | [Math](Math.md) | Script `Math.floor(x)`. Wraps the C runtime `floor`. |
-| 0x00022408 | `CMathClass_pow` | `CMathClass::pow` (math_node.cpp) | [Math](Math.md) | Script `Math.pow(x, y)`. Wraps `pow`. |
-| 0x00022410 | `CMathClass_random` | `CMathClass::random` (math_node.cpp) | [Math](Math.md) | Script `Math.random()`. Returns a `[0, 1)` float from the CRT PRNG. |
-| 0x00022434 | `CMathClass_sqrt` | `CMathClass::sqrt` (math_node.cpp) | [Math](Math.md) | Script `Math.sqrt(x)`. Wraps `sqrt`. |
 | 0x0002c570 | `CXApp::CXApp` | globals init in `main.cpp` | [App Shell](#app-shell) | Constructor for the original `CXApp` singleton. Theseus replaced this with module-scope globals and free functions; the binary class is preserved for reference. |
 | 0x0002cc10 | `Xbox_Init` | `Xbox_Init` (main.cpp) | [App Shell](#app-shell) | Early-boot init: `XOnlineStartup`, drive-letter symlinks, `XSetFileCacheSize`, `XInitDevices`, region detection, network bring-up. Runs before scene graph creation. |
 | 0x0002d0e0 | `CXApp::Draw` | main loop in `main.cpp` | [App Shell](#app-shell) | Per-frame render entry. Calls scene graph traversal then `Present`. |
@@ -90,7 +86,25 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x000321f0 | `CNumObject::ToNum` | `CNumObject::ToNum` (xap_vm.cpp) | [Script VM](VM.md) | Number-object self coercion. Returns the bound `float` directly without conversion. |
 | 0x00032850 | `CStrObject::toLowerCase` | `CStrObject::toLowerCase` (xap_vm.cpp) | [Script VM](VM.md) | Lowercases the bound UTF-16 string in place using `_wcslwr`. |
 | 0x000328c0 | `CStrObject::toUpperCase` | `CStrObject::toUpperCase` (xap_vm.cpp) | [Script VM](VM.md) | Uppercases the bound UTF-16 string in place using `_wcsupr`. |
-| 0x00032af0 | `CMathClass_abs` | `CMathClass::abs` (math_node.cpp) | [Math](Math.md) | Script `Math.abs(x)`. Returns the magnitude of a float. |
+| 0x00032950 | `CMathClass_CMathClass` | `CMathClass::CMathClass` (math_node.cpp) | [Math](Math.md) | Registers the "Math" class and its eight float constants. |
+| 0x00032a20 | `CMathClass_abs` | `CMathClass::abs` (math_node.cpp) | [Math](Math.md) | Script `Math.abs`. |
+| 0x00032a30 | `CMathClass_acos` | `CMathClass::acos` (math_node.cpp) | [Math](Math.md) | Script `Math.acos`. |
+| 0x00032a40 | `CMathClass_asin` | `CMathClass::asin` (math_node.cpp) | [Math](Math.md) | Script `Math.asin`. |
+| 0x00032a50 | `CMathClass_atan` | `CMathClass::atan` (math_node.cpp) | [Math](Math.md) | Script `Math.atan`. |
+| 0x00032a60 | `CMathClass_atan2` | `CMathClass::atan2` (math_node.cpp) | [Math](Math.md) | Script `Math.atan2(a, b)`: arc tangent of b / a. |
+| 0x00032a70 | `CMathClass_ceil` | `CMathClass::ceil` (math_node.cpp) | [Math](Math.md) | Script `Math.ceil`. |
+| 0x00032a90 | `CMathClass_cos` | `CMathClass::cos` (math_node.cpp) | [Math](Math.md) | Script `Math.cos`. |
+| 0x00032aa0 | `CMathClass_exp` | `CMathClass::exp` (math_node.cpp) | [Math](Math.md) | Script `Math.exp`. |
+| 0x00032ac0 | `CMathClass_floor` | `CMathClass::floor` (math_node.cpp) | [Math](Math.md) | Script `Math.floor`. |
+| 0x00032ae0 | `CMathClass_log` | `CMathClass::log` (math_node.cpp) | [Math](Math.md) | Script `Math.log`. |
+| 0x00032af0 | `CMathClass_max` | `CMathClass::max` (math_node.cpp) | [Math](Math.md) | Script `Math.max`. |
+| 0x00032b10 | `CMathClass_min` | `CMathClass::min` (math_node.cpp) | [Math](Math.md) | Script `Math.min`. |
+| 0x00032b30 | `CMathClass_pow` | `CMathClass::pow` (math_node.cpp) | [Math](Math.md) | Script `Math.pow`. |
+| 0x00032b40 | `CMathClass_random` | `CMathClass::random` (math_node.cpp) | [Math](Math.md) | Script `Math.random`: `rand() / 32767`. |
+| 0x00032b60 | `CMathClass_round` | `CMathClass::round` (math_node.cpp) | [Math](Math.md) | Script `Math.round`: adds a half and truncates. |
+| 0x00032b80 | `CMathClass_sin` | `CMathClass::sin` (math_node.cpp) | [Math](Math.md) | Script `Math.sin`. |
+| 0x00032b90 | `CMathClass_sqrt` | `CMathClass::sqrt` (math_node.cpp) | [Math](Math.md) | Script `Math.sqrt`. |
+| 0x00032ba0 | `CMathClass_tan` | `CMathClass::tan` (math_node.cpp) | [Math](Math.md) | Script `Math.tan`. |
 | 0x00033690 | `ExpandCString` | `ExpandCString` (string_util.cpp) | [Util](Util.md) | Resizes a `CString` buffer (the dashboard's growable wide-string container) to hold at least N additional characters. |
 | 0x00034d80 | `CFunctionCompiler::ParseExpression` | `CFunctionCompiler::ParseExpression` (xap_compile.cpp) | [Script VM](VM.md) | Recursive-descent expression parser. Drives the operator-precedence DOPER table to emit operator opcodes. |
 | 0x00034ea0 | `CFunctionCompiler::ParseIF` | `CFunctionCompiler::ParseIF` (xap_compile.cpp) | [Script VM](VM.md) | Compiles `if` / `if/else` to `opCond` + jump fixups. |
@@ -345,7 +359,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Audio System | [AudioSystem.md](AudioSystem.md) | 12 functions |
 | Camera | [Camera.md](Camera.md) | 9 functions |
 | Date | [Date.md](Date.md) | 7 functions |
-| Math | [Math.md](Math.md) | 5 functions |
+| Math | [Math.md](Math.md) | 19 functions |
 | File Operations | [FileOps.md](FileOps.md) | 7 functions |
 | Disc | (no doc yet, narrative TODO) | 1 function |
 | HUD & Picture | [HudNode.md](HudNode.md) | 9 functions |
