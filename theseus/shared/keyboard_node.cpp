@@ -153,11 +153,18 @@ static inline const WORD* GridFor(int mode, int jmode)
 	return JapaneseGrid() ? s_layouts[1][jmode] : s_layouts[0][mode];
 }
 
-// 5960 calls CharUpperW for shifted keys; Theseus only maps a to z.
+// 5960 runs shifted keys through CharUpperW. The only lowercase the grids
+// hold is a to z and the Latin-1 accents, so this covers every key it can
+// see: those move up 0x20 (except the division sign) and y diaeresis becomes
+// U+0178. Kana, symbols and sharp s stay put. Desktop keys are single bytes,
+// so there y diaeresis stays lowercase.
 static TCHAR KeyUpper(TCHAR ch)
 {
-	if (ch >= 'a' && ch <= 'z')
-		return (TCHAR)(ch - ('a' - 'A'));
+	unsigned c = (sizeof(TCHAR) == 1) ? (unsigned)(unsigned char)ch : (unsigned)ch;
+	if ((c >= 'a' && c <= 'z') || (c >= 0xe0 && c <= 0xfe && c != 0xf7))
+		return (TCHAR)(c - 0x20);
+	if (c == 0xff && sizeof(TCHAR) > 1)
+		return (TCHAR)0x178;
 	return ch;
 }
 
