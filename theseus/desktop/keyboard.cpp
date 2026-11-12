@@ -12,6 +12,7 @@
 extern CNode* GetTextNode(const char* szText, float nWidth);
 extern bool g_bActiveKey;
 extern char* g_szText;
+extern bool g_bAsteriskFormatting;   // text.cpp, gates *heading* text
 extern int g_nTextChar;
 extern int g_nCurLanguage;
 
@@ -250,7 +251,6 @@ public:
 	bool m_caps;
 	int m_mode;
 	int m_jmode;
-	bool m_asteriskFormatting;
 
     void selectKey(int nRow, int nColumn);
 	bool validKey(int nRow, int nColumn);
@@ -268,8 +268,8 @@ public:
 	void CycleMode();
 	void Insert(const char* szInsert);
 
-	bool GetAsteriskFormattingState() { return m_asteriskFormatting; }
-	void SetAsteriskFormattingState(bool b) { m_asteriskFormatting = b; }
+	bool GetAsteriskFormattingState() { return g_bAsteriskFormatting; }
+	void SetAsteriskFormattingState(bool b) { g_bAsteriskFormatting = b; }
 
 	void Advance(float nSeconds);
 	void Render();
@@ -332,7 +332,6 @@ CKeyboard::CKeyboard() :
 	m_jmode(jmodeHiragana),
 	m_shift(false),
 	m_caps(false),
-	m_asteriskFormatting(false),
 	m_string(NULL)
 {
 	m_nLength = 0;

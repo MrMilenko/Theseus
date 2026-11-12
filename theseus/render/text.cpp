@@ -22,6 +22,10 @@ TCHAR* g_szText = NULL;
 int g_nTextChar = -1;
 int g_nTextCharLast = -1;
 
+// *heading* formatting, off until a script turns it on through the keyboard's
+// SetAsteriskFormattingState (0x0017e74c, a BSS byte in 5960).
+bool g_bAsteriskFormatting = false;
+
 // D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE (0x52), 28 bytes a vertex.
 struct TEXTVERTEX
 {
@@ -444,10 +448,10 @@ static inline bool AtColumnEnd(const TCHAR* text, int i, int n)
 }
 
 // A column that starts and ends with '*' is a heading: the stars are hidden
-// and the text is tinted. True when text[i] opens one.
+// and the text is tinted. True when text[i] opens one and headings are on.
 static bool OpensHeading(const TCHAR* text, int i, int n)
 {
-	if (i >= n || text[i] != '*')
+	if (!g_bAsteriskFormatting || i >= n || text[i] != '*')
 		return false;
 	int end = i + 1;
 	while (end < n && !IsLineEnd(text[end]))
@@ -512,10 +516,9 @@ static void AddCursor(WORD* indices, int& nIndex, TEXTVERTEX* verts, int& nVerte
 // (or fades if the word has none), the second column is right justified, and
 // lines step down 1.5 after a paragraph or 1.0 inside one. Then every vertex
 // is scaled and the bounding box taken. See docs/decomp/Text.md.
-// Lines start indentWidth in until they drop below indentHeight. 5960 only
-// honors headings while the keyboard's asterisk formatting flag is on; Theseus
-// always does. The bounds stop in the second pass and the glyph scale are
-// Theseus's.
+// Lines start indentWidth in until they drop below indentHeight. Headings only
+// count while the asterisk formatting flag is on. The bounds stop in the second
+// pass and the glyph scale are Theseus's.
 void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale,
 	float indentWidth, float indentHeight)
 {
