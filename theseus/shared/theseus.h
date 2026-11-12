@@ -698,9 +698,11 @@ inline float pos(float n)
 	return 0.0f;
 }
 
+// 0..n. RAND_MAX is 32767 on Xbox, as the binary assumes, but about 2^31 on
+// mac and Linux, so dividing by a fixed 32767 threw desktop values far past n.
 inline float rnd(float n)
 {
-	return (float)rand() * n / 32767.0f;
+	return (float)rand() * n / (float)RAND_MAX;
 }
 
 inline float wrap(float n)
