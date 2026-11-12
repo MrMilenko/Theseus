@@ -180,16 +180,26 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0003f700 | `CGameCopier::CopyFileA` | `CGameCopier::CopyFile` (file_ops.cpp) | [File Ops](FileOps.md) | Buffered file copy with progress callback. Used by save-to-MU and game-copy flows. |
 | 0x0003f830 | `CGameCopier::DeleteFileA` | `CGameCopier::DeleteFile` (file_ops.cpp) | [File Ops](FileOps.md) | DeleteFile wrapper. |
 | 0x0003f8a0 | `CGameCopier::DeleteDirectory` | `CGameCopier::DeleteDirectory` (file_ops.cpp) | [File Ops](FileOps.md) | Recursive directory removal with progress callback. |
-| 0x000401b0 | `CScreenSaver::Advance` | `CScreenSaver::Advance` (settings_nodes.cpp) | [Settings](Settings.md) | Per-frame tick on the screensaver node. Counts down the idle timer and toggles the saver layer when threshold is reached. |
-| 0x000402a0 | `CScreenSaver::reset` | `CScreenSaver::reset` (settings_nodes.cpp) | [Settings](Settings.md) | Resets the idle timer to zero. Called on any input event. |
-| 0x00040320 | `CObject::ToNum` | `CObject::ToNum` (xap_vm.cpp) | [Script VM](VM.md) | Default numeric coercion for `CObject` subclasses. Subclasses override; base returns 0. |
+| 0x000400f0 | `CScreenSaver_CreateNode` | `CScreenSaver::CScreenSaver` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Factory for "ScreenSaver": enabled, 300 second delay, becomes the global saver. |
+| 0x00040190 | `CScreenSaver_dtor` | `CScreenSaver::~CScreenSaver` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Clears the global saver if it's this one. |
+| 0x000401b0 | `CScreenSaver::Advance` | `CScreenSaver::Advance` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Fires OnStart, OnDelay2 and OnDelay3 as idle time passes each delay; OnEnd when disabled while active. |
+| 0x000402a0 | `CScreenSaver::reset` | `CScreenSaver::reset` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Ends the saver, clears the stages and restarts the idle clock. |
+| 0x000402d0 | `CScreenSaver_OnSetProperty` | `CScreenSaver::OnSetProperty` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Enabling resets the idle clock. |
+| 0x00040320 | `ResetScreenSaver` | `ResetScreenSaver` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Input hook: resets the saver and the power down timer, returns whether it was showing. |
 | 0x00040380 | `CObject::OnSetProperty` | `CObject::OnSetProperty` (xap_vm.cpp) | [Script VM](VM.md) | Property-write hook. Called after `opAssign` lands a value on a property; subclasses override to react to property changes. |
 | 0x00040990 | `CTimeDepNode::~CTimeDepNode` | `CTimeDepNode::~CTimeDepNode` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Destructor for time-dependent nodes (TimeSensor and friends). Unlinks from the time-dep list. |
 | 0x00040b70 | `CJoystick_EnableGlobalInput` | `CJoystick::EnableGlobalInput` (input.cpp) | [Input](#input) | Toggles dashboard-wide gamepad input. Used by modal scenes (alerts, panic) to suspend or restore controller events. |
 | 0x0004147c | `CObject::Deref` | `CObject::Deref` (xap_vm.cpp) | [Script VM](VM.md) | Dereferences a script value. For `CVarObject` resolves to the bound target; for primitive objects returns `this`. |
 | 0x000417f8 | `CTimeDepNode::OnSetProperty` | `CTimeDepNode::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Reacts to property writes on time-dep nodes. Re-registers the node with the time-dep list when its `enabled` toggles. |
-| 0x00041950 | `CObject::Assign` | `CObject::Assign` (xap_vm.cpp) | [Script VM](VM.md) | Default assignment handler. Called by `opAssign` when LHS is a script-visible property. |
-| 0x000419e0 | `CSettings_GetValue` | `CSettings::GetValue` (settings_nodes.cpp) | [Settings](Settings.md) | FND-bound script accessor: returns the value of a settings entry by name. |
+| 0x000418a0 | `CSettings_CreateNode` | `CSettings::CSettings` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Factory for "Settings". |
+| 0x00041920 | `CSettings_dtor` | `CSettings::~CSettings` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Frees file and section, closes the file. |
+| 0x00041950 | `CSettings_Dot` | `CSettings::Dot` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Unknown names become CSetting values backed by the file. |
+| 0x000419e0 | `CSettings_SetValue` | `CSettings::SetValue` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Script `SetValue(name, value)`: writes and saves when changed. |
+| 0x00041a50 | `CSettings_GetValue` | `CSettings::GetValue` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Script `GetValue(name)`. |
+| 0x00041b60 | `FUN_00041b60` | `CSetting::~CSetting` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Frees the setting's name. |
+| 0x00041b80 | `FUN_00041b80` | `CSetting::Assign` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | `settings.Name = x` writes x as text. |
+| 0x00041bb0 | `FUN_00041bb0` | `CSetting::ToStr` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Reads the setting as text. |
+| 0x00041bc0 | `FUN_00041bc0` | `CSetting::Deref` (settings_nodes.cpp) | [Settings Nodes](SettingsNodes.md) | Reads the setting and drops the reference. |
 | 0x00041bf0 | `CTimeSensor_CreateNode` | `CTimeSensor::CTimeSensor` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Factory for "TimeSensor": cycleInterval 1.0, enabled. |
 | 0x00041c70 | `CTimeSensor_OnSetProperty` | `CTimeSensor::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Widens a script write of `time` into the double field. |
 | 0x00041c90 | `CTimeSensor::Advance` | `CTimeSensor::Advance` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Per-frame tick: loops or stops at the cycle end, computes fraction_changed and calls the script handler. |
@@ -382,6 +392,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | NtIoSvc | [NtIoSvc.md](NtIoSvc.md) | 1 function |
 | Scene Groups | [SceneGroups.md](SceneGroups.md) | 6 functions |
 | Settings | [Settings.md](Settings.md) | 14 functions |
+| Settings Nodes | [SettingsNodes.md](SettingsNodes.md) | 15 functions |
 | Shape Render | [ShapeRender.md](ShapeRender.md) | not yet started |
 | Text | [Text.md](Text.md) | 2 functions |
 | Title Collection | [TitleCollection.md](TitleCollection.md) | 9 verified Theseus mappings (AddTitle, Update, FindTitle, RemoveTitle, RemoveSavedGame x2, GetTitleTotalBlocks, IsDirty, IsPublisherExists) + 6 binary-only anchors (DLC enumerator, save dir walker, drive-letter translator, etc.); more labeling pending |
