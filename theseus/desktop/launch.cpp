@@ -65,6 +65,30 @@ static bool IsExistingFile(const char* path)
 	return Host_Stat(path, &info) && !(info.attrs & HOST_ATTR_DIR);
 }
 
+// Quotes an unquoted program path that has spaces in it, like anything under
+// "Program Files (x86)". Takes the longest leading run that names a real file.
+static void QuoteLeadingPath(char* s, size_t size)
+{
+	if (!s || !s[0] || s[0] == '"') return;
+	size_t len = strlen(s);
+	size_t best = 0;
+	char probe[2048];
+	for (size_t i = 1; i <= len && i < sizeof(probe); i++) {
+		if (s[i] != '\0' && !isspace((unsigned char)s[i])) continue;
+		memcpy(probe, s, i);
+		probe[i] = '\0';
+		if (IsExistingFile(probe)) best = i;
+	}
+	if (best == 0 || len + 3 > size) return;
+	bool hasSpace = false;
+	for (size_t i = 0; i < best; i++) if (isspace((unsigned char)s[i])) hasSpace = true;
+	if (!hasSpace) return;
+	memmove(s + best + 2, s + best, len - best + 1);
+	memmove(s + 1, s, best);
+	s[0] = '"';
+	s[best + 1] = '"';
+}
+
 // Parent dir of the program being spawned. Tries quoted path, then whole
 // string as a file, then first whitespace-delimited token.
 static bool DeriveWorkDir(const char* cmd, char* out, size_t outSize)
@@ -117,6 +141,7 @@ static bool Launch_DoSpawn(const char* expanded)
 	strncpy(spec, expanded, sizeof(spec) - 1);
 	spec[sizeof(spec) - 1] = '\0';
 	TrimOuterQuotes(spec);
+	if (!IsUrl(spec)) QuoteLeadingPath(spec, sizeof(spec));
 
 	char workdir[1024];
 	bool haveWorkdir = DeriveWorkDir(spec, workdir, sizeof(workdir));
