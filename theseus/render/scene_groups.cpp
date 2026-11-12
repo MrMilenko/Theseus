@@ -1,8 +1,8 @@
-// scene_groups.cpp: scene-graph container nodes (CGroup, CTransform,
-// CInline, CSpinner, CWaver, CLayout, CSwitch, CBillboard, CLayer,
-// CBackground, CLevel). All confirmed present in the 5960 retail XBE via
-// class-registration strings and FND table entries; see
-// docs/decomp/SceneGroups.md.
+// scene_groups.cpp: the scene graph's container nodes. Group, Transform,
+// Inline, Spinner, Waver, Layout, Switch, Billboard, Layer, Background and
+// Level, rebuilt function by function from the 5960 retail XBE (Group.cpp at
+// 0x4d3b0..0x4f760, Background at 0x4fc40..0x504c0, Layer at 0x5a290..0x5ab30,
+// Level at 0x5cbd0..0x5d230). Findings are in docs/decomp/SceneGroups.md.
 
 #include "std.h"
 #include "theseus.h"
@@ -24,8 +24,7 @@ extern void BindJoystick(CNode* pJoystickNode);
 
 
 // ===== CGroup ===============================================================
-// Base container node. Holds an array of children, renders them in order.
-// Computes bounding box as union of child boxes.
+// A node with children. Everything else in this file is built on it.
 
 IMPLEMENT_NODE("Group", CGroup, CNode)
 
@@ -33,22 +32,39 @@ START_NODE_PROPS(CGroup, CNode)
     NODE_PROP(pt_children, CGroup, children)
 END_NODE_PROPS()
 
+// CGroup::CGroup()
+// Reconstructed from 5960 retail XBE @ 0x0004d3d0 (the factory, ctor inlined):
+//     children = {0,0,0}; bboxCenter = 0; bboxSize = -1.0 (0x0002bef0) x3;
+//     bboxSpecified = 1; bboxDirty = 1;
+// A size of -1 on every axis means "nobody gave us a box, work it out".
 CGroup::CGroup()
 {
-    m_bboxCenter.x = 0.0f;
-    m_bboxCenter.y = 0.0f;
-    m_bboxCenter.z = 0.0f;
-    m_bboxSize.x = -1.0f;
-    m_bboxSize.y = -1.0f;
-    m_bboxSize.z = -1.0f;
+    m_bboxCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    m_bboxSize = D3DXVECTOR3(-1.0f, -1.0f, -1.0f);
     m_bboxSpecified = true;
     m_bboxDirty = true;
 }
 
+// CGroup::~CGroup()
+// Reconstructed from 5960 retail XBE @ 0x0004d470: ReleaseAll on the
+// children, then the CNode teardown. The CNodeArray member does that release.
 CGroup::~CGroup()
 {
 }
 
+// CGroup::GetBBox(pBBox)
+// Reconstructed from 5960 retail XBE @ 0x0004d4d0. Ghidra decompile:
+//     if (size == (-1,-1,-1)) specified = 0;
+//     if (dirty && !specified) {
+//         if (count == 0) center = size = 0;
+//         else { child[0]->GetBBox(&b); lo = b.c - b.s; hi = b.c + b.s;
+//                for (i = 1..) { GetBBox(&b);
+//                    if (b.c - b.s < lo) lo = b.c - b.s;
+//                    if (b.c + b.s < hi) hi = b.c + b.s; }
+//                center = (hi + lo) * 0.5; size = hi - lo; } }
+//     *pBBox = { center, size };
+// The far corner keeps the smaller value too, so it isn't a true union. That's
+// the binary's behavior and we keep it. Dirty is never cleared here.
 void CGroup::GetBBox(BBox* pBBox)
 {
     if (m_bboxSize.x == -1.0f && m_bboxSize.y == -1.0f && m_bboxSize.z == -1.0f)
@@ -56,59 +72,37 @@ void CGroup::GetBBox(BBox* pBBox)
 
     if (m_bboxDirty && !m_bboxSpecified)
     {
-        int nChildCount = m_children.GetLength();
-        if (nChildCount == 0)
+        int count = m_children.GetLength();
+        if (count == 0)
         {
-            m_bboxCenter.x = 0.0f;
-            m_bboxCenter.y = 0.0f;
-            m_bboxCenter.z = 0.0f;
-            m_bboxSize.x = 0.0f;
-            m_bboxSize.y = 0.0f;
-            m_bboxSize.z = 0.0f;
+            m_bboxCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+            m_bboxSize = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
         }
         else
         {
-            BBox bbox;
-            m_children.GetNode(0)->GetBBox(&bbox);
+            BBox box;
+            m_children.GetNode(0)->GetBBox(&box);
+            D3DXVECTOR3 lo = box.center - box.size;
+            D3DXVECTOR3 hi = box.center + box.size;
 
-            float xMin = bbox.center.x - bbox.size.x;
-            float yMin = bbox.center.y - bbox.size.y;
-            float zMin = bbox.center.z - bbox.size.z;
-            float xMax = bbox.center.x + bbox.size.x;
-            float yMax = bbox.center.y + bbox.size.y;
-            float zMax = bbox.center.z + bbox.size.z;
-
-            int i;
-            for (i = 1; i < nChildCount; i += 1)
+            for (int n = 1; n < count; n++)
             {
-                m_children.GetNode(i)->GetBBox(&bbox);
+                m_children.GetNode(n)->GetBBox(&box);
+                D3DXVECTOR3 near_ = box.center - box.size;
+                D3DXVECTOR3 far_ = box.center + box.size;
 
-                if (xMin > bbox.center.x - bbox.size.x)
-                    xMin = bbox.center.x - bbox.size.x;
-
-                if (yMin > bbox.center.y - bbox.size.y)
-                    yMin = bbox.center.y - bbox.size.y;
-
-                if (zMin > bbox.center.z - bbox.size.z)
-                    zMin = bbox.center.z - bbox.size.z;
-
-                if (xMax > bbox.center.x + bbox.size.x)
-                    xMax = bbox.center.x + bbox.size.x;
-
-                if (yMax > bbox.center.y + bbox.size.y)
-                    yMax = bbox.center.y + bbox.size.y;
-
-                if (zMax > bbox.center.z + bbox.size.z)
-                    zMax = bbox.center.z + bbox.size.z;
+                if (near_.x < lo.x) lo.x = near_.x;
+                if (near_.y < lo.y) lo.y = near_.y;
+                if (near_.z < lo.z) lo.z = near_.z;
+                if (far_.x < hi.x) hi.x = far_.x;
+                if (far_.y < hi.y) hi.y = far_.y;
+                if (far_.z < hi.z) hi.z = far_.z;
             }
 
-            m_bboxCenter.x = (xMax + xMin) / 2.0f;
-            m_bboxCenter.y = (yMax + yMin) / 2.0f;
-            m_bboxCenter.z = (zMax + zMin) / 2.0f;
-
-            m_bboxSize.x = xMax - xMin;
-            m_bboxSize.y = yMax - yMin;
-            m_bboxSize.z = zMax - zMin;
+            m_bboxCenter.x = (hi.x + lo.x) * 0.5f;
+            m_bboxCenter.y = (hi.y + lo.y) * 0.5f;
+            m_bboxCenter.z = (hi.z + lo.z) * 0.5f;
+            m_bboxSize = hi - lo;
         }
     }
 
@@ -116,98 +110,97 @@ void CGroup::GetBBox(BBox* pBBox)
     pBBox->size = m_bboxSize;
 }
 
+// CGroup::GetRadius()
+// Reconstructed from 5960 retail XBE @ 0x0004d770: the largest child radius,
+// starting from 0.
 float CGroup::GetRadius()
 {
-    float radius = 0.0f;
-    int nChildCount = m_children.GetLength();
-
-    int i;
-    for (i = 0; i < nChildCount; i += 1)
+    float best = 0.0f;
+    for (int n = 0; n < m_children.GetLength(); n++)
     {
-        float r = m_children.GetNode(i)->GetRadius();
-        if (radius < r)
-            radius = r;
+        float r = m_children.GetNode(n)->GetRadius();
+        if (r > best)
+            best = r;
     }
-
-    return radius;
+    return best;
 }
 
+// CGroup::Render()
+// Reconstructed from 5960 retail XBE @ 0x0004d7e0:
+//     for (i = 0; i < count; i++) if (child[i]->visible) child[i]->Render();
+// The visit/skip counters feed Theseus's frame profiler.
 void CGroup::Render()
 {
-
-    int nChildCount = m_children.GetLength();
-
-    int i;
-    for (i = 0; i < nChildCount; i += 1)
+    for (int n = 0; n < m_children.GetLength(); n++)
     {
-        CNode* pNode = m_children.GetNode(i);
+        CNode* child = m_children.GetNode(n);
         Frame_Count(FC_NODE_VISITS);
-        if (pNode->m_visible)
-            pNode->Render();
-        else
+        if (!child->m_visible)
+        {
             Frame_Count(FC_NODE_SKIPS);
+            continue;
+        }
+        child->Render();
     }
 }
 
+// CGroup::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0004d820: CNode::Advance, then
+// every child.
 void CGroup::Advance(float nSeconds)
 {
     CNode::Advance(nSeconds);
-    int nChildCount = m_children.GetLength();
-
-    int i;
-    for (i = 0; i < nChildCount; i += 1)
-        m_children.GetNode(i)->Advance(nSeconds);
+    for (int n = 0; n < m_children.GetLength(); n++)
+        m_children.GetNode(n)->Advance(nSeconds);
 }
 
+// CGroup::SetLight
+// Not in 5960, whose node vtable has no light slot. Theseus's light pass in
+// the app walks the tree with it, so groups hand it on to their children.
 void CGroup::SetLight(int& nLight, D3DCOLORVALUE& ambient)
 {
-    int nChildCount = m_children.GetLength();
-
-    int i;
-    for (i = 0; i < nChildCount; i += 1)
+    for (int n = 0; n < m_children.GetLength(); n++)
     {
-        CNode* pNode = m_children.GetNode(i);
-        if (pNode != NULL)
-            pNode->SetLight(nLight, ambient);
+        CNode* child = m_children.GetNode(n);
+        if (child != NULL)
+            child->SetLight(nLight, ambient);
     }
 }
 
+// CGroup::RenderDynamicTexture(pSurfx)
+// Reconstructed from 5960 retail XBE @ 0x0004d860: pass the surface to every
+// non-null child.
 void CGroup::RenderDynamicTexture(CSurfx* pSurfx)
 {
-    int nChildCount = m_children.GetLength();
-
-    int i;
-    for (i = 0; i < nChildCount; i += 1)
+    for (int n = 0; n < m_children.GetLength(); n++)
     {
-        CNode* pNode = m_children.GetNode(i);
-        if (pNode != NULL)
-            pNode->RenderDynamicTexture(pSurfx);
+        CNode* child = m_children.GetNode(n);
+        if (child != NULL)
+            child->RenderDynamicTexture(pSurfx);
     }
 }
 
+// CGroup::GetTextureSurface()
+// Reconstructed from 5960 retail XBE @ 0x0004d8a0: the first non-null child
+// texture, else NULL.
 LPDIRECT3DTEXTURE8 CGroup::GetTextureSurface()
 {
-    int nChildCount = m_children.GetLength();
-
-    for (int i = 0; i < nChildCount; i += 1)
+    for (int n = 0; n < m_children.GetLength(); n++)
     {
-        CNode* pNode = m_children.GetNode(i);
-        if (pNode != NULL)
-        {
-            LPDIRECT3DTEXTURE8 pSurface = pNode->GetTextureSurface();
-            if (pSurface != NULL)
-                return pSurface;
-        }
+        CNode* child = m_children.GetNode(n);
+        if (child == NULL)
+            continue;
+        LPDIRECT3DTEXTURE8 tex = child->GetTextureSurface();
+        if (tex != NULL)
+            return tex;
     }
-
     return NULL;
 }
 
 
 // ===== CTransform ===========================================================
-// Applies translation, rotation, scale to children with optional fade
-// interpolation. Supports animated property transitions via SetScale,
-// SetTranslation, SetRotation, SetAlpha.
+// Scale, rotation and translation for its children, plus an alpha. With fade
+// set, the script setters glide to the new value over fade seconds.
 
 IMPLEMENT_NODE("Transform", CTransform, CGroup)
 
@@ -234,205 +227,231 @@ START_NODE_FUN(CTransform, CGroup)
 END_NODE_FUN()
 #undef _FND_CLASS
 
+// CTransform::CTransform()
+// Reconstructed from 5960 retail XBE @ 0x0004d910. Ghidra decompile:
+//     rotation = (0,0,1,0); center = 0; scaleOrientation = (0,0,1,0);
+//     scale = (1,1,1); translation = 0; moving = 0; dirty = 1; fade = 0;
+//     alpha = 1.0; +0x178 = +0x17c = 0; the five fade clocks (doubles) = 0.0
+// The rotation quaternion is left for OnLoad to build.
 CTransform::CTransform() :
+    m_rotation(0.0f, 0.0f, 1.0f, 0.0f),
     m_center(0.0f, 0.0f, 0.0f),
     m_scaleOrientation(0.0f, 0.0f, 1.0f, 0.0f),
     m_scale(1.0f, 1.0f, 1.0f),
-    m_rotation(0.0f, 0.0f, 1.0f, 0.0f),
     m_translation(0.0f, 0.0f, 0.0f),
+    m_alpha(1.0f),
+    m_moving(false),
+    m_dirty(TRUE),
     m_fade(0.0f),
-    m_moving(false)
+    m_timeCenterStart(0.0f),
+    m_timeScaleOrientationStart(0.0f),
+    m_timeScaleStart(0.0),
+    m_timeRotationStart(0.0),
+    m_timeTranslationStart(0.0),
+    m_timeAlphaStart(0.0),
+    m_timeToDisappear(0.0)
 {
-    m_dirty = true;
-    m_alpha = 1.0f;
-    m_timeCenterStart = 0.0f;
-    m_timeScaleStart = 0.0f;
-    m_timeScaleOrientationStart = 0.0f;
-    m_timeRotationStart = 0.0f;
-    m_timeTranslationStart = 0.0f;
-    m_timeAlphaStart = 0.0f;
-    m_timeToDisappear = 0.0;
 }
 
+// CTransform::OnLoad()
+// Reconstructed from 5960 retail XBE @ 0x0004da40:
+//     CNode::OnLoad(); D3DXQuaternionRotationAxis(&rotationQuat, &rotation.xyz, rotation.w);
 void CTransform::OnLoad()
 {
     CGroup::OnLoad();
     D3DXQuaternionRotationAxis(&m_rotationQuat, (D3DXVECTOR3*)&m_rotation, m_rotation.w);
 }
 
+// CTransform::OnSetProperty(pprd, pvValue)
+// Reconstructed from 5960 retail XBE @ 0x0004da60. Ghidra decompile:
+//     if (prd->offset == 0x44) QuaternionRotationAxis(&quat, value, value[3]);
+//     else if (prd->offset == 0x120) { SetAlpha inlined; return 0; }
+//     return 1;
+// A rotation write also rebuilds the quaternion; an alpha write goes through
+// SetAlpha (so it can fade) and the raw store is vetoed.
 bool CTransform::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
-    if (PTR2INT(pprd->pbOffset) == offsetof(m_rotation))
+    int offset = PTR2INT(pprd->pbOffset);
+    if (offset == offsetof(m_rotation))
     {
-        const float* p = (const float*)pvValue;
-        D3DXQuaternionRotationAxis(&m_rotationQuat, (D3DXVECTOR3*)p, p[3]);
+        const float* axisAngle = (const float*)pvValue;
+        D3DXQuaternionRotationAxis(&m_rotationQuat, (const D3DXVECTOR3*)axisAngle, axisAngle[3]);
     }
-    else if (PTR2INT(pprd->pbOffset) == offsetof(m_alpha))
+    else if (offset == offsetof(m_alpha))
     {
-        SetAlpha(*(float*)pvValue);
+        SetAlpha(*(const float*)pvValue);
         return false;
     }
-
-    return CGroup::OnSetProperty(pprd, pvValue);
+    return true;
 }
 
+// Fraction of a fade that started at `start`, clamped to 1. When it reaches
+// 1 the clock is stopped (set back to 0). The binary inlines this four times.
+static float FadeStep(XTIME& start, float fade)
+{
+    float t = (float)(TheseusGetNow() - start) / fade;
+    if (t >= 1.0f)
+    {
+        start = 0.0;
+        t = 1.0f;
+    }
+    return t;
+}
+
+// CTransform::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0004dae0. Ghidra decompile:
+//     CGroup::Advance(dt);
+//     if (timeAlphaStart > 0) { t = (now - timeAlphaStart) / fade;
+//         if (t >= 1) { timeAlphaStart = 0; t = 1; }
+//         alpha = (alphaEnd - alphaStart) * t + alphaStart; }
+//     if (timeToDisappear > 0 && timeToDisappear <= now) { timeToDisappear = 0; alpha = 0; }
 void CTransform::Advance(float nSeconds)
 {
     CGroup::Advance(nSeconds);
 
-    if (m_timeAlphaStart > 0.0f)
+    if (m_timeAlphaStart > 0.0)
     {
-        float t = (float) (TheseusGetNow() - m_timeAlphaStart) / m_fade;
-        if (t >= 1.0f)
-        {
-            t = 1.0f;
-            m_timeAlphaStart = 0.0f;
-        }
-
+        float t = FadeStep(m_timeAlphaStart, m_fade);
         m_alpha = m_alphaStart + (m_alphaEnd - m_alphaStart) * t;
     }
 
-    if (m_timeToDisappear > 0.0f && TheseusGetNow() >= m_timeToDisappear)
+    if (m_timeToDisappear > 0.0 && m_timeToDisappear <= TheseusGetNow())
     {
+        m_timeToDisappear = 0.0;
         m_alpha = 0.0f;
-        m_timeToDisappear = 0.0f;
     }
 }
 
+// CTransform::CalcMatrix()
+// Reconstructed from 5960 retail XBE @ 0x0004dbb0. Starts from identity, steps
+// any running scale and translation fades (vector lerp) and the rotation fade
+// (D3DXQuaternionSlerp), each one setting moving. Then multiplies in scale if
+// it isn't (1,1,1), the quaternion if its w isn't 0, and the translation if it
+// isn't zero, in that order. Dirty stays set while any of the three fades is
+// still running (sum of their clocks > 0).
 void CTransform::CalcMatrix()
 {
     D3DXMatrixIdentity(&m_matrix);
 
-    if (m_timeScaleStart > 0.0f)
+    if (m_timeScaleStart > 0.0)
     {
         m_moving = true;
-
-        float t = (float) (TheseusGetNow() - m_timeScaleStart) / m_fade;
-        if (t >= 1.0f)
-        {
-            t = 1.0f;
-            m_timeScaleStart = 0.0f;
-        }
-
+        float t = FadeStep(m_timeScaleStart, m_fade);
         D3DXVec3Lerp(&m_scale, &m_scaleStart, &m_scaleEnd, t);
     }
 
-    if (m_timeTranslationStart > 0.0f)
+    if (m_timeTranslationStart > 0.0)
     {
         m_moving = true;
-
-        float t = (float) (TheseusGetNow() - m_timeTranslationStart) / m_fade;
-        if (t >= 1.0f)
-        {
-            t = 1.0f;
-            m_timeTranslationStart = 0.0f;
-        }
-
+        float t = FadeStep(m_timeTranslationStart, m_fade);
         D3DXVec3Lerp(&m_translation, &m_translationStart, &m_translationEnd, t);
     }
 
-    if (m_timeRotationStart > 0.0f)
+    if (m_timeRotationStart > 0.0)
     {
         m_moving = true;
-
-        float t = (float) (TheseusGetNow() - m_timeRotationStart) / m_fade;
-        if (t >= 1.0f)
-        {
-            t = 1.0f;
-            m_timeRotationStart = 0.0f;
-        }
-
+        float t = FadeStep(m_timeRotationStart, m_fade);
         D3DXQuaternionSlerp(&m_rotationQuat, &m_rotationStart, &m_rotationEnd, t);
     }
 
+    D3DXMATRIX step;
+
     if (m_scale.x != 1.0f || m_scale.y != 1.0f || m_scale.z != 1.0f)
     {
-        D3DXMATRIX mat;
-        D3DXMatrixScaling(&mat, m_scale.x, m_scale.y, m_scale.z);
-        D3DXMatrixMultiply(&m_matrix, &m_matrix, &mat);
+        D3DXMatrixScaling(&step, m_scale.x, m_scale.y, m_scale.z);
+        D3DXMatrixMultiply(&m_matrix, &m_matrix, &step);
     }
 
     if (m_rotationQuat.w != 0.0f)
     {
-        D3DXMATRIX mat;
-        D3DXMatrixRotationQuaternion(&mat, &m_rotationQuat);
-        D3DXMatrixMultiply(&m_matrix, &m_matrix, &mat);
+        D3DXMatrixRotationQuaternion(&step, &m_rotationQuat);
+        D3DXMatrixMultiply(&m_matrix, &m_matrix, &step);
     }
 
     if (m_translation.x != 0.0f || m_translation.y != 0.0f || m_translation.z != 0.0f)
     {
-        D3DXMATRIX mat;
-        D3DXMatrixTranslation(&mat, m_translation.x, m_translation.y, m_translation.z);
-        D3DXMatrixMultiply(&m_matrix, &m_matrix, &mat);
+        D3DXMatrixTranslation(&step, m_translation.x, m_translation.y, m_translation.z);
+        D3DXMatrixMultiply(&m_matrix, &m_matrix, &step);
     }
 
-    m_dirty = (m_timeScaleStart + m_timeTranslationStart + m_timeRotationStart) > 0.0f;
+    m_dirty = (m_timeScaleStart + m_timeTranslationStart + m_timeRotationStart) > 0.0;
 }
 
+// CTransform::SetScale(x, y, z)   [script fn 'SetScale', FND 0x00187dc8, sig 22]
+// Reconstructed from 5960 retail XBE @ 0x0004df30. Ghidra decompile:
+//     if (fade > 0) { timeScaleStart = now; scaleStart = scale;
+//                     scaleEnd = (x,y,z); moving = 1; }
+//     else scale = (x,y,z);
+//     dirty = 1;
 void CTransform::SetScale(float sx, float sy, float sz)
 {
+    D3DXVECTOR3 target(sx, sy, sz);
     if (m_fade > 0.0f)
     {
         m_timeScaleStart = TheseusGetNow();
         m_scaleStart = m_scale;
-        m_scaleEnd.x = sx;
-        m_scaleEnd.y = sy;
-        m_scaleEnd.z = sz;
+        m_scaleEnd = target;
         m_moving = true;
     }
     else
     {
-        m_scale.x = sx;
-        m_scale.y = sy;
-        m_scale.z = sz;
+        m_scale = target;
     }
-
-    m_dirty = true;
+    m_dirty = TRUE;
 }
 
+// CTransform::SetScaleOrientation(x, y, z, a)   [script fn 'SetScaleOrientation', FND 0x00187de0, sig 23]
+// Reconstructed from 5960 retail XBE @ 0x0004dfd0:
+//     scaleOrientation = (x,y,z,a); dirty = 1;
+// Stored only; CalcMatrix never reads it.
 void CTransform::SetScaleOrientation(float x, float y, float z, float a)
 {
-    m_scaleOrientation.x = x;
-    m_scaleOrientation.y = y;
-    m_scaleOrientation.z = z;
-    m_scaleOrientation.w = a;
-    m_dirty = true;
+    m_scaleOrientation = D3DXQUATERNION(x, y, z, a);
+    m_dirty = TRUE;
 }
 
+// CTransform::SetTranslation(x, y, z)   [script fn 'SetTranslation', FND 0x00187df8, sig 22]
+// Reconstructed from 5960 retail XBE @ 0x0004e010: same shape as SetScale,
+// on the translation and its fade clock.
 void CTransform::SetTranslation(float x, float y, float z)
 {
+    D3DXVECTOR3 target(x, y, z);
     if (m_fade > 0.0f)
     {
         m_timeTranslationStart = TheseusGetNow();
         m_translationStart = m_translation;
-        m_translationEnd.x = x;
-        m_translationEnd.y = y;
-        m_translationEnd.z = z;
+        m_translationEnd = target;
         m_moving = true;
     }
     else
     {
-        m_translation.x = x;
-        m_translation.y = y;
-        m_translation.z = z;
+        m_translation = target;
     }
-
-    m_dirty = true;
+    m_dirty = TRUE;
 }
 
+// CTransform::SetCenter(x, y, z)   [script fn 'SetCenter', FND 0x00187e10, sig 22]
+// Reconstructed from 5960 retail XBE @ 0x0004e0c0:
+//     center = (x,y,z); dirty = 1;
 void CTransform::SetCenter(float x, float y, float z)
 {
-    m_center.x = x;
-    m_center.y = y;
-    m_center.z = z;
-    m_dirty = true;
+    m_center = D3DXVECTOR3(x, y, z);
+    m_dirty = TRUE;
 }
 
+// CTransform::SetRotation(x, y, z, a)   [script fn 'SetRotation', FND 0x00187e28, sig 23]
+// Reconstructed from 5960 retail XBE @ 0x0004e0f0. Ghidra decompile:
+//     QuaternionRotationAxis(&q, &(x,y,z), a);
+//     if (fade > 0) { timeRotationStart = now; rotationStart = rotationQuat;
+//                     rotationEnd = q; moving = 1; }
+//     else { rotation = (x,y,z,a); rotationQuat = q; }
+//     dirty = 1;
+// A fading rotation leaves the axis/angle property alone.
 void CTransform::SetRotation(float x, float y, float z, float a)
 {
-    D3DXVECTOR3 v(x, y, z);
+    D3DXVECTOR3 axis(x, y, z);
     D3DXQUATERNION q;
-    D3DXQuaternionRotationAxis(&q, &v, a);
+    D3DXQuaternionRotationAxis(&q, &axis, a);
 
     if (m_fade > 0.0f)
     {
@@ -443,16 +462,16 @@ void CTransform::SetRotation(float x, float y, float z, float a)
     }
     else
     {
-        m_rotation.x = x;
-        m_rotation.y = y;
-        m_rotation.z = z;
-        m_rotation.w = a;
+        m_rotation = D3DXQUATERNION(x, y, z, a);
         m_rotationQuat = q;
     }
-
-    m_dirty = true;
+    m_dirty = TRUE;
 }
 
+// CTransform::SetAlpha(a)   [script fn 'SetAlpha', FND 0x00187e40, sig 19]
+// Reconstructed from 5960 retail XBE @ 0x0004e200:
+//     if (fade > 0) { timeAlphaStart = now; alphaStart = alpha; alphaEnd = a; }
+//     else alpha = a;
 void CTransform::SetAlpha(float a)
 {
     if (m_fade > 0.0f)
@@ -467,15 +486,27 @@ void CTransform::SetAlpha(float a)
     }
 }
 
+// CTransform::DisappearAfter(t)   [script fn 'DisappearAfter', FND 0x00187e58, sig 19]
+// Reconstructed from 5960 retail XBE @ 0x0004e250:
+//     timeToDisappear = (double)(t + (float)now);
+// The binary adds in single precision; Theseus keeps the double clock.
 void CTransform::DisappearAfter(float t)
 {
-    m_timeToDisappear = TheseusGetNow() + t;
+    m_timeToDisappear = t + TheseusGetNow();
 }
 
+// CTransform::Render()
+// Reconstructed from 5960 retail XBE @ 0x0004e270. Ghidra decompile:
+//     moving = 0; if (dirty) CalcMatrix();
+//     world->Push(); world->MultMatrixLocal(&matrix); <upload world>
+//     if (alpha > 0) { saved = effectAlpha; effectAlpha *= alpha;
+//                      CGroup::Render(); effectAlpha = saved; }
+//     world->Pop(); <upload world>
+// moving reads true only on frames where a fade stepped the matrix. A fully
+// transparent subtree counts as one skip for Theseus's frame profiler.
 void CTransform::Render()
 {
     m_moving = false;
-
     if (m_dirty)
         CalcMatrix();
 
@@ -483,30 +514,25 @@ void CTransform::Render()
     TheseusMultWorld(&m_matrix);
     TheseusUpdateWorld();
 
-    float nEffectAlphaSave = g_nEffectAlpha;
-    g_nEffectAlpha *= m_alpha;
-
     if (m_alpha > 0.0f)
     {
+        float outerAlpha = g_nEffectAlpha;
+        g_nEffectAlpha = outerAlpha * m_alpha;
         CGroup::Render();
+        g_nEffectAlpha = outerAlpha;
     }
     else
     {
-        // Whole subtree skipped due to zero alpha. Counts as one
-        // skip event regardless of subtree size since we don't
-        // descend to know how big it is.
         Frame_Count(FC_NODE_SKIPS);
     }
-
-    g_nEffectAlpha = nEffectAlphaSave;
 
     TheseusPopWorld();
 }
 
 
 // ===== CInline ==============================================================
-// Loads a child scene from a URL (with optional XIP archive).
-// Supports background loading and fade-in on delay-loaded content.
+// Pulls another XAP in as a child, out of its own XIP when there is one, and
+// fades it in once it arrives.
 
 class CInline : public CGroup
 {
@@ -538,14 +564,13 @@ protected:
     DECLARE_NODE_PROPS()
 
 #ifdef THESEUS_DESKTOP
-    // Hot-reload from new XAP source text (XAP editor "save" loop)
+    // Hot reload from new XAP text (the XAP editor's save loop)
     bool ReloadFromText(const char* xapText);
 #endif
 
 private:
     HANDLE m_hClassLoaderThread;
     TCHAR m_szAbsURL[MAX_PATH];
-    static void WINAPI ClassLoaderThread(CInline* p);
 };
 
 IMPLEMENT_NODE("Inline", CInline, CGroup)
@@ -556,82 +581,100 @@ START_NODE_PROPS(CInline, CGroup)
     NODE_PROP(pt_boolean, CInline, fadeInDelayLoad)
 END_NODE_PROPS()
 
+// CInline::CInline()
+// Reconstructed from 5960 retail XBE @ 0x0004e3b0. Ghidra decompile:
+//     url = 0; preload = 0; classLoaded = 0; fadeInDelayLoad = 1; CClass();
+//     thread = 0; timeOfLoad = 0.0; loading = 0; firstLoad = 0; xip = 0; dirty = 1;
 CInline::CInline() :
     m_url(NULL),
-    m_hClassLoaderThread(NULL),
+    m_preload(false),
     m_bClassLoaded(false),
     m_fadeInDelayLoad(true),
-    m_preload(false)
+    m_dirty(true),
+    m_bLoading(false),
+    m_bFirstLoad(false),
+    m_xipFile(NULL),
+    m_timeOfLoad(0.0),
+    m_hClassLoaderThread(NULL)
 {
-    m_dirty = true;
-    m_bLoading = false;
-    m_bFirstLoad = false;
-    m_xipFile = NULL;
-    m_timeOfLoad = 0.0f;
 }
 
+// CInline::~CInline()
+// Reconstructed from 5960 retail XBE @ 0x0004e470: free the url, then the
+// class and group teardown.
 CInline::~CInline()
 {
     delete [] m_url;
 }
 
+// CInline::Init()
+// Reconstructed from 5960 retail XBE @ 0x0004e4d0. Ghidra decompile:
+//     dirty = 0; children.ReleaseAll(); if (!url) return;
+//     MakeAbsoluteURL(path, url); p = wcsrchr(path, '/');
+//     if (p) { wcscpy(p, ".xip"); loading = 1; firstLoad = 1;
+//              xip = LoadXIP(path); if (xip) return; loading = 0; }
+//     FinishLoad();
+// The archive is named after the folder holding the XAP. With one, the load
+// finishes later in Advance; without, the class loads right here.
 void CInline::Init()
 {
-    ASSERT(m_dirty);
     m_dirty = false;
     m_children.ReleaseAll();
 
     if (m_url == NULL)
         return;
 
-    ASSERT(!m_bLoading);
-
-    // Start background XIP load if there is an archive for this URL
+    TCHAR xipPath[MAX_PATH];
+    MakeAbsoluteURL(xipPath, m_url);
+    TCHAR* slash = _tcsrchr(xipPath, '/');
+    if (slash != NULL)
     {
-        TCHAR szURL [MAX_PATH];
-
-        MakeAbsoluteURL(szURL, m_url);
-        TCHAR* pch = _tcsrchr(szURL, '/');
-        if (pch != NULL)
-        {
-            _tcscpy(pch, _T(".xip"));
-
-            m_bLoading = true;
-            m_bFirstLoad = true;
-            m_xipFile = LoadXIP(szURL);
-            if (m_xipFile != NULL)
-                return;
-
-            TRACE(_T("\001LoadXIP: %s failed!\n"));
-
-            m_bLoading = false;
-        }
+        _tcscpy(slash, _T(".xip"));
+        m_bLoading = true;
+        m_bFirstLoad = true;
+        m_xipFile = LoadXIP(xipPath);
+        if (m_xipFile != NULL)
+            return;
+        m_bLoading = false;
     }
 
     FinishLoad();
 }
 
+// CInline::FinishLoad()
+// Reconstructed from 5960 retail XBE @ 0x0004e560. Ghidra decompile:
+//     if (m_class.LoadAbsURL(absURL)) { n = m_class.CreateNode();
+//         CallFunction(n, "initialize"); children.AddNode(n); n->parent = this;
+//         CallFunction(this, "onLoad"); }
+//     firstLoad = 0; classLoaded = 1;
+// The load timer around it is Theseus's (frame profiler hitch report).
 void CInline::FinishLoad()
 {
-    TRACE(_T("FinishLoad: (0x%08x) %s\n"), this, m_url);
-    ASSERT(!m_bClassLoaded);
+    long long started = Frame_Now();
 
-    // Compile plus initialize/onLoad lands inside one frame; that's the hitch.
-    long long loadStart = Frame_Now();
     if (m_class.LoadAbsURL(m_szAbsURL))
     {
-        CNode* pNode = m_class.CreateNode();
-        CallFunction(pNode, _T("initialize"));
-
-        m_children.AddNode(pNode);
-        pNode->m_parent = this;
+        CNode* root = m_class.CreateNode();
+        CallFunction(root, _T("initialize"));
+        m_children.AddNode(root);
+        root->m_parent = this;
         CallFunction(this, _T("onLoad"));
     }
+
     m_bFirstLoad = false;
     m_bClassLoaded = true;
-    Frame_NoteLoad(Frame_Ms(Frame_Now() - loadStart));
+
+    Frame_NoteLoad(Frame_Ms(Frame_Now() - started));
 }
 
+// CInline::Render()
+// Reconstructed from 5960 retail XBE @ 0x0004e5d0. Nothing without a url or
+// while loading. If our XIP had its mesh buffers dropped (loaded, not
+// reloading, has vertex buffers, first one gone) it starts a reload and skips
+// the frame. Otherwise Init when dirty, and once the class is in, render the
+// children with the effect alpha scaled by the fade in, (now - timeOfLoad) / 2
+// capped at 1 (or 1 straight away without fadeInDelayLoad), inside the XAP's
+// directory. See docs/decomp/SceneGroups.md.
 void CInline::Render()
 {
     if (m_url == NULL || m_bLoading)
@@ -650,37 +693,34 @@ void CInline::Render()
     if (m_bLoading || !m_bClassLoaded)
         return;
 
-    float a = (float) (TheseusGetNow() - m_timeOfLoad) / 2.0f;
-
-    if (!m_fadeInDelayLoad)
+    float fadeIn = 1.0f;
+    if (m_fadeInDelayLoad)
     {
-        a = 1.0f;
-    }
-    else if (a > 1.0f)
-    {
-        a = 1.0f;
+        fadeIn = (float)(TheseusGetNow() - m_timeOfLoad) * 0.5f;
+        if (fadeIn > 1.0f)
+            fadeIn = 1.0f;
     }
 
-    float nEffectAlphaSave = g_nEffectAlpha;
-    g_nEffectAlpha *= a;
-
-    CDirPush dirPush(m_url);
-
-    CGroup::Render();
-
-    g_nEffectAlpha = nEffectAlphaSave;
+    float outerAlpha = g_nEffectAlpha;
+    g_nEffectAlpha = outerAlpha * fadeIn;
+    {
+        CDirPush inXapDir(m_url);
+        CGroup::Render();
+    }
+    g_nEffectAlpha = outerAlpha;
 }
 
-void WINAPI CInline::ClassLoaderThread(CInline* p)
-{
-    ASSERT(p->m_xipFile);
-    ASSERT(p->m_bFirstLoad);
-    ASSERT(!p->m_bLoading);
-    ASSERT(!p->m_bClassLoaded);
-    ASSERT(p->m_xipFile->IsReady());
-    p->FinishLoad();
-}
-
+// CInline::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0004e740. Ghidra decompile:
+//     if (dirty && preload) Init();
+//     if (xip && (!xip->loaded || xip->reloading)) { loading = 1; return; }
+//     if (loading) { loading = 0;
+//         if (firstLoad) { MakeAbsoluteURL(absURL, url); if (!thread) FinishLoad(); }
+//         timeOfLoad = now; }
+//     if (thread && WaitForSingleObject(thread, 0) == 0) { CloseHandle(thread); thread = 0; }
+//     CGroup::Advance(dt);
+// The class always loads on this thread (the script engine isn't thread
+// safe), so the handle is never set; the check is kept as the binary has it.
 void CInline::Advance(float nSeconds)
 {
     if (m_dirty && m_preload)
@@ -694,37 +734,20 @@ void CInline::Advance(float nSeconds)
 
     if (m_bLoading)
     {
-        ASSERT(m_xipFile != NULL);
-        if (!m_xipFile->IsReady())
-            return;
-
         m_bLoading = false;
-
         if (m_bFirstLoad)
         {
-            ASSERT(m_hClassLoaderThread == NULL);
-
             MakeAbsoluteURL(m_szAbsURL, m_url);
-
-            // Class loader can't run in a separate thread; the scripting
-            // engine is not thread-safe.
-            if (!m_hClassLoaderThread)
-            {
+            if (m_hClassLoaderThread == NULL)
                 FinishLoad();
-            }
         }
-
         m_timeOfLoad = TheseusGetNow();
     }
 
-    if (m_hClassLoaderThread)
+    if (m_hClassLoaderThread != NULL && WaitForSingleObject(m_hClassLoaderThread, 0) == WAIT_OBJECT_0)
     {
-        if (WaitForSingleObject(m_hClassLoaderThread, 0) == WAIT_OBJECT_0)
-        {
-            ASSERT(m_bClassLoaded);
-            CloseHandle(m_hClassLoaderThread);
-            m_hClassLoaderThread = NULL;
-        }
+        CloseHandle(m_hClassLoaderThread);
+        m_hClassLoaderThread = NULL;
     }
 
     CGroup::Advance(nSeconds);
@@ -732,7 +755,7 @@ void CInline::Advance(float nSeconds)
 
 
 // ===== CSpinner =============================================================
-// Continuously rotates children around an axis at a given RPM.
+// Turns its children around an axis, rpm turns a minute.
 
 class CSpinner : public CGroup
 {
@@ -758,23 +781,26 @@ START_NODE_PROPS(CSpinner, CGroup)
     NODE_PROP(pt_number, CSpinner, angle)
 END_NODE_PROPS()
 
-CSpinner::CSpinner()
+// CSpinner::CSpinner()
+// Reconstructed from 5960 retail XBE @ 0x0004e820 (factory, ctor inlined):
+//     rpm = 1.0; axis = (0, 1, 0); angle = 0;
+CSpinner::CSpinner() :
+    m_rpm(1.0f),
+    m_axis(0.0f, 1.0f, 0.0f),
+    m_angle(0.0f)
 {
-    m_rpm = 1.0f;
-    m_axis.x = 0.0f;
-    m_axis.y = 1.0f;
-    m_axis.z = 0.0f;
-    m_angle = 0.0f;
 }
 
+// CSpinner::Render()   (shared with CWaver)
+// Reconstructed from 5960 retail XBE @ 0x0004e8c0:
+//     world->Push(); D3DXMatrixRotationAxis(&m, &axis, angle);
+//     world->MultMatrixLocal(&m); <upload>; CGroup::Render(); world->Pop(); <upload>
 void CSpinner::Render()
 {
+    D3DXMATRIX spin;
     TheseusPushWorld();
-
-    D3DXMATRIX matrix;
-    D3DXMatrixRotationAxis(&matrix, &m_axis, m_angle);
-
-    TheseusMultWorld(&matrix);
+    D3DXMatrixRotationAxis(&spin, &m_axis, m_angle);
+    TheseusMultWorld(&spin);
     TheseusUpdateWorld();
 
     CGroup::Render();
@@ -782,22 +808,28 @@ void CSpinner::Render()
     TheseusPopWorld();
 }
 
+// CSpinner::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0004e980. Ghidra decompile:
+//     CGroup::Advance(dt);
+//     angle += rpm * (1/60) * dt * 2pi;
+//     while (angle > 2pi) angle -= 2pi;  while (angle < -2pi) angle += 2pi;
+// The binary multiplies by a stored 1/60; written as the division it stands for.
 void CSpinner::Advance(float nSeconds)
 {
     CGroup::Advance(nSeconds);
 
-    m_angle += ((m_rpm / 60.0f) * nSeconds) * (2.0f * D3DX_PI);
+    const float turn = 2.0f * D3DX_PI;
+    m_angle += m_rpm / 60.0f * nSeconds * turn;
 
-    while (m_angle > 2.0f * D3DX_PI)
-        m_angle -= 2.0f * D3DX_PI;
-    while (m_angle < -2.0f * D3DX_PI)
-        m_angle += 2.0f * D3DX_PI;
+    while (m_angle > turn)
+        m_angle -= turn;
+    while (m_angle < -turn)
+        m_angle += turn;
 }
 
 
 // ===== CWaver ===============================================================
-// Oscillates children sinusoidally around an axis. Extends CSpinner but
-// overrides Advance to use sin() instead of linear accumulation.
+// A Spinner that rocks back and forth instead of going round.
 
 class CWaver : public CSpinner
 {
@@ -818,21 +850,30 @@ START_NODE_PROPS(CWaver, CSpinner)
     NODE_PROP(pt_number, CWaver, field)
 END_NODE_PROPS()
 
-CWaver::CWaver()
+// CWaver::CWaver()
+// Reconstructed from 5960 retail XBE @ 0x0004ea20 (factory, ctor inlined):
+// the Spinner defaults plus field = pi/4 (0x0002c150).
+CWaver::CWaver() :
+    m_field(D3DX_PI / 4.0f)
 {
-    m_field = D3DX_PI / 4.0f;
 }
 
+// CWaver::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0004eaf0. Disassembly:
+//     CGroup::Advance(dt);   // not CSpinner's
+//     angle = sin(rpm * now * (pi/60)) * field * 0.5;
+// The angle is a function of the clock alone, swinging field wide.
 void CWaver::Advance(float nSeconds)
 {
-    CGroup::Advance(nSeconds); // Intentionally skips CSpinner::Advance
-    m_angle = sinf((float) (TheseusGetNow() * D3DX_PI * m_rpm / 60.0f)) * m_field / 2.0f;
+    CGroup::Advance(nSeconds);
+    float phase = (float)(D3DX_PI * TheseusGetNow() * m_rpm / 60.0f);
+    m_angle = sinf(phase) * m_field * 0.5f;
 }
 
 
 // ===== CLayout ==============================================================
-// Arranges children in a line along a direction vector, or in a circle
-// if direction is zero.
+// Lines its children up along direction, or rings them round the Y axis when
+// direction is zero.
 
 class CLayout : public CGroup
 {
@@ -857,143 +898,146 @@ START_NODE_PROPS(CLayout, CGroup)
     NODE_PROP(pt_number, CLayout, spacing)
 END_NODE_PROPS()
 
+// CLayout::CLayout()
+// Reconstructed from 5960 retail XBE @ 0x0004eb30 (factory, ctor inlined):
+//     direction = (1, 0, 0); spacing = 1.0;
 CLayout::CLayout() :
     m_direction(1.0f, 0.0f, 0.0f),
     m_spacing(1.0f)
 {
 }
 
+// CLayout::Render()
+// Reconstructed from 5960 retail XBE @ 0x0004ebd0. Ring (direction zero):
+// radius (count / 4) * spacing, integer divide. Each child i gets a Push, then
+// if visible: translate (cos(-a), 0, sin(-a)) * radius with a = 2pi * i / count,
+// rotate a + pi/2 about (0, 0.1, 0), upload, render, Pop. A hidden child's Push
+// is never popped; the binary does that too. Line: Push, step back
+// (count + spacing) / 2 along direction, then per visible child step half a
+// unit, upload, render, and step spacing + 0.5 more unless it's the last; Pop
+// at the end.
 void CLayout::Render()
 {
-
-    int nChildren = m_children.GetLength();
-    if (nChildren == 0)
+    int count = m_children.GetLength();
+    if (count == 0)
         return;
 
-    if (m_direction.x == 0 && m_direction.y == 0 && m_direction.z == 0)
+    if (m_direction.x == 0.0f && m_direction.y == 0.0f && m_direction.z == 0.0f)
     {
-        // Circular layout
-        D3DXMATRIX mat = *TheseusGetWorld();
+        float radius = (float)(count / 4) * m_spacing;
+        D3DXVECTOR3 up(0.0f, 0.1f, 0.0f);
 
-        float r = (nChildren / 4) * m_spacing;
-
-        int i;
-        for (i = 0; i < nChildren; i += 1)
+        for (int n = 0; n < count; n++)
         {
             TheseusPushWorld();
 
-            CNode* pNode = m_children.GetNode(i);
+            CNode* child = m_children.GetNode(n);
             Frame_Count(FC_NODE_VISITS);
-            if (!pNode->m_visible)
+            if (!child->m_visible)
             {
                 Frame_Count(FC_NODE_SKIPS);
                 continue;
             }
 
-            float a = D3DX_PI * 2.0f * i / nChildren;
-            float x = r * cosf(-a);
-            float z = r * sinf(-a);
-
-            D3DXVECTOR3 axis(0.0f, 0.1f, 0.0f);
-            TheseusTranslateWorld(x, 0.0f, z);
-            TheseusRotateWorld(&axis, a + D3DX_PI / 2.0f);
+            float a = 2.0f * D3DX_PI * n / count;
+            TheseusTranslateWorld(radius * cosf(-a), 0.0f, radius * sinf(-a));
+            TheseusRotateWorld(&up, a + D3DX_PI / 2.0f);
             TheseusUpdateWorld();
 
-            pNode->Render();
+            child->Render();
 
             TheseusPopWorld();
         }
-
         return;
     }
 
-    // Linear layout
     float spacing = m_spacing;
+    D3DXVECTOR3 step;
 
     TheseusPushWorld();
 
-    D3DXVECTOR3 v;
-    D3DXVec3Scale(&v, &m_direction, -((float)nChildren + spacing) / 2);
-    TheseusTranslateWorld(v.x, v.y, v.z);
+    D3DXVec3Scale(&step, &m_direction, (count + spacing) * -0.5f);
+    TheseusTranslateWorld(step.x, step.y, step.z);
 
-    int i;
-    for (i = 0; i < nChildren; i += 1)
+    for (int n = 0; n < count; n++)
     {
-        CNode* pNode = m_children.GetNode(i);
+        CNode* child = m_children.GetNode(n);
         Frame_Count(FC_NODE_VISITS);
-        if (!pNode->m_visible)
+        if (!child->m_visible)
         {
             Frame_Count(FC_NODE_SKIPS);
             continue;
         }
 
-        D3DXVec3Scale(&v, &m_direction, 0.5f);
-
-        TheseusTranslateWorld(v.x, v.y, v.z);
-
+        D3DXVec3Scale(&step, &m_direction, 0.5f);
+        TheseusTranslateWorld(step.x, step.y, step.z);
         TheseusUpdateWorld();
-        pNode->Render();
 
-        if (i < nChildren - 1)
+        child->Render();
+
+        if (n < count - 1)
         {
-            D3DXVec3Scale(&v, &m_direction, 0.5f + spacing);
-            TheseusTranslateWorld(v.x, v.y, v.z);
+            D3DXVec3Scale(&step, &m_direction, spacing + 0.5f);
+            TheseusTranslateWorld(step.x, step.y, step.z);
         }
     }
 
     TheseusPopWorld();
 }
 
+// CLayout::GetBBox(pBBox)
+// Reconstructed from 5960 retail XBE @ 0x0004ef00. Ghidra decompile:
+//     if (count == 0) { *pBBox = 0; return; }
+//     child[0]->GetBBox(pBBox);
+//     for (i = 1..) { child[i]->GetBBox(&b); size += b.size;
+//                     if (b.size < size) size = b.size;   // per axis }
+// Center is the first child's; for positive sizes each pass ends on the
+// newest child's size. Kept as the binary has it.
 void CLayout::GetBBox(BBox* pBBox)
 {
-    if (m_children.GetLength() == 0)
+    int count = m_children.GetLength();
+    if (count == 0)
     {
         CNode::GetBBox(pBBox);
         return;
     }
 
-    float spacing = m_spacing + 1.0f;
     m_children.GetNode(0)->GetBBox(pBBox);
-    int i;
-    for (i = 1; i < m_children.GetLength(); i += 1)
+
+    for (int n = 1; n < count; n++)
     {
-        CNode* pNode = m_children.GetNode(i);
-        BBox bbox;
-        pNode->GetBBox(&bbox);
+        BBox box;
+        m_children.GetNode(n)->GetBBox(&box);
 
-        D3DXVECTOR3 v;
-        D3DXVec3Scale(&v, &m_direction, spacing);
-        v.x *= bbox.size.x;
-        v.y *= bbox.size.y;
-        v.z *= bbox.size.z;
-        pBBox->size += bbox.size;
-
-        if (pBBox->size.x > bbox.size.x)
-            pBBox->size.x = bbox.size.x;
-        if (pBBox->size.y > bbox.size.y)
-            pBBox->size.y = bbox.size.y;
-        if (pBBox->size.z > bbox.size.z)
-            pBBox->size.z = bbox.size.z;
+        D3DXVECTOR3& size = pBBox->size;
+        size += box.size;
+        if (box.size.x < size.x) size.x = box.size.x;
+        if (box.size.y < size.y) size.y = box.size.y;
+        if (box.size.z < size.z) size.z = box.size.z;
     }
 }
 
+// CLayout::GetRadius()
+// Reconstructed from 5960 retail XBE @ 0x0004f000:
+//     r = sum(child radius); if (count > 1) r += (count - 1) * spacing * 0.5;
 float CLayout::GetRadius()
 {
-    float radius = 0.0f;
+    int count = m_children.GetLength();
+    float total = 0.0f;
 
-    for (int i = 0; i < m_children.GetLength(); i += 1)
-        radius += m_children.GetNode(i)->GetRadius();
+    for (int n = 0; n < count; n++)
+        total += m_children.GetNode(n)->GetRadius();
 
-    if (m_children.GetLength() > 1)
-        radius += (m_children.GetLength() - 1) * m_spacing / 2.0f;
+    if (count > 1)
+        total += (float)(count - 1) * m_spacing * 0.5f;
 
-    return radius;
+    return total;
 }
 
 
 // ===== CSwitch ==============================================================
-// Shows one child selected by index (whichChoice). All children still
-// get Advance() calls regardless of selection.
+// Shows the one choice whichChoice picks (none when out of range), but keeps
+// all of them advancing.
 
 class CSwitch : public CNode
 {
@@ -1012,6 +1056,9 @@ public:
     void SetLight(int& nLight, D3DCOLORVALUE& ambient);
 
     DECLARE_NODE_PROPS()
+
+private:
+    CNode* Chosen();
 };
 
 IMPLEMENT_NODE("Switch", CSwitch, CNode)
@@ -1021,68 +1068,93 @@ START_NODE_PROPS(CSwitch, CNode)
     NODE_PROP(pt_nodearray, CSwitch, choice)
 END_NODE_PROPS()
 
+// CSwitch::CSwitch()
+// Reconstructed from 5960 retail XBE @ 0x0004f080 (factory, ctor inlined):
+//     whichChoice = -1; choice = {0,0,0};
 CSwitch::CSwitch() :
     m_whichChoice(-1)
 {
 }
 
+// CSwitch::~CSwitch()
+// Reconstructed from 5960 retail XBE @ 0x0004f100: ReleaseAll on the
+// choices (the CNodeArray member does it), then the CNode teardown.
 CSwitch::~CSwitch()
 {
 }
 
+// The picked choice, or NULL when whichChoice is out of range. Every Switch
+// method in the binary opens with this bounds test.
+CNode* CSwitch::Chosen()
+{
+    if (m_whichChoice < 0 || m_whichChoice >= m_choice.GetLength())
+        return NULL;
+    return m_choice.GetNode(m_whichChoice);
+}
+
+// CSwitch::Render()
+// Reconstructed from 5960 retail XBE @ 0x0004f160: render the choice if it's
+// in range and visible. Visit/skip counts are Theseus's profiler.
 void CSwitch::Render()
 {
+    CNode* chosen = Chosen();
+    if (chosen == NULL)
+        return;
 
-    if (m_whichChoice >= 0 && m_whichChoice < m_choice.GetLength())
+    Frame_Count(FC_NODE_VISITS);
+    if (!chosen->m_visible)
     {
-        CNode* pNode = m_choice.GetNode(m_whichChoice);
-        Frame_Count(FC_NODE_VISITS);
-        if (pNode->m_visible)
-            pNode->Render();
-        else
-            Frame_Count(FC_NODE_SKIPS);
+        Frame_Count(FC_NODE_SKIPS);
+        return;
     }
+    chosen->Render();
 }
 
+// CSwitch::GetBBox(pBBox)
+// Reconstructed from 5960 retail XBE @ 0x0004f190: the choice's box, else
+// all zeros.
 void CSwitch::GetBBox(BBox* pBBox)
 {
-    if (m_whichChoice >= 0 && m_whichChoice < m_choice.GetLength())
-        m_choice.GetNode(m_whichChoice)->GetBBox(pBBox);
-    else
+    CNode* chosen = Chosen();
+    if (chosen == NULL)
+    {
         CNode::GetBBox(pBBox);
+        return;
+    }
+    chosen->GetBBox(pBBox);
 }
 
+// CSwitch::GetRadius()
+// Reconstructed from 5960 retail XBE @ 0x0004f1e0: the choice's radius, else 0.
 float CSwitch::GetRadius()
 {
-    if (m_whichChoice >= 0 && m_whichChoice < m_choice.GetLength())
-        return m_choice.GetNode(m_whichChoice)->GetRadius();
-
-    return 0.0f;
+    CNode* chosen = Chosen();
+    return chosen != NULL ? chosen->GetRadius() : 0.0f;
 }
 
+// CSwitch::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0004f210: CNode::Advance, then
+// every choice, picked or not.
 void CSwitch::Advance(float nSeconds)
 {
     CNode::Advance(nSeconds);
-
-    for (int i = 0; i < m_choice.GetLength(); i += 1)
-        m_choice.GetNode(i)->Advance(nSeconds);
+    for (int n = 0; n < m_choice.GetLength(); n++)
+        m_choice.GetNode(n)->Advance(nSeconds);
 }
 
+// CSwitch::SetLight
+// Theseus only, like CGroup::SetLight: hand it to the picked choice.
 void CSwitch::SetLight(int& nLight, D3DCOLORVALUE& ambient)
 {
-    if (m_whichChoice >= 0 && m_whichChoice < m_choice.GetLength())
-    {
-        CNode* pNode = m_choice.GetNode(m_whichChoice);
-
-        if (pNode != NULL)
-            pNode->SetLight(nLight, ambient);
-    }
+    CNode* chosen = Chosen();
+    if (chosen != NULL)
+        chosen->SetLight(nLight, ambient);
 }
 
 
 // ===== CBillboard ===========================================================
-// Orients children to face the camera. If axisOfRotation is zero-length,
-// does full viewer alignment. Otherwise rotates around the given axis.
+// Keeps its children turned toward the camera, either fully or only about
+// axisOfRotation.
 
 class CBillboard : public CGroup
 {
@@ -1107,15 +1179,24 @@ START_NODE_PROPS(CBillboard, CGroup)
     NODE_PROP(pt_vec3, CBillboard, axisOfRotation)
 END_NODE_PROPS()
 
+// CBillboard::CBillboard()
+// Reconstructed from 5960 retail XBE @ 0x0004f260 (factory, ctor inlined):
+//     axisOfRotation = (0, 1, 0);
 CBillboard::CBillboard() :
     m_axisOfRotation(0.0f, 1.0f, 0.0f)
 {
 }
 
+// CBillboard::~CBillboard()
+// Reconstructed from 5960 retail XBE @ 0x0004f320: just the group teardown.
 CBillboard::~CBillboard()
 {
 }
 
+// CBillboard::Render()
+// Reconstructed from 5960 retail XBE @ 0x0004f330:
+//     CalcMatrix(); world->Push(); world->MultMatrixLocal(&matrix); <upload>;
+//     CGroup::Render(); world->Pop(); <upload>
 void CBillboard::Render()
 {
     CalcMatrix();
@@ -1129,76 +1210,62 @@ void CBillboard::Render()
     TheseusPopWorld();
 }
 
+// CBillboard::CalcMatrix()
+// Reconstructed from 5960 retail XBE @ 0x0004f3d0 (unnamed helper, only
+// called from Render). Inverts the current world matrix and brings the camera
+// position into local space as a normalized "eye". With an axis no longer than
+// 0.001 it builds a facing frame: up is (inv._14, inv._22, inv._23) normalized,
+// x = normalize(up x eye), rows x, up, eye. Otherwise it normalizes the axis,
+// takes x = normalize(axis x eye), z = x x axis, and rotates about the axis by
+// acos(z.z), negated when x.z > 0. The odd up vector is the binary's; kept.
 void CBillboard::CalcMatrix()
 {
-    D3DXMATRIX world;
-    D3DXMATRIX world2local;
-
+    D3DXMATRIX world, toLocal;
     TheseusGetTransform(D3DTS_WORLD, &world);
-    D3DXMatrixInverse(&world2local, NULL, &world);
+    D3DXMatrixInverse(&toLocal, NULL, &world);
 
-    // Get eye vector in local coordinate space
     D3DXVECTOR3 eye = theCamera.m_position;
-    D3DXVec3TransformNormal(&eye, &eye, &world2local);
+    D3DXVec3TransformNormal(&eye, &eye, &toLocal);
     D3DXVec3Normalize(&eye, &eye);
 
     D3DXVECTOR3 axis = m_axisOfRotation;
-    float alen = D3DXVec3Length(&axis);
+    float length = D3DXVec3Length(&axis);
 
-    if (alen <= 0.001f)
+    if (length <= 0.001f)
     {
-        // Full viewer alignment
-        D3DXVECTOR3 up(world2local.m[0][3], world2local.m[1][1], world2local.m[1][2]);
+        D3DXVECTOR3 up(toLocal._14, toLocal._22, toLocal._23);
         D3DXVec3Normalize(&up, &up);
 
-        D3DXVECTOR3 x;
-        D3DXVec3Cross(&x, &up, &eye);
-        D3DXVec3Normalize(&x, &x);
+        D3DXVECTOR3 side;
+        D3DXVec3Cross(&side, &up, &eye);
+        D3DXVec3Normalize(&side, &side);
 
-        m_matrix.m[0][0] = x.x;
-        m_matrix.m[0][1] = x.y;
-        m_matrix.m[0][2] = x.z;
-        m_matrix.m[0][3] = 0.0f;
-
-        m_matrix.m[1][0] = up.x;
-        m_matrix.m[1][1] = up.y;
-        m_matrix.m[1][2] = up.z;
-        m_matrix.m[1][3] = 0.0f;
-
-        m_matrix.m[2][0] = eye.x;
-        m_matrix.m[2][1] = eye.y;
-        m_matrix.m[2][2] = eye.z;
-        m_matrix.m[2][3] = 0.0f;
-
-        m_matrix.m[3][0] = 0.0f;
-        m_matrix.m[3][1] = 0.0f;
-        m_matrix.m[3][2] = 0.0f;
-        m_matrix.m[3][3] = 1.0f;
+        m_matrix = D3DXMATRIX(
+            side.x, side.y, side.z, 0.0f,
+            up.x,   up.y,   up.z,   0.0f,
+            eye.x,  eye.y,  eye.z,  0.0f,
+            0.0f,   0.0f,   0.0f,   1.0f);
+        return;
     }
-    else
-    {
-        // Axis-constrained rotation
-        axis *= 1.0f / alen;
 
-        D3DXVECTOR3 x;
-        D3DXVec3Cross(&x, &axis, &eye);
-        D3DXVec3Normalize(&x, &x);
+    axis *= 1.0f / length;
 
-        D3DXVECTOR3 z;
-        D3DXVec3Cross(&z, &x, &axis);
+    D3DXVECTOR3 side, facing;
+    D3DXVec3Cross(&side, &axis, &eye);
+    D3DXVec3Normalize(&side, &side);
+    D3DXVec3Cross(&facing, &side, &axis);
 
-        float angle = acosf(z.z);
-        if (x.z > 0)
-          angle = -angle;
+    float angle = acosf(facing.z);
+    if (side.z > 0.0f)
+        angle = -angle;
 
-        D3DXMatrixRotationAxis(&m_matrix, &axis, angle);
-    }
+    D3DXMatrixRotationAxis(&m_matrix, &axis, angle);
 }
 
 
 // ===== CLayer ===============================================================
-// A self-contained rendering layer with its own viewpoint and projection.
-// Draws a black fade quad at m_alpha transparency before rendering children.
+// A scene drawn through its own viewpoint and projection, over a black wash
+// whose strength is 1 - transparency.
 
 class CLayer : public CGroup
 {
@@ -1233,226 +1300,201 @@ START_NODE_PROPS(CLayer, CGroup)
     NODE_PROP(pt_number, CLayer, transparency)
 END_NODE_PROPS()
 
+// CLayer::CLayer()
+// Reconstructed from 5960 retail XBE @ 0x0005a2a0 (factory, ctor inlined):
+//     viewpoint = navigationInfo = 0; fade = transparency = 0; vb = 0;
+// alpha (+0x58) isn't set until transparency is written; same here.
 CLayer::CLayer() :
     m_viewpoint(NULL),
     m_navigationInfo(NULL),
     m_fade(0.0f),
-    m_transparency(0.0f)
+    m_transparency(0.0f),
+    m_vb(NULL)
 {
-    m_vb = NULL;
 }
 
+// CLayer::~CLayer()
+// Reconstructed from 5960 retail XBE @ 0x0005a350: release the viewpoint,
+// the navigation info and the wash vertex buffer.
 CLayer::~CLayer()
 {
     if (m_viewpoint != NULL)
         m_viewpoint->Release();
-
     if (m_navigationInfo != NULL)
         m_navigationInfo->Release();
-
     if (m_vb != NULL)
         m_vb->Release();
 }
 
-struct COLORVERTEX
-{
-    float dvX, dvY, dvZ;
-    DWORD color;
-};
-
+// CLayer::OnSetProperty(pprd, pvValue)
+// Reconstructed from 5960 retail XBE @ 0x0005a400. Ghidra decompile:
+//     if (prd->offset == 0x50) { CLerper::RemoveObject(this);
+//         if (fade <= 0) alpha = 1 - value;
+//         else new CLerper(this, &alpha, 1 - value, fade); }
+//     return 1;
 bool CLayer::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
     if (PTR2INT(pprd->pbOffset) == offsetof(m_transparency))
     {
+        float target = 1.0f - *(const float*)pvValue;
         CLerper::RemoveObject(this);
-        if (m_fade > 0.0f)
-            new CLerper(this, &m_alpha, 1.0f - *(float*)pvValue, m_fade);
+        if (m_fade <= 0.0f)
+            m_alpha = target;
         else
-            m_alpha = 1.0f - *(float*)pvValue;
+            new CLerper(this, &m_alpha, target, m_fade);
     }
-
-    return CGroup::OnSetProperty(pprd, pvValue);
+    return true;
 }
 
+struct WashVertex
+{
+    float x, y, z;
+    DWORD color;
+};
+
+// CLayer::Render()
+// Reconstructed from 5960 retail XBE @ 0x0005a4a0. Nothing without a
+// viewpoint or with alpha 0. Otherwise it draws a screen sized black strip
+// (vertex buffer built on first use, colors 0xff000000) under an ortho
+// projection with identity world and view, alpha = diffuse * texture factor
+// (alpha * 255), blended, no culling, stage 1 off. Then it saves the
+// matrices, sets a perspective projection (fov from the viewpoint, near
+// avatarSize.x / 2 or 0.1, far visibilityLimit or 1000) and a view built from
+// the viewpoint's position and orientation with z flipped, renders the
+// children from an identity world, and puts everything back. See
+// docs/decomp/SceneGroups.md. Theseus differences, one each: the aspect
+// follows the window unless Xbox resolution is emulated; a navigationInfo
+// that isn't a NavigationInfo is ignored (the binary tests and goes on).
 void CLayer::Render()
 {
-    if (m_viewpoint == NULL)
-    {
-        TRACE(_T("\001Layer is missing a viewpoint!\n"));
-        return;
-    }
-
-    if (m_alpha == 0.0f)
+    if (m_viewpoint == NULL || m_alpha == 0.0f)
         return;
 
-    // Draw the fade quad
+    float viewW = TheseusGetViewWidth();
+    float viewH = TheseusGetViewHeight();
+
+    if (m_vb == NULL)
     {
-        if (m_vb == NULL)
+        if (FAILED(TheseusGetD3DDev()->CreateVertexBuffer(4 * sizeof(WashVertex), D3DUSAGE_WRITEONLY,
+                D3DFVF_XYZ | D3DFVF_DIFFUSE, D3DPOOL_MANAGED, &m_vb)))
+            return;
+
+        WashVertex* v;
+        if (SUCCEEDED(m_vb->Lock(0, 4 * sizeof(WashVertex), (BYTE**)&v, 0)))
         {
-            VERIFYHR(TheseusGetD3DDev()->CreateVertexBuffer(4 * sizeof(COLORVERTEX), D3DUSAGE_WRITEONLY, D3DFVF_XYZ | D3DFVF_DIFFUSE, D3DPOOL_MANAGED, &m_vb));
-
-            COLORVERTEX* verts;
-            VERIFYHR(m_vb->Lock(0, 4 * sizeof (COLORVERTEX), (BYTE**)&verts, 0));
-
-            verts[0].dvX = (float)TheseusGetViewWidth() / 2.0f;
-            verts[0].dvY = -(float)TheseusGetViewHeight() / 2.0f;
-            verts[0].dvZ = 0.0f;
-            verts[0].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, 1.0f);
-
-            verts[1].dvX = -(float)TheseusGetViewWidth() / 2.0f;
-            verts[1].dvY = -(float)TheseusGetViewHeight() / 2.0f;
-            verts[1].dvZ = 0.0f;
-            verts[1].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, 1.0f);
-
-            verts[2].dvX = (float)TheseusGetViewWidth() / 2.0f;
-            verts[2].dvY = (float)TheseusGetViewHeight() / 2.0f;
-            verts[2].dvZ = 0.0f;
-            verts[2].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, 1.0f);
-
-            verts[3].dvX = -(float)TheseusGetViewWidth() / 2.0f;
-            verts[3].dvY = (float)TheseusGetViewHeight() / 2.0f;
-            verts[3].dvZ = 0.0f;
-            verts[3].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, 1.0f);
-
-            VERIFYHR(m_vb->Unlock());
+            const float corner[4][2] = { { 0.5f, -0.5f }, { -0.5f, -0.5f }, { 0.5f, 0.5f }, { -0.5f, 0.5f } };
+            for (int n = 0; n < 4; n++)
+            {
+                v[n].x = viewW * corner[n][0];
+                v[n].y = viewH * corner[n][1];
+                v[n].z = 0.0f;
+                v[n].color = D3DCOLOR_ARGB(255, 0, 0, 0);
+            }
+            m_vb->Unlock();
         }
-
-        D3DXMATRIX matProjection, matProjectionSave, matWorldSave, matViewSave;
-
-        TheseusGetTransform(D3DTS_PROJECTION, &matProjectionSave);
-        TheseusGetTransform(D3DTS_WORLD, &matWorldSave);
-        TheseusGetTransform(D3DTS_VIEW, &matViewSave);
-
-        D3DXMatrixOrthoLH(&matProjection, TheseusGetViewWidth(), TheseusGetViewHeight(), -10000.0f, 10000.0f);
-        TheseusSetTransform(D3DTS_PROJECTION, &matProjection);
-        TheseusSetTransform(D3DTS_WORLD, &g_matIdentity);
-        TheseusSetTransform(D3DTS_VIEW, &g_matIdentity);
-
-        TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-        TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-        TheseusSetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
-        TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_RGBA(0, 0, 0, (BYTE)(m_alpha * 255.0f)));
-        TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-        TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-        TheseusSetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
-        TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
-        TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-        TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-        TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-        TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-
-        VERIFYHR(TheseusGetD3DDev()->SetStreamSource(0, m_vb, sizeof (COLORVERTEX)));
-        VERIFYHR(TheseusGetD3DDev()->SetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE));
-        VERIFYHR(TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
-
-        TheseusSetTransform(D3DTS_PROJECTION, &matProjectionSave);
-        TheseusSetTransform(D3DTS_WORLD, &matWorldSave);
-        TheseusSetTransform(D3DTS_VIEW, &matViewSave);
     }
 
-    CViewpoint* pViewpoint = (CViewpoint*)m_viewpoint;
-    CNavigationInfo* pNavigationInfo = (CNavigationInfo*)m_navigationInfo;
+    D3DXMATRIX outerProjection, outerWorld, outerView;
+    TheseusGetTransform(D3DTS_PROJECTION, &outerProjection);
+    TheseusGetTransform(D3DTS_WORLD, &outerWorld);
+    TheseusGetTransform(D3DTS_VIEW, &outerView);
 
-    if (pNavigationInfo != NULL && !pNavigationInfo->IsKindOf(NODE_CLASS(CNavigationInfo)))
+    D3DXMATRIX ortho;
+    D3DXMatrixOrthoLH(&ortho, viewW, viewH, -10000.0f, 10000.0f);
+    TheseusSetTransform(D3DTS_PROJECTION, &ortho);
+    TheseusSetTransform(D3DTS_WORLD, &g_matIdentity);
+    TheseusSetTransform(D3DTS_VIEW, &g_matIdentity);
+
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
+    TheseusSetRenderState(D3DRS_TEXTUREFACTOR, (DWORD)(m_alpha * 255.0f) << 24);
+    TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    TheseusSetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+    TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+
+    TheseusGetD3DDev()->SetStreamSource(0, m_vb, sizeof(WashVertex));
+    TheseusGetD3DDev()->SetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+    TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
+
+    TheseusSetTransform(D3DTS_PROJECTION, &outerProjection);
+    TheseusSetTransform(D3DTS_WORLD, &outerWorld);
+    TheseusSetTransform(D3DTS_VIEW, &outerView);
+
+    CViewpoint* viewpoint = (CViewpoint*)m_viewpoint;
+    CNavigationInfo* nav = (CNavigationInfo*)m_navigationInfo;
+    if (nav != NULL && !nav->IsKindOf(NODE_CLASS(CNavigationInfo)))
+        nav = NULL;
+
+    D3DXMATRIX savedProjection, savedWorld, savedView;
+    TheseusGetTransform(D3DTS_PROJECTION, &savedProjection);
+    TheseusGetTransform(D3DTS_WORLD, &savedWorld);
+    TheseusGetTransform(D3DTS_VIEW, &savedView);
+
+    float zNear = 0.1f;
+    float zFar = 1000.0f;
+    if (nav != NULL)
     {
-        TRACE(_T("\002Layer with bogus NavigationInfo!\n"));
-        pNavigationInfo = NULL;
+        zNear = nav->m_avatarSize.x * 0.5f;
+        if (nav->m_visibilityLimit != 0.0f)
+            zFar = nav->m_visibilityLimit;
     }
 
-    D3DXMATRIX matProjectionSave, matWorldSave, matViewSave;
-    TheseusGetTransform(D3DTS_PROJECTION, &matProjectionSave);
-    TheseusGetTransform(D3DTS_WORLD, &matWorldSave);
-    TheseusGetTransform(D3DTS_VIEW, &matViewSave);
+    // 1.5, or 1.875 stretched, is the binary's 720x480; off emulation Theseus
+    // uses the real window shape.
+    float aspect;
+    if (TheseusGetEmulateXboxRes())
+        aspect = TheseusGetStretchWidescreen() ? 1.5f * 1.25f : 1.5f;
+    else
+        aspect = viewH > 0.0f ? viewW / viewH : 1.5f;
 
-    // Calculate projection matrix
-    {
-        float nNear = 0.1f;
-        float nFar = 1000.0f;
-        float fieldOfView = D3DX_PI / 2.0f;
+    D3DXMatrixPerspectiveFovLH(&g_matProjection, viewpoint->m_fieldOfView, aspect, zNear, zFar);
+    TheseusSetTransform(D3DTS_PROJECTION, &g_matProjection);
 
-        if (pNavigationInfo != NULL)
-        {
-            nNear = pNavigationInfo->m_avatarSize.x / 2.0f;
-            if (pNavigationInfo->m_visibilityLimit != 0.0f)
-                nFar = pNavigationInfo->m_visibilityLimit;
-        }
+    D3DXVECTOR3 eyeAt(viewpoint->m_position.x, viewpoint->m_position.y, -viewpoint->m_position.z);
+    D3DXQUATERNION facing;
+    D3DXQuaternionRotationAxis(&facing, (const D3DXVECTOR3*)&viewpoint->m_orientation, -viewpoint->m_orientation.w);
+    D3DXMatrixAffineTransformation(&g_matView, 1.0f, NULL, &facing, &eyeAt);
+    D3DXMatrixInverse(&g_matView, NULL, &g_matView);
+    g_matView._31 = -g_matView._31;
+    g_matView._32 = -g_matView._32;
+    g_matView._33 = -g_matView._33;
+    g_matView._34 = -g_matView._34;
+    TheseusSetTransform(D3DTS_VIEW, &g_matView);
 
-        fieldOfView = pViewpoint->m_fieldOfView;
+    TheseusPushWorld();
+    TheseusIdentityWorld();
+    TheseusUpdateWorld();
+    CGroup::Render();
+    TheseusPopWorld();
 
-        float aspect;
-        if (TheseusGetEmulateXboxRes())
-        {
-            aspect = 720.0f/480.0f;
-            if (TheseusGetStretchWidescreen())
-                aspect *= 1.25f;
-        }
-        else
-        {
-            // Real window aspect, so the scene fills the display instead of
-            // being squeezed into a 4:3 box.
-            const float vw = TheseusGetViewWidth();
-            const float vh = TheseusGetViewHeight();
-            aspect = (vh > 0.0f) ? (vw / vh) : (720.0f/480.0f);
-        }
-
-        D3DXMatrixPerspectiveFovLH(&g_matProjection, fieldOfView, aspect, nNear, nFar);
-        TheseusSetTransform(D3DTS_PROJECTION, &g_matProjection);
-    }
-
-    // Calculate view matrix
-    if (pViewpoint != NULL)
-    {
-        D3DXVECTOR3 position = pViewpoint->m_position;
-        position.z = -position.z;
-
-        D3DXQUATERNION orientation;
-        D3DXQuaternionRotationAxis(&orientation, (D3DXVECTOR3*)&pViewpoint->m_orientation, -pViewpoint->m_orientation.w);
-
-        D3DXMatrixAffineTransformation(&g_matView, 1.0f, NULL, &orientation, &position);
-        D3DXMatrixInverse(&g_matView, NULL, &g_matView);
-
-        g_matView._31 = -g_matView._31;
-        g_matView._32 = -g_matView._32;
-        g_matView._33 = -g_matView._33;
-        g_matView._34 = -g_matView._34;
-        TheseusSetTransform(D3DTS_VIEW, &g_matView);
-    }
-
-    // Render children
-    {
-        TheseusPushWorld();
-        TheseusIdentityWorld();
-        TheseusUpdateWorld();
-        CGroup::Render();
-        TheseusPopWorld();
-    }
-
-    // Restore transforms
-    {
-        g_matProjection = matProjectionSave;
-        g_matView = matViewSave;
-
-        TheseusSetTransform(D3DTS_PROJECTION, &matProjectionSave);
-        TheseusSetTransform(D3DTS_WORLD, &matWorldSave);
-        TheseusSetTransform(D3DTS_VIEW, &matViewSave);
-    }
+    g_matProjection = savedProjection;
+    g_matView = savedView;
+    TheseusSetTransform(D3DTS_PROJECTION, &savedProjection);
+    TheseusSetTransform(D3DTS_WORLD, &savedWorld);
+    TheseusSetTransform(D3DTS_VIEW, &savedView);
 }
 
+// CLayer::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0005aaf0: CGroup::Advance, then the
+// navigation info, then the viewpoint.
 void CLayer::Advance(float nSeconds)
 {
     CGroup::Advance(nSeconds);
-
     if (m_navigationInfo != NULL)
         m_navigationInfo->Advance(nSeconds);
-
     if (m_viewpoint != NULL)
         m_viewpoint->Advance(nSeconds);
 }
 
 
 // ===== CBackground ==========================================================
-// Renders a backdrop texture behind the scene. Binds itself as the active
-// background on creation if none exists.
+// The backdrop behind everything. The first one made becomes the bound one.
 
 IMPLEMENT_NODE("Background", CBackground, CNode)
 
@@ -1462,29 +1504,44 @@ START_NODE_PROPS(CBackground, CNode)
     NODE_PROP(pt_boolean, CBackground, isBound)
 END_NODE_PROPS()
 
+// CBackground::CBackground()
+// Reconstructed from 5960 retail XBE @ 0x0004fc90. Ghidra decompile:
+//     skyColor = 0; backdrop = 0; isBound = 0; vb = 0; (+ the fade fields below)
+//     if (g_background == 0) { g_background = this; isBound = 1; }
+// 5960's Background also has fade, alpha, SetAlpha and DisappearAfter; Theseus
+// doesn't carry them.
 CBackground::CBackground() :
-    m_skyColor(0.0f, 0.0f, 0.0f),
     m_backdrop(NULL),
-    m_isBound(false)
+    m_skyColor(0.0f, 0.0f, 0.0f),
+    m_isBound(false),
+    m_vb(NULL)
 {
-    m_vb = NULL;
-
     if (TheseusGetBackground() == NULL)
-        Bind();
+    {
+        TheseusSetBackground(this);
+        m_isBound = true;
+    }
 }
 
+// CBackground::~CBackground()
+// Reconstructed from 5960 retail XBE @ 0x0004fd30: release the vertex buffer
+// and the backdrop, and stop being the bound background.
 CBackground::~CBackground()
 {
     if (m_vb != NULL)
         m_vb->Release();
-
     if (m_backdrop != NULL)
         m_backdrop->Release();
-
     if (TheseusGetBackground() == this)
         TheseusSetBackground(NULL);
 }
 
+// CBackground::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0004fe30. CNode::Advance, the
+// backdrop's Advance, then on first use a 4 vertex D3DVERTEX strip at
+// z = -10000 covering the screen, uv (1,1) (0,1) (1,0) (0,0). The normals
+// hold copies of the corner positions as the binary writes them (nz = 1).
+// The binary steps its alpha fade first; Theseus has none.
 void CBackground::Advance(float nSeconds)
 {
     CNode::Advance(nSeconds);
@@ -1492,80 +1549,77 @@ void CBackground::Advance(float nSeconds)
     if (m_backdrop != NULL)
         m_backdrop->Advance(nSeconds);
 
-    if (m_vb == NULL)
-    {
-        VERIFYHR(TheseusGetD3DDev()->CreateVertexBuffer(4 * sizeof(D3DVERTEX), D3DUSAGE_WRITEONLY, D3DFVF_VERTEX, D3DPOOL_MANAGED, &m_vb));
-
-        D3DVERTEX* verts;
-        VERIFYHR(m_vb->Lock(0, 4 * sizeof (D3DVERTEX), (BYTE**)&verts, 0));
-
-        verts[0].dvX = (float)TheseusGetViewWidth() / 2.0f;
-        verts[0].dvY = -(float)TheseusGetViewHeight() / 2.0f;
-        verts[0].dvZ = -10000.0f;
-        verts[0].dvNX = (float)TheseusGetViewWidth() / 2.0f;
-        verts[0].dvNY = -(float)TheseusGetViewHeight() / 2.0f;
-        verts[0].dvNZ = 1.0f;
-        verts[0].dvTU = 1.0f;
-        verts[0].dvTV = 1.0f;
-
-        verts[1].dvX = -(float)TheseusGetViewWidth() / 2.0f;
-        verts[1].dvY = -(float)TheseusGetViewHeight() / 2.0f;
-        verts[1].dvZ = -10000.0f;
-        verts[1].dvNX = (float)TheseusGetViewWidth() / 2.0f;
-        verts[1].dvNY = (float)TheseusGetViewHeight() / 2.0f;
-        verts[1].dvNZ = 1.0f;
-        verts[1].dvTU = 0.0f;
-        verts[1].dvTV = 1.0f;
-
-        verts[2].dvX = (float)TheseusGetViewWidth() / 2.0f;
-        verts[2].dvY = (float)TheseusGetViewHeight() / 2.0f;
-        verts[2].dvZ = -10000.0f;
-        verts[2].dvNX = (float)TheseusGetViewWidth() / 2.0f;
-        verts[2].dvNY = (float)TheseusGetViewHeight() / 2.0f;
-        verts[2].dvNZ = 1.0f;
-        verts[2].dvTU = 1.0f;
-        verts[2].dvTV = 0.0f;
-
-        verts[3].dvX = -(float)TheseusGetViewWidth() / 2.0f;
-        verts[3].dvY = (float)TheseusGetViewHeight() / 2.0f;
-        verts[3].dvZ = -10000.0f;
-        verts[3].dvNX = -(float)TheseusGetViewWidth() / 2.0f;
-        verts[3].dvNY = (float)TheseusGetViewHeight() / 2.0f;
-        verts[3].dvNZ = 1.0f;
-        verts[3].dvTU = 0.0f;
-        verts[3].dvTV = 0.0f;
-
-        VERIFYHR(m_vb->Unlock());
-    }
-}
-
-void CBackground::RenderBackdrop()
-{
-    ASSERT(m_backdrop != NULL);
-
-    LPDIRECT3DTEXTURE8 pTexture = m_backdrop->GetTextureSurface();
-    if (pTexture == NULL)
+    if (m_vb != NULL)
         return;
 
-    TheseusSetTexture(0, pTexture);
+    if (FAILED(TheseusGetD3DDev()->CreateVertexBuffer(4 * sizeof(D3DVERTEX), D3DUSAGE_WRITEONLY,
+            D3DFVF_VERTEX, D3DPOOL_MANAGED, &m_vb)))
+        return;
+
+    D3DVERTEX* v;
+    if (FAILED(m_vb->Lock(0, 4 * sizeof(D3DVERTEX), (BYTE**)&v, 0)))
+        return;
+
+    float halfW = TheseusGetViewWidth() * 0.5f;
+    float halfH = TheseusGetViewHeight() * 0.5f;
+
+    // position x, y; normal x, y; uv
+    const float corner[4][6] = {
+        {  halfW, -halfH,  halfW, -halfH, 1.0f, 1.0f },
+        { -halfW, -halfH,  halfW,  halfH, 0.0f, 1.0f },
+        {  halfW,  halfH,  halfW,  halfH, 1.0f, 0.0f },
+        { -halfW,  halfH, -halfW,  halfH, 0.0f, 0.0f },
+    };
+    for (int n = 0; n < 4; n++)
+    {
+        v[n].dvX = corner[n][0];
+        v[n].dvY = corner[n][1];
+        v[n].dvZ = -10000.0f;
+        v[n].dvNX = corner[n][2];
+        v[n].dvNY = corner[n][3];
+        v[n].dvNZ = 1.0f;
+        v[n].dvTU = corner[n][4];
+        v[n].dvTV = corner[n][5];
+    }
+
+    m_vb->Unlock();
+}
+
+// CBackground::RenderBackdrop()
+// Reconstructed from 5960 retail XBE @ 0x00050110. Takes the backdrop's
+// texture (nothing to do without one), binds it to stage 0 and clears stage
+// 1, saves projection, world and view, sets the ortho screen projection with
+// identity world and view, and draws the strip from Advance with lighting,
+// z writes and backface culling (CCW) saved, set and restored around it.
+// Color comes from the texture. The binary's alpha also comes from a texture
+// factor driven by Background's fade, with blending on; Theseus's Background
+// has no fade, so it takes alpha from the texture and draws with blending off.
+// The app only calls this when there's a backdrop.
+void CBackground::RenderBackdrop()
+{
+    LPDIRECT3DTEXTURE8 tex = m_backdrop->GetTextureSurface();
+    if (tex == NULL)
+        return;
+
+    TheseusSetTexture(0, tex);
     TheseusSetTexture(1, NULL);
 
-    D3DXMATRIX matProjection, matProjectionSave, matWorldSave, matViewSave;
+    D3DXMATRIX outerProjection, outerWorld, outerView;
+    TheseusGetTransform(D3DTS_PROJECTION, &outerProjection);
+    TheseusGetTransform(D3DTS_WORLD, &outerWorld);
+    TheseusGetTransform(D3DTS_VIEW, &outerView);
 
-    TheseusGetTransform(D3DTS_PROJECTION, &matProjectionSave);
-    TheseusGetTransform(D3DTS_WORLD, &matWorldSave);
-    TheseusGetTransform(D3DTS_VIEW, &matViewSave);
-
-    D3DXMatrixOrthoLH(&matProjection, TheseusGetViewWidth(), TheseusGetViewHeight(), -10000.0f, 10000.0f);
-    TheseusSetTransform(D3DTS_PROJECTION, &matProjection);
+    D3DXMATRIX ortho;
+    D3DXMatrixOrthoLH(&ortho, TheseusGetViewWidth(), TheseusGetViewHeight(), -10000.0f, 10000.0f);
+    TheseusSetTransform(D3DTS_PROJECTION, &ortho);
     TheseusSetTransform(D3DTS_WORLD, &g_matIdentity);
     TheseusSetTransform(D3DTS_VIEW, &g_matIdentity);
 
-    DWORD dwLighting, dwAlphaBlendEnable, dwCullMode, dwZWriteEnable;
-    TheseusGetRenderState(D3DRS_LIGHTING, &dwLighting);
-    TheseusGetRenderState(D3DRS_ALPHABLENDENABLE, &dwAlphaBlendEnable);
-    TheseusGetRenderState(D3DRS_CULLMODE, &dwCullMode);
-    TheseusGetRenderState(D3DRS_ZWRITEENABLE, &dwZWriteEnable);
+    DWORD lighting, blend, cull, zwrite;
+    TheseusGetRenderState(D3DRS_LIGHTING, &lighting);
+    TheseusGetRenderState(D3DRS_ALPHABLENDENABLE, &blend);
+    TheseusGetRenderState(D3DRS_CULLMODE, &cull);
+    TheseusGetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
 
     TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
     TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
@@ -1579,44 +1633,50 @@ void CBackground::RenderBackdrop()
     TheseusSetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
     TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
 
-    VERIFYHR(TheseusGetD3DDev()->SetStreamSource(0, m_vb, sizeof (D3DVERTEX)));
-    VERIFYHR(TheseusGetD3DDev()->SetVertexShader(D3DFVF_VERTEX));
-    VERIFYHR(TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
+    TheseusGetD3DDev()->SetStreamSource(0, m_vb, sizeof(D3DVERTEX));
+    TheseusGetD3DDev()->SetVertexShader(D3DFVF_VERTEX);
+    TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
 
-    TheseusSetRenderState(D3DRS_LIGHTING, dwLighting);
-    TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, dwAlphaBlendEnable);
-    TheseusSetRenderState(D3DRS_CULLMODE, dwCullMode);
-    TheseusSetRenderState(D3DRS_ZWRITEENABLE, dwZWriteEnable);
+    TheseusSetRenderState(D3DRS_LIGHTING, lighting);
+    TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, blend);
+    TheseusSetRenderState(D3DRS_CULLMODE, cull);
+    TheseusSetRenderState(D3DRS_ZWRITEENABLE, zwrite);
 
-    TheseusSetTransform(D3DTS_PROJECTION, &matProjectionSave);
-    TheseusSetTransform(D3DTS_WORLD, &matWorldSave);
-    TheseusSetTransform(D3DTS_VIEW, &matViewSave);
+    TheseusSetTransform(D3DTS_PROJECTION, &outerProjection);
+    TheseusSetTransform(D3DTS_WORLD, &outerWorld);
+    TheseusSetTransform(D3DTS_VIEW, &outerView);
 }
 
+// CBackground::Bind()
+// Inlined into the ctor and OnSetProperty in the binary: unbind whoever is
+// bound, then bind this one.
 void CBackground::Bind()
 {
-    if (TheseusGetBackground() != NULL)
-        TheseusGetBackground()->m_isBound = false;
-
+    CBackground* bound = TheseusGetBackground();
+    if (bound != NULL)
+        bound->m_isBound = false;
     TheseusSetBackground(this);
     m_isBound = true;
 }
 
+// CBackground::OnSetProperty(pprd, pvValue)
+// Reconstructed from 5960 retail XBE @ 0x00050450. Ghidra decompile:
+//     if (prd->offset == 0x2c) { if (*value) { Bind inlined } }
+//     else if (prd->offset == 0x48) { SetAlpha inlined; return 0; }
+//     return 1;
+// Setting isBound true binds; false does nothing. Theseus has no alpha.
 bool CBackground::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
-    if (PTR2INT(pprd->pbOffset) == offsetof(m_isBound))
-    {
-        if (*(bool*)pvValue)
-            Bind();
-    }
-
+    if (PTR2INT(pprd->pbOffset) == offsetof(m_isBound) && *(const bool*)pvValue)
+        Bind();
     return true;
 }
 
 
 // ===== CLevel ===============================================================
-// A top-level scene area. Manages transitions between levels with fade,
-// XIP archive loading, tunnel camera paths, and joystick rebinding.
+// One place in the dashboard (main menu, memory, music, settings...). Going
+// to a level cross fades from the current one over a second, through the
+// tunnel and camera path between them.
 
 CLevel* g_pCurLevel;
 CLevel* g_pFromLevel;
@@ -1643,117 +1703,135 @@ START_NODE_FUN(CLevel, CGroup)
 END_NODE_FUN()
 #undef _FND_CLASS
 
+// CLevel::CLevel()
+// Reconstructed from 5960 retail XBE @ 0x0005cc20. Ghidra decompile:
+//     g_timeToNextLevel = 0.0;
+//     control = tunnel = path = shell = archive = 0; unloadable = 1; fade = 1;
+//     visible = 0; xip = 0; arrive = 0;
+// Every new level resets the shared transition clock.
 CLevel::CLevel() :
-    m_tunnel(NULL),
     m_control(NULL),
+    m_tunnel(NULL),
     m_path(NULL),
     m_shell(NULL),
     m_archive(NULL),
+    m_unloadable(true),
     m_fade(true),
-    m_unloadable(true)
+    m_xipFile(NULL),
+    m_bArrive(false)
 {
+    g_timeToNextLevel = 0.0;
     m_visible = false;
-    m_xipFile = NULL;
-    g_timeToNextLevel = 0.0f;
-    m_bArrive = false;
 }
 
+// CLevel::~CLevel()
+// Reconstructed from 5960 retail XBE @ 0x0005ccd0: drop out of the current,
+// from and tunnel globals, release tunnel, control, path and shell, free the
+// archive name.
 CLevel::~CLevel()
 {
-    if (this == g_pCurLevel)
+    if (g_pCurLevel == this)
         g_pCurLevel = NULL;
-
-    if (this == g_pFromLevel)
+    if (g_pFromLevel == this)
         g_pFromLevel = NULL;
-
-    if (m_tunnel == g_pCurTunnel)
+    if (g_pCurTunnel == m_tunnel)
         g_pCurTunnel = NULL;
 
     if (m_tunnel != NULL)
         m_tunnel->Release();
-
     if (m_control != NULL)
         m_control->Release();
-
     if (m_path != NULL)
         m_path->Release();
-
     if (m_shell != NULL)
         m_shell->Release();
 
     delete [] m_archive;
 }
 
+// CLevel::Render()
+// Reconstructed from 5960 retail XBE @ 0x0005cd80. Ghidra decompile:
+//     a = 1;
+//     if (fade) { t = clamp((g_timeToNextLevel - now) * 1.3333334, 0, 1);
+//         if (this == g_pCurLevel) a = 1 - t; else if (this == g_pFromLevel) a = t;
+//         if (a == 0) return; }    // only reached for cur or from
+//     effectAlpha *= a; if (shell) shell->Render();
+//     if (this == g_pCurLevel) g_motionBlur = min(a * 1.3, 1);
+//     CGroup::Render(); effectAlpha restored;
+// The 1.3333334 is 1 / 0.75: the cross fade runs over the last 0.75 s.
 void CLevel::Render()
 {
-    float alpha = 1.0f;
+    float a = 1.0f;
 
     if (m_fade)
     {
-        float t = (float) (g_timeToNextLevel - TheseusGetNow()) / 0.75f;
+        float t = (float)(g_timeToNextLevel - TheseusGetNow()) / 0.75f;
         if (t > 1.0f)
             t = 1.0f;
         else if (t < 0.0f)
             t = 0.0f;
 
-        if (g_pCurLevel == this)
-            alpha = 1.0f - t;
-        else if (g_pFromLevel == this)
-            alpha = t;
+        if (this == g_pCurLevel)
+            a = 1.0f - t;
+        else if (this == g_pFromLevel)
+            a = t;
 
-        if (alpha == 0.0f)
+        if (a == 0.0f)
             return;
     }
 
-    float nEffectAlphaSave = g_nEffectAlpha;
-    g_nEffectAlpha *= alpha;
+    float outerAlpha = g_nEffectAlpha;
+    g_nEffectAlpha = outerAlpha * a;
 
     if (m_shell != NULL)
         m_shell->Render();
 
-    if (g_pCurLevel == this)
-    {
-        float blurAlpha = alpha * 1.3f;
-        if (blurAlpha > 1.0f)
-            blurAlpha = 1.0f;
-        g_transitionMotionBlur = blurAlpha;
-    }
+    if (this == g_pCurLevel)
+        g_transitionMotionBlur = a * 1.3f > 1.0f ? 1.0f : a * 1.3f;
 
     CGroup::Render();
 
-    g_nEffectAlpha = nEffectAlphaSave;
+    g_nEffectAlpha = outerAlpha;
 }
 
+// CLevel::Activate()
+// Reconstructed from 5960 retail XBE @ 0x0005ce90. Ghidra decompile:
+//     g_bLevelTransition = 1;
+//     if (archive && !xip) xip = LoadXIP(archive);
+//     if (g_pFromLevel) { from->Deactivate() inlined; g_timeToNextLevel = 0; g_pFromLevel = 0; }
+//     else if (!g_pCurLevel || g_timeToNextLevel == 0) goto start;
+//     if (g_pCurLevel) { cur->visible = 0;
+//         if (cur->xip && cur->unloadable && !cur->xip->locked) cur->xip->DeleteMeshBuffers(); }
+//     g_pCurLevel = 0;
+//     if (g_pCurTunnel) { g_pCurTunnel->visible = 0; g_pCurTunnel = 0; }
+//   start:
+//     BindJoystick(0) inlined; g_timeToNextLevel = now + 1.0;
+//     g_pFromLevel = g_pCurLevel; visible = 1; g_pCurLevel = this;
+// A transition still running is cut short: both its ends are hidden and the
+// new one fades in from nothing.
 void CLevel::Activate()
 {
     g_bLevelTransition = true;
 
-    TRACE(_T("Leaving level  0x%08x\n"), g_pCurLevel);
-    TRACE(_T("Going to level 0x%08x\n"), this);
-
     if (m_archive != NULL && m_xipFile == NULL)
-    {
         m_xipFile = LoadXIP(m_archive);
-    }
 
-    if (g_pFromLevel != NULL || g_pCurLevel != NULL && g_timeToNextLevel != 0.0f)
+    bool midTransition = g_pFromLevel != NULL || (g_pCurLevel != NULL && g_timeToNextLevel != 0.0);
+    if (midTransition)
     {
-        TRACE(_T("\taborting goto level 0x%08x\n"), g_pFromLevel);
-
         if (g_pFromLevel != NULL)
         {
             g_pFromLevel->Deactivate();
             g_pFromLevel = NULL;
-            g_timeToNextLevel = 0.0f;
         }
 
         if (g_pCurLevel != NULL)
         {
-            g_pCurLevel->m_visible = false;
-            if (g_pCurLevel->m_xipFile && g_pCurLevel->m_unloadable && !g_pCurLevel->m_xipFile->m_locked)
-                g_pCurLevel->m_xipFile->DeleteMeshBuffers();
+            CLevel* cur = g_pCurLevel;
+            cur->m_visible = false;
+            if (cur->m_xipFile != NULL && cur->m_unloadable && !cur->m_xipFile->m_locked)
+                cur->m_xipFile->DeleteMeshBuffers();
             g_pCurLevel = NULL;
-            g_timeToNextLevel = 0.0f;
         }
 
         if (g_pCurTunnel != NULL)
@@ -1763,18 +1841,21 @@ void CLevel::Activate()
         }
     }
 
-    ASSERT(g_pFromLevel == NULL);
-
-    g_timeToNextLevel = TheseusGetNow() + 1.0f;
-    g_pFromLevel = g_pCurLevel;
-
-    m_visible = true;
-
     BindJoystick(NULL);
-
+    g_timeToNextLevel = TheseusGetNow() + 1.0;
+    g_pFromLevel = g_pCurLevel;
+    m_visible = true;
     g_pCurLevel = this;
 }
 
+// CLevel::GoTo()   [script fn 'GoTo', FND 0x00188478, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005cf90. Ghidra decompile:
+//     if (this == g_pCurLevel) return;
+//     Activate(); g_pCurTunnel = tunnel; if (tunnel) tunnel->visible = 1;
+//     if (path is a Viewpoint) BindViewpoint(path);
+//     else if (path is a CameraPath) { active = 1; start = now; backward = 0; }
+//     CallFunction(this, "OnActivate");
+// The CameraPath start is its Activate(false), inlined.
 void CLevel::GoTo()
 {
     if (this == g_pCurLevel)
@@ -1783,7 +1864,6 @@ void CLevel::GoTo()
     Activate();
 
     g_pCurTunnel = m_tunnel;
-
     if (g_pCurTunnel != NULL)
         g_pCurTunnel->m_visible = true;
 
@@ -1798,6 +1878,15 @@ void CLevel::GoTo()
     CallFunction(this, _T("OnActivate"));
 }
 
+// CLevel::GoBackTo()   [script fn 'GoBackTo', FND 0x00188490, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005d040. Ghidra decompile:
+//     if (this == g_pCurLevel) return;
+//     Activate(); g_pCurTunnel = from ? from->tunnel : 0;
+//     if (g_pCurTunnel) g_pCurTunnel->visible = 1;
+//     if (from && from->path is a CameraPath) { path: active = 1; start = now; backward = 1; }
+//     else if (path is a Viewpoint) BindViewpoint(path);
+//     CallFunction(this, "OnActivate");
+// Going back runs the level we're leaving's tunnel and path in reverse.
 void CLevel::GoBackTo()
 {
     if (this == g_pCurLevel)
@@ -1805,52 +1894,52 @@ void CLevel::GoBackTo()
 
     Activate();
 
-    g_pCurTunnel = (g_pFromLevel == NULL) ? NULL : g_pFromLevel->m_tunnel;
-
+    CLevel* from = g_pFromLevel;
+    g_pCurTunnel = from != NULL ? from->m_tunnel : NULL;
     if (g_pCurTunnel != NULL)
         g_pCurTunnel->m_visible = true;
 
-    if (g_pFromLevel != NULL && g_pFromLevel->m_path != NULL && g_pFromLevel->m_path->IsKindOf(NODE_CLASS(CCameraPath)))
-        ((CCameraPath*)g_pFromLevel->m_path)->Activate(true);
+    if (from != NULL && from->m_path != NULL && from->m_path->IsKindOf(NODE_CLASS(CCameraPath)))
+        ((CCameraPath*)from->m_path)->Activate(true);
     else if (m_path != NULL && m_path->IsKindOf(NODE_CLASS(CViewpoint)))
         BindViewpoint(m_path);
 
     CallFunction(this, _T("OnActivate"));
 }
 
+// CLevel::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0005d120. Ghidra decompile:
+//     CGroup::Advance(dt); tunnel, path, control, shell ->Advance(dt) when set;
+//     if (this == g_pCurLevel && g_timeToNextLevel != 0 && g_timeToNextLevel <= now) {
+//         g_timeToNextLevel = 0; if (g_pCurTunnel) g_pCurTunnel->visible = 0;
+//         if (g_pFromLevel) { g_pFromLevel->Deactivate(); g_pFromLevel = 0; }
+//         arrive = 1; }
+//     if (arrive && (!xip || xip->loaded)) { arrive = 0; BindJoystick(control);
+//         CallFunction(this, "OnArrival"); g_bLevelTransition = 0; }
+// Arrival waits for the level's XIP before handing over the controller.
 void CLevel::Advance(float nSeconds)
 {
     CGroup::Advance(nSeconds);
 
     if (m_tunnel != NULL)
         m_tunnel->Advance(nSeconds);
-
     if (m_path != NULL)
         m_path->Advance(nSeconds);
-
     if (m_control != NULL)
         m_control->Advance(nSeconds);
-
     if (m_shell != NULL)
         m_shell->Advance(nSeconds);
 
-    if (g_pCurLevel == this && g_timeToNextLevel != 0.0f && TheseusGetNow() >= g_timeToNextLevel)
+    if (this == g_pCurLevel && g_timeToNextLevel != 0.0 && g_timeToNextLevel <= TheseusGetNow())
     {
-        TRACE(_T("Arrived at level 0x%08x\n"), this);
-
-        ASSERT(g_pCurLevel == this);
-
-        g_timeToNextLevel = 0.0f;
-
+        g_timeToNextLevel = 0.0;
         if (g_pCurTunnel != NULL)
             g_pCurTunnel->m_visible = false;
-
         if (g_pFromLevel != NULL)
         {
             g_pFromLevel->Deactivate();
             g_pFromLevel = NULL;
         }
-
         m_bArrive = true;
     }
 
@@ -1863,10 +1952,12 @@ void CLevel::Advance(float nSeconds)
     }
 }
 
+// CLevel::Deactivate()
+// Reconstructed from 5960 retail XBE @ 0x0005d200:
+//     visible = 0; CallFunction(this, "OnDeactivate");
+//     if (unloadable && !xip->locked) xip->DeleteMeshBuffers();
 void CLevel::Deactivate()
 {
-    ASSERT(this == g_pFromLevel);
-
     m_visible = false;
     CallFunction(this, _T("OnDeactivate"));
 
