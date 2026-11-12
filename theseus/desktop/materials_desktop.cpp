@@ -1015,6 +1015,14 @@ DWORD MatInfo_GetColor(CMatInfo* p, int idx)
 		return D3DCOLOR_RGBA(m->m_r, m->m_g, m->m_b, m->m_a);
 	if (CModulateTextureMatInfo* m = dynamic_cast<CModulateTextureMatInfo*>(p))
 		return D3DCOLOR_RGBA(m->m_r, m->m_g, m->m_b, m->m_a);
+	// The egg glows rebuild their falloff colors every frame from these, so
+	// that's where the skin's ColorA / ColorB actually live.
+	if (CEggGlowPulseMatInfo* m = dynamic_cast<CEggGlowPulseMatInfo*>(p)) {
+		const CustomColor& c = (idx == 0) ? m->Color1 : m->Color2;
+		return D3DCOLOR_RGBA(c.r, c.g, c.b, c.a);
+	}
+	if (CEggGlowFadeMatInfo* m = dynamic_cast<CEggGlowFadeMatInfo*>(p))
+		return (idx == 0) ? m->m_colorSide : D3DCOLOR_RGBA(m->Color1.r, m->Color1.g, m->Color1.b, m->Color1.a);
 	if (CInnerWallMatInfo* m = dynamic_cast<CInnerWallMatInfo*>(p))
 		return (idx == 0) ? m->m_colorSide : m->m_colorFront;
 	if (CFalloffMatInfo* m = dynamic_cast<CFalloffMatInfo*>(p))
@@ -1035,6 +1043,16 @@ void MatInfo_SetColor(CMatInfo* p, int idx, DWORD c)
 		{ m->m_r=r; m->m_g=g; m->m_b=b; m->m_a=a; return; }
 	if (CModulateTextureMatInfo* m = dynamic_cast<CModulateTextureMatInfo*>(p))
 		{ m->m_r=r; m->m_g=g; m->m_b=b; m->m_a=a; return; }
+	CustomColor cc;
+	cc.r = r; cc.g = g; cc.b = b; cc.a = a;
+	if (CEggGlowPulseMatInfo* m = dynamic_cast<CEggGlowPulseMatInfo*>(p)) {
+		if (idx == 0) m->Color1 = cc; else m->Color2 = cc;
+		return;
+	}
+	if (CEggGlowFadeMatInfo* m = dynamic_cast<CEggGlowFadeMatInfo*>(p)) {
+		if (idx == 0) m->m_colorSide = c; else m->Color1 = cc;
+		return;
+	}
 	if (CInnerWallMatInfo* m = dynamic_cast<CInnerWallMatInfo*>(p)) {
 		if (idx == 0) m->m_colorSide = c; else m->m_colorFront = c;
 		return;
