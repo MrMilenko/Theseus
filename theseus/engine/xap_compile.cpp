@@ -466,6 +466,16 @@ const TCHAR* ParseVec4(const TCHAR* pch, float v[4])
 	return pch;
 }
 
+// The array readers stop at the end of the text instead of spinning on it
+// forever. Theseus fix; 5960 has no such check.
+static bool ArrayRanOut(const TCHAR* pch)
+{
+	if (*pch != '\0')
+		return false;
+	SyntaxError(_T("Expected ']' to end array"));
+	return true;
+}
+
 // ParseIntArray / ParseVecArray
 // Reconstructed from 5960 retail XBE @ 0x000333a0 / 0x00033490. Behavior:
 // demand '[', then walk the list twice. The first walk only counts values (a
@@ -488,7 +498,7 @@ const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray)
 	const int nLineFirst = g_nLine;
 
 	int cValues = 0;
-	for (pch = SkipWhite(pchFirst); *pch != ']'; pch = SkipWhite(pch))
+	for (pch = SkipWhite(pchFirst); *pch != ']' && !ArrayRanOut(pch); pch = SkipWhite(pch))
 	{
 		int nIgnored;
 		pch = ParseInteger(pch, nIgnored);
@@ -501,12 +511,15 @@ const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray)
 			pch++;
 	}
 
+	if (*pch == '\0')
+		return pch;
+
 	cbArray = cValues * sizeof(int);
 	pbArray = new BYTE[cbArray];
 	int* pnOut = (int*)pbArray;
 
 	g_nLine = nLineFirst;
-	for (pch = SkipWhite(pchFirst); *pch != ']'; pch = SkipWhite(pch))
+	for (pch = SkipWhite(pchFirst); *pch != ']' && !ArrayRanOut(pch); pch = SkipWhite(pch))
 	{
 		pch = ParseInteger(pch, *pnOut++);
 
@@ -535,7 +548,7 @@ const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int n
 	const int nLineFirst = g_nLine;
 
 	int cValues = 0;
-	for (pch = SkipWhite(pchFirst); *pch != ']'; pch = SkipWhite(pch))
+	for (pch = SkipWhite(pchFirst); *pch != ']' && !ArrayRanOut(pch); pch = SkipWhite(pch))
 	{
 		for (int i = 0; i < nVecSize; i++)
 		{
@@ -551,12 +564,15 @@ const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int n
 			pch++;
 	}
 
+	if (*pch == '\0')
+		return pch;
+
 	cbArray = cValues * sizeof(float);
 	pbArray = new BYTE[cbArray];
 	float* pnOut = (float*)pbArray;
 
 	g_nLine = nLineFirst;
-	for (pch = SkipWhite(pchFirst); *pch != ']'; pch = SkipWhite(pch))
+	for (pch = SkipWhite(pchFirst); *pch != ']' && !ArrayRanOut(pch); pch = SkipWhite(pch))
 	{
 		for (int i = 0; i < nVecSize; i++)
 			pch = ParseNumber(pch, *pnOut++);
@@ -1500,6 +1516,13 @@ const TCHAR* CFunctionCompiler::ParseLocalVar(const TCHAR* pch)
 		int cchName;
 		pch = Token(pch, pchName, cchName);
 
+		// Theseus fix: 5960 runs past the 100 local slots without noticing.
+		if (!CHECK(m_nFrameSize < (int)countof(m_rgstLocal)))
+		{
+			SyntaxError(_T("Too many local variables"));
+			return szParseError;
+		}
+
 		const int iSlot = m_nFrameSize++;
 		m_rgstLocal[iSlot].pchName = pchName;
 		m_rgstLocal[iSlot].cchName = (short)cchName;
@@ -1675,7 +1698,13 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 		int cchURL;
 		pch = Token(pch + 1, pchURL, cchURL);
 
+		// Theseus fix: 5960 copies the url into its buffer without a length check.
 		TCHAR szURL[MAX_PATH];
+		if (!CHECK(cchURL < MAX_PATH))
+		{
+			SyntaxError(_T("Import path is too long"));
+			return szParseError;
+		}
 		CopyChars(szURL, pchURL, cchURL);
 		szURL[cchURL] = '\0';
 
@@ -1978,6 +2007,13 @@ const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFuncti
 			const TCHAR* pchName;
 			int cchName;
 			pch = Token(pch, pchName, cchName);
+
+			// Theseus fix: 5960 runs past the 100 local slots without noticing.
+			if (!CHECK(body.m_nFrameSize < (int)countof(body.m_rgstLocal)))
+			{
+				SyntaxError(_T("Too many parameters"));
+				return szParseError;
+			}
 
 			ST& local = body.m_rgstLocal[body.m_nFrameSize++];
 			local.pchName = pchName;
