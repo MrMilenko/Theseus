@@ -404,6 +404,20 @@ static bool XipReadExact(CFileBuffer& file, void* pv, int cb)
 	return cb >= 0 && file.Read(pv, cb) == cb;
 }
 
+// CreateObjects reads entries back to back with no seeking, so an entry we
+// refuse still has to be read past or every entry after it lands wrong.
+static void XipDiscard(CFileBuffer& file, int cb)
+{
+	BYTE scratch[4096];
+	while (cb > 0)
+	{
+		int n = cb < (int)sizeof(scratch) ? cb : (int)sizeof(scratch);
+		if (file.Read(scratch, n) != n)
+			return;
+		cb -= n;
+	}
+}
+
 // Every real archive ends exactly where dataStart + dataSize says it does.
 static bool XipSizeMatches(CFileBuffer& file, const XIPHEADER& hdr)
 {
@@ -507,7 +521,6 @@ void CXipFile::CreateObjects()
 				CMeshRef* pMeshRef = new CMeshRef;
 				pMeshRef->m_xipFile = this;
 				pMeshRef->m_meshBufferIndex = m_filedata[i].m_dwDataOffset >> 24;
-				ASSERT(pMeshRef->m_meshBufferIndex < MAX_MESHBUFFER);
 				pMeshRef->m_firstIndex = m_filedata[i].m_dwDataOffset & 0x00ffffff;
 				pMeshRef->m_primitiveCount = m_filedata[i].m_dwSize;
 				m_objects[i] = pMeshRef;
@@ -520,13 +533,25 @@ void CXipFile::CreateObjects()
 			break;
 
 		case XIP_TYPE_INDEXBUFFER:
-			ASSERT(m_nIndexBufferCount < MAX_MESHBUFFER);
+			// The index buffer lands in its vertex buffer's slot, so both
+			// counts have to fit. Desktop ASSERT only warns.
+			if (m_nIndexBufferCount >= MAX_MESHBUFFER || m_nVertexBufferCount >= MAX_MESHBUFFER)
+			{
+				TRACE("\001CreateObjects: too many index buffers\n");
+				XipDiscard(m_file, m_filedata[i].m_dwSize);
+				break;
+			}
 			ReadIndexBuffer(i, m_nVertexBufferCount);
 			m_nIndexBufferCount += 1;
 			break;
 
 		case XIP_TYPE_VERTEXBUFFER:
-			ASSERT(m_nVertexBufferCount < MAX_MESHBUFFER);
+			if (m_nVertexBufferCount >= MAX_MESHBUFFER)
+			{
+				TRACE("\001CreateObjects: too many vertex buffers\n");
+				XipDiscard(m_file, m_filedata[i].m_dwSize);
+				break;
+			}
 			ReadVertexBuffer(i, m_nVertexBufferCount);
 			m_nVertexBufferCount += 1;
 			break;
@@ -773,7 +798,9 @@ bool CXipFile::IsReloading() const
 
 void CMeshRef::Render(bool bSetFVF/*=true*/)
 {
-	ASSERT(m_meshBufferIndex < m_xipFile->m_nVertexBufferCount);
+	// The index comes from the archive's top byte, so it can name any of 256.
+	if (m_meshBufferIndex >= m_xipFile->m_nVertexBufferCount)
+		return;
 	CMeshBuffer* pMeshBuffer = &m_xipFile->m_rgMeshBuffer[m_meshBufferIndex];
 
 	m_xipFile->m_cacheTime = TheseusGetNow();
@@ -803,6 +830,7 @@ void CMeshRef::Render(bool bSetFVF/*=true*/)
 
 DWORD CMeshRef::GetFVF() const
 {
-	ASSERT(m_meshBufferIndex < m_xipFile->m_nVertexBufferCount);
+	if (m_meshBufferIndex >= m_xipFile->m_nVertexBufferCount)
+		return 0;
 	return m_xipFile->m_rgMeshBuffer[m_meshBufferIndex].m_fvf;
 }

@@ -633,7 +633,8 @@ void CXipFile::CreateObjects()
 			break;
 
 		case XIP_TYPE_INDEXBUFFER:
-			if (m_indexBufferCount >= MAX_MESHBUFFER)
+			// Written into its vertex buffer's slot, so that count has to fit too.
+			if (m_indexBufferCount >= MAX_MESHBUFFER || m_vertexBufferCount >= MAX_MESHBUFFER)
 			{
 				TRACE(_T("\001CreateObjects: too many index buffers in %s\n"), m_fileName);
 				DiscardBytes(m_file, m_filedata[i].m_size);
@@ -898,7 +899,8 @@ bool CXipFile::IsReloading() const
 
 void CMeshRef::Render(bool bSetFVF)
 {
-	ASSERT(m_meshBufferIndex < m_xipFile->m_vertexBufferCount);
+	if (m_meshBufferIndex >= m_xipFile->m_vertexBufferCount)
+		return;
 	CMeshBuffer* pBuf = &m_xipFile->m_meshBuffers[m_meshBufferIndex];
 
 	m_xipFile->m_cacheTime = TheseusGetNow();
@@ -931,6 +933,7 @@ void CMeshRef::Render(bool bSetFVF)
 
 DWORD CMeshRef::GetFVF() const
 {
-	ASSERT(m_meshBufferIndex < m_xipFile->m_vertexBufferCount);
+	if (m_meshBufferIndex >= m_xipFile->m_vertexBufferCount)
+		return 0;
 	return m_xipFile->m_meshBuffers[m_meshBufferIndex].m_fvf;
 }
