@@ -22,6 +22,8 @@ struct SafeSave {
         bool ok = !ferror(f);
         ok = (fclose(f) == 0) && ok;
         f = nullptr;
+        // On disk before the rename, or a power cut can leave an empty file.
+        ok = ok && Host_FlushToDisk(tmp.c_str());
         if (!ok) { remove(tmp.c_str()); return false; }
         HostFileInfo info;
         if (Host_Stat(path.c_str(), &info))
