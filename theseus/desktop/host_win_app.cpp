@@ -46,6 +46,12 @@ void Host_ConsoleOrLog(const char* logPath) {
 		*slash = '\0';
 		Host_MakeDir(dir);
 	}
+	char prev[MAX_PATH];
+	snprintf(prev, sizeof(prev), "%s", logPath);
+	char* ext = strstr(prev, ".log");
+	if (ext && (size_t)(ext - prev) + sizeof(".prev.log") <= sizeof(prev))
+		strcpy(ext, ".prev.log");
+	MoveFileExA(logPath, prev, MOVEFILE_REPLACE_EXISTING);
 	if (freopen(logPath, "w", stdout)) {
 		setvbuf(stdout, NULL, _IOLBF, 0);
 		_dup2(_fileno(stdout), _fileno(stderr));

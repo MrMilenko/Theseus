@@ -6,10 +6,16 @@
 #include <SDL_syswm.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
@@ -18,17 +24,89 @@
 #define HAS_BACKTRACE 1
 #endif
 
-void Host_ConsoleOrLog(const char*) {}
+// Everything still reaches the terminal, and a copy lands in theseus.log, so a
+// Finder or desktop-entry launch leaves something a user can send. The last
+// run's log is kept as theseus.prev.log.
+static int s_termFd = -1;
+static int s_logFd = -1;
+static pthread_t s_teeThread;
+static bool s_teeRunning = false;
+
+static void* TeeThread(void* arg) {
+	int in = (int)(intptr_t)arg;
+	char buf[4096];
+	ssize_t n;
+	while ((n = read(in, buf, sizeof(buf))) > 0) {
+		if (s_termFd >= 0) (void)!write(s_termFd, buf, (size_t)n);
+		if (s_logFd >= 0)  (void)!write(s_logFd, buf, (size_t)n);
+	}
+	close(in);
+	return NULL;
+}
+
+// Closing the only write ends lets the thread drain the pipe and finish.
+static void StopTee() {
+	if (!s_teeRunning) return;
+	fflush(stdout);
+	fflush(stderr);
+	close(STDOUT_FILENO);
+	close(STDERR_FILENO);
+	pthread_join(s_teeThread, NULL);
+	s_teeRunning = false;
+}
+
+void Host_ConsoleOrLog(const char* logPath) {
+	// First launch: the user data folder doesn't exist yet.
+	std::string dir = logPath;
+	dir = dir.substr(0, dir.rfind('/'));
+	for (size_t i = 1; i <= dir.size(); i++)
+		if (i == dir.size() || dir[i] == '/')
+			mkdir(dir.substr(0, i).c_str(), 0755);
+
+	std::string prev = logPath;
+	size_t dot = prev.rfind(".log");
+	prev = (dot == std::string::npos) ? prev + ".prev" : prev.substr(0, dot) + ".prev.log";
+	rename(logPath, prev.c_str());
+
+	s_logFd = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (s_logFd < 0) return;
+	int p[2];
+	if (pipe(p) != 0) return;
+
+	fflush(stdout);
+	fflush(stderr);
+	s_termFd = dup(STDERR_FILENO);
+	dup2(p[1], STDOUT_FILENO);
+	dup2(p[1], STDERR_FILENO);
+	close(p[1]);
+	setvbuf(stdout, NULL, _IOLBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
+
+	if (pthread_create(&s_teeThread, NULL, TeeThread, (void*)(intptr_t)p[0]) == 0) {
+		s_teeRunning = true;
+		atexit(StopTee);
+	}
+}
 void Host_BoostProcess() {}
 
+// Writes straight to the terminal and the log: the tee thread may never get
+// to run again once we're in here.
 static void CrashHandler(int sig) {
-	fprintf(stderr, "\n[CRASH] Signal %d (%s)\n", sig, sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : "OTHER");
-	fflush(stderr);
+	char line[96];
+	int len = snprintf(line, sizeof(line), "\n[CRASH] Signal %d (%s)\n", sig,
+	                   sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : sig == SIGBUS ? "SIGBUS" : "OTHER");
+	int fds[2] = { s_termFd >= 0 ? s_termFd : STDERR_FILENO, s_logFd };
 #ifdef HAS_BACKTRACE
 	void* bt[64];
 	int n = backtrace(bt, 64);
-	backtrace_symbols_fd(bt, n, 2);
 #endif
+	for (int i = 0; i < 2; i++) {
+		if (fds[i] < 0) continue;
+		(void)!write(fds[i], line, (size_t)len);
+#ifdef HAS_BACKTRACE
+		backtrace_symbols_fd(bt, n, fds[i]);
+#endif
+	}
 	_exit(128 + sig);
 }
 
