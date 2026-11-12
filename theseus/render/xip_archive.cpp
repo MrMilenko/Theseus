@@ -193,11 +193,28 @@ int CFileBuffer::Read(void* pv, int cb)
 
 
 // ===== The archive pool =====================================================
-// Twenty archives, the 5960 pool (c_rgXipFile @ 0x001804e0, 0x150 bytes each;
-// the count is at 0x0017e734). Nothing ever leaves it.
+// 5960 keeps twenty archives in a fixed array (0x001804e0, 0x150 bytes a slot,
+// count at 0x0017e734) and nothing ever leaves it, since scene nodes and mesh
+// refs keep pointing at them. Theseus has more scenes than that, so the pool
+// grows twenty slots at a time. Each archive is its own allocation and never
+// moves, and an outgrown slot table is kept: the Xbox loader thread can be
+// walking it from CleanupMeshCache while LoadXIP grows it.
 
-CXipFile c_rgXipFile[20];
-int c_nXipFileCount = 0;
+static const int XIP_POOL_STEP = 20;
+
+static CXipFile** volatile c_rgXipFile = NULL;
+static int c_nXipFileSlots = 0;
+static volatile int c_nXipFileCount = 0;
+
+static void GrowXipPool()
+{
+	const int nSlots = c_nXipFileSlots + XIP_POOL_STEP;
+	CXipFile** rgNew = new CXipFile*[nSlots];
+	for (int i = 0; i < c_nXipFileCount; i++)
+		rgNew[i] = c_rgXipFile[i];
+	c_rgXipFile = rgNew;
+	c_nXipFileSlots = nSlots;
+}
 
 // 5960 starts loads on a worker thread and runs them inline if no thread
 // starts. Desktop always runs them inline: scripts read the scene as soon as
@@ -229,8 +246,8 @@ static void RunLoader(LPTHREAD_START_ROUTINE pfnLoad, CXipFile* pXip)
 //     if (!bSync) { start the loader thread; return xip; }
 //     xip->Load(); return xip;
 // The key keeps "default" while Open drops it, so default.xip never matches
-// itself here; nothing loads it twice. Theseus refuses when the pool is
-// full, where 5960 writes past it, a sync caller learns about a failed load,
+// itself here; nothing loads it twice. Theseus grows the pool where 5960
+// would write past it, a sync caller learns about a failed load,
 // and a name too long or with no extension is refused. isSkin is Theseus's
 // and unused here.
 CXipFile* LoadXIP(const TCHAR* szURL, bool bSync, bool isSkin)
@@ -251,7 +268,7 @@ CXipFile* LoadXIP(const TCHAR* szURL, bool bSync, bool isSkin)
 
 	for (int i = 0; i < c_nXipFileCount; i++)
 	{
-		CXipFile* pXip = &c_rgXipFile[i];
+		CXipFile* pXip = c_rgXipFile[i];
 		if (_stricmp(szKey, pXip->m_dirPath) != 0)
 			continue;
 
@@ -261,15 +278,16 @@ CXipFile* LoadXIP(const TCHAR* szURL, bool bSync, bool isSkin)
 		return pXip;
 	}
 
-	if (c_nXipFileCount >= (int)countof(c_rgXipFile))
+	if (c_nXipFileCount == c_nXipFileSlots)
+		GrowXipPool();
+
+	CXipFile* pXip = new CXipFile;
+	if (!pXip->Open(szPath))
 	{
-		TRACE(_T("\001LoadXIP: XIP pool full (%d), cannot load %s\n"), (int)countof(c_rgXipFile), szPath);
+		delete pXip;
 		return NULL;
 	}
-
-	CXipFile* pXip = &c_rgXipFile[c_nXipFileCount];
-	if (!pXip->Open(szPath))
-		return NULL;
+	c_rgXipFile[c_nXipFileCount] = pXip;
 	c_nXipFileCount++;
 
 	if (!bSync)
@@ -308,7 +326,7 @@ bool FindInXIPAndDetach(const TCHAR* szURL, BYTE*& pbContent, DWORD& cbContent)
 
 	for (int i = c_nXipFileCount - 1; i >= 0; i--)
 	{
-		CXipFile& xip = c_rgXipFile[i];
+		CXipFile& xip = *c_rgXipFile[i];
 		if (xip.m_locked || !xip.m_loaded)
 			continue;
 
@@ -387,7 +405,7 @@ void* FindObjectInXIP(const TCHAR* szURL, const TCHAR* szFilename, int nType)
 
 	for (int i = c_nXipFileCount - 1; i >= 0; i--)
 	{
-		CXipFile& xip = c_rgXipFile[i];
+		CXipFile& xip = *c_rgXipFile[i];
 		if (xip.m_locked || !xip.m_loaded)
 			continue;
 
@@ -1000,10 +1018,13 @@ void CXipFile::DeleteMeshBuffers()
 // The out of memory path calls this to free the archive drawn longest ago.
 bool CleanupMeshCache()
 {
+	// Count first: a slot under the count is always in the table.
+	const int nXips = c_nXipFileCount;
+	CXipFile** rgXips = c_rgXipFile;
 	CXipFile* pOldest = NULL;
-	for (int i = 0; i < c_nXipFileCount; i++)
+	for (int i = 0; i < nXips; i++)
 	{
-		CXipFile* pXip = &c_rgXipFile[i];
+		CXipFile* pXip = rgXips[i];
 		if (pXip->m_locked || !pXip->m_loaded)
 			continue;
 		if (pXip->m_vertexBufferCount == 0 || pXip->m_meshBuffers[0].m_vertexBuffer == NULL)

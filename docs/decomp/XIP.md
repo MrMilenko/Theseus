@@ -192,8 +192,8 @@ on every world matrix change instead (see `SetFalloffShaderFrameValues`, `0x0005
 ## Where Theseus differs
 
 - No `XIPS` signature check and no `y:` to `x:` swap; files open through Theseus's own path layer.
-- A twenty first archive is refused instead of overrunning the pool; a sync `LoadXIP` that fails
-  returns NULL.
+- The pool grows twenty slots at a time instead of overrunning at twenty one, so a long desktop
+  session never runs out. Archives still never leave it. A sync `LoadXIP` that fails returns NULL.
 - `Load` checks every read, refuses a header whose name pool would be empty or whose
   `dataStart + dataSize` isn't the file size, and closes a refused file.
 - `CreateObjects` refuses mesh references past the last slot and mesh buffers past ten, and reads
