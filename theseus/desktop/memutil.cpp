@@ -1,57 +1,51 @@
-// memutil.cpp: desktop allocator backend. Plain new / delete pass-
-// through with no Xbox-style cache eviction (the host OS handles OOM).
-// Counterpart to xbox/memutil.cpp.
+// memutil.cpp: the desktop's memory hooks. Allocations go straight to the
+// C heap; when operator new fails, NewFailed frees caches and retries like
+// the dashboard does on the console. Counterpart to xbox/memutil.cpp.
 
 #include "std.h"
 #include "dashapp.h"
 
-// Desktop: simple memory management - no Xbox D3D memory pools
-
-extern void CleanupImageCache();
 extern bool CleanupTextureCache();
 extern bool CleanupMeshCache();
 
+// How far the out of memory recovery has got.
 int g_nNewFailedState;
 
+// NewFailed(bytes)
+// Follows the 5960 retail XBE's out of memory handling (inlined around its
+// allocations, see LoadXlate @ 0x0003c370): free the texture cache, then
+// the mesh cache, retrying after each; a stage that frees nothing moves on
+// to the next. When both are spent it prints "xdash: out of memory" and
+// gives up, which on the console returns to the firmware and here exits.
 int __cdecl NewFailed(size_t nBytes)
 {
-	TRACE("\001new failed to allocate %d bytes!\n", nBytes);
-
-	switch (g_nNewFailedState)
+	bool freed = false;
+	if (g_nNewFailedState == 0)
+		freed = CleanupTextureCache();
+	else if (g_nNewFailedState == 1)
+		freed = CleanupMeshCache();
+	else
 	{
-	case 0:
-		TRACE("\002Cleaning the texture cache!\n");
-		if (CleanupTextureCache())
-			return 1;
-		break;
-
-	case 1:
-		TRACE("\002Cleaning the mesh cache!\n");
-		if (CleanupMeshCache())
-			return 1;
-		break;
-
-	default:
-		// We've run out of things to try!
-		fprintf(stderr, "xdash: out of memory (failed to allocate %d bytes)\n", nBytes);
+		fprintf(stderr, "xdash: out of memory (failed to allocate %d bytes)\n", (int)nBytes);
 		exit(1);
 	}
 
-	g_nNewFailedState += 1;
-	return 1; // keep trying!
+	if (!freed)
+		g_nNewFailedState++;
+	return 1;
 }
 
-void *TheseusAllocMemory(int nBytes)
+void* TheseusAllocMemory(int nBytes)
 {
 	return malloc(nBytes);
 }
 
-void TheseusFreeMemory(void *pv)
+void TheseusFreeMemory(void* pv)
 {
 	free(pv);
 }
 
-void TheseusCreateMeshFVF(DWORD NumFaces, DWORD NumVertices, DWORD Options, DWORD FVF, LPD3DXMESH *ppMesh)
+void TheseusCreateMeshFVF(DWORD NumFaces, DWORD NumVertices, DWORD Options, DWORD FVF, LPD3DXMESH* ppMesh)
 {
 	D3DXCreateMeshFVF(NumFaces, NumVertices, Options, FVF, TheseusGetD3DDev(), ppMesh);
 }
