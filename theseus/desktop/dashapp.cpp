@@ -826,7 +826,9 @@ void CleanupApp()
 
 void Advance()
 {
-	XTIME now = (float)GetTickCount() / 1000.0f;
+	// Seconds since SDL started, same base on every host. GetTickCount on
+	// Windows is system uptime at 15.6 ms steps, and a float of that drifts.
+	XTIME now = (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
 	float nDelta = (float)(now - g_now);
 	if (nDelta == 0.0f)
 		nDelta = 0.001f;
