@@ -162,7 +162,10 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x000417f8 | `CTimeDepNode::OnSetProperty` | `CTimeDepNode::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Reacts to property writes on time-dep nodes. Re-registers the node with the time-dep list when its `enabled` toggles. |
 | 0x00041950 | `CObject::Assign` | `CObject::Assign` (xap_vm.cpp) | [Script VM](VM.md) | Default assignment handler. Called by `opAssign` when LHS is a script-visible property. |
 | 0x000419e0 | `CSettings_GetValue` | `CSettings::GetValue` (settings_nodes.cpp) | [Settings](Settings.md) | FND-bound script accessor: returns the value of a settings entry by name. |
-| 0x00041c90 | `CTimeSensor::Advance` | `CTimeSensor::Advance` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Per-frame tick. Computes fractional progress through the sensor's cycle interval and routes that into the bound interpolators. |
+| 0x00041bf0 | `CTimeSensor_CreateNode` | `CTimeSensor::CTimeSensor` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Factory for "TimeSensor": cycleInterval 1.0, enabled. |
+| 0x00041c70 | `CTimeSensor_OnSetProperty` | `CTimeSensor::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Widens a script write of `time` into the double field. |
+| 0x00041c90 | `CTimeSensor::Advance` | `CTimeSensor::Advance` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Per-frame tick: loops or stops at the cycle end, computes fraction_changed and calls the script handler. |
+| 0x00041d50 | `CTimeSensor_OnIsActiveChanged` | `CTimeSensor::OnIsActiveChanged` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Turning on stamps the cycle start; turning off calls OnActiveChanged. |
 | 0x00041d80 | `CObject::ToStr` | `CObject::ToStr` (xap_vm.cpp) | [Script VM](VM.md) | Default string coercion. Returns class name; subclasses override for meaningful output. |
 | 0x00041d90 | `CObject::_vtable_default` | `CObject::_vtable_default` (xap_vm.cpp) | [Script VM](VM.md) | The default vtable instance shared by base `CObject` instances. |
 | 0x00041f20 | `FUN_00041f20` | `CTitleArray::AddTitle` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Reads `<udata>\<titleID>\TitleMeta.xbx`, extracts `TitleName` for the active language code (or falls back to a translated `"Broken Game"`), then grows the title array by 50 entries if at capacity (`m_titleCount == m_titleCapacity`), and copies the title ID + name into the new slot. Identified by the path-build + INI read + `+= 50` capacity grow + array memcpy pattern. |
@@ -238,6 +241,16 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0004e0f0 | `CTransform::SetRotation` | `CTransform::SetRotation` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Sets the rotation as axis-angle. Marks the matrix dirty for next CalcMatrix. |
 | 0x0004e4d0 | `CInline::Init` | `CInline::Init` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Inline-node init: opens the referenced XIP / XAP and inserts its root into the local scene graph. |
 | 0x0004e740 | `CInline::Advance` | `CInline::Advance` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Per-frame tick. If the load thread completed, swaps the placeholder for the loaded sub-tree. |
+| 0x0004f770 | `CViewpoint_CreateNode` | `CViewpoint::CViewpoint` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Factory for "Viewpoint": 45 degree field of view, jump, position (0, 0, 10). |
+| 0x0004f830 | `CViewpoint_dtor` | `CViewpoint::~CViewpoint` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Frees the description and unbinds itself. |
+| 0x0004f860 | `CViewpoint_OnLoad` | `CViewpoint::OnLoad` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Binds when no viewpoint is bound yet. |
+| 0x0004f880 | `BindViewpoint` | `BindViewpoint` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Binds a node if its class chain reaches Viewpoint. |
+| 0x0004f8b0 | `CViewpoint_Bind` | `CViewpoint::Bind` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Takes the bound slot and moves the camera to this viewpoint (one second glide unless jump). |
+| 0x0004f940 | `CViewpoint_OnSetProperty` | `CViewpoint::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | isBound binds; fieldOfView marks the projection dirty. |
+| 0x000504d0 | `CNavigationInfo_CreateNode` | `CNavigationInfo::CNavigationInfo` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Factory for "NavigationInfo": avatar (0.25, 1.6, 0.75), headlight, speed 1. |
+| 0x00050580 | `CNavigationInfo_dtor` | `CNavigationInfo::~CNavigationInfo` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Frees the type string and unbinds itself. |
+| 0x000505b0 | `CNavigationInfo_OnLoad` | `CNavigationInfo::OnLoad` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | First one loaded becomes the bound NavigationInfo. |
+| 0x000505e0 | `CNavigationInfo_OnSetProperty` | `CNavigationInfo::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | isBound, avatarSize and visibilityLimit mark the projection dirty. |
 | 0x00050640 | `CCamera_CreateNode` | `CCamera::CCamera` (camera.cpp) | [Camera](Camera.md) | Factory for "Camera": position (0, 0, 20), identity orientation, idle, clears the noisy flag. |
 | 0x00050760 | `CCamera_dtor` | `CCamera::~CCamera` (camera.cpp) | [Camera](Camera.md) | Frees the mode string, then the node destructor. |
 | 0x00050780 | `CCamera_UpdateViewMatrix` | `CCamera::UpdateViewMatrix` (camera.cpp) | [Camera](Camera.md) | Builds the view from position and orientation (plus the one degree noisy wobble), flips the third row, loads it into the device. |
@@ -272,8 +285,9 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0005bca0 | `CKeyboard_Advance` | `CKeyboard::Advance` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Advances the node, then the control node. |
 | 0x0005c250 | `CLevel_load` |  | [Scene Groups](SceneGroups.md) | FND-bound script method on Level: triggers asynchronous load of the Level's referenced sub-scene. |
 | 0x0005d200 | `CLevel::Deactivate` | `CLevel::Deactivate` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Marks a Level node inactive. Pauses its time-dep children and skips it during render traversal. |
-| 0x0005d300 | `CPositionInterpolator::Interpolate` | `CPositionInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Linear interpolation between key positions based on the bound TimeSensor's fraction. |
-| 0x0005d5a0 | `COrientationInterpolator::Interpolate` | `COrientationInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Spherical-linear interpolation between key axis-angle rotations. |
+| 0x0005d300 | `CPositionInterpolator::Interpolate` | `CPositionInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Catmull-Rom between interior keys, straight lines on the end spans, clamped at both ends. |
+| 0x0005d520 | `COrientationInterpolator_OnLoad` | `COrientationInterpolator::OnLoad` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Converts each axis+angle key into a quaternion once. |
+| 0x0005d5a0 | `COrientationInterpolator::Interpolate` | `COrientationInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Slerp between neighboring keys, clamped at both ends. |
 | 0x00061090 | `CBackgroundLoader::Fetch` | `CBackgroundLoader::Fetch` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Pulls the next pending request off the background loader queue. The loader thread spins on this. |
 | 0x00061760 | `CImageTexture::Load` | `CImageTexture::Load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Loads an XBX (Xbox swizzled) texture from a XIP entry into a D3D texture. |
 | 0x00061b40 | `CAudioClip::Cleanup` | `CAudioClip::Cleanup` (audio_system.cpp) | [Audio](AudioSystem.md) | Releases an audio clip's DirectSound buffer and waveform data. |
@@ -320,7 +334,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Script VM | [VM.md](VM.md) | 35 functions |
 | Scene Graph | [Node.md](Node.md) | 2 functions + 32 class-table registrations |
 | XIP Archives | [XIP.md](XIP.md) | 26 functions |
-| Animation Nodes | [AnimationNodes.md](AnimationNodes.md) | 4 functions |
+| Animation Nodes | [AnimationNodes.md](AnimationNodes.md) | 17 functions |
 | Audio System | [AudioSystem.md](AudioSystem.md) | 12 functions |
 | Camera | [Camera.md](Camera.md) | 9 functions |
 | Date | [Date.md](Date.md) | 7 functions |
