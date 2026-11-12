@@ -337,8 +337,9 @@ void CKeyboard::ClearSelection()
 
 TCHAR CKeyboard::ApplyCase(TCHAR ch)
 {
-	if (m_caps ^ m_shift)
-		ch = (TCHAR)toupper((unsigned char)ch);
+	// Only a-z change case; anything wider passes through untouched.
+	if ((m_caps ^ m_shift) && ch >= 'a' && ch <= 'z')
+		ch = (TCHAR)(ch - 'a' + 'A');
 	return ch;
 }
 
