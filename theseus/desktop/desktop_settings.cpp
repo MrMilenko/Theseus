@@ -9,6 +9,7 @@
 #include "settings_schema.h"
 #include "audio_sdl.h"
 #include "media_player.h"
+#include "virtual_games.h"
 
 extern char s_xemuPath[512];
 extern char g_qcowPath[512];
@@ -44,6 +45,10 @@ char g_currentSkin[64]          = "Stock";
 // --dashboard / --development can override without it being saved.
 static int s_startupModeSaved = 0;
 static void ApplyStartupMode() { g_startupMode = s_startupModeSaved; }
+
+// The same game from two sources shows once, from the best one.
+bool g_hideDuplicateGames = true;
+static void ApplyDuplicates() { g_vgames.generation++; }
 
 static void ApplyMsaa()       { g_msaaChangeRequested = true; }
 static void ApplyVsync()      { g_vsyncChangeRequested = true; }
@@ -155,6 +160,8 @@ static const SettingDef kDefs[] = {
     S_STR("TMDBKey",     "Library", "Media", "TMDB API Key",    g_tmdbKey, "", SF_SECRET),
     S_PATH("RomsDir",    "Library", "Games", "ROMs Folder",     g_romsDir, 0),
     S_BOOL("FetchGameArt", "Library", "Games", "Download Game Art", g_fetchGameArt, "1", 0),
+    { "HideDuplicateGames", "Library", "Games", "Show Each Game Once", SK_BOOL, &g_hideDuplicateGames, 0, "1", 0,
+      NOENUM, 0, 0, 0, NULL, ApplyDuplicates },
     S_STR("SteamGridDBKey", "Library", "Games", "SteamGridDB API Key", g_steamGridDbKey, "", SF_SECRET),
     S_STR("PlexToken",          "Library", "Media", "Plex Token",     g_plexToken,          "", SF_SECRET | SF_HIDDEN),
     S_STR("PlexClientId",       "Library", "Media", "Plex Client",    g_plexClientId,       "", SF_SECRET | SF_HIDDEN),

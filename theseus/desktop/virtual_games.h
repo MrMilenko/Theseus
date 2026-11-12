@@ -43,6 +43,8 @@ struct VirtualGame {
     bool favorite;
     bool hidden;
     long long lastPlayed;  // unix time of the last launch that started, 0 for never
+    // Another source has the same game and wins (VGames_FindDuplicates).
+    bool duplicate;
 };
 
 struct VirtualGameDB {
@@ -491,9 +493,78 @@ inline void VGames_MarkPlayed(const char* launch) {
 #define VGAMES_RECENT     "Recently Played"
 #define VGAMES_RECENT_MAX 20
 
+extern bool g_hideDuplicateGames;   // desktop.ini HideDuplicateGames
+
+// Which copy of a game wins when sources overlap: Steam, then anything you
+// added yourself, then ES-DE. Streaming rows are a different way to play, so
+// they never count.
+inline int VGames_SourceRank(const VirtualGame& g) {
+    if (g.transient) return 2;
+    return strncmp(g.launch, "steam://", 8) == 0 ? 0 : 1;
+}
+
+// "The Legend of Zelda: A Link to the Past (USA)" and "Legend of Zelda, The -
+// A Link to the Past" both come out "legendofzeldaalinktopast".
+inline std::string VGames_MatchName(const char* name) {
+    std::string out, word;
+    int depth = 0;
+    for (const char* p = name;; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '(' || c == '[') { depth++; continue; }
+        if ((c == ')' || c == ']') && depth > 0) { depth--; continue; }
+        if (depth > 0 && c) continue;
+        if (c && c < 0x80 && isalnum(c)) { word += (char)tolower(c); continue; }
+        // Accented letters and trademark signs drop out with the punctuation.
+        if (c >= 0x80) continue;
+        if (!word.empty() && word != "the") out += word;
+        word.clear();
+        if (!c) break;
+    }
+    return out;
+}
+
+// Marks the losing copies. Cheap to call, it only redoes the work when the DB changed.
+inline void VGames_FindDuplicates() {
+    static unsigned s_gen = ~0u;
+    if (s_gen == g_vgames.generation) return;
+    s_gen = g_vgames.generation;
+    std::map<std::string, int> best;
+    std::vector<std::string> keys((size_t)g_vgames.count * 2);
+    for (int i = 0; i < g_vgames.count; i++) {
+        VirtualGame& g = g_vgames.games[i];
+        g.duplicate = false;
+        if (!g.valid || VGames_IsStreaming(g)) continue;
+        const char* steam = strstr(g.launch, "steam://rungameid/");
+        if (steam) keys[i * 2] = std::string("steam:") + std::to_string(atoll(steam + 18));
+        std::string n = VGames_MatchName(g.name);
+        if (!n.empty()) keys[i * 2 + 1] = "name:" + n;
+        int rank = VGames_SourceRank(g);
+        for (int k = 0; k < 2; k++) {
+            const std::string& key = keys[i * 2 + k];
+            if (key.empty()) continue;
+            std::map<std::string, int>::iterator it = best.find(key);
+            if (it == best.end() || rank < it->second) best[key] = rank;
+        }
+    }
+    // Only a better source hides a row. Two copies from the same place are
+    // probably on purpose (two regions, two versions) and both stay.
+    for (int i = 0; i < g_vgames.count; i++) {
+        VirtualGame& g = g_vgames.games[i];
+        if (!g.valid || VGames_IsStreaming(g)) continue;
+        int rank = VGames_SourceRank(g);
+        for (int k = 0; k < 2; k++) {
+            const std::string& key = keys[i * 2 + k];
+            if (!key.empty() && best[key] < rank) g.duplicate = true;
+        }
+    }
+}
+
 // What the launcher lists. Hidden rows stay in the DB, just out of sight.
 inline bool VGames_IsShown(const VirtualGame& g) {
-    return g.valid && !g.hidden;
+    if (!g.valid || g.hidden) return false;
+    if (!g_hideDuplicateGames) return true;
+    VGames_FindDuplicates();
+    return !g.duplicate;
 }
 
 inline bool VGames_IsMarkList(const char* category) {

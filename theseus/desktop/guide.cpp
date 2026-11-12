@@ -227,6 +227,8 @@ static const char* SettingHelp(const SettingDef& d)
         { "ShowAlbumCover",      "Show album art in the orb when a soundtrack has it." },
         { "CRT_Enabled",         "Old TV look over the whole dashboard." },
         { "GuideTheme",          "The guide's colors." },
+        { "FetchGameArt",        "Box art for games without an icon. Icons you picked are never replaced." },
+        { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
     };
     for (size_t i = 0; i < sizeof(kHelp) / sizeof(kHelp[0]); i++)
         if (strcmp(kHelp[i].key, d.key) == 0) return kHelp[i].help;

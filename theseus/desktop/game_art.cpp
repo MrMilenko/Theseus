@@ -480,6 +480,8 @@ static void Scan()
     for (int i = 0; i < g_vgames.count; i++) {
         const VirtualGame& g = g_vgames.games[i];
         if (!g.valid || VGames_IsStreaming(g)) continue;
+        // The copy that shows already has a source of its own.
+        if (g_hideDuplicateGames && (VGames_FindDuplicates(), g.duplicate)) continue;
         if (!Http_IsSafeFileId(g.titleID) || s_seen.count(g.titleID)) continue;
 
         ArtJob j;
