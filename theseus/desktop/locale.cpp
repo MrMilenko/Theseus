@@ -217,7 +217,8 @@ static void LoadXlate(const char* szXlateSection)
 
     //      TRACE("XLATE: \"%s\" = \"%s\"\n", pchKey, pchValue);
 
-            ASSERT(nXlate < MAX_XLATE); // need to increase MAX_XLATE!
+            if (!CHECK(nXlate < MAX_XLATE))
+                return; // the rest of the file is dropped; raise MAX_XLATE
             rgxlate[nXlate].m_szKey = (char*)pchKey;
             rgxlate[nXlate].m_szValue = (char*)pchValue;
             nXlate += 1;

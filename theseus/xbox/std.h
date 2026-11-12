@@ -152,6 +152,15 @@ extern void Ansi(char* sz, const TCHAR* wsz, int nMaxChars);
 EXTERN_C bool AssertFailed(const TCHAR* szFile, int nLine, HRESULT hr);
 EXTERN_C void Trace(const TCHAR* szMsg, ...);
 
+// CHECK survives retail, unlike ASSERT. Use it where failing means bad memory.
+#define CHECK(f)        TheseusCheck(!!(f), #f, __FILE__, __LINE__)
+inline bool TheseusCheck(bool ok, const char* expr, const char* file, int line)
+{
+	if (!ok)
+		Trace(_T("\001CHECK failed %hs:%d: %hs\n"), file, line, expr);
+	return ok;
+}
+
 #else
 // Release (Xbox) and all desktop builds: no-op asserts, silent trace
 #define ASSERT(f)       ((void)0)
@@ -162,6 +171,8 @@ EXTERN_C void Trace(const TCHAR* szMsg, ...);
 #define ALERT           1 ? (void)0 : Alert
 
 inline void Trace(const TCHAR* szMsg, ...) { }
+
+#define CHECK(f)        (!!(f))
 
 #endif
 

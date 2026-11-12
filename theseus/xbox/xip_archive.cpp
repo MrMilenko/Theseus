@@ -812,13 +812,15 @@ void CXipFile::ReloadMeshBuffers()
 	{
 		if (m_filedata[i].m_type == XIP_TYPE_INDEXBUFFER)
 		{
-			ASSERT(nIB < m_indexBufferCount);
+			if (!CHECK(nIB < m_indexBufferCount))
+				continue;
 			m_file.Seek(m_header.m_dataStart + m_filedata[i].m_dataOffset);
 			ReadIndexBuffer(i, nIB++);
 		}
 		else if (m_filedata[i].m_type == XIP_TYPE_VERTEXBUFFER)
 		{
-			ASSERT(nVB < m_vertexBufferCount);
+			if (!CHECK(nVB < m_vertexBufferCount))
+				continue;
 			m_file.Seek(m_header.m_dataStart + m_filedata[i].m_dataOffset);
 			ReadVertexBuffer(i, nVB++);
 		}

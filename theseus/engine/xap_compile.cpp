@@ -327,7 +327,11 @@ const TCHAR* ParseInteger(const TCHAR* pch, int& i)
 	pch = Token(pch, pchToken, cchToken);
 
 	TCHAR szBuf[64];
-	ASSERT(cchToken < countof(szBuf));
+	if (!CHECK(cchToken < countof(szBuf)))
+	{
+		SyntaxError(_T("Number is too long"));
+		cchToken = countof(szBuf) - 1;
+	}
 	_tcsncpy(szBuf, pchToken, cchToken);
 	szBuf[cchToken] = 0;
 	i = _ttoi(szBuf);
@@ -342,7 +346,11 @@ const TCHAR* ParseNumber(const TCHAR* pch, float& n)
 	pch = Token(pch, pchToken, cchToken);
 
 	TCHAR szBuf[64];
-	ASSERT(cchToken < countof(szBuf));
+	if (!CHECK(cchToken < countof(szBuf)))
+	{
+		SyntaxError(_T("Number is too long"));
+		cchToken = countof(szBuf) - 1;
+	}
 	_tcsncpy(szBuf, pchToken, cchToken);
 	szBuf[cchToken] = 0;
 	n = (float)_tcstod(szBuf, NULL);
@@ -712,7 +720,11 @@ const TCHAR* CFunctionCompiler::ParseTerm(const TCHAR* pch)
 		{
 			// Numeric literal
 			TCHAR szBuf[256]; // copy the token because _tcstod stupidly copies the whole string
-			ASSERT(cchToken < countof(szBuf));
+			if (!CHECK(cchToken < countof(szBuf)))
+			{
+				SyntaxError(_T("Number is too long"));
+				cchToken = countof(szBuf) - 1;
+			}
 			CopyChars(szBuf, pchToken, cchToken);
 			szBuf[cchToken] = 0;
 			float n = (float)_tcstod(szBuf, NULL);

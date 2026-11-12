@@ -580,13 +580,16 @@ int CConfig::GetGamePCFlags()
 {
 	DWORD dwFlags = 0, dwType;
 	VERIFY(!XQueryValue(XC_PARENTAL_CONTROL_GAMES, &dwType, &dwFlags, 4, NULL));
-	ASSERT(dwFlags <= 6);
+	if (!CHECK(dwFlags <= 6))
+		dwFlags = 0;
 	return (int)(6 - dwFlags); // stored inverted in EEPROM
 }
 
 void CConfig::SetGamePCFlags(int nFlags)
 {
-	ASSERT(nFlags <= 6);
+	// Scripts call this and the value goes straight into EEPROM.
+	if (!CHECK(nFlags >= 0 && nFlags <= 6))
+		return;
 	nFlags = 6 - nFlags;
 	VERIFY(!XSetValue(XC_PARENTAL_CONTROL_GAMES, REG_DWORD, (DWORD *)&nFlags, 4));
 }
@@ -595,13 +598,15 @@ int CConfig::GetMoviePCFlags()
 {
 	DWORD dwFlags = 0, dwType;
 	VERIFY(!XQueryValue(XC_PARENTAL_CONTROL_MOVIES, &dwType, &dwFlags, 4, NULL));
-	ASSERT(dwFlags <= 7);
+	if (!CHECK(dwFlags <= 7))
+		dwFlags = 0;
 	return (int)(7 - dwFlags);
 }
 
 void CConfig::SetMoviePCFlags(int nFlags)
 {
-	ASSERT(nFlags <= 7);
+	if (!CHECK(nFlags >= 0 && nFlags <= 7))
+		return;
 	nFlags = 7 - nFlags;
 	VERIFY(!XSetValue(XC_PARENTAL_CONTROL_MOVIES, REG_DWORD, (DWORD *)&nFlags, 4));
 }

@@ -95,6 +95,15 @@ EXTERN_C void Alert(const char* szMsg, ...);
 #define TRACE           Trace
 #define ALERT           Alert
 
+// CHECK survives every build, unlike ASSERT. Use it where failing means bad memory.
+#define CHECK(f)        TheseusCheck(!!(f), #f, __FILE__, __LINE__)
+inline bool TheseusCheck(bool ok, const char* expr, const char* file, int line)
+{
+	if (!ok)
+		fprintf(stderr, "[CHECK] %s:%d: %s\n", file, line, expr);
+	return ok;
+}
+
 // Profiling stubs (Xbox profiling removed)
 #define START_PROFILE()
 #define END_PROFILE()

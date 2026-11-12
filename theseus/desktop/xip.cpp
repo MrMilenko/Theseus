@@ -743,14 +743,16 @@ void CXipFile::ReloadMeshBuffers()
 		switch (m_filedata[i].m_dwType)
 		{
 		case XIP_TYPE_INDEXBUFFER:
-			ASSERT(nIndexBuffer < m_nIndexBufferCount);
+			if (!CHECK(nIndexBuffer < m_nIndexBufferCount))
+				break;
 			m_file.Seek(m_header.m_dwDataStart + m_filedata[i].m_dwDataOffset);
 			ReadIndexBuffer(i, nIndexBuffer);
 			nIndexBuffer += 1;
 			break;
 
 		case XIP_TYPE_VERTEXBUFFER:
-			ASSERT(nVertexBuffer < m_nVertexBufferCount);
+			if (!CHECK(nVertexBuffer < m_nVertexBufferCount))
+				break;
 			m_file.Seek(m_header.m_dwDataStart + m_filedata[i].m_dwDataOffset);
 			ReadVertexBuffer(i, nVertexBuffer);
 			nVertexBuffer += 1;
