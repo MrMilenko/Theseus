@@ -18,13 +18,24 @@ public:
 	void Bind();
 	void RenderBackdrop();
 
+	void SetAlpha(float a);
+	void DisappearAfter(float t);
+
 	CNode* m_backdrop;
 	D3DXVECTOR3 m_skyColor;
 	bool m_isBound;
 
+	float m_fade;			// seconds SetAlpha takes to get there
+	XTIME m_timeAlphaStart;
+	float m_alphaStart;
+	float m_alphaEnd;
+	float m_alpha;			// backdrop opacity
+	XTIME m_timeToDisappear;
+
 	LPDIRECT3DVERTEXBUFFER8 m_vb;
 
 	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 };
 
 class CLevel : public CGroup
