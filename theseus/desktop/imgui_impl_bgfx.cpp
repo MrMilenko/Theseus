@@ -45,6 +45,7 @@ static bgfx::ShaderHandle LoadShader(const char* name)
 		case bgfx::RendererType::Metal:      sub = "metal"; break;
 		case bgfx::RendererType::Vulkan:     sub = "spirv"; break;
 		case bgfx::RendererType::OpenGL:     sub = "glsl";  break;
+		case bgfx::RendererType::OpenGLES:   sub = "essl";  break;
 		default: break;
 	}
 	char path[512];
