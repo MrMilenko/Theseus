@@ -491,7 +491,8 @@ static void RereadLegacyFromDisk() {
 void SaveDesktopSettings() {
     Plat_MkdirP(AppPath_Tree("Configs"));
     RereadLegacyFromDisk();
-    FILE* fp = fopen(AppPath("Configs/desktop.ini"), "w");
+    SafeSave save(AppPath("Configs/desktop.ini"));
+    FILE* fp = save.f;
     if (!fp) return;
     fprintf(fp, "[Desktop]\n");
     fprintf(fp, "XemuPath=%s\n", s_xemuPath);
@@ -558,7 +559,7 @@ void SaveDesktopSettings() {
     fprintf(fp, "Use Progressive=%s\n", g_useProgressive);
     fprintf(fp, "\n[Dashboard Settings]\n");
     fprintf(fp, "Current Skin=%s\n",    g_currentSkin);
-    fclose(fp);
+    save.Commit();
 }
 
 // Helper: returns true when ImGui has an active text input widget (Title Maker, inspector search, etc.)
@@ -1095,6 +1096,7 @@ void RenderXcloudOverlay()
 
 #if defined(THESEUS_HAVE_WEBRTC)
 #include "xcloud_video.h"
+#include "safe_save.h"
 #include <vector>
 
 

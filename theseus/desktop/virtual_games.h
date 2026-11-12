@@ -11,6 +11,7 @@
 #include <cctype>
 #include <sys/stat.h>
 #include "xboxfs_drive.h"
+#include "safe_save.h"
 
 // Roomy enough for a full local library plus a signed-in xCloud/Game Pass
 // account injected at boot (see xcloud_vgames.cpp), and now an imported ES-DE
@@ -155,7 +156,8 @@ inline void VGames_Reload() {
 inline void VGames_Save() {
     Plat_MkdirP(AppPath_Tree("Configs"));
 
-    FILE* fp = fopen(VGAMES_INI, "w");
+    SafeSave save(VGAMES_INI);
+    FILE* fp = save.f;
     if (!fp) return;
 
     for (int i = 0; i < g_vgames.count; i++) {
@@ -172,7 +174,7 @@ inline void VGames_Save() {
         if (g.group[0]) fprintf(fp, "Group=%s\n", g.group);
         fprintf(fp, "\n");
     }
-    fclose(fp);
+    save.Commit();
 }
 
 inline int VGames_Add(const char* name, const char* titleID, const char* launch,
@@ -236,7 +238,8 @@ inline void VGames_DeleteByName(const char* name) {
     g_vgames.games[idx].valid = false;
     g_vgames.generation++;
 
-    FILE* fp = fopen(AppPath("Configs/games.ini"), "w");
+    SafeSave save(AppPath("Configs/games.ini"));
+    FILE* fp = save.f;
     if (fp) {
         for (int i = 0; i < g_vgames.count; i++) {
             if (!g_vgames.games[i].valid) continue;
@@ -249,7 +252,7 @@ inline void VGames_DeleteByName(const char* name) {
                 fprintf(fp, "Category=%s\n", g_vgames.games[i].category);
             fprintf(fp, "\n");
         }
-        fclose(fp);
+        save.Commit();
     }
     fprintf(stderr, "[VGames] Deleted: %s\n", name);
 }
