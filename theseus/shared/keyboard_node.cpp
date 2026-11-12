@@ -1,209 +1,166 @@
-// keyboard_node.cpp: CKeyboard, the on-screen keyboard node.
+// keyboard_node.cpp: the Keyboard node, the on-screen keyboard behind every
+// name and passcode prompt.
 //
-// Provides text input via a grid of selectable keys. Three Western modes
-// (alpha, symbol, accent) and three Japanese modes (hiragana, katakana,
-// English). XAP scripts drive navigation and receive callbacks (OnDone,
-// OnError).
-//
-// CKeyboard confirmed in the 5960 retail XBE: class descriptor
-// "CKeyboard" at 0x00029d38, node-type string "Keyboard" at 0x00029d4c.
-// See docs/decomp/Keyboard.md.
-//   FND table at 0x00013da4
-//   Class registration at 0x0001f368
+// A grid of keys (5 x 11 western, 9 x 11 Japanese) with a highlighted key the
+// script moves around, a 31 character edit string with a cursor, and OnDone /
+// OnError callbacks. Rebuilt function by function from the 5960 retail XBE;
+// what the binary does is written up in docs/decomp/Keyboard.md.
 
 #include "std.h"
 #include "theseus.h"
 #include "node.h"
 #include "runner.h"
 
-extern CNode* GetTextNode(const TCHAR* szText, float nWidth);
-extern bool g_bActiveKey;
+// Shared with the Text node: the keyboard lends it the edit string and cursor
+// (0x0017e748, 0x00175220), flags the highlighted key (0x0017e74d) and owns the
+// *heading* switch (0x0017e74c).
 extern TCHAR* g_szText;
-extern bool g_bAsteriskFormatting;   // text.cpp, gates *heading* text
 extern int g_nTextChar;
+extern bool g_bActiveKey;
+extern bool g_bAsteriskFormatting;
 extern int g_nCurLanguage;
 
 
-// ===== Constants ============================================================
+// ===== Layouts =============================================================
+// Six 16 bit key tables at 0x000211b8..0x00021498, reached through the
+// pointer list at 0x00175430 (three western, then three Japanese). Values
+// below 0x0f are function keys, everything else types itself.
 
-#define KB_MAX_LENGTH   31
-#define KB_COLS         11
-
-// Western mode indices
-enum { MODE_ALPHA = 0, MODE_SYMBOL, MODE_ACCENT };
-
-// Japanese mode indices
-enum { JMODE_HIRAGANA = 0, JMODE_KATAKANA, JMODE_ENGLISH };
-
-// Special key codes
-enum {
-	KEY_SHIFT = 1, KEY_CAPS, KEY_ALPHA, KEY_SYM, KEY_ACC,
-	KEY_LT, KEY_RT, KEY_BS, KEY_DONE, KEY_SPACE,
-	KEY_HIRAGANA, KEY_KATAKANA, KEY_ENGLISH, KEY_VOID
+enum
+{
+	kcShift = 1,
+	kcCaps,
+	kcAlphabet,
+	kcSymbols,
+	kcAccents,
+	kcLeft,
+	kcRight,
+	kcBackspace,
+	kcDone,
+	kcSpace,
+	kcHiragana,
+	kcKatakana,
+	kcEnglish,
+	kcBlank,        // a hole in the Japanese grid, never drawn or landed on
 };
 
+#define EDIT_MAX        31
+#define GRID_COLUMNS    11
+#define WESTERN_KEYS    (5 * GRID_COLUMNS)
+#define JAPANESE_KEYS   (9 * GRID_COLUMNS)
+#define WESTERN_NODES   45      // merged keys share one node
+#define JAPANESE_NODES  99
 
-// ===== Unicode character defines ============================================
-
-#define _nbsp     0x00a0
-#define _iexcl    0x00a1
-#define _pound    0x00a3
-#define _yen      0x00a5
-#define _laquo    0x00ab
-#define _raquo    0x00bb
-#define _iquest   0x00bf
-#define _agrave   0x00e0
-#define _aacute   0x00e1
-#define _acirc    0x00e2
-#define _auml     0x00e4
-#define _aelig    0x00e6
-#define _ccedil   0x00e7
-#define _egrave   0x00e8
-#define _eacute   0x00e9
-#define _ecirc    0x00ea
-#define _euml     0x00eb
-#define _igrave   0x00ec
-#define _iacute   0x00ed
-#define _icirc    0x00ee
-#define _iuml     0x00ef
-#define _ntilde   0x00f1
-#define _ograve   0x00f2
-#define _oacute   0x00f3
-#define _ocirc    0x00f4
-#define _otilde   0x00f5
-#define _ugrave   0x00f9
-#define _uacute   0x00fa
-#define _ucirc    0x00fb
-#define _uuml     0x00fc
-#define _yacute   0x00fd
-#define _yuml     0x00ff
-#define _szlig    0x00df
-#define _euro     0x20ac
-
-
-// ===== Key layout tables ====================================================
-// Each table is a flat array of WORD, KB_COLS entries per row.
-// Special keys use the KEY_* constants above.
-
-static const WORD s_alphaKeys[] =
+static const WORD s_westernAlpha[WESTERN_KEYS] =
 {
-	KEY_DONE,   L'1', L'2', L'3', L'4', L'5', L'6', L'7', L'8', L'9', L'0',
-	KEY_SHIFT,  L'a', L'b', L'c', L'd', L'e', L'f', L'g', L'h', L'i', L'j',
-	KEY_CAPS,   L'k', L'l', L'm', L'n', L'o', L'p', L'q', L'r', L's', L't',
-	KEY_ACC,    L'u', L'v', L'w', L'x', L'y', L'z', KEY_BS, KEY_BS, KEY_BS, KEY_BS,
-	KEY_SYM,    KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_LT, KEY_LT, KEY_RT, KEY_RT,
+	kcDone,     '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+	kcShift,    'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j',
+	kcCaps,     'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
+	kcAccents,  'u', 'v', 'w', 'x', 'y', 'z',
+	            kcBackspace, kcBackspace, kcBackspace, kcBackspace,
+	kcSymbols,  kcSpace, kcSpace, kcSpace, kcSpace, kcSpace, kcSpace,
+	            kcLeft, kcLeft, kcRight, kcRight,
 };
 
-static const WORD s_symbolKeys[] =
+static const WORD s_westernSymbols[WESTERN_KEYS] =
 {
-	KEY_DONE,   L'(',  L')',  L'&',  L'_',  L'^',    L'%',  L'\\', L'/',  L'@',  L'#',
-	KEY_SHIFT,  L'[',  L']',  L'$',  _pound, _euro,  _yen,  L';',  L':',  L'\'', L'"',
-	KEY_CAPS,   L'<',  L'>',  L'?',  L'!',  _iquest, _iexcl, L'-', L'*',  L'+',  L'=',
-	KEY_ACC,    L'{',  L'}',  _laquo, _raquo, L',',  L'.',  KEY_BS, KEY_BS, KEY_BS, KEY_BS,
-	KEY_ALPHA,  KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_LT, KEY_LT, KEY_RT, KEY_RT,
+	kcDone,     '(', ')', '&', '_', '^', '%', '\\', '/', '@', '#',
+	kcShift,    '[', ']', '$', 0xa3, 0x20ac, 0xa5, ';', ':', '\'', '"',
+	kcCaps,     '<', '>', '?', '!', 0xbf, 0xa1, '-', '*', '+', '=',
+	kcAccents,  '{', '}', 0xab, 0xbb, ',', '.',
+	            kcBackspace, kcBackspace, kcBackspace, kcBackspace,
+	kcAlphabet, kcSpace, kcSpace, kcSpace, kcSpace, kcSpace, kcSpace,
+	            kcLeft, kcLeft, kcRight, kcRight,
 };
 
-static const WORD s_accentKeys[] =
+static const WORD s_westernAccents[WESTERN_KEYS] =
 {
-	KEY_DONE,   L'1',     L'2',     L'3',     L'4',     L'5',     L'6',     L'7',     L'8',     L'9',     L'0',
-	KEY_SHIFT,  _agrave,  _aacute,  _acirc,   _auml,    _egrave,  _eacute,  _ecirc,   _euml,    _igrave,  _iacute,
-	KEY_CAPS,   _icirc,   _iuml,    _ograve,  _oacute,  _ocirc,   _otilde,  _ugrave,  _uacute,  _ucirc,   _uuml,
-	KEY_ALPHA,  _yacute,  _yuml,    _ccedil,  _szlig,   _ntilde,  _aelig,   KEY_BS,   KEY_BS,   KEY_BS,   KEY_BS,
-	KEY_SYM,    KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_SPACE, KEY_LT, KEY_LT, KEY_RT, KEY_RT,
+	kcDone,     '1', '2', '3', '4', '5', '6', '7', '8', '9', '0',
+	kcShift,    0xe0, 0xe1, 0xe2, 0xe4, 0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed,
+	kcCaps,     0xee, 0xef, 0xf2, 0xf3, 0xf4, 0xf5, 0xf9, 0xfa, 0xfb, 0xfc,
+	kcAlphabet, 0xfd, 0xff, 0xe7, 0xdf, 0xf1, 0xe6,
+	            kcBackspace, kcBackspace, kcBackspace, kcBackspace,
+	kcSymbols,  kcSpace, kcSpace, kcSpace, kcSpace, kcSpace, kcSpace,
+	            kcLeft, kcLeft, kcRight, kcRight,
 };
 
-static const WORD* s_westernModes[] = { s_alphaKeys, s_symbolKeys, s_accentKeys };
-
-static const WORD s_hiraganaKeys[] =
+static const WORD s_hiragana[JAPANESE_KEYS] =
 {
-	0x3042, 0x3044, 0x3046, 0x3048, 0x304A, 0x308F, 0x3092, 0x3093, KEY_VOID, KEY_VOID, KEY_HIRAGANA,
-	0x304B, 0x304D, 0x304F, 0x3051, 0x3053, 0x3041, 0x3043, 0x3045, 0x3047, 0x3049, KEY_KATAKANA,
-	0x3055, 0x3057, 0x3059, 0x305B, 0x305D, 0x3063, 0x3083, 0x3085, 0x3087, 0x308E, KEY_ENGLISH,
-	0x305F, 0x3061, 0x3064, 0x3066, 0x3068, 0x304C, 0x304E, 0x3050, 0x3052, 0x3054, KEY_SPACE,
-	0x306A, 0x306B, 0x306C, 0x306D, 0x306E, 0x3056, 0x3058, 0x305A, 0x305C, 0x305E, KEY_BS,
-	0x306F, 0x3072, 0x3075, 0x3078, 0x307B, 0x3060, 0x3062, 0x3065, 0x3067, 0x3069, KEY_LT,
-	0x307E, 0x307F, 0x3080, 0x3081, 0x3082, 0x3070, 0x3073, 0x3076, 0x3079, 0x307C, KEY_RT,
-	0x3084, KEY_VOID, 0x3086, KEY_VOID, 0x3088, 0x3071, 0x3074, 0x3077, 0x307A, 0x307D, KEY_VOID,
-	0x3089, 0x308A, 0x308B, 0x308C, 0x308D, 0x30FC, 0x3001, 0x3002, 0x300C, 0x300D, KEY_DONE,
+	0x3042, 0x3044, 0x3046, 0x3048, 0x304a, 0x308f, 0x3092, 0x3093, kcBlank, kcBlank, kcHiragana,
+	0x304b, 0x304d, 0x304f, 0x3051, 0x3053, 0x3041, 0x3043, 0x3045, 0x3047, 0x3049, kcKatakana,
+	0x3055, 0x3057, 0x3059, 0x305b, 0x305d, 0x3063, 0x3083, 0x3085, 0x3087, 0x308e, kcEnglish,
+	0x305f, 0x3061, 0x3064, 0x3066, 0x3068, 0x304c, 0x304e, 0x3050, 0x3052, 0x3054, kcSpace,
+	0x306a, 0x306b, 0x306c, 0x306d, 0x306e, 0x3056, 0x3058, 0x305a, 0x305c, 0x305e, kcBackspace,
+	0x306f, 0x3072, 0x3075, 0x3078, 0x307b, 0x3060, 0x3062, 0x3065, 0x3067, 0x3069, kcLeft,
+	0x307e, 0x307f, 0x3080, 0x3081, 0x3082, 0x3070, 0x3073, 0x3076, 0x3079, 0x307c, kcRight,
+	0x3084, kcBlank, 0x3086, kcBlank, 0x3088, 0x3071, 0x3074, 0x3077, 0x307a, 0x307d, kcBlank,
+	0x3089, 0x308a, 0x308b, 0x308c, 0x308d, 0x30fc, 0x3001, 0x3002, 0x300c, 0x300d, kcDone,
 };
 
-static const WORD s_katakanaKeys[] =
+static const WORD s_katakana[JAPANESE_KEYS] =
 {
-	0x30A2, 0x30A4, 0x30A6, 0x30A8, 0x30AA, 0x30EF, 0x30F2, 0x30F3, 0x30F4, KEY_VOID, KEY_HIRAGANA,
-	0x30AB, 0x30AD, 0x30AF, 0x30B1, 0x30B3, 0x30A1, 0x30A3, 0x30A5, 0x30A7, 0x30A9, KEY_KATAKANA,
-	0x30B5, 0x30B7, 0x30B9, 0x30BB, 0x30BD, 0x30C3, 0x30E3, 0x30E5, 0x30E7, 0x30EE, KEY_ENGLISH,
-	0x30BF, 0x30C1, 0x30C4, 0x30C6, 0x30C8, 0x30AC, 0x30AE, 0x30B0, 0x30B2, 0x30B4, KEY_SPACE,
-	0x30CA, 0x30CB, 0x30CC, 0x30CD, 0x30CE, 0x30B6, 0x30B8, 0x30BA, 0x30BC, 0x30BE, KEY_BS,
-	0x30CF, 0x30D2, 0x30D5, 0x30D8, 0x30DB, 0x30C0, 0x30C2, 0x30C5, 0x30C7, 0x30C9, KEY_LT,
-	0x30DE, 0x30DF, 0x30E0, 0x30E1, 0x30E2, 0x30D0, 0x30D3, 0x30D6, 0x30D9, 0x30DC, KEY_RT,
-	0x30E4, KEY_VOID, 0x30E6, KEY_VOID, 0x30E8, 0x30D1, 0x30D4, 0x30D7, 0x30DA, 0x30DD, KEY_VOID,
-	0x30E9, 0x30EA, 0x30EB, 0x30EC, 0x30ED, 0x30FC, 0x3001, 0x3002, 0x300C, 0x300D, KEY_DONE,
+	0x30a2, 0x30a4, 0x30a6, 0x30a8, 0x30aa, 0x30ef, 0x30f2, 0x30f3, 0x30f4, kcBlank, kcHiragana,
+	0x30ab, 0x30ad, 0x30af, 0x30b1, 0x30b3, 0x30a1, 0x30a3, 0x30a5, 0x30a7, 0x30a9, kcKatakana,
+	0x30b5, 0x30b7, 0x30b9, 0x30bb, 0x30bd, 0x30c3, 0x30e3, 0x30e5, 0x30e7, 0x30ee, kcEnglish,
+	0x30bf, 0x30c1, 0x30c4, 0x30c6, 0x30c8, 0x30ac, 0x30ae, 0x30b0, 0x30b2, 0x30b4, kcSpace,
+	0x30ca, 0x30cb, 0x30cc, 0x30cd, 0x30ce, 0x30b6, 0x30b8, 0x30ba, 0x30bc, 0x30be, kcBackspace,
+	0x30cf, 0x30d2, 0x30d5, 0x30d8, 0x30db, 0x30c0, 0x30c2, 0x30c5, 0x30c7, 0x30c9, kcLeft,
+	0x30de, 0x30df, 0x30e0, 0x30e1, 0x30e2, 0x30d0, 0x30d3, 0x30d6, 0x30d9, 0x30dc, kcRight,
+	0x30e4, kcBlank, 0x30e6, kcBlank, 0x30e8, 0x30d1, 0x30d4, 0x30d7, 0x30da, 0x30dd, kcBlank,
+	0x30e9, 0x30ea, 0x30eb, 0x30ec, 0x30ed, 0x30fc, 0x3001, 0x3002, 0x300c, 0x300d, kcDone,
 };
 
-static const WORD s_englishKeys[] =
+// The Japanese "English" page: capitals and lowercase side by side, then
+// digits and punctuation.
+static const WORD s_japaneseLatin[JAPANESE_KEYS] =
 {
-	0x41, 0x42, 0x43, 0x44, 0x45, 0x61, 0x62, 0x63, 0x64, 0x65, KEY_HIRAGANA,
-	0x46, 0x47, 0x48, 0x49, 0x4A, 0x66, 0x67, 0x68, 0x69, 0x6A, KEY_KATAKANA,
-	0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F, KEY_ENGLISH,
-	0x50, 0x51, 0x52, 0x53, 0x54, 0x70, 0x71, 0x72, 0x73, 0x74, KEY_SPACE,
-	0x55, 0x56, 0x57, 0x58, 0x59, 0x75, 0x76, 0x77, 0x78, 0x79, KEY_BS,
-	0x5A, 0x22, 0x27, 0x40, 0x23, 0x7A, 0x28, 0x29, 0x7B, 0x7D, KEY_LT,
-	0x26, 0x5E, 0x24, 0xA5, 0x25, 0x2D, 0x2B, 0x3D, 0x2A, 0x2F, KEY_RT,
-	0x30, 0x31, 0x32, 0x33, 0x34, 0x3F, 0x21, 0x3A, 0x3B, 0x5C, KEY_VOID,
-	0x35, 0x36, 0x37, 0x38, 0x39, 0x3C, 0x3E, 0x2C, 0x2E, 0x5F, KEY_DONE,
+	'A', 'B', 'C', 'D', 'E', 'a', 'b', 'c', 'd', 'e',   kcHiragana,
+	'F', 'G', 'H', 'I', 'J', 'f', 'g', 'h', 'i', 'j',   kcKatakana,
+	'K', 'L', 'M', 'N', 'O', 'k', 'l', 'm', 'n', 'o',   kcEnglish,
+	'P', 'Q', 'R', 'S', 'T', 'p', 'q', 'r', 's', 't',   kcSpace,
+	'U', 'V', 'W', 'X', 'Y', 'u', 'v', 'w', 'x', 'y',   kcBackspace,
+	'Z', '"', '\'', '@', '#', 'z', '(', ')', '{', '}',  kcLeft,
+	'&', '^', '$', 0xa5, '%', '-', '+', '=', '*', '/',  kcRight,
+	'0', '1', '2', '3', '4', '?', '!', ':', ';', '\\',  kcBlank,
+	'5', '6', '7', '8', '9', '<', '>', ',', '.', '_',   kcDone,
 };
 
-static const WORD* s_japaneseModes[] = { s_hiraganaKeys, s_katakanaKeys, s_englishKeys };
-
-
-// ===== Key label lookup =====================================================
-
-static const TCHAR* GetKeyLabel(WORD key)
+static const WORD* const s_layouts[2][3] =
 {
-	switch (key)
-	{
-	case KEY_SHIFT:    return _T("SHIFT");
-	case KEY_CAPS:     return _T("CAPS LOCK");
-	case KEY_ALPHA:    return _T("ALPHABET");
-	case KEY_SYM:      return _T("SYMBOLS");
-	case KEY_ACC:      return _T("ACCENTS");
-	case KEY_ENGLISH:  return _T("ENGLISH");
-	case KEY_HIRAGANA: return _T("HIRAGANA");
-	case KEY_KATAKANA: return _T("KATAKANA");
-	case KEY_LT:       return _T("<");
-	case KEY_RT:       return _T(">");
-	case KEY_BS:       return _T("BACKSPACE");
-	case KEY_DONE:     return _T("DONE");
-	case KEY_SPACE:    return _T("SPACE");
-	case KEY_VOID:     return _T(" ");
-	default:           return NULL;
-	}
+	{ s_westernAlpha, s_westernSymbols, s_westernAccents },
+	{ s_hiragana, s_katakana, s_japaneseLatin },
+};
+
+static inline bool JapaneseGrid()
+{
+	return g_nCurLanguage == 1;
+}
+
+static inline int BottomRow()
+{
+	return JapaneseGrid() ? 8 : 4;
+}
+
+// Western grids key off mode, the Japanese grid off jmode.
+static inline const WORD* GridFor(int mode, int jmode)
+{
+	return JapaneseGrid() ? s_layouts[1][jmode] : s_layouts[0][mode];
+}
+
+// 5960 calls CharUpperW for shifted keys; Theseus only maps a to z.
+static TCHAR KeyUpper(TCHAR ch)
+{
+	if (ch >= 'a' && ch <= 'z')
+		return (TCHAR)(ch - ('a' - 'A'));
+	return ch;
 }
 
 
-// ===== Helpers ==============================================================
-
-static bool IsJapanese() { return g_nCurLanguage == 1; }
-
-static int GetRowCount() { return IsJapanese() ? 8 : 4; }
-
-static const WORD* GetActiveLayout(int westernMode, int japaneseMode)
-{
-	return IsJapanese() ? s_japaneseModes[japaneseMode] : s_westernModes[westernMode];
-}
-
-static WORD KeyAt(const WORD* layout, int row, int col)
-{
-	return layout[row * KB_COLS + col];
-}
-
-static bool IsValidKey(const WORD* layout, int row, int col)
-{
-	return KeyAt(layout, row, col) != KEY_VOID;
-}
-
-
-// ===== CKeyboard ============================================================
+// ===== CKeyboard ===========================================================
+// 0x9c bytes in 5960: the nodearray at +0x1c, frame/text/control +0x28..+0x30,
+// string +0x34, shift +0x38, caps +0x39, mode +0x40, jmode +0x44, the edit
+// buffer +0x48 (32 WCHARs), its length +0x88, cursor +0x8c, row +0x90 and
+// column +0x94.
 
 class CKeyboard : public CNode
 {
@@ -216,9 +173,7 @@ public:
 	CNode* m_frame;
 	CNode* m_text;
 	CNode* m_control;
-
 	TCHAR* m_string;
-
 	bool m_shift;
 	bool m_caps;
 	int m_mode;
@@ -230,7 +185,6 @@ public:
 	void selectLeft();
 	void selectRight();
 	void activate();
-
 	void Backspace();
 	void Delete();
 	void CursorLeft();
@@ -238,32 +192,32 @@ public:
 	void Shift();
 	void CycleMode();
 	void Insert(const TCHAR* szInsert);
-
-	bool GetAsteriskFormattingState() { return g_bAsteriskFormatting; }
-	void SetAsteriskFormattingState(bool b) { g_bAsteriskFormatting = b; }
+	bool GetAsteriskFormattingState();
+	void SetAsteriskFormattingState(bool bOn);
 
 	void Advance(float nSeconds);
 	void Render();
 	bool OnSetProperty(const PRD* pprd, const void* pvValue);
 
 protected:
-	TCHAR m_rgch[KB_MAX_LENGTH + 1];
-	int m_nLength;
-	int m_nCursor;
-	int m_nRow;
-	int m_nColumn;
+	TCHAR m_edit[EDIT_MAX + 1];
+	int m_editLen;
+	int m_cursor;       // -1 means the whole string is selected
+	int m_row;
+	int m_col;
 
-	const WORD* ActiveLayout() { return GetActiveLayout(m_mode, m_jmode); }
-	TCHAR ApplyCase(TCHAR ch);
-	void ClearSelection();
-	bool InsertChar(TCHAR ch);
+	const WORD* Grid() const { return GridFor(m_mode, m_jmode); }
+	WORD KeyAt(int row, int col) const { return Grid()[row * GRID_COLUMNS + col]; }
+	void TakeSelection();
+	void OpenGap(int at, int count);
 
 	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS();
+	DECLARE_NODE_FUNCTIONS()
 };
 
 IMPLEMENT_NODE("Keyboard", CKeyboard, CNode)
 
+// PRD at 0x00175448, same order.
 START_NODE_PROPS(CKeyboard, CNode)
 	NODE_PROP(pt_nodearray, CKeyboard, keys)
 	NODE_PROP(pt_node, CKeyboard, frame)
@@ -276,6 +230,7 @@ START_NODE_PROPS(CKeyboard, CNode)
 	NODE_PROP(pt_string, CKeyboard, string)
 END_NODE_PROPS()
 
+// FND at 0x00188250 (the binary lists Set before Get).
 #define _FND_CLASS CKeyboard
 START_NODE_FUN(CKeyboard, CNode)
 	NODE_FUN_VII(selectKey)
@@ -296,485 +251,512 @@ START_NODE_FUN(CKeyboard, CNode)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-CKeyboard::CKeyboard() :
-	m_control(NULL),
-	m_frame(NULL),
-	m_text(NULL),
-	m_mode(MODE_ALPHA),
-	m_jmode(JMODE_HIRAGANA),
-	m_shift(false),
-	m_caps(false),
-	m_string(NULL)
+// CKeyboard::CKeyboard()
+// Reconstructed from 5960 retail XBE @ 0x0005ab80: every field zero except
+// the cursor, which starts at -1 so the first key replaces the whole string.
+CKeyboard::CKeyboard()
 {
-	m_nLength = 0;
-	m_nCursor = -1;
-	m_nRow = 0;
-	m_nColumn = 0;
+	m_frame = NULL;
+	m_text = NULL;
+	m_control = NULL;
+	m_string = NULL;
+	m_shift = false;
+	m_caps = false;
+	m_mode = 0;
+	m_jmode = 0;
+	m_editLen = 0;
+	m_cursor = -1;
+	m_row = 0;
+	m_col = 0;
 }
 
+// CKeyboard::~CKeyboard()
+// Reconstructed from 5960 retail XBE @ 0x0005ac20:
+//     if (text) text->Release(); if (frame) frame->Release();
+//     if (control) control->Release(); free(string); keys.ReleaseAll();
 CKeyboard::~CKeyboard()
 {
-	if (m_text != NULL)
-		m_text->Release();
-
-	if (m_frame != NULL)
-		m_frame->Release();
-
-	if (m_control != NULL)
-		m_control->Release();
-
+	CNode* owned[] = { m_text, m_frame, m_control };
+	for (int i = 0; i < 3; i++)
+	{
+		if (owned[i] != NULL)
+			owned[i]->Release();
+	}
 	delete [] m_string;
 }
 
-void CKeyboard::ClearSelection()
+// Every edit starts here: with the whole string selected (cursor -1) the edit
+// replaces it, so the string empties and the cursor goes to 0. The binary
+// repeats this block at the top of each editing function.
+void CKeyboard::TakeSelection()
 {
-	if (m_nCursor == -1)
-	{
-		m_nLength = 0;
-		m_nCursor = 0;
-	}
+	if (m_cursor != -1)
+		return;
+	m_editLen = 0;
+	m_cursor = 0;
 }
 
-TCHAR CKeyboard::ApplyCase(TCHAR ch)
+// Shifts the tail from `at` right by `count` characters.
+void CKeyboard::OpenGap(int at, int count)
 {
-	// Only a-z change case; anything wider passes through untouched.
-	if ((m_caps ^ m_shift) && ch >= 'a' && ch <= 'z')
-		ch = (TCHAR)(ch - 'a' + 'A');
-	return ch;
-}
-
-bool CKeyboard::InsertChar(TCHAR ch)
-{
-	ClearSelection();
-
-	if (m_nLength >= KB_MAX_LENGTH)
-	{
-		CallFunction(this, _T("OnError"));
-		return false;
-	}
-
-	MoveMemory(&m_rgch[m_nCursor + 1], &m_rgch[m_nCursor], (m_nLength - m_nCursor) * sizeof(TCHAR));
-	m_rgch[m_nCursor] = ch;
-	m_nCursor += 1;
-	m_nLength += 1;
-	return true;
+	MoveMemory(m_edit + at + count, m_edit + at, (m_editLen - at) * sizeof(TCHAR));
 }
 
 
-// ===== Navigation ===========================================================
+// ===== Moving the highlight ================================================
 
+// CKeyboard::selectKey(row, col)   [script fn 'selectKey', FND 0x00188250, sig 18]
+// Reconstructed from 5960 retail XBE @ 0x0005ace0:
+//     row = (row < 0 || row > (lang==1 ? 8 : 4)) ? 0 : row;
+//     col = (col < 0 || col > 10) ? 0 : col;
 void CKeyboard::selectKey(int nRow, int nColumn)
 {
-	int rows = GetRowCount();
-
-	m_nRow = (nRow < 0 || nRow > rows) ? 0 : nRow;
-	m_nColumn = (nColumn < 0 || nColumn > 10) ? 0 : nColumn;
+	bool rowOk = nRow >= 0 && nRow <= BottomRow();
+	bool colOk = nColumn >= 0 && nColumn < GRID_COLUMNS;
+	m_row = rowOk ? nRow : 0;
+	m_col = colOk ? nColumn : 0;
 }
 
+// CKeyboard::selectUp()   [script fn 'selectUp', FND 0x00188268, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005ad40:
+//     do { row = row ? row - 1 : bottom; } while (grid[row*11 + col] == 0xe);
 void CKeyboard::selectUp()
 {
-	const WORD* layout = ActiveLayout();
-	int rows = GetRowCount();
-	int attempts = rows + 1;
-
-	while (attempts-- > 0)
+	do
 	{
-		m_nRow = (m_nRow == 0) ? rows : m_nRow - 1;
-		if (IsValidKey(layout, m_nRow, m_nColumn))
-			return;
+		m_row = (m_row == 0) ? BottomRow() : m_row - 1;
 	}
+	while (KeyAt(m_row, m_col) == kcBlank);
 }
 
+// CKeyboard::selectDown()   [script fn 'selectDown', FND 0x00188280, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005adb0:
+//     do { row = (row == bottom) ? 0 : row + 1; } while (grid[row*11 + col] == 0xe);
 void CKeyboard::selectDown()
 {
-	const WORD* layout = ActiveLayout();
-	int rows = GetRowCount();
-	int attempts = rows + 1;
-
-	while (attempts-- > 0)
+	do
 	{
-		m_nRow = (m_nRow == rows) ? 0 : m_nRow + 1;
-		if (IsValidKey(layout, m_nRow, m_nColumn))
-			return;
+		m_row = (m_row == BottomRow()) ? 0 : m_row + 1;
 	}
+	while (KeyAt(m_row, m_col) == kcBlank);
 }
 
+// CKeyboard::selectLeft()   [script fn 'selectLeft', FND 0x00188298, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005ae60. Column 0 wraps to 10
+// (again if that's a blank). Japanese steps one column, skipping blanks.
+// Western rows 3 and 4 hop over the wide keys: row 3 from 7..10 lands on 6;
+// row 4 from 9..10 lands on 8, from 7..8 on 6, from 1..6 on 0.
 void CKeyboard::selectLeft()
 {
-	const WORD* layout = ActiveLayout();
-
-	if (IsJapanese())
+	for (;;)
 	{
-		int attempts = KB_COLS;
-		while (attempts-- > 0)
+		if (m_col == 0)
 		{
-			m_nColumn = (m_nColumn == 0) ? 10 : m_nColumn - 1;
-			if (IsValidKey(layout, m_nRow, m_nColumn))
+			m_col = GRID_COLUMNS - 1;
+			if (KeyAt(m_row, m_col) != kcBlank)
 				return;
-		}
-	}
-	else
-	{
-		if (m_nColumn == 0)
-		{
-			m_nColumn = 10;
-			return;
+			continue;
 		}
 
-		if (m_nRow == 3)
+		if (JapaneseGrid())
 		{
-			m_nColumn = (m_nColumn > 6) ? 6 : m_nColumn - 1;
+			m_col--;
+			if (KeyAt(m_row, m_col) != kcBlank)
+				return;
+			continue;
 		}
-		else if (m_nRow == 4)
-		{
-			if (m_nColumn > 8)
-				m_nColumn = 8;
-			else if (m_nColumn > 6)
-				m_nColumn = 6;
-			else
-				m_nColumn = 0;
-		}
+
+		if (m_row == 3 && m_col > 6)
+			m_col = 6;
+		else if (m_row == 4)
+			m_col = (m_col > 8) ? 8 : (m_col > 6) ? 6 : 0;
 		else
-		{
-			m_nColumn -= 1;
-		}
+			m_col--;
+		return;
 	}
 }
 
+// CKeyboard::selectRight()   [script fn 'selectRight', FND 0x001882b0, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005af50. The mirror of selectLeft:
+// column 10 wraps to 0, Japanese skips blanks, western row 3 wraps from 7 on
+// and row 4 goes 0 to 1, 1..6 to 7, 7..8 to 9, 9 on to 0.
 void CKeyboard::selectRight()
 {
-	const WORD* layout = ActiveLayout();
-
-	if (IsJapanese())
+	for (;;)
 	{
-		int attempts = KB_COLS;
-		while (attempts-- > 0)
+		if (m_col == GRID_COLUMNS - 1)
 		{
-			m_nColumn = (m_nColumn == 10) ? 0 : m_nColumn + 1;
-			if (IsValidKey(layout, m_nRow, m_nColumn))
+			m_col = 0;
+			if (KeyAt(m_row, m_col) != kcBlank)
 				return;
+			continue;
 		}
-	}
-	else
-	{
-		if (m_nRow == 3)
-		{
-			if (m_nColumn >= 7)
-			{
-				m_nColumn = 0;
-				return;
-			}
-			m_nColumn += 1;
-		}
-		else if (m_nRow == 4)
-		{
-			if (m_nColumn >= 9)
-			{
-				m_nColumn = 0;
-				return;
-			}
 
-			if (m_nColumn == 0)
-				m_nColumn = 1;
-			else if (m_nColumn < 7)
-				m_nColumn = 7;
-			else if (m_nColumn < 9)
-				m_nColumn = 9;
+		if (JapaneseGrid())
+		{
+			m_col++;
+			if (KeyAt(m_row, m_col) != kcBlank)
+				return;
+			continue;
+		}
+
+		if (m_row == 3)
+			m_col = (m_col < 7) ? m_col + 1 : 0;
+		else if (m_row == 4)
+		{
+			if (m_col >= 9)
+				m_col = 0;
+			else if (m_col == 0)
+				m_col = 1;
+			else
+				m_col = (m_col > 6) ? 9 : 7;
 		}
 		else
-		{
-			if (m_nColumn == 10)
-			{
-				m_nColumn = 0;
-				return;
-			}
-			m_nColumn += 1;
-		}
+			m_col++;
+		return;
 	}
 }
 
 
-// ===== Key activation =======================================================
+// ===== Pressing a key ======================================================
 
+// CKeyboard::activate()   [script fn 'activate', FND 0x001882c8, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005b340. Looks up the highlighted
+// key and acts on it: function keys switch case or page, move the cursor or
+// erase; DONE trims the string, copies it to `string` and calls OnDone (an
+// empty or all blank string calls OnError instead); SPACE inserts quietly
+// unless full; anything else inserts the character (uppercased when shift
+// and caps disagree), drops shift, or calls OnError when full.
+// See docs/decomp/Keyboard.md.
 void CKeyboard::activate()
 {
-	const WORD* layout = ActiveLayout();
-	WORD key = KeyAt(layout, m_nRow, m_nColumn);
+	WORD key = KeyAt(m_row, m_col);
 
 	switch (key)
 	{
-	case KEY_DONE:
-		{
-			// Reject all-whitespace strings
-			int i;
-			for (i = 0; i < m_nLength; i += 1)
-			{
-				if (m_rgch[i] != ' ')
-					break;
-			}
+	case kcShift:
+		Shift();
+		return;
 
-			if (i == m_nLength)
-			{
-				CallFunction(this, _T("OnError"));
-				break;
-			}
+	case kcCaps:
+		if (m_mode != 0 && m_mode != 2)
+			break;
+		m_caps = !m_caps;
+		return;
 
-			// Trim trailing spaces
-			TCHAR* pEnd = m_rgch + (m_nLength - 1);
-			while (*pEnd == _T(' '))
-			{
-				*pEnd = _T('\0');
-				pEnd--;
-			}
+	case kcAlphabet: m_mode = 0; return;
+	case kcSymbols:  m_mode = 1; return;
+	case kcAccents:  m_mode = 2; return;
+	case kcHiragana: m_jmode = 0; return;
+	case kcKatakana: m_jmode = 1; return;
+	case kcEnglish:  m_jmode = 2; return;
 
-			// Trim leading spaces
-			TCHAR* pStart = m_rgch;
-			while (*pStart == _T(' '))
-				pStart++;
+	case kcLeft:      CursorLeft(); return;
+	case kcRight:     CursorRight(); return;
+	case kcBackspace: Backspace(); return;
 
-			if (pStart != m_rgch)
-				MoveMemory(m_rgch, pStart, sizeof(TCHAR) * (_tcslen(pStart) + 1));
+	case kcDone:
+	{
+		int lead = 0;
+		while (lead < m_editLen && m_edit[lead] == ' ')
+			lead++;
+		if (lead == m_editLen)
+			break;
 
-			delete [] m_string;
-			m_string = new TCHAR [m_nLength + 1];
-			CopyChars(m_string, m_rgch, m_nLength);
-			m_string[m_nLength] = 0;
+		// Blank out trailing spaces, then slide the text over the leading ones.
+		for (int end = m_editLen - 1; m_edit[end] == ' '; end--)
+			m_edit[end] = 0;
+		if (lead > 0)
+			MoveMemory(m_edit, m_edit + lead, (_tcslen(m_edit + lead) + 1) * sizeof(TCHAR));
 
-			CallFunction(this, _T("OnDone"));
-		}
-		break;
+		// The copy keeps the untrimmed length, so trimmed spaces come along as nulls.
+		delete [] m_string;
+		m_string = new TCHAR[m_editLen + 1];
+		CopyChars(m_string, m_edit, m_editLen);
+		m_string[m_editLen] = 0;
+		CallFunction(this, _T("OnDone"));
+		return;
+	}
 
-	case KEY_SHIFT:    Shift(); break;
-	case KEY_CAPS:
-		if (m_mode != MODE_ALPHA && m_mode != MODE_ACCENT)
-			CallFunction(this, _T("OnError"));
-		else
-			m_caps = !m_caps;
-		break;
-
-	case KEY_ALPHA:    m_mode = MODE_ALPHA; break;
-	case KEY_SYM:      m_mode = MODE_SYMBOL; break;
-	case KEY_ACC:      m_mode = MODE_ACCENT; break;
-	case KEY_HIRAGANA: m_jmode = JMODE_HIRAGANA; break;
-	case KEY_KATAKANA: m_jmode = JMODE_KATAKANA; break;
-	case KEY_ENGLISH:  m_jmode = JMODE_ENGLISH; break;
-	case KEY_LT:       CursorLeft(); break;
-	case KEY_RT:       CursorRight(); break;
-	case KEY_BS:       Backspace(); break;
-
-	case KEY_SPACE:
-		// Space on a full string is ignored without the error sound.
-		ClearSelection();
-		if (m_nLength < KB_MAX_LENGTH)
-			InsertChar(_T(' '));
-		break;
+	case kcSpace:
+		TakeSelection();
+		if (m_editLen >= EDIT_MAX)
+			return;
+		OpenGap(m_cursor, 1);
+		m_edit[m_cursor++] = ' ';
+		m_editLen++;
+		return;
 
 	default:
-		// Shift stays on if the string was full.
-		if (InsertChar(ApplyCase((TCHAR)key)))
-			m_shift = false;
-		break;
+		TakeSelection();
+		if (m_editLen >= EDIT_MAX)
+			break;
+		OpenGap(m_cursor, 1);
+		m_edit[m_cursor++] = (m_caps != m_shift) ? KeyUpper((TCHAR)key) : (TCHAR)key;
+		m_editLen++;
+		m_shift = false;
+		return;
 	}
+
+	CallFunction(this, _T("OnError"));
 }
 
 
-// ===== Text editing =========================================================
+// ===== Editing =============================================================
 
+// CKeyboard::Backspace()   [script fn 'Backspace', FND 0x001882f8, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005b630:
+//     if (cursor == -1) { len = 0; cursor = 0; }
+//     if (cursor > 0) { memmove(&buf[cursor-1], &buf[cursor], (len-cursor)*2); len--; cursor--; }
+//     else CallFunction(this, L"OnError");
 void CKeyboard::Backspace()
 {
-	ClearSelection();
-
-	if (m_nCursor > 0)
-	{
-		MoveMemory(&m_rgch[m_nCursor - 1], &m_rgch[m_nCursor], (m_nLength - m_nCursor) * sizeof(TCHAR));
-		m_nLength -= 1;
-		m_nCursor -= 1;
-	}
-	else
-	{
-		CallFunction(this, _T("OnError"));
-	}
-}
-
-void CKeyboard::Delete()
-{
-	ClearSelection();
-
-	if (m_nCursor < m_nLength)
-	{
-		CursorRight();
-		Backspace();
-	}
-	else
-	{
-		CallFunction(this, _T("OnError"));
-	}
-}
-
-void CKeyboard::CursorLeft()
-{
-	if (m_nCursor == -1)
-		m_nCursor = 0;
-	else if (m_nCursor > 0)
-		m_nCursor -= 1;
-	else
-		CallFunction(this, _T("OnError"));
-}
-
-void CKeyboard::CursorRight()
-{
-	if (m_nCursor == -1)
-		m_nCursor = m_nLength;
-	else if (m_nCursor < m_nLength)
-		m_nCursor += 1;
-	else
-		CallFunction(this, _T("OnError"));
-}
-
-void CKeyboard::Shift()
-{
-	if (m_mode != MODE_ALPHA && m_mode != MODE_ACCENT)
-		CallFunction(this, _T("OnError"));
-	else
-		m_shift = !m_shift;
-}
-
-void CKeyboard::CycleMode()
-{
-	m_mode = (m_mode + 1 > 2) ? 0 : m_mode + 1;
-	m_jmode = (m_jmode + 1 > 2) ? 0 : m_jmode + 1;
-}
-
-void CKeyboard::Insert(const TCHAR* szInsert)
-{
-	ClearSelection();
-
-	int cch = _tcslen(szInsert);
-
-	if (m_nLength + cch > KB_MAX_LENGTH)
+	TakeSelection();
+	if (m_cursor <= 0)
 	{
 		CallFunction(this, _T("OnError"));
 		return;
 	}
+	MoveMemory(m_edit + m_cursor - 1, m_edit + m_cursor, (m_editLen - m_cursor) * sizeof(TCHAR));
+	m_cursor--;
+	m_editLen--;
+}
 
-	MoveMemory(&m_rgch[m_nCursor + cch], &m_rgch[m_nCursor], (m_nLength - m_nCursor) * sizeof(TCHAR));
-	CopyChars(&m_rgch[m_nCursor], szInsert, cch);
-	m_nCursor += cch;
-	m_nLength += cch;
+// CKeyboard::Delete()   [script fn 'Delete', FND 0x00188310, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005b6a0: takes the selection, then
+// if there is a character under the cursor steps past it and backspaces over
+// it, otherwise OnError.
+void CKeyboard::Delete()
+{
+	TakeSelection();
+	if (m_cursor >= m_editLen)
+	{
+		CallFunction(this, _T("OnError"));
+		return;
+	}
+	m_cursor++;
+	Backspace();
+}
+
+// CKeyboard::CursorLeft()   [script fn 'CursorLeft', FND 0x00188328, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005b700:
+//     if (cursor == -1) cursor = 0; else if (cursor > 0) cursor--; else OnError;
+void CKeyboard::CursorLeft()
+{
+	if (m_cursor > 0)
+		m_cursor--;
+	else if (m_cursor == -1)
+		m_cursor = 0;
+	else
+		CallFunction(this, _T("OnError"));
+}
+
+// CKeyboard::CursorRight()   [script fn 'CursorRight', FND 0x00188340, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005b740:
+//     if (cursor == -1) cursor = len; else if (cursor < len) cursor++; else OnError;
+void CKeyboard::CursorRight()
+{
+	if (m_cursor == -1)
+		m_cursor = m_editLen;
+	else if (m_cursor < m_editLen)
+		m_cursor++;
+	else
+		CallFunction(this, _T("OnError"));
+}
+
+// CKeyboard::Shift()   [script fn 'Shift', FND 0x00188358, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005b780:
+//     if (mode != 0 && mode != 2) OnError; else shift = !shift;
+// Only the letter and accent pages have a case.
+void CKeyboard::Shift()
+{
+	if (m_mode == 0 || m_mode == 2)
+		m_shift = !m_shift;
+	else
+		CallFunction(this, _T("OnError"));
+}
+
+// CKeyboard::CycleMode()   [script fn 'CycleMode', FND 0x00188370, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005b7b0: bumps mode and jmode
+// together, each going back to 0 once past 2.
+void CKeyboard::CycleMode()
+{
+	m_mode++;
+	m_jmode++;
+	if (m_mode > 2)
+		m_mode = 0;
+	if (m_jmode > 2)
+		m_jmode = 0;
+}
+
+// CKeyboard::Insert(text)   [script fn 'Insert', FND 0x00188388, sig 12]
+// Reconstructed from 5960 retail XBE @ 0x0005b7e0:
+//     take selection; n = wcslen(s); if (len + n > 31) { OnError; return; }
+//     memmove(&buf[cursor+n], &buf[cursor], (len-cursor)*2); copy s in;
+//     cursor += n; len += n; shift = 0;
+void CKeyboard::Insert(const TCHAR* szInsert)
+{
+	TakeSelection();
+	int count = (int)_tcslen(szInsert);
+	if (m_editLen + count > EDIT_MAX)
+	{
+		CallFunction(this, _T("OnError"));
+		return;
+	}
+	OpenGap(m_cursor, count);
+	CopyChars(m_edit + m_cursor, szInsert, count);
+	m_cursor += count;
+	m_editLen += count;
 	m_shift = false;
 }
 
-
-// ===== Properties ===========================================================
-
-bool CKeyboard::OnSetProperty(const PRD* pprd, const void* pvValue)
+// CKeyboard::GetAsteriskFormattingState / SetAsteriskFormattingState
+//   [script fns, FND 0x001883b8 sig 2 / 0x001883a0 sig 14]
+// Reconstructed from 5960 retail XBE @ 0x0005acb0 / 0x0005acc0: read and
+// write the one global byte at 0x0017e74c that turns *heading* text on.
+bool CKeyboard::GetAsteriskFormattingState()
 {
-	if (PTR2INT(pprd->pbOffset) == offsetof(m_string))
-	{
-		TCHAR* szNew = *(TCHAR**)pvValue;
-		if (szNew == NULL)
-			szNew = _T("");
-		int cch = _tcslen(szNew);
-		if (cch > KB_MAX_LENGTH)
-			cch = KB_MAX_LENGTH;
-		CopyChars(m_rgch, szNew, cch);
-		m_nLength = cch;
-		m_nCursor = -1;
-	}
+	return g_bAsteriskFormatting;
+}
 
-	return true;
+void CKeyboard::SetAsteriskFormattingState(bool bOn)
+{
+	g_bAsteriskFormatting = bOn;
 }
 
 
-// ===== Rendering ============================================================
+// ===== Node hooks ==========================================================
 
+// CKeyboard::OnSetProperty(pprd, pvValue)
+// Reconstructed from 5960 retail XBE @ 0x0005b970:
+//     if (prd->offset == 0x34 /* string */) {
+//         s = *value ? *value : L""; n = min(wcslen(s), 31);
+//         copy n chars into buf; len = n; cursor = -1; }
+//     return 1;
+// A script setting `string` loads the edit buffer with the whole thing selected.
+bool CKeyboard::OnSetProperty(const PRD* pprd, const void* pvValue)
+{
+	if (PTR2INT(pprd->pbOffset) != offsetof(m_string))
+		return true;
+
+	const TCHAR* szValue = *(const TCHAR* const*)pvValue;
+	if (szValue == NULL)
+		szValue = _T("");
+	int count = (int)_tcslen(szValue);
+	if (count > EDIT_MAX)
+		count = EDIT_MAX;
+	CopyChars(m_edit, szValue, count);
+	m_editLen = count;
+	m_cursor = -1;
+	return true;
+}
+
+// CKeyboard::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0005bca0:
+//     CNode::Advance(t); if (control) control->Advance(t);
+void CKeyboard::Advance(float nSeconds)
+{
+	CNode::Advance(nSeconds);
+	if (m_control != NULL)
+		m_control->Advance(nSeconds);
+}
+
+// Western rows 3 and 4 have keys several columns wide; any column of one
+// highlights its first cell.
+static int MergedCell(int cell)
+{
+	if (cell >= 41 && cell <= 43)
+		return 40;      // BACKSPACE
+	if (cell >= 46 && cell <= 50)
+		return 45;      // SPACE
+	if (cell == 52)
+		return 51;      // <
+	if (cell == 54)
+		return 53;      // >
+	return cell;
+}
+
+static const TCHAR* FunctionKeyLabel(WORD key)
+{
+	switch (key)
+	{
+	case kcShift:     return _T("SHIFT");
+	case kcCaps:      return _T("CAPS LOCK");
+	case kcAlphabet:  return _T("ALPHABET");
+	case kcSymbols:   return _T("SYMBOLS");
+	case kcAccents:   return _T("ACCENTS");
+	case kcLeft:      return _T("<");
+	case kcRight:     return _T(">");
+	case kcBackspace: return _T("BACKSPACE");
+	case kcDone:      return _T("DONE");
+	case kcSpace:     return _T("SPACE");
+	case kcHiragana:  return _T("HIRAGANA");
+	case kcKatakana:  return _T("KATAKANA");
+	case kcEnglish:   return _T("ENGLISH");
+	case kcBlank:     return _T(" ");
+	}
+	return NULL;
+}
+
+// CKeyboard::Render()
+// Reconstructed from 5960 retail XBE @ 0x0005b9d0. Draws the frame, then the
+// text node with the edit string and cursor handed over through g_szText /
+// g_nTextChar. The key nodes only draw when the nodearray has exactly 45
+// (western) or 99 (Japanese) entries. Each grid cell that starts a new key
+// gets the next node: its label goes in g_szText (the function key name, or
+// the character, uppercased on western pages when shift and caps disagree),
+// g_bActiveKey says whether it is highlighted, and blanks are skipped.
 void CKeyboard::Render()
 {
-	const WORD* layout = ActiveLayout();
+	const WORD* grid = Grid();
 
 	if (m_frame != NULL)
 		m_frame->Render();
 
-	// Render text input field
 	if (m_text != NULL)
 	{
-		m_rgch[m_nLength] = 0;
-		g_szText = m_rgch;
-		g_nTextChar = m_nCursor;
+		m_edit[m_editLen] = 0;
+		g_szText = m_edit;
+		g_nTextChar = m_cursor;
 		m_text->Render();
 		g_nTextChar = -1;
 	}
 
-	// Determine grid size
-	int totalKeys;
-	if (IsJapanese())
-	{
-		if (m_keys.GetLength() != 99)
-			return;
-		totalKeys = 99;
-	}
-	else
-	{
-		if (m_keys.GetLength() != 45)
-			return;
-		totalKeys = 55;
-	}
+	bool japanese = JapaneseGrid();
+	if (m_keys.GetLength() != (japanese ? JAPANESE_NODES : WESTERN_NODES))
+		return;
 
-	// Map selected position to a flat key index, accounting for merged keys
-	int selectedIdx = m_nRow * KB_COLS + m_nColumn;
-	if (!IsJapanese())
-	{
-		if (selectedIdx > 40 && selectedIdx <= 43)
-			selectedIdx = 40;
-		else if (selectedIdx > 45 && selectedIdx <= 50)
-			selectedIdx = 45;
-		else if (selectedIdx == 52)
-			selectedIdx = 51;
-		else if (selectedIdx == 54)
-			selectedIdx = 53;
-	}
+	int cells = japanese ? JAPANESE_KEYS : WESTERN_KEYS;
+	int highlighted = m_row * GRID_COLUMNS + m_col;
+	if (!japanese)
+		highlighted = MergedCell(highlighted);
 
-	TCHAR charBuf[2];
-	int nodeIdx = 0;
-
-	for (int i = 0; i < totalKeys; i += 1)
+	TCHAR label[2];
+	int node = 0;
+	for (int cell = 0; cell < cells; cell++)
 	{
-		// Western layout: skip duplicate entries for merged keys (BS, Space, LT, RT)
-		if (!IsJapanese() && i > 0 && layout[i] == layout[i - 1])
+		WORD key = grid[cell];
+		if (!japanese && cell > 0 && key == grid[cell - 1])
 			continue;
 
-		CNode* pNode = m_keys.GetNode(nodeIdx);
-		WORD key = layout[i];
+		CNode* pKey = m_keys.GetNode(node++);
 
-		// Set the label text for this key
-		const TCHAR* label = GetKeyLabel(key);
-		if (label != NULL)
+		const TCHAR* name = FunctionKeyLabel(key);
+		if (name != NULL)
 		{
-			g_szText = (TCHAR*)label;
+			g_szText = (TCHAR*)name;
 		}
 		else
 		{
-			charBuf[0] = (TCHAR)key;
-			charBuf[1] = 0;
-
-			if (!IsJapanese())
-				charBuf[0] = ApplyCase(charBuf[0]);
-
-			g_szText = charBuf;
+			label[0] = (TCHAR)key;
+			if (!japanese && m_caps != m_shift)
+				label[0] = KeyUpper(label[0]);
+			label[1] = 0;
+			g_szText = label;
 		}
 
-		g_bActiveKey = (i == selectedIdx);
-		if (key != KEY_VOID)
-			pNode->Render();
-
-		nodeIdx += 1;
+		g_bActiveKey = (cell == highlighted);
+		if (key != kcBlank)
+			pKey->Render();
 	}
-}
-
-void CKeyboard::Advance(float nSeconds)
-{
-	CNode::Advance(nSeconds);
-
-	if (m_control != NULL)
-		m_control->Advance(nSeconds);
 }
