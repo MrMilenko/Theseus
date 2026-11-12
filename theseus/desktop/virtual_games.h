@@ -238,22 +238,7 @@ inline void VGames_DeleteByName(const char* name) {
     g_vgames.games[idx].valid = false;
     g_vgames.generation++;
 
-    SafeSave save(AppPath("Configs/games.ini"));
-    FILE* fp = save.f;
-    if (fp) {
-        for (int i = 0; i < g_vgames.count; i++) {
-            if (!g_vgames.games[i].valid) continue;
-            if (VGames_IsStreaming(g_vgames.games[i]) || g_vgames.games[i].transient) continue;
-            fprintf(fp, "[%s]\n", g_vgames.games[i].name);
-            fprintf(fp, "TitleID=%s\n", g_vgames.games[i].titleID);
-            fprintf(fp, "Launch=%s\n", g_vgames.games[i].launch);
-            fprintf(fp, "Drive=%s\n", g_vgames.games[i].drive);
-            if (g_vgames.games[i].category[0])
-                fprintf(fp, "Category=%s\n", g_vgames.games[i].category);
-            fprintf(fp, "\n");
-        }
-        save.Commit();
-    }
+    VGames_Save();
     fprintf(stderr, "[VGames] Deleted: %s\n", name);
 }
 
