@@ -2249,3 +2249,32 @@ void RenderTitleMaker() {
 
     ImGui::End();
 }
+
+// The guide's imports. Same work as the Title Maker buttons, without the panel.
+int TitleMaker_ImportSteam(int* outSkipped)
+{
+    int created = 0, skipped = 0, icons = 0;
+    if (!s_steamPath[0]) {
+        char roots[4][512];
+        if (Steam_DiscoverInstallRoots(NULL, roots, 4) <= 0) return -1;
+    }
+    TM_ImportSteamLibrary(s_steamPath, &created, &skipped, &icons);
+    if (outSkipped) *outSkipped = skipped;
+    return created;
+}
+
+int TitleMaker_ImportRetroArch(int* outSkipped)
+{
+    char playlistsDir[600] = "";
+    if (!RetroArch_DiscoverPlaylistsDir(s_retroarchPath, playlistsDir, sizeof(playlistsDir)))
+        return -1;
+    TM_RAImportCtx ctx = {};
+    strncpy(ctx.installRoot, s_retroarchPath, sizeof(ctx.installRoot) - 1);
+    RetroArch_WalkPlaylists(playlistsDir, TM_RAImportItem, &ctx);
+    if (ctx.added > 0) {
+        VGames_Save();
+        UDataSynth_RebuildAll();
+    }
+    if (outSkipped) *outSkipped = ctx.skipped;
+    return ctx.added;
+}

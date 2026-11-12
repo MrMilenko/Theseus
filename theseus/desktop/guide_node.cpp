@@ -13,6 +13,13 @@
 #include "app_paths.h"
 #include "preloader.h"
 #include "log_redact.h"
+#include "virtual_games.h"
+#include "playlist.h"
+#include "esde_vgames.h"
+#include "udata_synth.h"
+#include <algorithm>
+#include <strings.h>
+#include <time.h>
 #include <bgfx/bgfx.h>
 #include <unistd.h>
 #include <errno.h>
@@ -52,6 +59,12 @@ static void RestartWithMode(const char* flag)
 
 static const char* ShippedVersion();
 
+static std::string NameOnly(const std::string& path)
+{
+    size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
 static std::string VersionLine()
 {
     char line[256];
@@ -87,6 +100,65 @@ static bool CopyLog()
     text.resize(got);
     std::string out = VersionLine() + "\n\n" + Log_Redact(text, HomeDir());
     return SDL_SetClipboardText(out.c_str()) == 0;
+}
+
+int TitleMaker_ImportSteam(int* outSkipped);
+int TitleMaker_ImportRetroArch(int* outSkipped);
+extern int Title_SanitizeName(const char*, char*, size_t);
+extern char s_esdePath[512];
+
+static const char* kCategories[] = { "Games", "Applications", "Homebrew", "Emulators", "Dashboards" };
+static const int   kCategoryCount = (int)(sizeof(kCategories) / sizeof(kCategories[0]));
+
+// A file browser entry. macOS apps are folders, but you pick them like files.
+struct BrowseEntry { std::string name; bool dir; };
+
+static bool IsAppBundle(const std::string& n)
+{
+    return n.size() > 4 && strcasecmp(n.c_str() + n.size() - 4, ".app") == 0;
+}
+
+static void ListDir(const std::string& dir, std::vector<BrowseEntry>& out)
+{
+    out.clear();
+    HostDir* d = Host_OpenDir(dir.c_str());
+    if (!d) return;
+    char name[512];
+    bool isDir = false;
+    while (out.size() < 4000 && Host_ReadDirType(d, name, sizeof(name), &isDir)) {
+        if (name[0] == '.') continue;
+        BrowseEntry e = { name, isDir && !IsAppBundle(name) };
+        out.push_back(e);
+    }
+    Host_CloseDir(d);
+    std::sort(out.begin(), out.end(), [](const BrowseEntry& a, const BrowseEntry& b) {
+        if (a.dir != b.dir) return a.dir;
+        return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
+    });
+}
+
+static std::string ParentDir(const std::string& dir)
+{
+    size_t end = dir.size();
+    while (end > 1 && (dir[end - 1] == '/' || dir[end - 1] == '\\')) end--;
+    size_t cut = dir.find_last_of("/\\", end - 1);
+    if (cut == std::string::npos) return dir;
+    if (cut == 0) return "/";
+    if (cut == 2 && dir[1] == ':') return dir.substr(0, 3);
+    return dir.substr(0, cut);
+}
+
+// "Some Game.app" or "/x/y/Game.exe" -> "Some Game" / "Game", made safe for the
+// dashboard's font.
+static std::string NameFromPath(const std::string& path)
+{
+    size_t slash = path.find_last_of("/\\");
+    std::string base = slash == std::string::npos ? path : path.substr(slash + 1);
+    size_t dot = base.find_last_of('.');
+    if (dot != std::string::npos && dot > 0) base = base.substr(0, dot);
+    char clean[128];
+    Title_SanitizeName(base.c_str(), clean, sizeof(clean));
+    return clean;
 }
 
 // Somewhere to put things on a fresh install: Movies, TV Shows and ROMs next
@@ -157,12 +229,15 @@ static const char* SettingHelp(const SettingDef& d)
 static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games" };
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
 
-enum GuideView { GV_ROOT, GV_PAGES, GV_PAGE, GV_ABOUT, GV_SHORTCUTS, GV_START, GV_LOGS };
+enum GuideView { GV_ROOT, GV_PAGES, GV_PAGE, GV_ABOUT, GV_SHORTCUTS, GV_START, GV_LOGS,
+                 GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST };
 
 enum GuideAct {
     GA_NONE, GA_VIEW, GA_SETTING, GA_TOOLS, GA_RESUME, GA_QUIT,
     GA_DEVMODE, GA_FOLDERS, GA_OPENFOLDERS,
     GA_OPENLOGS, GA_COPYVERSION, GA_COPYLOG,
+    GA_STEAM, GA_RETROARCH, GA_ESDE, GA_CHOOSEFILE, GA_CATEGORY, GA_ADDGAME,
+    GA_BROWSEUP, GA_BROWSE, GA_PLAYLIST,
 };
 
 struct GuideRow {
@@ -176,7 +251,7 @@ class CDesktopGuide : public CNode
 public:
     CDesktopGuide() : m_view(GV_ROOT), m_page(0), m_cursor(0), m_backTo(NULL),
                       m_startChecked(false), m_startShown(false), m_foldersDone(false),
-                      m_copied(GA_NONE) {}
+                      m_copied(GA_NONE), m_category(0), m_playlist(0) {}
     DECLARE_NODE(CDesktopGuide, CNode)
     DECLARE_NODE_PROPS()
     DECLARE_NODE_FUNCTIONS()
@@ -252,6 +327,14 @@ public:
         case GV_ABOUT:     return new CStrObject(_T("About"));
         case GV_SHORTCUTS: return new CStrObject(_T("Shortcuts"));
         case GV_LOGS:      return new CStrObject(_T("Logs & Help"));
+        case GV_LIBRARY:   return new CStrObject(_T("Games & Playlists"));
+        case GV_ADDGAME:   return new CStrObject(_T("Add a Game"));
+        case GV_BROWSE:    return new CStrObject(_T("Choose a File"));
+        case GV_PLAYLISTS: return new CStrObject(_T("Playlists"));
+        case GV_PLAYLIST: {
+            const Playlist* pl = Playlist_Get(m_playlist);
+            return new CStrObject(pl ? pl->name.c_str() : "");
+        }
         case GV_START:     return new CStrObject(g_welcomeDone ? _T("Start") : _T("Welcome"));
         default:           return new CStrObject(_T("UIX Desktop"));
         }
@@ -296,6 +379,83 @@ public:
         case GA_OPENFOLDERS:
             Plat_OpenInFileManager(AppPath_Tree("Library"));
             return 0;
+        case GA_STEAM:
+        case GA_RETROARCH: {
+            int skipped = 0;
+            int added = r->act == GA_STEAM ? TitleMaker_ImportSteam(&skipped)
+                                           : TitleMaker_ImportRetroArch(&skipped);
+            char msg[64];
+            if (added < 0) snprintf(msg, sizeof(msg), "Not found");
+            else snprintf(msg, sizeof(msg), "%d new, %d already in", added, skipped);
+            m_result[r->act] = msg;
+            Build();
+            return added < 0 ? -1 : 2;
+        }
+        case GA_ESDE: {
+            if (!s_esdePath[0]) { m_result[GA_ESDE] = "Set its folder first"; Build(); return -1; }
+            EsdeVGames_Sync(s_esdePath);
+            m_result[GA_ESDE] = "Refreshed";
+            Build();
+            return 2;
+        }
+        case GA_CHOOSEFILE:
+            m_stack.push_back(MakeFrame());
+            if (m_browseDir.empty()) {
+                const char* h = HomeDir();
+                m_browseDir = h ? h : "/";
+            }
+            m_view = GV_BROWSE;
+            m_cursor = 0;
+            Build();
+            return 1;
+        case GA_BROWSEUP:
+            m_browseDir = ParentDir(m_browseDir);
+            m_cursor = 0;
+            Build();
+            return 1;
+        case GA_BROWSE: {
+            const BrowseEntry& e = m_entries[r->arg];
+            std::string full = m_browseDir;
+            if (full.empty() || (full.back() != '/' && full.back() != '\\')) full += Host_PathSep;
+            full += e.name;
+            if (e.dir) {
+                m_browseDir = full;
+                m_cursor = 0;
+                Build();
+                return 1;
+            }
+            m_pickedPath = full;
+            m_pickedName = NameFromPath(full);
+            m_added.clear();
+            Back();
+            return 1;
+        }
+        case GA_CATEGORY:
+            m_category = (m_category + 1) % kCategoryCount;
+            Build();
+            return 2;
+        case GA_ADDGAME: {
+            if (m_pickedPath.empty() || m_pickedName.empty()) return -1;
+            if (VGames_FindByName(m_pickedName.c_str()) >= 0) { m_added = "Already there"; Build(); return -1; }
+            char genID[16];
+            snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL));
+            std::string launch = "\"" + m_pickedPath + "\"";
+            VGames_Add(m_pickedName.c_str(), genID, launch.c_str(), "E", kCategories[m_category]);
+            VGames_Save();
+            UDataSynth_RebuildAll();
+            m_added = "Added";
+            m_pickedPath.clear();
+            m_pickedName.clear();
+            Build();
+            return 2;
+        }
+        case GA_PLAYLIST:
+            m_stack.push_back(MakeFrame());
+            m_playlist = r->arg;
+            m_view = GV_PLAYLIST;
+            m_cursor = 0;
+            Build();
+            return 1;
         case GA_OPENLOGS:
             Host_OpenFolder(Plat_UserDataDir());
             return 0;
@@ -323,6 +483,11 @@ public:
     int Adjust(int i, int dir)
     {
         const GuideRow* r = Row(i);
+        if (r && r->act == GA_CATEGORY) {
+            m_category = (m_category + (dir < 0 ? kCategoryCount - 1 : 1)) % kCategoryCount;
+            Build();
+            return 1;
+        }
         if (!r || r->act != GA_SETTING) return 0;
         const SettingDef& d = DesktopSettings_Table().defs[r->arg];
         if (!Setting_Cycle(d, dir < 0 ? -1 : 1)) return 0;
@@ -356,6 +521,10 @@ private:
     CLevel* m_backTo;
     bool m_startChecked, m_startShown, m_foldersDone;
     int m_copied;   // which Copy row says Copied
+    std::string m_result[GA_PLAYLIST + 1];   // what an import row says after running
+    std::string m_browseDir, m_pickedPath, m_pickedName, m_added;
+    std::vector<BrowseEntry> m_entries;
+    int m_category, m_playlist;
 
     const GuideRow* Row(int i) const
     {
@@ -376,6 +545,7 @@ private:
         switch (m_view) {
         case GV_ROOT:
             Add("Settings",  "", "Display, audio, media folders and startup.", GA_VIEW, 100 + GV_PAGES);
+            Add("Games & Playlists", "", "Add a game, run the imports, see your playlists.", GA_VIEW, 100 + GV_LIBRARY);
             Add("Shortcuts", "", "Keys and buttons that work everywhere.", GA_VIEW, 100 + GV_SHORTCUTS);
             Add("Logs & Help", "", "Open or copy the log for a bug report.", GA_VIEW, 100 + GV_LOGS);
             Add("About",     "", "Version and credits.", GA_VIEW, 100 + GV_ABOUT);
@@ -432,6 +602,51 @@ private:
                 Add(mode->label, val, "Ask on launch brings this screen back each time.", GA_SETTING,
                     (int)(mode - DesktopSettings_Table().defs));
             }
+            break;
+        }
+        case GV_LIBRARY: {
+            Add("Add a Game", "", "Pick a program or file and it shows up in the launcher.", GA_VIEW, 100 + GV_ADDGAME);
+            Add("Import Steam Library", m_result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
+            Add("Import RetroArch Recent", m_result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
+            Add("Refresh ES-DE", m_result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
+            char n[32];
+            snprintf(n, sizeof(n), "%d", Playlist_Count());
+            Add("Playlists", n, "Made in the Playlist Maker.", GA_VIEW, 100 + GV_PLAYLISTS);
+            break;
+        }
+        case GV_ADDGAME: {
+            std::string file = m_pickedPath.empty() ? "Choose" : NameOnly(m_pickedPath);
+            Add("File", file.c_str(), m_pickedPath.empty() ? "A program, a shortcut or a ROM." : m_pickedPath.c_str(), GA_CHOOSEFILE);
+            Add("Name", m_pickedName.c_str(), "Taken from the file name. Rename it in the Title Maker (F3).");
+            Add("Category", kCategories[m_category], "Left and right change it.", GA_CATEGORY);
+            Add("Add to Launcher", m_added.c_str(),
+                m_pickedPath.empty() ? "Choose a file first." : "Adds it under the category above.", GA_ADDGAME);
+            break;
+        }
+        case GV_BROWSE: {
+            ListDir(m_browseDir, m_entries);
+            Add("Up a Folder", "", m_browseDir.c_str(), GA_BROWSEUP);
+            for (size_t i = 0; i < m_entries.size(); i++)
+                Add(m_entries[i].name.c_str(), m_entries[i].dir ? "Folder" : "", m_browseDir.c_str(), GA_BROWSE, (int)i);
+            break;
+        }
+        case GV_PLAYLISTS:
+            for (int i = 0; i < Playlist_Count(); i++) {
+                const Playlist* pl = Playlist_Get(i);
+                if (!pl) continue;
+                char n[32];
+                snprintf(n, sizeof(n), "%d", (int)pl->items.size());
+                Add(pl->name.c_str(), n, "Edit playlists in the Playlist Maker (F6).", GA_PLAYLIST, i);
+            }
+            if (m_rows.empty()) Add("No playlists yet", "", "Make one in the Playlist Maker (F6).");
+            break;
+        case GV_PLAYLIST: {
+            const Playlist* pl = Playlist_Get(m_playlist);
+            if (pl)
+                for (size_t i = 0; i < pl->items.size(); i++)
+                    Add(pl->items[i].title.empty() ? NameOnly(pl->items[i].path).c_str() : pl->items[i].title.c_str(),
+                        "", NULL);
+            if (m_rows.empty()) Add("Empty", "", NULL);
             break;
         }
         case GV_LOGS:

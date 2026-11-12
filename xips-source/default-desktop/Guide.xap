@@ -83,12 +83,14 @@ function DrawGuide()
 	c.theDownArrow.visible = (nGuideScroll + nGuideRows < nGuideCount);
 }
 
-function MoveGuideCursor(nTo)
+// Parameters can't be assigned in XAP script, so clamp into a local.
+function MoveGuideCursor(nWant)
 {
-	if (nTo < 0)
-		nTo = 0;
+	var nTo = nWant;
 	if (nTo > nGuideCount - 1)
 		nTo = nGuideCount - 1;
+	if (nTo < 0)
+		nTo = 0;
 	if (nTo == nGuideCursor)
 		return;
 	PlaySoundMenuChange();
@@ -172,6 +174,7 @@ DEF theGuideMenu Level
 			if (r == -1)
 			{
 				PlaySoundError();
+				DrawGuide();
 				return;
 			}
 			PlaySoundA();
