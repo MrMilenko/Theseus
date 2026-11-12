@@ -42,7 +42,6 @@ SRCS_SHARED_XBOX_ONLY = \
 SRCS_RENDER = \
 	render/animation_nodes.cpp \
 	render/asset_loader.cpp \
-	render/autosmooth.cpp \
 	render/camera.cpp \
 	render/hud_node.cpp \
 	render/materials.cpp \

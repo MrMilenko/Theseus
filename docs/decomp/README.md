@@ -35,7 +35,7 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x00014b3c | `_classCBillboard` | `CBillboard::class` (scene_groups.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the camera-facing quad node. |
 | 0x0001a06c | `_classCXAppNode` | `CXAppNode::class` (main.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the application root node type. |
 | 0x0001a098 | `_classCTimeDepNode` | `CTimeDepNode::class` (animation_nodes.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for time-dependent node base. |
-| 0x0001a0f0 | `_classCArrayObject` | `CArrayObject::class` (xap_vm.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Array type. |
+| 0x0001a0f0 | `_classCArrayObject` | `CArrayObject::class` (array.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Array type. |
 | 0x0001a1b0 | `_classCDateObject` | `CDateObject::class` (date_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Date type. |
 | 0x0001a408 | `_classCFile` | `CFile::class` (file_ops.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the File node. |
 | 0x0001a94c | `_classCVec3Object` | `CVec3Object::class` (xap_vm.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Vec3 type. |
@@ -58,10 +58,6 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0001f300 | `_classCMaxMaterial` | `CMaxMaterial::class` (materials.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the 3ds Max material translator node. |
 | 0x0001f33c | `_classCLayer` | `CLayer::class` (scene_groups.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the 2D-overlay layer node. |
 | 0x0001f368 | `_classCKeyboard` | `CKeyboard::class` (keyboard_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the on-screen keyboard node. |
-| 0x000223e4 | `CMathClass_floor` | `CMathClass::floor` (math_node.cpp) | [Math](Math.md) | Script `Math.floor(x)`. Wraps the C runtime `floor`. |
-| 0x00022408 | `CMathClass_pow` | `CMathClass::pow` (math_node.cpp) | [Math](Math.md) | Script `Math.pow(x, y)`. Wraps `pow`. |
-| 0x00022410 | `CMathClass_random` | `CMathClass::random` (math_node.cpp) | [Math](Math.md) | Script `Math.random()`. Returns a `[0, 1)` float from the CRT PRNG. |
-| 0x00022434 | `CMathClass_sqrt` | `CMathClass::sqrt` (math_node.cpp) | [Math](Math.md) | Script `Math.sqrt(x)`. Wraps `sqrt`. |
 | 0x0002c570 | `CXApp::CXApp` | globals init in `main.cpp` | [App Shell](#app-shell) | Constructor for the original `CXApp` singleton. Theseus replaced this with module-scope globals and free functions; the binary class is preserved for reference. |
 | 0x0002cc10 | `Xbox_Init` | `Xbox_Init` (main.cpp) | [App Shell](#app-shell) | Early-boot init: `XOnlineStartup`, drive-letter symlinks, `XSetFileCacheSize`, `XInitDevices`, region detection, network bring-up. Runs before scene graph creation. |
 | 0x0002d0e0 | `CXApp::Draw` | main loop in `main.cpp` | [App Shell](#app-shell) | Per-frame render entry. Calls scene graph traversal then `Present`. |
@@ -74,8 +70,22 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0002def0 | `XAppCreateFile` | `TheseusCreateFile` in `main.cpp` | [App Shell](#app-shell) | Wrapper around `CreateFileA` with dashboard-specific share/disposition defaults. |
 | 0x0002ea20 | `CNodeClass::FindByName` | `CNodeClass::FindByName` in `node_system.cpp` | [Scene Graph](Node.md) | Walks the static class registration list (built from `_classCXxxx_CXxxx__2VCNodeClass__A` entries in .data) looking for a UTF-16 class name match. The XAP compiler uses this when binding `DEF` declarations. |
 | 0x0002ee60 | `CXAppNode::Advance` | tick loop in `main.cpp` | [Scene Graph](Node.md) | Per-frame tick on the application root node. Drives the time-dependent node graph. |
-| 0x00030570 | `CArrayElementReference::Deref` | `CArrayElementReference::Deref` (xap_vm.cpp) | [Script VM](VM.md) | Dereferences an `array[index]` LHS. Allocates the slot if missing for assignment paths. |
-| 0x00030e70 | `CArrayObject::concat` | `CArrayObject::concat` (xap_vm.cpp) | [Script VM](VM.md) | Array concatenation builtin invoked from script via `Array.concat(...)`. |
+| 0x00030440 | `CArrayElementReference_CArrayElementReference` | `CArrayElementReference::CArrayElementReference` (array.cpp) | [Script VM](VM.md) | Holds the array and index an `array[i]` expression names. |
+| 0x000304c0 | `CArrayElementReference_dtor` | `CArrayElementReference::~CArrayElementReference` (array.cpp) | [Script VM](VM.md) | Releases the array. |
+| 0x00030520 | `CArrayElementReference_Assign` | `CArrayElementReference::Assign` (array.cpp) | [Script VM](VM.md) | Stores into the slot, growing the array when the index is past the end. |
+| 0x00030570 | `CArrayElementReference::Deref` | `CArrayElementReference::Deref` (array.cpp) | [Script VM](VM.md) | Reads the slot; out of range is "Array reference out of bounds". |
+| 0x00030630 | `CArrayObject_CArrayObject` | `CArrayObject::CArrayObject` (array.cpp) | [Script VM](VM.md) | `new Array(n)` makes n nulls, `new Array(a, b, ...)` holds the arguments. |
+| 0x00030770 | `CArrayObject_CArrayObject_Len` | `CArrayObject::CArrayObject(int)` (array.cpp) | [Script VM](VM.md) | Native constructor for an array of n nulls. |
+| 0x00030800 | `CArrayObject_dtor` | `CArrayObject::~CArrayObject` (array.cpp) | [Script VM](VM.md) | Releases every element and frees the block. |
+| 0x000308e0 | `CArrayObject_Grow` | `CArrayObject::Grow` (array.cpp) | [Script VM](VM.md) | Extends the length, reallocating with 16 spare slots when needed. |
+| 0x00030960 | `CArrayObject_ToStr` | `CArrayObject::ToStr` (array.cpp) | [Script VM](VM.md) | `join(",")`. |
+| 0x00030970 | `CArrayObject_Dot` | `CArrayObject::Dot` (array.cpp) | [Script VM](VM.md) | `length`, or an element reference for a number. |
+| 0x00030a70 | `CArrayObject_concat` | `CArrayObject::concat` (array.cpp) | [Script VM](VM.md) | Script `concat`: new array of both arrays' elements. |
+| 0x00030b80 | `CArrayObject_join` | `CArrayObject::join` (array.cpp) | [Script VM](VM.md) | Script `join`: elements as text, nulls as "[null]". |
+| 0x00030c40 | `CArrayObject_reverse` | `CArrayObject::reverse` (array.cpp) | [Script VM](VM.md) | Script `reverse`: reversed copy. |
+| 0x00030cd0 | `CArrayObject_slice` | `CArrayObject::slice` (array.cpp) | [Script VM](VM.md) | Script `slice(start[, end])`; a negative end counts from one past the last element. |
+| 0x00030e00 | `LAB_00030e00` | `CompareAsText` (array.cpp) | [Script VM](VM.md) | Sort comparator: nulls first, then wide string order of ToStr. |
+| 0x00030e70 | `CArrayObject_sort` | `CArrayObject::sort` (array.cpp) | [Script VM](VM.md) | Script `sort`: sorted copy. |
 | 0x00031040 | `CDateObject::Construct` | `CDateObject::Construct` (date_node.cpp) | [Script VM](VM.md) | Date object constructor. Initializes from current system time when called with no args, or parses string/numeric input. |
 | 0x00031450 | `CDateObject::getDate` | `CDateObject::getDate` (date_node.cpp) | [Script VM](VM.md) | Returns the day-of-month component of the bound date. |
 | 0x00031510 | `CDateObject::toGMTString` | `CDateObject::toGMTString` (date_node.cpp) | [Script VM](VM.md) | Formats date as RFC 1123 UTC string. |
@@ -90,7 +100,25 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x000321f0 | `CNumObject::ToNum` | `CNumObject::ToNum` (xap_vm.cpp) | [Script VM](VM.md) | Number-object self coercion. Returns the bound `float` directly without conversion. |
 | 0x00032850 | `CStrObject::toLowerCase` | `CStrObject::toLowerCase` (xap_vm.cpp) | [Script VM](VM.md) | Lowercases the bound UTF-16 string in place using `_wcslwr`. |
 | 0x000328c0 | `CStrObject::toUpperCase` | `CStrObject::toUpperCase` (xap_vm.cpp) | [Script VM](VM.md) | Uppercases the bound UTF-16 string in place using `_wcsupr`. |
-| 0x00032af0 | `CMathClass_abs` | `CMathClass::abs` (math_node.cpp) | [Math](Math.md) | Script `Math.abs(x)`. Returns the magnitude of a float. |
+| 0x00032950 | `CMathClass_CMathClass` | `CMathClass::CMathClass` (math_node.cpp) | [Math](Math.md) | Registers the "Math" class and its eight float constants. |
+| 0x00032a20 | `CMathClass_abs` | `CMathClass::abs` (math_node.cpp) | [Math](Math.md) | Script `Math.abs`. |
+| 0x00032a30 | `CMathClass_acos` | `CMathClass::acos` (math_node.cpp) | [Math](Math.md) | Script `Math.acos`. |
+| 0x00032a40 | `CMathClass_asin` | `CMathClass::asin` (math_node.cpp) | [Math](Math.md) | Script `Math.asin`. |
+| 0x00032a50 | `CMathClass_atan` | `CMathClass::atan` (math_node.cpp) | [Math](Math.md) | Script `Math.atan`. |
+| 0x00032a60 | `CMathClass_atan2` | `CMathClass::atan2` (math_node.cpp) | [Math](Math.md) | Script `Math.atan2(a, b)`: arc tangent of b / a. |
+| 0x00032a70 | `CMathClass_ceil` | `CMathClass::ceil` (math_node.cpp) | [Math](Math.md) | Script `Math.ceil`. |
+| 0x00032a90 | `CMathClass_cos` | `CMathClass::cos` (math_node.cpp) | [Math](Math.md) | Script `Math.cos`. |
+| 0x00032aa0 | `CMathClass_exp` | `CMathClass::exp` (math_node.cpp) | [Math](Math.md) | Script `Math.exp`. |
+| 0x00032ac0 | `CMathClass_floor` | `CMathClass::floor` (math_node.cpp) | [Math](Math.md) | Script `Math.floor`. |
+| 0x00032ae0 | `CMathClass_log` | `CMathClass::log` (math_node.cpp) | [Math](Math.md) | Script `Math.log`. |
+| 0x00032af0 | `CMathClass_max` | `CMathClass::max` (math_node.cpp) | [Math](Math.md) | Script `Math.max`. |
+| 0x00032b10 | `CMathClass_min` | `CMathClass::min` (math_node.cpp) | [Math](Math.md) | Script `Math.min`. |
+| 0x00032b30 | `CMathClass_pow` | `CMathClass::pow` (math_node.cpp) | [Math](Math.md) | Script `Math.pow`. |
+| 0x00032b40 | `CMathClass_random` | `CMathClass::random` (math_node.cpp) | [Math](Math.md) | Script `Math.random`: `rand() / 32767`. |
+| 0x00032b60 | `CMathClass_round` | `CMathClass::round` (math_node.cpp) | [Math](Math.md) | Script `Math.round`: adds a half and truncates. |
+| 0x00032b80 | `CMathClass_sin` | `CMathClass::sin` (math_node.cpp) | [Math](Math.md) | Script `Math.sin`. |
+| 0x00032b90 | `CMathClass_sqrt` | `CMathClass::sqrt` (math_node.cpp) | [Math](Math.md) | Script `Math.sqrt`. |
+| 0x00032ba0 | `CMathClass_tan` | `CMathClass::tan` (math_node.cpp) | [Math](Math.md) | Script `Math.tan`. |
 | 0x00033690 | `ExpandCString` | `ExpandCString` (string_util.cpp) | [Util](Util.md) | Resizes a `CString` buffer (the dashboard's growable wide-string container) to hold at least N additional characters. |
 | 0x00034d80 | `CFunctionCompiler::ParseExpression` | `CFunctionCompiler::ParseExpression` (xap_compile.cpp) | [Script VM](VM.md) | Recursive-descent expression parser. Drives the operator-precedence DOPER table to emit operator opcodes. |
 | 0x00034ea0 | `CFunctionCompiler::ParseIF` | `CFunctionCompiler::ParseIF` (xap_compile.cpp) | [Script VM](VM.md) | Compiles `if` / `if/else` to `opCond` + jump fixups. |
@@ -152,9 +180,12 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0003f700 | `CGameCopier::CopyFileA` | `CGameCopier::CopyFile` (file_ops.cpp) | [File Ops](FileOps.md) | Buffered file copy with progress callback. Used by save-to-MU and game-copy flows. |
 | 0x0003f830 | `CGameCopier::DeleteFileA` | `CGameCopier::DeleteFile` (file_ops.cpp) | [File Ops](FileOps.md) | DeleteFile wrapper. |
 | 0x0003f8a0 | `CGameCopier::DeleteDirectory` | `CGameCopier::DeleteDirectory` (file_ops.cpp) | [File Ops](FileOps.md) | Recursive directory removal with progress callback. |
-| 0x000401b0 | `CScreenSaver::Advance` | `CScreenSaver::Advance` (settings_nodes.cpp) | [Settings](Settings.md) | Per-frame tick on the screensaver node. Counts down the idle timer and toggles the saver layer when threshold is reached. |
-| 0x000402a0 | `CScreenSaver::reset` | `CScreenSaver::reset` (settings_nodes.cpp) | [Settings](Settings.md) | Resets the idle timer to zero. Called on any input event. |
-| 0x00040320 | `CObject::ToNum` | `CObject::ToNum` (xap_vm.cpp) | [Script VM](VM.md) | Default numeric coercion for `CObject` subclasses. Subclasses override; base returns 0. |
+| 0x000400f0 | `CScreenSaver_CreateNode` | `CScreenSaver::CScreenSaver` (settings_nodes.cpp) | [Settings](Settings.md) | Factory for "ScreenSaver": enabled, 300 second delay, becomes the global saver. |
+| 0x00040190 | `CScreenSaver_dtor` | `CScreenSaver::~CScreenSaver` (settings_nodes.cpp) | [Settings](Settings.md) | Clears the global saver if it's this one. |
+| 0x000401b0 | `CScreenSaver::Advance` | `CScreenSaver::Advance` (settings_nodes.cpp) | [Settings](Settings.md) | Fires OnStart, OnDelay2 and OnDelay3 as idle time passes each delay; OnEnd when disabled while active. |
+| 0x000402a0 | `CScreenSaver::reset` | `CScreenSaver::reset` (settings_nodes.cpp) | [Settings](Settings.md) | Ends the saver, clears the stages and restarts the idle clock. |
+| 0x000402d0 | `CScreenSaver_OnSetProperty` | `CScreenSaver::OnSetProperty` (settings_nodes.cpp) | [Settings](Settings.md) | Enabling resets the idle clock. |
+| 0x00040320 | `ResetScreenSaver` | `ResetScreenSaver` (settings_nodes.cpp) | [Settings](Settings.md) | Input hook: resets the saver and the power down timer, returns whether it was showing. |
 | 0x00040380 | `CObject::OnSetProperty` | `CObject::OnSetProperty` (xap_vm.cpp) | [Script VM](VM.md) | Property-write hook. Called after `opAssign` lands a value on a property; subclasses override to react to property changes. |
 | 0x00040990 | `CTimeDepNode::~CTimeDepNode` | `CTimeDepNode::~CTimeDepNode` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Destructor for time-dependent nodes (TimeSensor and friends). Unlinks from the time-dep list. |
 | 0x00040b70 | `CJoystick_EnableGlobalInput` | `CJoystick::EnableGlobalInput` (input.cpp) | [Input](#input) | Toggles dashboard-wide gamepad input. Used by modal scenes (alerts, panic) to suspend or restore controller events. |
@@ -163,10 +194,13 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x00041950 | `CSettings_Dot` | `CSettings::Dot` (settings_nodes.cpp) | [Settings](Settings.md) | Member lookup on a Settings node: its own members first, any other name becomes a setting object bound to that ini entry. |
 | 0x000419e0 | `CSettings_SetValue` | `CSettings::SetValue` (settings_nodes.cpp) | [Settings](Settings.md) | FND-bound script call: writes a value into the node's section and saves when it changed. |
 | 0x00041a50 | `CSettings_GetValue` | `CSettings::GetValue` (settings_nodes.cpp) | [Settings](Settings.md) | FND-bound script call: returns the value of an entry in the node's section. |
-| 0x00041f20 | `FUN_00041f20` | `CTitleArray::AddTitle` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Reads `<udata>\<titleID>\TitleMeta.xbx`, extracts `TitleName` for the active language code (or falls back to a translated `"Broken Game"`), then grows the title array by 50 entries if at capacity (`m_titleCount == m_titleCapacity`), and copies the title ID + name into the new slot. Identified by the path-build + INI read + `+= 50` capacity grow + array memcpy pattern. |
-| 0x00041c90 | `CTimeSensor::Advance` | `CTimeSensor::Advance` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Per-frame tick. Computes fractional progress through the sensor's cycle interval and routes that into the bound interpolators. |
+| 0x00041bf0 | `CTimeSensor_CreateNode` | `CTimeSensor::CTimeSensor` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Factory for "TimeSensor": cycleInterval 1.0, enabled. |
+| 0x00041c70 | `CTimeSensor_OnSetProperty` | `CTimeSensor::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Widens a script write of `time` into the double field. |
+| 0x00041c90 | `CTimeSensor::Advance` | `CTimeSensor::Advance` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Per-frame tick: loops or stops at the cycle end, computes fraction_changed and calls the script handler. |
+| 0x00041d50 | `CTimeSensor_OnIsActiveChanged` | `CTimeSensor::OnIsActiveChanged` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Turning on stamps the cycle start; turning off calls OnActiveChanged. |
 | 0x00041d80 | `CObject::ToStr` | `CObject::ToStr` (xap_vm.cpp) | [Script VM](VM.md) | Default string coercion. Returns class name; subclasses override for meaningful output. |
 | 0x00041d90 | `CObject::_vtable_default` | `CObject::_vtable_default` (xap_vm.cpp) | [Script VM](VM.md) | The default vtable instance shared by base `CObject` instances. |
+| 0x00041f20 | `FUN_00041f20` | `CTitleArray::AddTitle` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Reads `<udata>\<titleID>\TitleMeta.xbx`, extracts `TitleName` for the active language code (or falls back to a translated `"Broken Game"`), then grows the title array by 50 entries if at capacity (`m_titleCount == m_titleCapacity`), and copies the title ID + name into the new slot. Identified by the path-build + INI read + `+= 50` capacity grow + array memcpy pattern. |
 | 0x00042230 | `FUN_00042230` | `CTitleArray::Update` (title_collection.cpp) | [Title Collection](TitleCollection.md) | The boot-time title enumerator. Enters `m_RootLock`, walks `<udata>\*.*` via FindFirstFile/FindNextFile, calls AddTitle for each non-`fffe0000` directory, qsorts by name, then ScanSavedGames per title. Identified by the signature match (critical section + FindFirstFile loop + qsort). |
 | 0x00042740 | `CSavedGameGrid::GetSavedGameCount` | `CSavedGameGrid::GetSavedGameCount` (savegame_grid.cpp) | [Save Games](#save-games) | Returns the total count of saves visible across all attached storage devices, summed from the title array. |
 | 0x000428d0 | `FUN_000428d0` |  | [Title Collection](TitleCollection.md) | Loads / counts DLC entries for a title. Allocates a 0x1000-entry array of stride-0x34 records and iterates `C:\tdata\<titleid>\$c\` via the FUN_00043730 enumerator. 5960-only DLC content management; no Theseus equivalent. |
@@ -178,24 +212,24 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x00042f40 | `FUN_00042f40` | `CTitleArray::RemoveSavedGame` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Second overload taking `(const TCHAR* szTitleID, const TCHAR* szDirName)`. Calls FindTitle, iterates saves by directory name, then memmove-removes. Identified by signature match. |
 | 0x00042ff0 | `FUN_00042ff0` |  | [Title Collection](TitleCollection.md) | Parallel of `RemoveSavedGame` but operates on a stride-0x34 array (DLC) instead of stride-0x30 (saves). 5960 DLC content management; no Theseus equivalent. |
 | 0x00043150 | `GetSavedGameID_internal` | `CTitleArray::GetSavedGameID` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Returns the directory-name string for the Nth save under the Mth title. The grid-side `CSavedGameGrid::GetSavedGameID2` wrapper trampolines into this on the active device. |
+| 0x000432f0 | `CFont::Open` | `CFont::Open` (text.cpp) | [Text](Text.md) | Loads an XTF font file from a XIP and constructs the glyph cache. |
 | 0x00043390 | `FUN_00043390` | `CTitleArray::GetTitleTotalBlocks` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Computes total block count for a title (cached at title-struct offset +0x20). Calls a path-walking enumerator and aggregates results. Identified by the `wcscmp(... L"fffe0000")` early-out and the +0x20 cache invalidation matching `RemoveSavedGame`. |
 | 0x00043460 | `FUN_00043460` |  | [Title Collection](TitleCollection.md) | Internal path-build helper used by `GetTitleTotalBlocks`: appends a name to a wstring path with a backslash separator, then calls a directory walker. No direct Theseus equivalent. |
 | 0x000434f0 | `FUN_000434f0` |  | [Title Collection](TitleCollection.md) | Save-game directory enumerator. Walks a `<titlepath>\$s\` directory tallying entry sizes. Parallel to FUN_00043730 (DLC enumerator). Inlined / folded into Theseus's `CTitleArray::Update`. |
 | 0x00043730 | `FUN_00043730` |  | [Title Collection](TitleCollection.md) | DLC directory enumerator. Walks `<titlepath>\$c\` to count and size DLC entries. 5960-only DLC content management; folded into Theseus's `CSavedGameGrid::ResolveDLCFolder` flow. |
 | 0x00043ae0 | `FUN_00043ae0` |  | [Title Collection](TitleCollection.md) | Drive-letter to device-unit translator (`'F'`/`'f'`->0, ... `'C'`/`'c'`->8). Used by every CTitleArray method that branches on the active drive. Inlined in Theseus. |
 | 0x00043c50 | `FUN_00043c50` | `CTitleArray::IsDirty` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Returns 1 if both `m_root[0]` is set AND `m_dirty` is set; 0 otherwise. Two-condition test matches `IsDirty`'s body, not `IsValid`'s single-condition test. |
+| 0x00044240 | `CTitleArray::IsPublisherExists` | `CTitleArray::IsPublisherExists` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Tests whether any title in the array shares a given publisher ID. Used by save-game grouping. |
 | 0x00044290 | `FUN_00044290` |  | [Live Accounts](#live-accounts) | Removes ALL Xbox Live accounts from HDD by looping `_XOnlineRemoveUserFromHD` over each loaded user, then invalidating the cache (`this+0x924 = -1`). Not exposed in Theseus; kept here as a binary anchor for the unported bulk-delete flow. |
 | 0x000442f0 | `FUN_000442f0` |  | [Live Accounts](#live-accounts) | Removes a single Xbox Live account from HDD. Per-user inner of `FUN_00044290`. Calls `_XOnlineRemoveUserFromHD` once and invalidates the cache. |
-| 0x000432f0 | `CFont::Open` | `CFont::Open` (text.cpp) | [Text](Text.md) | Loads an XTF font file from a XIP and constructs the glyph cache. |
-| 0x00044240 | `CTitleArray::IsPublisherExists` | `CTitleArray::IsPublisherExists` (title_collection.cpp) | [Title Collection](TitleCollection.md) | Tests whether any title in the array shares a given publisher ID. Used by save-game grouping. |
-| 0x000463f0 | `CMusicCollection_GetSoundtrackCount` | `CMusicCollection::DeleteSoundtrack` (music_collection.cpp, stubbed) | [Music](#music) | Despite the Ghidra label, this trampolines into a delete-shaped helper at 0x00046320 (bounds check, close handle, memmove + count decrement). The Ghidra label appears to be a Version Tracking misalignment. Theseus stubs `DeleteSoundtrack` to no-op. |
 | 0x00046020 | `FUN_00046020` | `CMusicCollection::FormatSoundtrackSongTime` (music_collection.cpp) | [Music](#music) | Returns a `MM:SS` formatted song-length string. Calls `XGetSoundtrackSongInfo`, divides ms-length by 1000, formats minutes / seconds, wraps in a new `CStrObject`. |
 | 0x00046120 | `FUN_00046120` | `CMusicCollection::AddSoundtrack` (music_collection.cpp, stubbed) | [Music](#music) | Computes the 20-byte XC digest of the soundtrack name, compares it against a 40-byte two-entry key table for system-soundtrack admission control, then dispatches to `DashAddSoundtrack`. Theseus stubs this to `return -1`. Identified by the XCCalcDigest call shape and the digest-table compare. |
 | 0x00046320 | `FUN_00046320` |  | [Music](#music) | Free-function `::DeleteSoundtrack(int nSoundtrack)` worker. Bounds-checks against `c_nSoundtrackCount`, calls `DashBeginUsingSoundtracks` and `DashDeleteSoundtrack`, then on success closes the dash handle, decrements the count, and memmoves the soundtrack array (stride 0x4c). The wrapper at 0x000463f0 is what FND-binds this. |
 | 0x00046390 | `FUN_00046390` |  | [Music](#music) | Free-function `::DeleteAllSoundtracks()`. Calls `DashBeginUsingSoundtracks`, loops `DashDeleteSoundtrack` over every entry in `c_rgsoundtrack`, closes the dash handle, zeroes `c_nSoundtrackCount`. |
+| 0x000463f0 | `CMusicCollection_GetSoundtrackCount` | `CMusicCollection::DeleteSoundtrack` (music_collection.cpp, stubbed) | [Music](#music) | Despite the Ghidra label, this trampolines into a delete-shaped helper at 0x00046320 (bounds check, close handle, memmove + count decrement). The Ghidra label appears to be a Version Tracking misalignment. Theseus stubs `DeleteSoundtrack` to no-op. |
 | 0x00046400 | `FUN_00046400` | `CMusicCollection::ClearCopyList` (music_collection.cpp, stubbed) | [Music](#music) | Frees the existing `m_rgCopySong` buffer and reallocates `nSongCount * sizeof(CCopySong)` (stride 0x18). Resets `m_nCopySongAlloc` and zeroes `m_nCopySongCount`. Theseus stubs to no-op. |
-| 0x00046830 | `FUN_00046830` |  | [Music](#music) | `CMusicCollection::ThreadProc` worker. Iterates the copy-song queue (`m_rgCopySong`), reads each song's name via `XGetSoundtrackSongInfo`, hands off to FUN_000468e0 (per-song copy). Theseus does not implement the music copy thread. |
 | 0x00046660 | `CMusicCollection::GetUpdateString` | `CMusicCollection::GetUpdateString` (music_collection.cpp) | [Music](#music) | Builds the localized "Updating soundtracks..." progress string for the music panel. |
+| 0x00046830 | `FUN_00046830` |  | [Music](#music) | `CMusicCollection::ThreadProc` worker. Iterates the copy-song queue (`m_rgCopySong`), reads each song's name via `XGetSoundtrackSongInfo`, hands off to FUN_000468e0 (per-song copy). Theseus does not implement the music copy thread. |
 | 0x00047520 | `~CSavedGameGrid` | `CSavedGameGrid::~CSavedGameGrid` (savegame_grid.cpp) | [Save Games](#save-games) | Destructor. Frees per-title cached data and unhooks the device-change watcher. |
 | 0x000476f0 | `CSavedGameGrid_GetTitleCount` | `CSavedGameGrid::GetTitleCount` (savegame_grid.cpp) | [Save Games](#save-games) | Returns the count of distinct titles that have at least one save / DLC / Live record on the current device. |
 | 0x000478d0 | `CSavedGameGrid_GetTitleID` | `CSavedGameGrid::GetTitleID` (savegame_grid.cpp) | [Save Games](#save-games) | Returns the 8-character hex title ID at a given grid index. |
@@ -239,7 +273,51 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0004e0f0 | `CTransform::SetRotation` | `CTransform::SetRotation` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Sets the rotation as axis-angle. Marks the matrix dirty for next CalcMatrix. |
 | 0x0004e4d0 | `CInline::Init` | `CInline::Init` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Inline-node init: opens the referenced XIP / XAP and inserts its root into the local scene graph. |
 | 0x0004e740 | `CInline::Advance` | `CInline::Advance` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Per-frame tick. If the load thread completed, swaps the placeholder for the loaded sub-tree. |
+| 0x0004f770 | `CViewpoint_CreateNode` | `CViewpoint::CViewpoint` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Factory for "Viewpoint": 45 degree field of view, jump, position (0, 0, 10). |
+| 0x0004f830 | `CViewpoint_dtor` | `CViewpoint::~CViewpoint` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Frees the description and unbinds itself. |
+| 0x0004f860 | `CViewpoint_OnLoad` | `CViewpoint::OnLoad` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Binds when no viewpoint is bound yet. |
+| 0x0004f880 | `BindViewpoint` | `BindViewpoint` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Binds a node if its class chain reaches Viewpoint. |
+| 0x0004f8b0 | `CViewpoint_Bind` | `CViewpoint::Bind` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Takes the bound slot and moves the camera to this viewpoint (one second glide unless jump). |
+| 0x0004f940 | `CViewpoint_OnSetProperty` | `CViewpoint::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | isBound binds; fieldOfView marks the projection dirty. |
+| 0x000504d0 | `CNavigationInfo_CreateNode` | `CNavigationInfo::CNavigationInfo` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Factory for "NavigationInfo": avatar (0.25, 1.6, 0.75), headlight, speed 1. |
+| 0x00050580 | `CNavigationInfo_dtor` | `CNavigationInfo::~CNavigationInfo` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Frees the type string and unbinds itself. |
+| 0x000505b0 | `CNavigationInfo_OnLoad` | `CNavigationInfo::OnLoad` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | First one loaded becomes the bound NavigationInfo. |
+| 0x000505e0 | `CNavigationInfo_OnSetProperty` | `CNavigationInfo::OnSetProperty` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | isBound, avatarSize and visibilityLimit mark the projection dirty. |
+| 0x00050640 | `CCamera_CreateNode` | `CCamera::CCamera` (camera.cpp) | [Camera](Camera.md) | Factory for "Camera": position (0, 0, 20), identity orientation, idle, clears the noisy flag. |
+| 0x00050760 | `CCamera_dtor` | `CCamera::~CCamera` (camera.cpp) | [Camera](Camera.md) | Frees the mode string, then the node destructor. |
+| 0x00050780 | `CCamera_UpdateViewMatrix` | `CCamera::UpdateViewMatrix` (camera.cpp) | [Camera](Camera.md) | Builds the view from position and orientation (plus the one degree noisy wobble), flips the third row, loads it into the device. |
+| 0x000508e0 | `CCamera_Set` | `CCamera::Set` (camera.cpp) | [Camera](Camera.md) | Starts a timed move to a new pose; zero or negative seconds snaps. |
+| 0x000509a0 | `CCamera_Advance` | `CCamera::Advance` (camera.cpp) | [Camera](Camera.md) | Lerps position and slerps orientation through a running move, then rebuilds the view. |
+| 0x00050a70 | `CCameraPath_CreateNode` | `CCameraPath::CCameraPath` (camera.cpp) | [Camera](Camera.md) | Factory for "CameraPath": interval 1.0, inactive, no interpolators. |
+| 0x00050af0 | `CCameraPath_dtor` | `CCameraPath::~CCameraPath` (camera.cpp) | [Camera](Camera.md) | Releases the position interpolator and drops the orientation one. |
+| 0x00050b60 | `CCameraPath_Advance` | `CCameraPath::Advance` (camera.cpp) | [Camera](Camera.md) | Samples the two interpolators at the path's time and snaps the camera there. |
+| 0x00050c90 | `CCameraPath_OnSetProperty` | `CCameraPath::OnSetProperty` (camera.cpp) | [Camera](Camera.md) | Writing isActive restamps the start time. |
 | 0x00053ed0 | `CFont::LoadGlyph` | `CFont::LoadGlyph` (text.cpp) | [Text](Text.md) | Decompresses a single glyph bitmap from the XTF cache table. |
+| 0x00056110 | `GenerateRadialAlphaMask` | `GenerateRadialAlphaMask` (materials.cpp) | [Materials](Materials.md) | Draws the round alpha falloff the four mask textures use. |
+| 0x000562d0 | `GetRadialAlphaMask` | `GetRadialAlphaMask` (materials.cpp) | [Materials](Materials.md) | Plain round mask texture, built once. |
+| 0x000563a0 | `GetRadialAVAlphaMask` | `GetRadialAVAlphaMask` (materials.cpp) | [Materials](Materials.md) | Round mask squeezed into the top left 0.6875. |
+| 0x00056470 | `GetRadialEdgeAlphaMask` | `GetRadialEdgeAlphaMask` (materials.cpp) | [Materials](Materials.md) | Steep edge mask; icons use it. |
+| 0x00056540 | `GetRadialEdgeAlphaMainMask` | `GetRadialEdgeAlphaMainMask` (materials.cpp) | [Materials](Materials.md) | Softer edge mask for the main panels. |
+| 0x00056610 | `CInnerWallMatInfo_Setup` | `CInnerWallMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Textured falloff drawn from both sides. |
+| 0x000567d0 | `CFreeSpaceMatInfo_Setup` | `CFreeSpaceMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Memory gauge: slides the texture by the material's param. |
+| 0x00056940 | `CMaskTextureMatInfo_Setup` | `CMaskTextureMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Mesh texture cut by a mask on stage 1, faded on stage 2. |
+| 0x00056a50 | `COrangeEggGlowMatInfo_Setup` | (reference only) | [Materials](Materials.md) | Camera space texture projection with an animated offset. |
+| 0x00056c70 | `CModulateTextureMatInfo_Setup` | `CModulateTextureMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Mesh texture with a pulsing tinted alpha. |
+| 0x00056d90 | `CReflectMatInfo_Setup` | `CReflectMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Environment reflection shader. |
+| 0x00056ea0 | `CBackingMatInfo_Setup` | `CBackingMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Colored panel shaped by a mask. |
+| 0x00056f80 | `CEggGlowPulseMatInfo_Setup` | `CEggGlowPulseMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Falloff whose front alpha pulses 64..192. |
+| 0x00057000 | `CEggGlowFadeMatInfo_Setup` | `CEggGlowFadeMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Falloff glow that fades out over 1.25 seconds after param is set to 1. |
+| 0x000570c0 | `CKeyMatInfo_CKeyMatInfo` | `CKeyMatInfo::CKeyMatInfo` (materials.cpp) | [Materials](Materials.md) | Falloff fields plus the bright and text bytes. |
+| 0x00057120 | `CKeyMatInfo_Setup` | `CKeyMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Keyboard key colors from one of two palettes. |
+| 0x000572d0 | `CIconMatInfo_Setup` | `CIconMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Current or selected title image, fading in, with soft edges. |
+| 0x00057650 | `CMatInfo_Setup` | `CMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Base Setup: standard material and cull none flags. |
+| 0x000576b0 | `CSolidMatInfo_Setup` | `CSolidMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Flat texture factor color. |
+| 0x00057790 | `CFalloffMatInfo_Setup` | `CFalloffMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Side to front color falloff shader. |
+| 0x00057940 | `CFalloffTexInfo_Setup` | `CFalloffTexInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Falloff over the mesh's texture. |
+| 0x00057af0 | `CAnisoMatInfo_Setup` | `CAnisoMatInfo::Setup` (materials.cpp) | [Materials](Materials.md) | Falloff through the anisotropic shader. |
+| 0x00057cb0 | `Material_Init` | `Material_Init` (materials_retail.inl) | [Materials](Materials.md) | Builds and sorts all 127 materials. |
+| 0x0005a0f0 | `CMaxMaterial_OnSetProperty` | `CMaxMaterial::OnSetProperty` (materials.cpp) | [Materials](Materials.md) | A new name rebinds; param is widened to a double. |
+| 0x0005a130 | `CMaxMaterial_Render` | `CMaxMaterial::Render` (materials.cpp) | [Materials](Materials.md) | Binds the named material and runs its Setup. |
 | 0x0005ab80 | `CKeyboard_CKeyboard` | `CKeyboard::CKeyboard` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Constructor. Zeroes every field except the cursor, which starts at -1 (whole string selected). |
 | 0x0005ac20 | `CKeyboard_dtor` | `CKeyboard::~CKeyboard` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Releases the text, frame and control nodes, frees `string`, releases the key nodearray. |
 | 0x0005acb0 | `CKeyboard_GetAsteriskFormattingState` | `CKeyboard::GetAsteriskFormattingState` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Returns the global *heading* text flag at 0x0017e74c. |
@@ -262,12 +340,47 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0005b970 | `CKeyboard_OnSetProperty` | `CKeyboard::OnSetProperty` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Setting `string` loads the edit buffer (up to 31 characters) with the whole thing selected. |
 | 0x0005b9d0 | `CKeyboard_Render` | `CKeyboard::Render` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Draws the frame, the text node with the edit string and cursor, then one node per key with its label. |
 | 0x0005bca0 | `CKeyboard_Advance` | `CKeyboard::Advance` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Advances the node, then the control node. |
-| 0x0005c250 | `CLevel_load` |  | [Scene Groups](SceneGroups.md) | FND-bound script method on Level: triggers asynchronous load of the Level's referenced sub-scene. |
+| 0x0005bce0 | `CMesh_ScalarDeletingDtor` | `CMesh::~CMesh` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | CMesh vtable (`0x00029d60`) slot 2: destructor, then free. |
+| 0x0005bd00 | `CMesh_dtor` | `CMesh::~CMesh` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Releases the vertex and index buffers. |
+| 0x0005bdb0 | `CMesh_Create_File` | `CMesh::Create` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Reads the 0x18 byte `.xm` header, maps type 4/5 to list/strip (anything else fails), reads the vertices and indices straight into new buffers. |
+| 0x0005bea0 | `FUN_0005bea0` | `CMesh::Render` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | CMesh slot 0. Sets the FVF, swaps edge AA for multisample past 800 faces, gives the first mesh of the frame the camera's own view, draws. |
+| 0x0005c050 | `CMeshNode_CreateNode` | `CMeshNode::CMeshNode` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Factory for "Mesh": dirty, owns its mesh, pushed on the front of the mesh node list. |
+| 0x0005c0e0 | `CMeshNode_dtor` | `CMeshNode::~CMeshNode` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Frees an owned mesh and the url, unlinks the node. |
+| 0x0005c1f0 | `CMeshNode_vfunc23` | `CMeshNode::Init` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Clears the dirty flag. |
+| 0x0005c200 | `CMeshNode_Render` | `CMeshNode::Render` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Stamps the render time, loads on first use, draws the mesh and sets its FVF unless the shape renderer already did. |
+| 0x0005c250 | `Xap_load` | `CMeshNode::load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Script fn `load` (FND `0x00188418`). XIP first; else the file beside the scene, then beside the app. |
+| 0x0005c320 | `CreateMesh_File` | `LoadMesh` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | New CMesh read from a path. Comes back even when the file didn't open. |
+| 0x0005c390 | `MakeSphere` | `MakeSphere` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | D3DX sphere cloned to XYZ, normal, diffuse, then repacked with one DWORD per normal. |
 | 0x0005d200 | `CLevel::Deactivate` | `CLevel::Deactivate` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Marks a Level node inactive. Pauses its time-dep children and skips it during render traversal. |
-| 0x0005d300 | `CPositionInterpolator::Interpolate` | `CPositionInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Linear interpolation between key positions based on the bound TimeSensor's fraction. |
-| 0x0005d5a0 | `COrientationInterpolator::Interpolate` | `COrientationInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Spherical-linear interpolation between key axis-angle rotations. |
-| 0x00061090 | `CBackgroundLoader::Fetch` | `CBackgroundLoader::Fetch` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Pulls the next pending request off the background loader queue. The loader thread spins on this. |
-| 0x00061760 | `CImageTexture::Load` | `CImageTexture::Load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Loads an XBX (Xbox swizzled) texture from a XIP entry into a D3D texture. |
+| 0x0005d300 | `CPositionInterpolator::Interpolate` | `CPositionInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Catmull-Rom between interior keys, straight lines on the end spans, clamped at both ends. |
+| 0x0005d520 | `COrientationInterpolator_OnLoad` | `COrientationInterpolator::OnLoad` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Converts each axis+angle key into a quaternion once. |
+| 0x0005d5a0 | `COrientationInterpolator::Interpolate` | `COrientationInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Slerp between neighboring keys, clamped at both ends. |
+| 0x00060390 | `CStarField_CreateNode` | `CStarField::CStarField` (starfield.cpp) | [TMAP System](TmapSystem.md) | Factory for "StarField": 20 stars, speed 1. |
+| 0x00060430 | `CStarField_Advance` | `CStarField::Advance` (starfield.cpp) | [TMAP System](TmapSystem.md) | Moves every star toward the viewer and respawns the ones that pass it. |
+| 0x00060510 | `CStarField_RenderDynamicTexture` | `CStarField::RenderDynamicTexture` (starfield.cpp) | [TMAP System](TmapSystem.md) | Perspective-projects the stars into the 8-bit surface, brighter when closer. |
+| 0x00060640 | `FUN_00060640` | `CStarField::Update` (starfield.cpp) | [TMAP System](TmapSystem.md) | Grows the star array when `stars` goes up, keeping the old stars. |
+| 0x000606d0 | `CDotField_CreateNode` | `CDotField::CDotField` (dotfield_node.cpp) | [TMAP System](TmapSystem.md) | Factory for "DotField": spacing 8, still. |
+| 0x00060790 | `CDotField_Advance` | `CDotField::Advance` (dotfield_node.cpp) | [TMAP System](TmapSystem.md) | Scrolls the grid; with no speeds set it picks a new heading and spacing every 10 to 15 seconds. |
+| 0x00060930 | `CDotField_RenderDynamicTexture` | `CDotField::RenderDynamicTexture` (dotfield_node.cpp) | [TMAP System](TmapSystem.md) | Writes 255 at every grid point. |
+| 0x00060990 | `CBackgroundTexture_OnComplete` | `ParseTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | File bytes to a texture: `.xt` raw, `.xbx` XPR0 with header and size checks, anything else through D3DX with the out of memory retry. |
+| 0x00060c90 | `FUN_00060c90` | `LoadTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Forces the `.xbx` extension and looks the texture up in the XIPs. |
+| 0x00060d40 | `CreateTexture` | `CreateTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | One level managed texture; hands back the size it came out at. |
+| 0x00060db0 | `CTexture_CreateNode` | `CTexture::CTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Factory for "Texture": repeats on, A8R8G8B8, no surface. |
+| 0x00060e30 | `CTexture_dtor` | `CTexture::~CTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Releases the surface, then the node destructor. |
+| 0x00060ec0 | `CTexture_vfunc23` | `CTexture::Create` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Stores the size and makes the surface. |
+| 0x00060ef0 | `CImageTexture_CreateNode` | `CImageTexture::CImageTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Factory for "ImageTexture": no url, dirty. |
+| 0x00060f70 | `CImageTexture_dtor` | `CImageTexture::~CImageTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Frees the url, then the CTexture destructor. |
+| 0x00060f90 | `CImageTexture_GetTextureSurface` | `CImageTexture::GetTextureSurface` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Loads the url the first time after it changes, returns the surface. |
+| 0x00060fc0 | `FUN_00060fc0` | `CBackgroundLoader::CBackgroundLoader` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Clears the loader and queues it at the tail of the list at `0x0017e6f0`. |
+| 0x00061030 | `FUN_00061030` | `CBackgroundLoader::~CBackgroundLoader` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Unlinks, closes the file, frees the url and the data. |
+| 0x00061090 | `CBackgroundLoader_Fetch` | `CBackgroundLoader::Fetch` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Opens the file overlapped (unbuffered on `c:` and `y:`), sector rounds the size, starts one ReadFile for all of it. |
+| 0x000611f0 | `FUN_000611f0` | `CBackgroundTexture::~CBackgroundTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Clears the cache slot's loading flag. |
+| 0x00061210 | `FUN_00061210` | `CBackgroundTexture::OnComplete` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Parses the loaded file into the cache slot; a 64 or 128 wide request that fails gets the Xbox logo. |
+| 0x00061290 | `CleanupTextureCache` | `CleanupTextureCache` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Frees the least recently used texture that isn't locked or loading. First stop of every out of memory retry. |
+| 0x000614f0 | `FUN_000614f0` | `UnloadTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Drops every cache slot holding a url and says whether there was one. Called by the MOTD clear. |
+| 0x000615a0 | `FindTexture` | `FindTexture` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Cache lookup by url; a miss takes a free or the oldest slot and loads now or in the background. |
+| 0x00061760 | `GetTexture` | `CImageTexture::Load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Swaps the surface for the cached texture of a url, synchronously, and takes its size. |
+| 0x00061820 | `CImageTexture_OnSetProperty` | `CImageTexture::OnSetProperty` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | A new url marks the texture dirty. |
 | 0x00061b40 | `CAudioClip::Cleanup` | `CAudioClip::Cleanup` (audio_system.cpp) | [Audio](AudioSystem.md) | Releases an audio clip's DirectSound buffer and waveform data. |
 | 0x00061ba0 | `CAudioClip::Init` | `CAudioClip::Init` (audio_system.cpp) | [Audio](AudioSystem.md) | Loads a clip from a XIP entry, parses the WAV header, allocates a DSound buffer, and uploads the PCM payload. |
 | 0x000629a0 | `CAudioBuf::Lock` | `CAudioBuf::Lock` (audio_system.cpp) | [Audio](AudioSystem.md) | DSound `IDirectSoundBuffer::Lock` wrapper. Used by the audio pump to write streamed samples. |
@@ -312,11 +425,12 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Script VM | [VM.md](VM.md) | 35 functions |
 | Scene Graph | [Node.md](Node.md) | 2 functions + 32 class-table registrations |
 | XIP Archives | [XIP.md](XIP.md) | 26 functions |
-| Animation Nodes | [AnimationNodes.md](AnimationNodes.md) | 4 functions |
+| Animation Nodes | [AnimationNodes.md](AnimationNodes.md) | 17 functions |
 | Audio System | [AudioSystem.md](AudioSystem.md) | 12 functions |
-| Camera | [Camera.md](Camera.md) | not yet started |
+| Camera | [Camera.md](Camera.md) | 9 functions |
 | Date | [Date.md](Date.md) | 30 functions |
-| Math | [Math.md](Math.md) | 5 functions |
+| Math | [Math.md](Math.md) | 19 functions |
+| Materials | [Materials.md](Materials.md) | 25 functions |
 | File Operations | [FileOps.md](FileOps.md) | 7 functions |
 | File Utilities | [FileUtil.md](FileUtil.md) | 10 functions: paths, URL resolving, block counts |
 | Disc | (no doc yet, narrative TODO) | 1 function |
@@ -339,7 +453,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Music Collection | (no doc yet, narrative TODO) | 5 verified Theseus mappings (FormatSoundtrackSongTime, GetUpdateString + 3 stubs: AddSoundtrack, ClearCopyList, DeleteSoundtrack) + 3 binary-only anchors (global ::DeleteSoundtrack, ::DeleteAllSoundtracks, ThreadProc); more labeling pending |
 | Render | (no doc yet, narrative TODO) | 1 function |
 | App Shell | (no doc yet, narrative TODO) | 9 functions |
-| Asset Loader | [AssetLoader.md](AssetLoader.md) (narrative TODO) | 2 functions |
+| Asset Loader | [AssetLoader.md](AssetLoader.md) | 30 functions |
 | DVD Playback | (reference-only, no doc) | 1 function |
 | Original WMA Pump | (reference-only, folded into AudioSystem.md) | 1 function |
 | Original CDDA Streamer | (reference-only, folded into AudioSystem.md) | 1 function |

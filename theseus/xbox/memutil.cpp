@@ -9,7 +9,6 @@
 extern "C" void* WINAPI D3D_AllocNoncontiguousMemory(DWORD Size);
 extern "C" void WINAPI D3D_FreeNoncontiguousMemory(void* pMemory);
 
-extern void CleanupImageCache();
 extern bool CleanupTextureCache();
 extern bool CleanupMeshCache();
 
