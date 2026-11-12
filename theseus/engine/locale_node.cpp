@@ -613,6 +613,41 @@ bool FormatTime(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE
     return true;
 }
 
+// FormatDate(szBuf, chLen, pst, locale)
+// Reconstructed from 5960 retail XBE @ 0x0003cd40. Ghidra decompile, trimmed:
+//     if (locale == -1) locale = region << 16 | language;
+//     sep = GetDateSeparator();
+//     0x10000 (NA English):                         "%02d%c%02d%c%d " month, day, year
+//     regions 1, 2, 4 with language 1, 6 or 7:      "%d%c%02d%c%02d " year, month, day
+//     anything else:                                "%02d%c%02d%c%d " day, month, year
+//     if (chLen < len + 2) return false; copy; return true;
+// The Text node's <date> prefix draws this.
+bool FormatDate(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE_CURRENT*/)
+{
+    if (locale == LOCALE_CURRENT)
+        locale = LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage);
+
+    TCHAR chSep = GetDateSeparator();
+    int region = REGION_FROM_LOCALE(locale);
+    int language = LANGUAGE_FROM_LOCALE(locale);
+    bool bYearFirst = (region == XC_GAME_REGION_NA || region == XC_GAME_REGION_JAPAN || region == XC_GAME_REGION_RESTOFWORLD) &&
+        (language == 1 || language == 6 || language == 7);
+
+    TCHAR szDate[32];
+    if (locale == LOCALE_NA_ENGLISH)
+        _sntprintf(szDate, countof(szDate), _T("%02d%c%02d%c%d "), pst->wMonth, chSep, pst->wDay, chSep, pst->wYear);
+    else if (bYearFirst)
+        _sntprintf(szDate, countof(szDate), _T("%d%c%02d%c%02d "), pst->wYear, chSep, pst->wMonth, chSep, pst->wDay);
+    else
+        _sntprintf(szDate, countof(szDate), _T("%02d%c%02d%c%d "), pst->wDay, chSep, pst->wMonth, chSep, pst->wYear);
+
+    if (chLen < lstrlen(szDate) + 2)
+        return false;
+
+    lstrcpy(szBuf, szDate);
+    return true;
+}
+
 void Locale_Exit()
 {
     FreeXlate();

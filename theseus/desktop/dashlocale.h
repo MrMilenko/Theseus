@@ -47,6 +47,7 @@
 extern void FormatInteger(char* szBuf, int nNumber, int locale = LOCALE_CURRENT);
 extern void FormatBlocks(char* szBuf, int nNumber, int locale = LOCALE_CURRENT);
 extern bool FormatTime(char* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale = LOCALE_CURRENT);
+extern bool FormatDate(char* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale = LOCALE_CURRENT);
 extern const char* Translate(const char* szString, char* szTranslate, int nLanguage = LANGUAGE_CURRENT);
 
 extern int g_nCurLanguage;
