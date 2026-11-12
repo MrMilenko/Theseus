@@ -162,6 +162,20 @@ static void ExecLaunch(const char* spec, bool isUrl, bool isSteamUrl) {
 #else
 		// Linux: bypass xdg-open/KIO; steam binary takes the URL directly.
 		execlp("steam", "steam", spec, (char*)NULL);
+		// Flatpak Steam has no steam on PATH. Stack buffers only, we're the
+		// child of a threaded fork.
+		const char* home = getenv("HOME");
+		char userApp[512] = "";
+		if (home) {
+			strncpy(userApp, home, sizeof(userApp) - 1);
+			strncat(userApp, "/.local/share/flatpak/app/com.valvesoftware.Steam",
+			        sizeof(userApp) - strlen(userApp) - 1);
+		}
+		struct stat st;
+		if (stat("/var/lib/flatpak/app/com.valvesoftware.Steam", &st) == 0 ||
+		    (userApp[0] && stat(userApp, &st) == 0))
+			execlp("flatpak", "flatpak", "run", "com.valvesoftware.Steam", spec, (char*)NULL);
+		execlp("xdg-open", "xdg-open", spec, (char*)NULL);
 #endif
 	} else if (isUrl) {
 #ifdef __APPLE__
