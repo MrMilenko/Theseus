@@ -93,10 +93,9 @@ void Host_BoostProcess() {
 
 // Crash reports. An unhandled exception filter writes crashes\<local time>.txt
 // in the user data folder (version, OS, exception, stack walk, the end of
-// theseus.log, home folder shown as ~) and a minidump beside it. Follows
-// MrBruh's approach: abort() raises an exception of its own so the filter
-// sees it too, and the main thread keeps stack room for after an overflow.
-#define CRASH_ABORT_EXCEPTION 0xE0000001UL
+// theseus.log, home folder shown as ~) and a minidump beside it. abort()
+// reports as STATUS_FATAL_APP_EXIT, the code the CRT itself uses for it.
+#define CRASH_FATAL_APP_EXIT 0x40000015UL
 
 static char s_crashDir[MAX_PATH];
 static char s_crashHome[MAX_PATH];
@@ -116,7 +115,7 @@ static const char* ExceptionName(DWORD code) {
 	case EXCEPTION_ARRAY_BOUNDS_EXCEEDED: return "EXCEPTION_ARRAY_BOUNDS_EXCEEDED";
 	case EXCEPTION_BREAKPOINT:            return "EXCEPTION_BREAKPOINT";
 	case 0xC0000409:                      return "STATUS_STACK_BUFFER_OVERRUN";
-	case CRASH_ABORT_EXCEPTION:           return "abort()";
+	case CRASH_FATAL_APP_EXIT:            return "abort()";
 	default:                              return "exception";
 	}
 }
@@ -225,14 +224,7 @@ static void CrashLogTail(CrashText* out) {
 	CrashRedact(out, s_logTail + start, got - start, s_crashHome, true);
 }
 
-static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
-	// One report. A crash inside it goes on to Windows; another thread's
-	// crash waits for the end this one brings.
-	static volatile LONG crashedThread = 0;
-	LONG me = (LONG)GetCurrentThreadId();
-	LONG first = InterlockedCompareExchange(&crashedThread, me, 0);
-	if (first == me) return EXCEPTION_CONTINUE_SEARCH;
-	if (first) Sleep(INFINITE);
+static void WriteCrashReport(EXCEPTION_POINTERS* ep) {
 	fflush(stdout);
 
 	SYSTEMTIME st;
@@ -277,28 +269,80 @@ static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
 		fprintf(stderr, "[CRASH] Report saved to %s\n", r->data);
 	}
 	fflush(stderr);
+}
+
+static DWORD WINAPI CrashReportThread(LPVOID ep) {
+	WriteCrashReport((EXCEPTION_POINTERS*)ep);
+	return 0;
+}
+
+static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep) {
+	// One report. A crash inside it goes on to Windows; another thread's
+	// crash waits for the end this one brings.
+	static volatile LONG crashedThread = 0;
+	LONG me = (LONG)GetCurrentThreadId();
+	LONG first = InterlockedCompareExchange(&crashedThread, me, 0);
+	if (first == me) return EXCEPTION_CONTINUE_SEARCH;
+	if (first) Sleep(INFINITE);
+
+	// An overflowed stack has no room left for the report, so a fresh
+	// thread with its own stack writes it.
+	if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+		HANDLE t = CreateThread(NULL, 256 * 1024, CrashReportThread, ep, 0, NULL);
+		if (t) {
+			WaitForSingleObject(t, 30000);
+			CloseHandle(t);
+		}
+	} else {
+		WriteCrashReport(ep);
+	}
 	return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// abort() lands here through SIGABRT. Build the record by hand from this
+// thread's context and report it like any other crash, then end the process.
 static void CrashAbort(int) {
-	RaiseException(CRASH_ABORT_EXCEPTION, EXCEPTION_NONCONTINUABLE, 0, NULL);
+	CONTEXT ctx = {};
+	RtlCaptureContext(&ctx);
+	EXCEPTION_RECORD rec = {};
+	rec.ExceptionCode = CRASH_FATAL_APP_EXIT;
+	rec.ExceptionFlags = EXCEPTION_NONCONTINUABLE;
+#if defined(_M_X64) || defined(__x86_64__)
+	rec.ExceptionAddress = (PVOID)ctx.Rip;
+#endif
+	EXCEPTION_POINTERS ep = { &rec, &ctx };
+	CrashFilter(&ep);
+	TerminateProcess(GetCurrentProcess(), 3);
 }
 
-// MrBruh's: RtlGetVersion tells the truth where GetVersionEx won't, and
-// Wine owns up through ntdll.
+static bool CrashRegString(HKEY root, const char* key, const char* value, char* out, DWORD outSize) {
+	out[0] = '\0';
+	DWORD type = 0, size = outSize;
+	if (RegGetValueA(root, key, value, RRF_RT_REG_SZ, &type, out, &size) != ERROR_SUCCESS) {
+		out[0] = '\0';
+		return false;
+	}
+	return true;
+}
+
+// Read once at install from the registry: product name, release and build.
+// Wine keeps its own key, which is how a run under Wine shows up.
 static void CrashOsName(char* out, size_t outSize) {
-	typedef LONG (WINAPI *RtlGetVersionFn)(OSVERSIONINFOW*);
-	typedef const char* (CDECL *WineGetVersionFn)(void);
-	HMODULE ntdll = GetModuleHandleA("ntdll.dll");
-	RtlGetVersionFn rtlGetVersion = ntdll ? (RtlGetVersionFn)(void*)GetProcAddress(ntdll, "RtlGetVersion") : NULL;
-	WineGetVersionFn wineGetVersion = ntdll ? (WineGetVersionFn)(void*)GetProcAddress(ntdll, "wine_get_version") : NULL;
-	OSVERSIONINFOW v = {};
-	v.dwOSVersionInfoSize = sizeof(v);
-	if (!rtlGetVersion || rtlGetVersion(&v) != 0) v.dwMajorVersion = v.dwMinorVersion = v.dwBuildNumber = 0;
-	int n = snprintf(out, outSize, "Windows %lu.%lu.%lu", (unsigned long)v.dwMajorVersion,
-	                 (unsigned long)v.dwMinorVersion, (unsigned long)v.dwBuildNumber);
-	if (wineGetVersion && n > 0 && (size_t)n < outSize)
-		snprintf(out + n, outSize - (size_t)n, " (Wine %.32s)", wineGetVersion());
+	const char* nt = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+	char product[96], release[32], build[32];
+	if (!CrashRegString(HKEY_LOCAL_MACHINE, nt, "ProductName", product, sizeof(product)))
+		snprintf(product, sizeof(product), "Windows");
+	if (!CrashRegString(HKEY_LOCAL_MACHINE, nt, "DisplayVersion", release, sizeof(release)))
+		CrashRegString(HKEY_LOCAL_MACHINE, nt, "ReleaseId", release, sizeof(release));
+	CrashRegString(HKEY_LOCAL_MACHINE, nt, "CurrentBuildNumber", build, sizeof(build));
+	int n = snprintf(out, outSize, "%s%s%s%s%s", product, release[0] ? " " : "", release,
+	                 build[0] ? " build " : "", build);
+	HKEY wine;
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, "Software\\Wine", 0, KEY_READ, &wine) == ERROR_SUCCESS) {
+		RegCloseKey(wine);
+		if (n > 0 && (size_t)n < outSize)
+			snprintf(out + n, outSize - (size_t)n, " (under Wine)");
+	}
 }
 
 // Shipped Configs/version: "[default]" then "version=0.4.0".
@@ -347,8 +391,6 @@ void Host_InstallCrashHandler(const char* userDataDir, const char* shippedDir) {
 	snprintf(s_crashHeader, sizeof(s_crashHeader), "Version: %s\nOS: %s\n", version, os);
 
 	SetUnhandledExceptionFilter(CrashFilter);
-	ULONG guarantee = 64 * 1024;
-	SetThreadStackGuarantee(&guarantee);
 	signal(SIGABRT, CrashAbort);
 
 	TrimCrashReports(".txt");
