@@ -135,5 +135,5 @@ day, weekday and hour of each change date.
 
 - The language text comes from `Q:\Language\<name>.dat` instead of an XBE section, for the first
   six languages, with up to 1000 pairs and a bound check. A missing file leaves the table empty.
-- Desktop strings are narrow, so desktop keeps one byte per UTF-16 character.
+- Desktop strings are UTF-8, so desktop converts the UTF-16 text as it loads.
 - The title arrays are emptied with `DeleteAll(false)` rather than `SetRoot(0)`.

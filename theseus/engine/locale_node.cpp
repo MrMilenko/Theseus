@@ -6,7 +6,7 @@
 // function by function from the 5960 retail XBE; what the binary does is
 // written up in docs/decomp/Locale.md. Both builds compile this file. The
 // seam is the language file: 5960 loads it from an XBE section, Theseus from
-// Q:\Language\<name>.dat, and desktop narrows its UTF-16 to one byte a char.
+// Q:\Language\<name>.dat, and desktop turns its UTF-16 into UTF-8.
 
 #include "std.h"
 #include "theseus.h"
@@ -50,9 +50,44 @@ static TCHAR* s_xlateText;      // the loaded file; keys and values point into i
 
 // ===== Loading a language ==================================================
 
+#ifndef _XBOX
+// Desktop strings are UTF-8. out needs 3 bytes per unit plus the null.
+static void NarrowToUTF8(const WORD* in, int count, char* out)
+{
+	unsigned char* p = (unsigned char*)out;
+	for (int i = 0; i < count; i++)
+	{
+		unsigned cp = in[i];
+		if (cp >= 0xd800 && cp < 0xdc00 && i + 1 < count && in[i + 1] >= 0xdc00 && in[i + 1] < 0xe000)
+			cp = 0x10000 + ((cp - 0xd800) << 10) + (in[++i] - 0xdc00);
+
+		if (cp < 0x80)
+			*p++ = (unsigned char)cp;
+		else if (cp < 0x800)
+		{
+			*p++ = (unsigned char)(0xc0 | (cp >> 6));
+			*p++ = (unsigned char)(0x80 | (cp & 0x3f));
+		}
+		else if (cp < 0x10000)
+		{
+			*p++ = (unsigned char)(0xe0 | (cp >> 12));
+			*p++ = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+			*p++ = (unsigned char)(0x80 | (cp & 0x3f));
+		}
+		else
+		{
+			*p++ = (unsigned char)(0xf0 | (cp >> 18));
+			*p++ = (unsigned char)(0x80 | ((cp >> 12) & 0x3f));
+			*p++ = (unsigned char)(0x80 | ((cp >> 6) & 0x3f));
+			*p++ = (unsigned char)(0x80 | (cp & 0x3f));
+		}
+	}
+	*p = 0;
+}
+#endif
+
 // Reads Q:\Language\<name>.dat (UTF-16LE behind a BOM) into s_xlateText,
-// null terminated and without the BOM. Desktop keeps the low byte of each
-// character since its TCHAR is char.
+// null terminated and without the BOM. Desktop turns it into UTF-8.
 static bool ReadLanguageFile(const char* name)
 {
 	char path[MAX_PATH];
@@ -75,12 +110,18 @@ static bool ReadLanguageFile(const char* name)
 	WORD* start = (units > 0 && raw[0] == 0xfeff) ? raw + 1 : raw;
 	int count = (int)(raw + units - start);
 
+#ifdef _XBOX
 	s_xlateText = (TCHAR*)malloc((count + 1) * sizeof(TCHAR));
 	if (s_xlateText != NULL)
 	{
 		for (int i = 0; i <= count; i++)
-			s_xlateText[i] = (TCHAR)start[i];
+			s_xlateText[i] = start[i];
 	}
+#else
+	s_xlateText = (TCHAR*)malloc(count * 3 + 1);
+	if (s_xlateText != NULL)
+		NarrowToUTF8(start, count, s_xlateText);
+#endif
 	free(raw);
 	return s_xlateText != NULL;
 }
