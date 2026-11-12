@@ -623,12 +623,25 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 
 	LPD3DXMESH pMesh = NULL;
 	TheseusCreateMeshFVF(nFaces, nVerts, D3DXMESH_MANAGED, TEXT_FVF, &pMesh);
-	*ppMesh = pMesh;
+	if (pMesh == NULL)
+		return;
 
-	WORD* indices;
-	TEXTVERTEX* verts;
-	pMesh->LockIndexBuffer(D3DLOCK_DISCARD, (BYTE**)&indices);
-	pMesh->LockVertexBuffer(D3DLOCK_DISCARD, (BYTE**)&verts);
+	// No mesh at all beats one written through a failed lock; the node
+	// tries again next frame.
+	WORD* indices = NULL;
+	TEXTVERTEX* verts = NULL;
+	if (FAILED(pMesh->LockIndexBuffer(D3DLOCK_DISCARD, (BYTE**)&indices)))
+	{
+		pMesh->Release();
+		return;
+	}
+	if (FAILED(pMesh->LockVertexBuffer(D3DLOCK_DISCARD, (BYTE**)&verts)))
+	{
+		pMesh->UnlockIndexBuffer();
+		pMesh->Release();
+		return;
+	}
+	*ppMesh = pMesh;
 
 	// Pass 2: fill it.
 	int nIndex = 0, nVertex = 0;
@@ -1377,10 +1390,12 @@ void CTextNode::Render()
 		{
 			float wrap = copy == 0 ? 0.0f : contentW + SCROLL_GAP;
 			TEXTVERTEX* verts;
-			m_pMesh->LockVertexBuffer(0, (BYTE**)&verts);
-			float left = m_scroll - 1.0f;
-			HorizontalFade(verts, m_pMesh->GetNumVertices(), left, left + window + 2.0f, wrap);
-			m_pMesh->UnlockVertexBuffer();
+			if (SUCCEEDED(m_pMesh->LockVertexBuffer(0, (BYTE**)&verts)))
+			{
+				float left = m_scroll - 1.0f;
+				HorizontalFade(verts, m_pMesh->GetNumVertices(), left, left + window + 2.0f, wrap);
+				m_pMesh->UnlockVertexBuffer();
+			}
 
 			if (copy == 1 && m_scroll + window < contentW)
 				break;
@@ -1393,9 +1408,11 @@ void CTextNode::Render()
 			if (m_scroll == 0.0f)
 				top += 1.0f;   // no top fade until it starts moving
 			TEXTVERTEX* verts;
-			m_pMesh->LockVertexBuffer(0, (BYTE**)&verts);
-			VerticalFade(verts, m_pMesh->GetNumVertices(), top, bottom, wrap);
-			m_pMesh->UnlockVertexBuffer();
+			if (SUCCEEDED(m_pMesh->LockVertexBuffer(0, (BYTE**)&verts)))
+			{
+				VerticalFade(verts, m_pMesh->GetNumVertices(), top, bottom, wrap);
+				m_pMesh->UnlockVertexBuffer();
+			}
 
 			if (copy == 1 && m_scroll + m_height < contentH)
 				break;
