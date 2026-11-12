@@ -35,6 +35,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <SDL.h>
+#include "imgui.h"
 #include <string>
 #include <vector>
 
@@ -299,8 +300,8 @@ static struct Guide {
     unsigned held, repeatHeld;
     Uint32 repeatTime;
     int device;
-    bool pointerMoved;
-    float pointerX, pointerY;
+    bool pointerMoved, clickMoved;
+    float pointerX, pointerY, wheel;
 
     int copied;
     std::string result[GA_COUNT];
@@ -865,57 +866,91 @@ void Guide_Frame()
 
 // The pointer
 
+// Where a click left the guide, to tell a double click that would land on
+// the next screen's rows from quick clicks on the same row.
+static std::string Screen()
+{
+    char s[64];
+    snprintf(s, sizeof(s), "%d/%d/%d/%d/", (int)g.view, (int)g.stack.size(), g.section, g.page);
+    return s + g.browseDir;
+}
+
+static void Click(const HitTarget& t)
+{
+    switch (t.kind) {
+    case T_SECTION:
+        ShowSection(t.index);
+        g.inPanel = false;
+        break;
+    case T_ROW:
+        g.inPanel = true;
+        g.cursor = t.index;
+        Select();
+        break;
+    case T_TAB:
+        g.page = t.index;
+        g.cursor = g.scroll = 0;
+        Build();
+        break;
+    case T_PROMPT:
+        Handle((unsigned)t.index);
+        break;
+    }
+}
+
 void Guide_HandleEvent(const SDL_Event* e)
 {
     if (!g.open) return;
     extern SDL_Window* g_pSDLWindow;
     if (!g_pSDLWindow) return;
     Uint32 win = SDL_GetWindowID(g_pSDLWindow);
+    // Events come in window points, the overlay lays out in pixels.
     float scale = Plat_GetDisplayScale();
     float x, y;
+    // A tool window over the guide keeps its own clicks.
+    const bool imgui = ImGui::GetIO().WantCaptureMouse;
 
     switch (e->type) {
     case SDL_MOUSEMOTION:
-        if (e->motion.windowID != win) return;
+        if (e->motion.windowID != win || imgui) return;
         ui_overlay_to_layout((float)e->motion.x * scale, (float)e->motion.y * scale, &x, &y);
         g.pointerX = x;
         g.pointerY = y;
         g.pointerMoved = true;
         g.device = 0;
         break;
-    case SDL_MOUSEWHEEL:
-        if (e->wheel.windowID != win || !g.inPanel) return;
-        MoveCursor(e->wheel.y > 0 ? -1 : e->wheel.y < 0 ? 1 : 0);
+    case SDL_MOUSEWHEEL: {
+        if (e->wheel.windowID != win || imgui) return;
+        // Whole notches, gathered from a trackpad's fractions too.
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+        g.wheel += e->wheel.preciseY;
+#else
+        g.wheel += (float)e->wheel.y;
+#endif
+        int step = (int)g.wheel;
+        g.wheel -= (float)step;
+        if (e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) step = -step;
+        for (; step > 0; step--) Handle(GUIDE_UP);
+        for (; step < 0; step++) Handle(GUIDE_DOWN);
         g.device = 0;
         break;
+    }
     case SDL_MOUSEBUTTONDOWN: {
-        if (e->button.windowID != win) return;
+        if (e->button.windowID != win || imgui) return;
         g.device = 0;
         if (e->button.button == SDL_BUTTON_RIGHT) { PressB(); return; }
         if (e->button.button != SDL_BUTTON_LEFT) return;
+        // The second half of a double click that opened something.
+        if (e->button.clicks > 1 && g.clickMoved) return;
         ui_overlay_to_layout((float)e->button.x * scale, (float)e->button.y * scale, &x, &y);
         for (size_t i = 0; i < g.targets.size(); i++) {
             const HitTarget t = g.targets[i];
             if (x < t.x0 || x >= t.x1 || y < t.y0 || y >= t.y1) continue;
-            switch (t.kind) {
-            case T_SECTION:
-                ShowSection(t.index);
-                g.inPanel = false;
-                break;
-            case T_ROW:
-                g.inPanel = true;
-                g.cursor = t.index;
-                Select();
-                break;
-            case T_TAB:
-                g.page = t.index;
-                g.cursor = g.scroll = 0;
-                Build();
-                break;
-            case T_PROMPT:
-                Handle((unsigned)t.index);
-                break;
-            }
+            std::string before = Screen();
+            Click(t);
+            g.clickMoved = Screen() != before;
+            // Spans are from the last frame drawn; a moved screen has new ones.
+            if (g.clickMoved) g.targets.clear();
             return;
         }
         break;
