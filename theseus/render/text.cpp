@@ -113,7 +113,8 @@ public:
 	float Advance(int nGlyph) const { return m_pGlyphs[nGlyph].advanceX; }
 	CGlyphShape* Shape(int nGlyph) const { return m_ppShapes[nGlyph]; }
 
-	void CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale);
+	void CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale,
+		float indentWidth = 0.0f, float indentHeight = 0.0f);
 
 	HANDLE m_hFile;
 
@@ -511,11 +512,12 @@ static void AddCursor(WORD* indices, int& nIndex, TEXTVERTEX* verts, int& nVerte
 // (or fades if the word has none), the second column is right justified, and
 // lines step down 1.5 after a paragraph or 1.0 inside one. Then every vertex
 // is scaled and the bounding box taken. See docs/decomp/Text.md.
-// 5960 also passes an indent (width, height) the Text node exposes; Theseus
-// has no indent props, so lines always restart at x = 0. 5960 only honors
-// headings while the keyboard's asterisk formatting flag is on; Theseus always
-// does. The bounds stop in the second pass and the glyph scale are Theseus's.
-void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale)
+// Lines start indentWidth in until they drop below indentHeight. 5960 only
+// honors headings while the keyboard's asterisk formatting flag is on; Theseus
+// always does. The bounds stop in the second pass and the glyph scale are
+// Theseus's.
+void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale,
+	float indentWidth, float indentHeight)
 {
 	if (m_pSet == NULL)
 		return;
@@ -627,7 +629,7 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 
 	// Pass 2: fill it.
 	int nIndex = 0, nVertex = 0;
-	float x = 0.0f, y = 0.0f;
+	float x = indentWidth, y = 0.0f;
 	float blue = 1.0f;
 	bool bHeading = false;
 	bool bParaStart = true;
@@ -682,9 +684,9 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 
 				if (ich != nChars)
 				{
-					x = 0.0f;
 					bool bTight = bHeading || ch == '\r' || !bSingleColumn;
 					y -= bTight ? 1.0f : 1.5f;
+					x = y < -indentHeight ? 0.0f : indentWidth;
 				}
 				bHeading = false;
 				bParaStart = true;
@@ -729,8 +731,8 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 			{
 				if (wrapChar > -1)
 				{
-					x = 0.0f;
 					y -= 1.0f;
+					x = y < -indentHeight ? 0.0f : indentWidth;
 					ich = wrapChar;
 					nVertex = wrapVertex;
 					nIndex = wrapIndex;
@@ -1090,7 +1092,7 @@ float OverlayFontDraw(const TCHAR* text, float screenX, float screenY, float pix
 // extrusion 0x2c, width 0x30, translate 0x34, height 0x38, scroll 0x3c,
 // scrollRate 0x40, scrollDelay 0x44, indentWidth 0x48, indentHeight 0x4c,
 // mesh 0x50, bbox 0x54..0x6b, language 0x6c, scroll start time 0x70.
-// Theseus has scrollHorizontal where 5960 has the two indent props.
+// scrollHorizontal is Theseus's.
 
 class CTextNode : public CNode
 {
@@ -1114,6 +1116,8 @@ public:
 	float m_scroll;
 	float m_scrollRate;
 	float m_scrollDelay;
+	float m_indentWidth;
+	float m_indentHeight;
 	bool m_scrollHorizontal;
 
 	DECLARE_NODE_PROPS()
@@ -1124,6 +1128,8 @@ public:
 	XTIME m_timeToScroll;
 
 private:
+	typedef bool (*StampFormatter)(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale);
+	int ExpandStamp(const TCHAR* szPrefix, StampFormatter pfnFormat, bool& bRebuild);
 	void DropMesh();
 };
 
@@ -1144,6 +1150,8 @@ START_NODE_PROPS(CTextNode, CNode)
 	NODE_PROP(pt_number, CTextNode, scroll)
 	NODE_PROP(pt_number, CTextNode, scrollRate)
 	NODE_PROP(pt_number, CTextNode, scrollDelay)
+	NODE_PROP(pt_number, CTextNode, indentWidth)
+	NODE_PROP(pt_number, CTextNode, indentHeight)
 	NODE_PROP(pt_boolean, CTextNode, scrollHorizontal)
 END_NODE_PROPS()
 
@@ -1163,6 +1171,8 @@ CTextNode::CTextNode() :
 	m_scroll(0.0f),
 	m_scrollRate(0.0f),
 	m_scrollDelay(0.0f),
+	m_indentWidth(0.0f),
+	m_indentHeight(0.0f),
 	m_scrollHorizontal(false),
 	m_pMesh(NULL),
 	m_nLanguage(0),
@@ -1248,19 +1258,44 @@ const TCHAR* FaceFromFont(const TCHAR* szFont)
 	return szFont;
 }
 
+// "<clock>" and "<date>" texts draw the local time or date after the prefix.
+// Refreshes the stored text when the value changes; returns the prefix length,
+// or 0 when the text doesn't start with this prefix.
+int CTextNode::ExpandStamp(const TCHAR* szPrefix, StampFormatter pfnFormat, bool& bRebuild)
+{
+	int cchPrefix = (int)_tcslen(szPrefix);
+	if (_tcsncmp(m_text, szPrefix, cchPrefix) != 0)
+		return 0;
+
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	TCHAR szValue[32];
+	szValue[0] = 0;
+	pfnFormat(szValue, countof(szValue), &st, LOCALE_CURRENT);
+
+	if (_tcscmp(m_text + cchPrefix, szValue) != 0)
+	{
+		delete [] m_text;
+		m_text = new TCHAR[cchPrefix + _tcslen(szValue) + 1];
+		_tcscpy(m_text, szPrefix);
+		_tcscpy(m_text + cchPrefix, szValue);
+		bRebuild = true;
+	}
+	return cchPrefix;
+}
+
 // CTextNode::Render()
 // Reconstructed from 5960 retail XBE @ 0x000559e0 (1331 bytes). Takes the
 // keyboard's string if one is waiting (a changed string or cursor rebuilds),
-// expands <clock>, rebuilds on a language change, then builds the mesh with
+// expands <clock> and <date>, rebuilds on a language change, then builds the mesh with
 // the translated text, |width| as the format width and a negative width as
 // "don't wrap". Justify middle or end shifts left by half or all of the drawn
 // width (capped at |width|). With a height smaller than the text the mesh
 // fades top and bottom and draws twice, the second copy one gap below so the
 // scroll wraps around. Each draw pushes the world matrix, translates, turns
 // culling off for the flat glyphs and back to CCW. See docs/decomp/Text.md.
-// 5960 also expands <date>, passes the indent props and rebuilds every frame
-// a cursorless keyboard string arrives; Theseus does none of those. The
-// horizontal marquee, the draw counter and the desktop vertex alpha toggle
+// 5960 also rebuilds every frame a cursorless keyboard string arrives, which
+// draws the same mesh; Theseus skips that. The horizontal marquee, the draw counter and the desktop vertex alpha toggle
 // are Theseus's.
 void CTextNode::Render()
 {
@@ -1281,27 +1316,14 @@ void CTextNode::Render()
 	if (m_text == NULL || m_text[0] == 0)
 		return;
 
-	static const TCHAR szClock[] = _T("<clock>");
-	const int cchClock = 7;
 	const TCHAR* szText = m_text;
-	if (_tcsncmp(m_text, szClock, cchClock) == 0)
+	int cchStamp = ExpandStamp(_T("<clock>"), FormatTime, bRebuild);
+	if (cchStamp == 0)
+		cchStamp = ExpandStamp(_T("<date>"), FormatDate, bRebuild);
+	if (cchStamp != 0)
 	{
-		SYSTEMTIME st;
-		GetLocalTime(&st);
-		TCHAR szTime[32];
-		FormatTime(szTime, countof(szTime), &st);
-
-		if (_tcscmp(m_text + cchClock, szTime) != 0)
-		{
-			delete [] m_text;
-			m_text = new TCHAR[cchClock + _tcslen(szTime) + 1];
-			_tcscpy(m_text, szClock);
-			_tcscpy(m_text + cchClock, szTime);
-			bRebuild = true;
-		}
-
 		m_translate = false;
-		szText = m_text + cchClock;
+		szText = m_text + cchStamp;
 	}
 
 	if (m_translate && m_nLanguage != g_nCurLanguage)
@@ -1320,7 +1342,8 @@ void CTextNode::Render()
 		CFont* pFont = GetFont(FaceFromFont(m_font));
 		if (pFont == NULL || !pFont->IsOpen())
 			return;
-		pFont->CreateTextMesh(szText, -1, &m_pMesh, &m_bboxMin, &m_bboxMax, fabsf(m_width), m_width < 0.0f, 1.0f);
+		pFont->CreateTextMesh(szText, -1, &m_pMesh, &m_bboxMin, &m_bboxMax, fabsf(m_width), m_width < 0.0f, 1.0f,
+			m_indentWidth, m_indentHeight);
 		if (m_pMesh == NULL)
 			return;
 	}
