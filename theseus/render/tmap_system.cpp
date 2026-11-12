@@ -32,37 +32,40 @@ void fft_close (fft_state* state);
 
 
 // ===== CSurfx ===============================================================
-// 8-bit palettized pixel surface. Used as the render target for all TMAP
-// effects. Supports Bresenham line drawing and delta field warping.
+// 8-bit palettized pixel surface. Every TMAP effect draws into one of these.
 
 int CSurfx::sTempRef = 0;
 long CSurfx::sTempSize = 0;
 char* CSurfx::sTemp = NULL;
 
+// CSurfx::CSurfx(nWidth, nHeight)
+// Reconstructed from 5960 retail XBE @ 0x0005f3f0 (inlined into
+// CDynamicTexture's update at 0x0005dde0). Ghidra decompile:
+//     w = nWidth; h = nHeight; pels = new[(h + 1) * w];
+//     lineWidth = 1; clip = {0, 0, w, h}; bytesPerRow = w; ++DAT_0017e75c;
+// The spare row under the image catches the analyzer's peak dots at y == h.
 CSurfx::CSurfx(int nWidth, int nHeight)
 {
 	m_nWidth = nWidth;
 	m_nHeight = nHeight;
-	m_pels = new BYTE [nWidth * (nHeight + 1)];
-
+	m_pels = new BYTE [(nHeight + 1) * nWidth];
+	mBytesPerRow = nWidth;
 	mLineWidth = 1;
-
 	mClipRect.left = 0;
 	mClipRect.top = 0;
 	mClipRect.right = nWidth;
 	mClipRect.bottom = nHeight;
-
-	mBytesPerRow = nWidth;
-
-	sTempRef += 1;
+	sTempRef++;
 }
 
+// CSurfx::~CSurfx()
+// Reconstructed from 5960 retail XBE, inlined into CDynamicTexture_dtor @ 0x0005dbc0:
+//     free(pels); if (--DAT_0017e75c == 0) { free(DAT_0017e764); DAT_0017e764 = 0; DAT_0017e760 = 0; }
+// The last surface to go frees the shared fade scratch buffer.
 CSurfx::~CSurfx()
 {
 	delete [] m_pels;
-
-	sTempRef -= 1;
-	if (sTempRef == 0)
+	if (--sTempRef == 0)
 	{
 		delete [] sTemp;
 		sTemp = NULL;
@@ -70,138 +73,109 @@ CSurfx::~CSurfx()
 	}
 }
 
+// A delta field cell is 24 bits: source x offset in the top 12, source y in
+// the bottom 12, both in 1/32 pixel steps and biased by 63 pixels (0x7E0).
+#define DELTA_BIAS_PELS	63
+#define DELTA_FRAC_BITS	5
+
+static inline unsigned long ReadDelta(const char* cell)
+{
+	const unsigned char* b = (const unsigned char*)cell;
+	return b[0] | (b[1] << 8) | ((unsigned long)b[2] << 16);
+}
+
+// Bilinear pull for one destination pixel. base is the source pixel that a
+// zero offset lands on, already shifted back by the 63 pixel bias.
+static inline BYTE PullPel(const char* base, long bytesPerRow, unsigned long code)
+{
+	unsigned long dx = (code >> 12) & 0xFFF;
+	unsigned long dy = code & 0xFFF;
+	const unsigned char* p = (const unsigned char*)base + (dx >> DELTA_FRAC_BITS) + (dy >> DELTA_FRAC_BITS) * bytesPerRow;
+	unsigned long fx = dx & 31;
+	unsigned long fy = dy & 31;
+
+	unsigned long left = p[0] * (32 - fy) + p[bytesPerRow] * fy;
+	unsigned long right = p[1] * (32 - fy) + p[bytesPerRow + 1] * fy;
+
+	// 32 * 32 weights sum to 1024; the * 31 >> 15 also dims each pass by 1/32.
+	return (BYTE)(((left * (32 - fx) + right * fx) * 31) >> 15);
+}
+
+// CSurfx::Fade(inGrad)
+// Reconstructed from the call in CImageFader_RenderDynamicTexture @ 0x0005e120:
+//     Fade(pels, width, width, height, field)   width doubles as the row pitch.
 void CSurfx::Fade(DeltaFieldData* inGrad)
 {
 	Fade((char*)m_pels, m_nWidth, m_nWidth, m_nHeight, inGrad);
 }
 
-#define HALFCORD	0x003F
-#define FIXED_BITS	5
-
-// Source-to-source copy variant (separate source and dest buffers)
+// CSurfx::Fade(inSrce, srcPitch, inDest, destPitch, inX, inY, inGrad)
+// Reconstructed from 5960 retail XBE @ 0x0005f430. Ghidra decompile:
+//     src += -0x3f * srcPitch - 0x3f;
+//     for each row: for x < inX: code = *(uint*)grad; grad += 3;
+//         p = src + x + (code>>12 & 0xfff)>>5 + ((code & 0xfff)>>5) * srcPitch;
+//         dest[x] = ((p[pitch]*fy + p[0]*(32-fy))*(32-fx) + (p[pitch+1]*fy + p[1]*(32-fy))*fx) * 0x1f >> 0xf;
+//       dest += destPitch; src += srcPitch;
+// Out-of-place pass: warps inY rows of source into a separate buffer.
 void CSurfx::Fade(const char* inSrce, long inBytesPerSrceRow, char* inDest, long inBytesPerDestRow, long inX, long inY, const char* inGrad)
 {
-	unsigned long p, x, y, u, v, u1, v1, P1, P2, P3, P4, codedDel, xGrad, yGrad;
-	const char* srceMap;
+	const char* base = inSrce - DELTA_BIAS_PELS * inBytesPerSrceRow - DELTA_BIAS_PELS;
 
-	inSrce = inSrce - HALFCORD * inBytesPerSrceRow - HALFCORD;
-
-	for (y = 0; y < (unsigned)inY; y++)
+	for (long row = 0; row < inY; row++)
 	{
-		for (x = 0; x < (unsigned)inX; x++)
-		{
-			codedDel = *((const unsigned long*) inGrad);
-			inGrad += 3;
-			xGrad = 0xFFF & (codedDel >> 12);
-			yGrad = 0xFFF & (codedDel);
+		for (long x = 0; x < inX; x++, inGrad += 3)
+			inDest[x] = (char)PullPel(base + x, inBytesPerSrceRow, ReadDelta(inGrad));
 
-			srceMap = inSrce + (xGrad >> FIXED_BITS) + (yGrad >> FIXED_BITS) * inBytesPerSrceRow + x;
-
-			u = (yGrad & 0x1F);
-			v = (xGrad & 0x1F);
-
-			P1  = ((unsigned char*) srceMap)[0];
-			P2  = ((unsigned char*) srceMap)[1];
-
-			u1  = 0x20 - u;
-			P1 *= u1;
-			P2 *= u1;
-
-			P3  = ((unsigned char*) srceMap)[inBytesPerSrceRow];
-			P4  = ((unsigned char*) srceMap)[inBytesPerSrceRow + 1];
-
-			v1  = 0x20 - v;
-			P3 *= u;
-			P4 *= u;
-
-			// Bilinear interpolation
-			p = v * (P2 + P4) + v1 * (P1 + P3);
-
-			((unsigned char*) inDest)[x] = (unsigned char)((31 * p) >> 15);
-		}
-
+		base += inBytesPerSrceRow;
 		inDest += inBytesPerDestRow;
-		inSrce += inBytesPerSrceRow;
 	}
 }
 
-// In-place variant using a trailing row buffer to avoid overwriting source data
+// CSurfx::Fade(inPix, inBytesPerRow, inX, inY, inGrad)
+// Reconstructed from 5960 retail XBE @ 0x0005f540. Warps the image in place.
+// A pixel can pull from up to mNegYExtents rows above itself, so finished rows
+// wait in a ring of that many rows (the shared DAT_0017e764 buffer, grown on
+// demand) and only overwrite the image once nothing can read them anymore.
+// Steps: first ring-full of rows goes through the out-of-place pass; each later
+// row swaps the oldest ring row into the image and computes into its slot; the
+// tail of the ring is flushed in order, inX / 4 dwords per row like the binary.
+// See docs/decomp/TmapSystem.md.
 void CSurfx::Fade(char* inPix, long inBytesPerRow, long inX, long inY, DeltaFieldData* inGrad)
 {
-	unsigned long p, x, y, u, v, u1, v1, P1, P2, P3, P4, codedDel, xGrad, yGrad, curBufRowNum;
-	long bufRows;
-	char* srceMap, *curBufRow, *srce, *grad = inGrad->mField;
-
-	bufRows = inGrad->mNegYExtents;
-	if (sTempSize < bufRows * inBytesPerRow)
+	long ringRows = inGrad->mNegYExtents;
+	if (sTempSize < ringRows * inBytesPerRow)
 	{
-		sTempSize = bufRows * inBytesPerRow;
+		sTempSize = ringRows * inBytesPerRow;
 		delete [] sTemp;
 		sTemp = new char [sTempSize];
 	}
+	if (ringRows > inY)
+		ringRows = inY;
 
-	if (inY <= bufRows)
-		bufRows = inY;
-	Fade(inPix, inBytesPerRow, sTemp, inBytesPerRow, inX, bufRows, grad);
-	inY -= bufRows;
-	grad += 3 * inX * bufRows;
-	curBufRowNum = 0;
+	const char* grad = inGrad->mField;
+	Fade(inPix, inBytesPerRow, sTemp, inBytesPerRow, inX, ringRows, grad);
+	grad += 3 * inX * ringRows;
 
-	srce = inPix + bufRows * inBytesPerRow - HALFCORD * inBytesPerRow - HALFCORD;
+	const char* base = inPix + (ringRows - DELTA_BIAS_PELS) * inBytesPerRow - DELTA_BIAS_PELS;
+	long slot = 0;
 
-	for (y = 0; y < (unsigned)inY; y += 1)
+	for (long row = ringRows; row < inY; row++)
 	{
-		curBufRow = sTemp + curBufRowNum * inBytesPerRow;
-
-		for (x = 0; x < (unsigned)inX; x += 1)
+		char* ring = sTemp + slot * inBytesPerRow;
+		for (long x = 0; x < inX; x++, grad += 3)
 		{
-			codedDel = *((const unsigned long*) grad);
-			grad += 3;
-			xGrad = 0xFFF & (codedDel >> 12);
-			yGrad = 0xFFF & (codedDel);
-
-			inPix[x] = curBufRow[x];
-
-			srceMap = srce + (xGrad >> FIXED_BITS) + (yGrad >> FIXED_BITS) * inBytesPerRow + x;
-
-			u = (yGrad & 0x1F);
-			v = (xGrad & 0x1F);
-
-			P1 = ((unsigned char*)srceMap)[0];
-			P2 = ((unsigned char*)srceMap)[1];
-
-			u1 = 0x20 - u;
-			P1 *= u1;
-			P2 *= u1;
-
-			P3 = ((unsigned char*)srceMap)[inBytesPerRow];
-			P4 = ((unsigned char*)srceMap)[inBytesPerRow + 1];
-
-			v1 = 0x20 - v;
-			P3 *= u;
-			P4 *= u;
-
-			p = v * (P2 + P4) + v1 * (P1 + P3);
-
-			curBufRow[x] = (char)((31 * p) >> 15);
+			inPix[x] = ring[x];
+			ring[x] = (char)PullPel(base + x, inBytesPerRow, ReadDelta(grad));
 		}
 
-		curBufRowNum = (curBufRowNum + 1) % bufRows;
+		slot = (slot + 1) % ringRows;
 		inPix += inBytesPerRow;
-		srce += inBytesPerRow;
+		base += inBytesPerRow;
 	}
 
-	// Flush trailing buffer
-	p = inX >> 2;
-	for (y = 0; y < (unsigned)bufRows; y += 1)
+	for (long i = 0; i < ringRows; i++)
 	{
-		curBufRow = sTemp + ((curBufRowNum + y) % bufRows) * inBytesPerRow;
-		for (x = 0; x < p; x += 1)
-		{
-			// DWORD, not unsigned long, which is 8 bytes on 64-bit desktop builds.
-			((DWORD*)inPix)[x] = ((DWORD*)curBufRow)[x];
-		}
-
+		memcpy(inPix, sTemp + ((slot + i) % ringRows) * inBytesPerRow, (inX / 4) * 4);
 		inPix += inBytesPerRow;
 	}
 }
@@ -379,192 +353,194 @@ void MakePalette(DWORD outPalette [256])
 
 
 // ===== Line Drawing =========================================================
-// Bresenham line with variable-width pen and circle stamp for thick lines.
+// Bresenham stepping with an optional round pen. Nothing in the dash ever
+// raises mLineWidth above 1, but the wide pen is there and kept working.
 
-#define __doXerr	error_term += dy;			\
-					if (error_term >= dx) {		\
-						error_term -= dx;		\
-						basePtr += rowOffset;	\
-						ymov--;					\
-					}
+// Pen insets per row for widths 2..11, from the byte tables at 0x0002a310..0x0002a364.
+static const char* PenShape(int width)
+{
+	static const char w2[] = { 0, 0 };
+	static const char w3[] = { 1, 0, 1 };
+	static const char w4[] = { 1, 0, 0, 1 };
+	static const char w5[] = { 1, 0, 0, 0, 1 };
+	static const char w6[] = { 1, 0, 0, 0, 0, 1 };
+	static const char w7[] = { 2, 1, 0, 0, 0, 1, 2 };
+	static const char w8[] = { 2, 1, 0, 0, 0, 0, 1, 2 };
+	static const char w9[] = { 3, 1, 1, 0, 0, 0, 1, 1, 3 };
+	static const char w10[] = { 3, 1, 1, 0, 0, 0, 0, 1, 1, 3 };
+	static const char w11[] = { 4, 2, 1, 1, 0, 0, 0, 1, 1, 2, 4 };
+	static const char* const shapes[] = { w2, w3, w4, w5, w6, w7, w8, w9, w10, w11 };
+	return shapes[width - 2];
+}
 
-#define __doYerr	error_term += dx;			\
-					if (error_term >= dy) {		\
-						error_term -= dy;		\
-						basePtr += xDirection;	\
-						xmov--;					\
-					}
+// Keeps bits 0..29 and copies the sign into bits 30 and 31, so a wild
+// coordinate keeps its side of the surface without overflowing the math below.
+static inline int FoldCoord(int v)
+{
+	return (v & 0x3FFFFFFF) | ((v >> 1) & (int)0xC0000000);
+}
 
-#define __circ(dia, a)	switch ((dia)) {								\
-						case 2:		a = "\0\0"; break;					\
-						case 3:		a = "\1\0\1"; break;				\
-						case 4:		a = "\1\0\0\1"; break;				\
-						case 5:		a = "\1\0\0\0\1"; break;			\
-						case 6:		a = "\1\0\0\0\0\1"; break;			\
-						case 7:		a = "\2\1\0\0\0\1\2"; break;		\
-						case 8:		a = "\2\1\0\0\0\0\1\2"; break;		\
-						case 9:		a = "\3\1\1\0\0\0\1\1\3"; break;	\
-						case 10:	a = "\3\1\1\0\0\0\0\1\1\3"; break;	\
-						case 11:	a = "\4\2\1\1\0\0\0\1\1\2\4"; break;\
-						case 12:	a = "\4\2\1\1\0\0\0\0\1\1\2\4"; break;\
-					}
-
+// CSurfx::Line(sx, sy, ex, ey, color)
+// Reconstructed from 5960 retail XBE @ 0x0005fdf0. Behavior:
+//   - Pens wider than 3 shrink toward 128/128 on axis lines and 183/128 on
+//     diagonals: w = (lineWidth * (128 + 55 * minor^2 / major^2) + 64) >> 7.
+//   - If the start sits outside the clip rect (inset by half the pen) the ends
+//     are swapped; if both do, nothing is drawn. Step counts are trimmed so the
+//     walk stops at the clip edge.
+//   - Width 1 plots single pixels. Wider pens stamp a round cap at the start
+//     (insets from the 0x2a310 tables below 12, halfW - sqrt(halfW^2 - k^2) at
+//     12 and up) and then lay a w pixel span across the minor axis per step.
+// The stepping itself is the textbook integer Bresenham walk; see
+// docs/decomp/TmapSystem.md for the full breakdown.
 void CSurfx::Line(int sx, int sy, int ex, int ey, unsigned char color)
 {
-	long xDirection, rowOffset, error_term;
-	char* basePtr, *center;
-	long xmov, ymov, dx, dy, t, j, lw;
-	long penExtents;
+	sx = FoldCoord(sx);
+	sy = FoldCoord(sy);
+	ex = FoldCoord(ex);
+	ey = FoldCoord(ey);
 
-	// int on purpose: through a 64-bit long a negative coordinate folds to a huge positive one.
-	sx = (((int)(sx & 0x80000000)) >> 1) | (sx & 0x3FFFFFFF);
-	ex = (((int)(ex & 0x80000000)) >> 1) | (ex & 0x3FFFFFFF);
-	sy = (((int)(sy & 0x80000000)) >> 1) | (sy & 0x3FFFFFFF);
-	ey = (((int)(ey & 0x80000000)) >> 1) | (ey & 0x3FFFFFFF);
-
-	lw = mLineWidth;
-	if (mLineWidth > 3) {
-		dx = ex - sx; dx = dx * dx;
-		dy = ey - sy; dy = dy * dy;
-		if (dx > 0 && dx >= dy)
-			lw = 128 + 55 * dy / dx;
-		else if (dy > 0 && dy > dx)
-			lw = 128 + 55 * dx / dy;
-
-		if (dx > 0 || dy > 0)
-			lw = (mLineWidth * lw + 64) >> 7;
-	}
-	penExtents = lw >> 1;
-
-	// Clipping
-	if (sx < mClipRect.left + penExtents || sx >= mClipRect.right - penExtents || sy < mClipRect.top + penExtents || sy >= mClipRect.bottom - penExtents) {
-		if (ex < mClipRect.left + penExtents || ex >= mClipRect.right - penExtents || ey < mClipRect.top + penExtents || ey >= mClipRect.bottom - penExtents)
-			return;
-
-		t = ex; ex = sx; sx = t;
-		t = ey; ey = sy; sy = t;
-	}
-
-	dx = ex - sx;
-	dy = ey - sy;
-
-	dx = ex - sx;
-	xmov = dx;
-	if (dx < 0) {
-		xmov = -dx;
-		if (sx - xmov < mClipRect.left + penExtents)
-			xmov = sx - (mClipRect.left + penExtents);
-		xDirection = -1;
-		dx = -dx;
-	} else if (dx > 0) {
-		if (sx + xmov >= mClipRect.right - penExtents)
-			xmov = mClipRect.right - penExtents - 1 - sx;
-		xDirection = 1;
-	} else {
-		xDirection = 0;
-	}
-
-	ymov = dy;
-	if (dy < 0) {
-		ymov = -dy;
-		if (sy - ymov < mClipRect.top + penExtents)
-			ymov = sy - (mClipRect.top + penExtents);
-		rowOffset = -mBytesPerRow;
-		dy = -dy;
-	} else {
-		if (sy + ymov >= mClipRect.bottom - penExtents)
-			ymov = mClipRect.bottom - penExtents - sy - 1;
-		rowOffset = mBytesPerRow;
-	}
-
-	basePtr = (char*)m_pels + sy * mBytesPerRow + sx * 1;
-	error_term = 0;
-
-	long halfW;
-
-	if (lw > 1)
+	long w = mLineWidth;
+	if (mLineWidth > 3)
 	{
-		long c_x, tw = mLineWidth;
-		halfW = (tw) >> 1;
+		// 64 bit squares: the folded coordinates can reach 2^30.
+		long long dx2 = (long long)(ex - sx) * (ex - sx);
+		long long dy2 = (long long)(ey - sy) * (ey - sy);
+		if (dx2 > 0 && dx2 >= dy2)
+			w = (long)(128 + 55 * dy2 / dx2);
+		else if (dy2 > 0 && dy2 > dx2)
+			w = (long)(128 + 55 * dx2 / dy2);
+		if (dx2 > 0 || dy2 > 0)
+			w = (mLineWidth * w + 64) >> 7;
+	}
+	long half = w >> 1;
 
-		if (tw < 12)
-		{
-			char* c_shape;
-			__circ(tw, c_shape)
-			for (j = 0; j < tw; j++)
-			{
-				c_x = c_shape[j];
-				center = basePtr + (j - halfW) * mBytesPerRow;
-				int k;
-				for (k = c_x; k < tw - c_x; k++)
-				{
-					((unsigned char*) center)[k - halfW] = color;
-				}
-			}
-		}
-		else
-		{
-			for (j = 0; j < tw; j++)
-			{
-				c_x = 0;
-				center = basePtr + (j - halfW) * mBytesPerRow;
-				for (int k = c_x; k < tw - c_x; k++)
-				{
-					((unsigned char*) center)[k - halfW] = color;
-				}
-			}
-		}
+	long left = mClipRect.left + half;
+	long top = mClipRect.top + half;
+	long right = mClipRect.right - half;
+	long bottom = mClipRect.bottom - half;
 
-		halfW = lw >> 1;
+	if (sx < left || sx >= right || sy < top || sy >= bottom)
+	{
+		if (ex < left || ex >= right || ey < top || ey >= bottom)
+			return;
+		int t = sx; sx = ex; ex = t;
+		t = sy; sy = ey; ey = t;
+	}
+
+	// Major/minor run lengths, step directions, and how many steps fit on screen.
+	long dx = ex - sx, dy = ey - sy;
+	long xStep, xLeft, rowStep, yLeft;
+
+	if (dx < 0)
+	{
+		dx = -dx;
+		xStep = -1;
+		xLeft = (sx - dx < left) ? sx - left : dx;
+	}
+	else if (dx > 0)
+	{
+		xStep = 1;
+		xLeft = (sx + dx >= right) ? right - 1 - sx : dx;
+	}
+	else
+	{
+		xStep = 0;
+		xLeft = 0;
+	}
+
+	if (dy < 0)
+	{
+		dy = -dy;
+		rowStep = -mBytesPerRow;
+		yLeft = (sy - dy < top) ? sy - top : dy;
+	}
+	else
+	{
+		rowStep = mBytesPerRow;
+		yLeft = (sy + dy >= bottom) ? bottom - 1 - sy : dy;
+	}
+
+	unsigned char* p = m_pels + sy * mBytesPerRow + sx;
+	long err = 0;
+
+	if (w > 1)
+	{
+		long pen = mLineWidth;
+		long penHalf = pen >> 1;
+		const char* shape = pen < 12 ? PenShape(pen) : NULL;
+
+		for (long row = 0; row < pen; row++)
+		{
+			long k = row - penHalf;
+			long inset = shape ? shape[row] : penHalf - (long)sqrt((double)(penHalf * penHalf - k * k));
+			if (inset < pen - inset)
+				memset(p + k * mBytesPerRow + inset - penHalf, color, pen - 2 * inset);
+		}
 
 		if (dx > dy)
 		{
-			for (; xmov >= 0 && ymov >= 0; xmov--)
+			for (; xLeft >= 0 && yLeft >= 0; xLeft--)
 			{
-				center = basePtr - halfW * mBytesPerRow;
-				for (j = 0; j < lw; j++)
-				{
-					*((unsigned char*) center) = color;
-					center += mBytesPerRow;
-				}
+				unsigned char* q = p - half * mBytesPerRow;
+				for (long i = 0; i < w; i++, q += mBytesPerRow)
+					*q = color;
 
-				basePtr += xDirection;
-				__doXerr
+				p += xStep;
+				err += dy;
+				if (err >= dx)
+				{
+					err -= dx;
+					p += rowStep;
+					yLeft--;
+				}
 			}
 		}
 		else
 		{
-			for (; ymov >= 0 && xmov >= 0; ymov--)
+			for (; yLeft >= 0 && xLeft >= 0; yLeft--)
 			{
-				center = basePtr - (halfW) * 1;
-				for (j = 0; j < lw; j++)
+				memset(p - half, color, w);
+
+				p += rowStep;
+				err += dx;
+				if (err >= dy)
 				{
-					*((unsigned char*) center) = color;
-					center += 1;
+					err -= dy;
+					p += xStep;
+					xLeft--;
 				}
-				basePtr += rowOffset;
-				__doYerr
+			}
+		}
+		return;
+	}
+
+	if (dx >= dy)
+	{
+		for (; xLeft >= 0 && yLeft >= 0; xLeft--)
+		{
+			*p = color;
+			p += xStep;
+			err += dy;
+			if (err >= dx)
+			{
+				err -= dx;
+				p += rowStep;
+				yLeft--;
 			}
 		}
 	}
 	else
 	{
-		if (dx >= dy)
+		for (; yLeft >= 0 && xLeft >= 0; yLeft--)
 		{
-			for (; xmov >= 0 && ymov >= 0; xmov--)
+			*p = color;
+			p += rowStep;
+			err += dx;
+			if (err >= dy)
 			{
-				*((unsigned char*) basePtr) = color;
-				basePtr += xDirection;
-				__doXerr
-			}
-		}
-		else
-		{
-			for (; ymov >= 0 && xmov >= 0; ymov--)
-			{
-				*((unsigned char*) basePtr) = color;
-				basePtr += rowOffset;
-				__doYerr
+				err -= dy;
+				p += xStep;
+				xLeft--;
 			}
 		}
 	}
