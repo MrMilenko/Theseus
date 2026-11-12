@@ -364,6 +364,70 @@ dereferences it.
 **OnSetProperty (`0x0005e3f0`).** For the `type` property (offset 0x1c): free the current field,
 promote the next one, clear next. Returns 1 for everything.
 
+## AudioVisualizer
+
+| Offset | Field |
+|--------|-------|
+| 0x1c | type string |
+| 0x20 | channel string |
+| 0x24 | source node |
+| 0x28 | scale, default 1.0 |
+| 0x2c | offset |
+| 0x30 | 256 left samples |
+| 0x230 | 256 right samples |
+| 0x430 | 128 left spectrum bins |
+| 0x530 | 128 right spectrum bins |
+| 0x630 | spectrum valid |
+| 0x632 | 256 mono samples (never filled) |
+| 0x832 | mono valid |
+
+**RenderDynamicTexture (`0x00063940`).** Returns unless the source's class is AudioClip,
+its transport mode (+0x50) is 1 (playing), and its pump (+0x68) hands back a sample buffer.
+Sample count is buffer size / 4, capped at 256; left/right are copied out, the rest zeroed,
+both "valid" flags cleared, then the count is capped at the surface height. Channel `r`/`R`
+picks the right samples. The type's first letter picks the effect:
+
+- anything else (or no type): **line scope.** One line per sample, from the previous point to
+  `(width/2 + (sample * width >> 16), row)`, color 255.
+- `s`/`S`: **spinner.** Calls `rand()` and ignores it, takes `c = cos(t * 0.2)`,
+  `s = sin(t * 0.2)`, then steps `p` from 0 to 1 by `1 / width`: level
+  `= sample[(int)(count * p)] / 32767 * scale + offset`, `a = (p - 0.5) * 2.1`, point
+  `(c*a + s*level, s*a - c*level)` scaled by half the surface, joined with lines.
+- `c`/`C`: draws nothing.
+- `a`/`A`: **analyzer.** Spectrum update (below), then 256 bars: left bins reversed then right
+  bins, each `ln(bin) * 8` clamped to 0..255. Peaks (static ints at `0x00188f90`) fall by 2 a
+  frame and jump to `2 * bar`. Each column takes bar `x * 256 / width`, filled from the bottom
+  with 255 counting down, plus one 255 dot at the peak height (which can land in the spare
+  row). Then the beat flash and the wave overlay.
+
+**Spectrum (`0x000638a0`, `0x00063900`).** Once per frame: FFT of the left then right samples
+(state made on first use), each of the 129 outputs becomes `(short)(sqrt(p) / 256)`. 129 bins
+into a 128 entry array: the left's last bin lands on right bin 0 (rewritten right after) and
+the right's lands on the valid flag (set right after).
+
+**Beat flash (`0x00063ef0`).** Bass = average of `bin >> 4` over the 5 lowest bins of both
+channels. Globals at `0x0017e6f4..0x0017e70c` track a running max and min that roll into
+"last" values every 10 frames (frame counter at `0x00188f50`). When bass rises above
+`(6 * lastMax + 4 * lastMin) / 10` the whole surface is filled with 255, once, until bass drops
+below `(4 * lastMax + 6 * lastMin) / 10`.
+
+**Wave overlay (`0x00064130`).** Globals: amplitude 50 (`0x00176034`), shift 30
+(`0x00176038`), mode -1 (`0x0017603c`), color 128 (`0x00176040`), next switch (`0x00188f48`).
+
+- When mode < 0 or the switch time passes: mode += 1, next = `rand() * 5 / 32767 + now + 3`;
+  mode wraps from 5 to 0.
+- Half circle tables `cos/sin(i / width * pi + pi / 2)` for every 4th `i`
+  (`0x0017e774..0x0017e780`), rebuilt when the width changes.
+- Steps of 4 pixels across the width; each step reads the high byte of sample
+  `((i << 8) / width) / 5` from each channel, scaled `* height * 50 >> 12`. Lines sit
+  `height * 30 >> 8` from the middle: mode 0 one left-channel line, mode 1 right above and left
+  below, mode 2 the right line twice plus two vertical left lines, modes 3 and 4 both channels
+  around the half circle (mode 3 clips negative values), closed with one last chord.
+- Then two 64 point Lissajous trails as 2x2 dots (`0x000640a0`), color 255:
+  `(cos(k / d1), sin(k / d2)) * height * 50/256` rotated by `k * 0.001` around the center, with
+  `d1, d2 = 80, 140.48` and `187.2, 271.13`. `k` starts from a global (`0x00188f40`) each
+  trail and the second trail's end is stored back.
+
 ## Notes
 
 - CSurfx operates on a raw BYTE array with manual pitch calculation.

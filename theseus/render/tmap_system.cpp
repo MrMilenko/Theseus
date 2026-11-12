@@ -1472,13 +1472,11 @@ bool CImageFader::OnSetProperty(const PRD* pprd, const void* pvValue)
 
 
 // ===== CAudioVisualizer =====================================================
-// Renders PCM waveform and FFT spectrum data from an AudioClip source
-// into a CSurfx. Supports line scope, spinner scope, spectrum analyzer,
-// and spectral overlay effects.
+// Draws the playing AudioClip into the surface as a scope, a spinner or a
+// spectrum analyzer with a beat flash and an overlay of wave lines.
 //
-// Xbox-only here. desktop has its own SDL_mixer-backed CAudioVisualizer
-// in desktop/desktop_nodes.cpp because the audio sample buffer comes from
-// DashAudio_GetPCMSamples() (a ring buffer), not from CAudioClip::GetSampleBuffer().
+// Xbox only here. Desktop has its own CAudioVisualizer in
+// desktop/desktop_nodes.cpp, fed from the SDL mixer's sample ring.
 #ifdef _XBOX
 
 class CAudioVisualizer : public CNode
@@ -1495,7 +1493,6 @@ public:
 	float m_offset;
 
 protected:
-	short* GetMonoPCM();
 	void UpdateSpectrum();
 
 	void RenderDynamicTexture(CSurfx* pSurfx);
@@ -1527,512 +1524,391 @@ START_NODE_PROPS(CAudioVisualizer, CNode)
 	NODE_PROP(pt_node, CAudioVisualizer, source)
 END_NODE_PROPS()
 
+// CAudioVisualizer::CAudioVisualizer()
+// Reconstructed from CAudioVisualizer_CreateNode @ 0x00063770 (0x834 bytes):
+//     type = channel = source = NULL; scale = 1.0; offset = 0
 CAudioVisualizer::CAudioVisualizer() :
 	m_type(NULL),
+	m_channel(NULL),
 	m_source(NULL),
 	m_scale(1.0f),
-	m_offset(0.0f),
-	m_channel(NULL)
+	m_offset(0.0f)
 {
 }
 
+// CAudioVisualizer::~CAudioVisualizer()
+// Reconstructed from 5960 retail XBE @ 0x00063800: free(type); free(channel); source->Release().
 CAudioVisualizer::~CAudioVisualizer()
 {
 	delete [] m_type;
 	delete [] m_channel;
-
 	if (m_source != NULL)
 		m_source->Release();
 }
 
+// CAudioVisualizer::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x00063870: CNode::Advance, then the source.
 void CAudioVisualizer::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
-
 	if (m_source != NULL)
 		m_source->Advance(nSeconds);
 }
 
-short* CAudioVisualizer::GetMonoPCM()
-{
-	if (!m_bMonoValid)
-	{
-		int i;
-		for (i = 0; i < 256; i += 1)
-		{
-			m_pcmMono[i] = (short)(((int)m_pcmLeft[i] + (int)m_pcmRight[i]) / 2);
-		}
-
-		m_bMonoValid = true;
-	}
-
-	return m_pcmMono;
-}
-
+// CAudioVisualizer::CalcSpectrum(pcm, fft)
+// Reconstructed from 5960 retail XBE @ 0x000638a0. Ghidra decompile:
+//     if (!state) state = fft_init();  fft_perform(pcm, buf[129], state);
+//     for (i = 0; i < 0x81; i++) fft[i] = (short)(sqrt(buf[i]) * (1/256.0));
+// 129 bins go into a 128 entry array: the last lands in the next field, the
+// same spill the binary has with this layout.
 void CAudioVisualizer::CalcSpectrum(short* pcm, short* fft)
 {
-	static fft_state *state = NULL;
-	float buf [FFT_BUFFER_SIZE / 2 + 1];
+	static fft_state* state = NULL;
+	float power [FFT_BUFFER_SIZE / 2 + 1];
 
-	if (!state)
+	if (state == NULL)
 		state = fft_init();
+	fft_perform(pcm, power, state);
 
-	fft_perform(pcm, buf, state);
-
-	for (int i = 0; i < FFT_BUFFER_SIZE / 2 + 1; i += 1)
-	{
-		buf[i] = sqrtf(buf[i]) / FFT_BUFFER_SIZE;
-		fft[i] = (short)buf[i];
-	}
+	for (int n = 0; n <= FFT_BUFFER_SIZE / 2; n++)
+		fft[n] = (short)(sqrtf(power[n]) / FFT_BUFFER_SIZE);
 }
 
+// CAudioVisualizer::UpdateSpectrum()
+// Reconstructed from 5960 retail XBE @ 0x00063900: once per frame, left then right.
 void CAudioVisualizer::UpdateSpectrum()
 {
 	if (m_bFFTValid)
 		return;
-
 	CalcSpectrum(m_pcmLeft, m_fftLeft);
 	CalcSpectrum(m_pcmRight, m_fftRight);
-
 	m_bFFTValid = true;
 }
 
-#define mag(s) ((float)samples[(int)(s * nSamples) * 2 + lrc] / 32767.0f)
+// log(level) * 8 as a byte, 0 for silence (and NaN), 255 at the top.
+static inline BYTE SpectrumByte(short level)
+{
+	float n = logf(level) * 8.0f;
+	if (!(n > 0.0f))
+		return 0;
+	return n < 255.0f ? (BYTE)n : 255;
+}
 
+// CAudioVisualizer::RenderDynamicTexture(pSurfx)
+// Reconstructed from 5960 retail XBE @ 0x00063940. Only draws while the source
+// is a playing AudioClip with a sample buffer. Copies up to 256 stereo samples
+// into the left/right arrays (zero padded) and marks the mono and spectrum
+// caches stale. type picks the effect by first letter: none or other = line
+// scope, 's' = spinner, 'c' = nothing, 'a' = analyzer. channel 'r'/'R' takes
+// the right channel. Analyzer bars use 128 left bins mirrored into 128 right
+// bins, falling peak dots (2 per frame, static array @ 0x00188f90), then the
+// beat flash and the wave overlay. Details in docs/decomp/TmapSystem.md.
 void CAudioVisualizer::RenderDynamicTexture(CSurfx* pSurfx)
 {
-	CAudioClip* pAudioClip = (CAudioClip*)m_source;
-	if (pAudioClip == NULL || pAudioClip->GetNodeClass() != NODE_CLASS(CAudioClip) || pAudioClip->m_transportMode != TRANSPORT_PLAY)
+	CAudioClip* clip = (CAudioClip*)m_source;
+	if (clip == NULL || clip->GetNodeClass() != NODE_CLASS(CAudioClip) || clip->m_transportMode != TRANSPORT_PLAY)
 		return;
 
-	short* samples = (short*)pAudioClip->GetSampleBuffer();
+	short* samples = (short*)clip->GetSampleBuffer();
 	if (samples == NULL)
 		return;
 
-	int nSamples = pAudioClip->GetSampleBufferSize() / 4;
-
-	if (nSamples <= 0)
+	int count = clip->GetSampleBufferSize() / 4;
+	if (count <= 0)
 		return;
+	if (count > 256)
+		count = 256;
 
-	// Setup local PCM buffers
+	for (int n = 0; n < 256; n++)
 	{
-		if (nSamples > 256)
-			nSamples = 256;
-
-		int i;
-		for (i = 0; i < nSamples; i += 1)
-		{
-			m_pcmLeft[i] = samples[i * 2];
-			m_pcmRight[i] = samples[i * 2 + 1];
-		}
-
-		for (; i < 256; i += 1)
-		{
-			m_pcmLeft[i] = 0;
-			m_pcmRight[i] = 0;
-		}
-
-		m_bMonoValid = false;
-		m_bFFTValid = false;
+		m_pcmLeft[n] = n < count ? samples[n * 2] : 0;
+		m_pcmRight[n] = n < count ? samples[n * 2 + 1] : 0;
 	}
+	m_bMonoValid = false;
+	m_bFFTValid = false;
 
-	if (nSamples > pSurfx->m_nHeight)
-		nSamples = pSurfx->m_nHeight;
+	if (count > pSurfx->m_nHeight)
+		count = pSurfx->m_nHeight;
 
-	int lrc = 0;
-	if (m_channel != NULL)
+	int channel = 0;
+	if (m_channel != NULL && (m_channel[0] == 'r' || m_channel[0] == 'R'))
+		channel = 1;
+
+	TCHAR kind = m_type != NULL ? m_type[0] : 0;
+	int width = pSurfx->m_nWidth;
+	int height = pSurfx->m_nHeight;
+	float t = (float)TheseusGetNow();
+
+	if (kind == 's' || kind == 'S')
 	{
-		if (m_channel[0] == 'r' || m_channel[0] == 'R')
-			lrc = 1;
+		int xc = width / 2;
+		int yc = height / 2;
+		float step = 1.0f / (float)width;
+		float c = cosf(t * 0.2f);
+		float s = sinf(t * 0.2f);
+		float lastX = 0.0f, lastY = 0.0f;
+		rand();	// the binary draws one value here and never uses it
+
+		for (float pos = 0.0f; pos <= 1.0; pos += step)
+		{
+			float level = (float)samples[(int)(pos * count) * 2 + channel] / 32767.0f * m_scale + m_offset;
+			float along = 2.1f * (pos - 0.5f);
+			float x = c * along + s * level;
+			float y = -c * level + s * along;
+
+			if (pos != 0.0f)
+				pSurfx->Line(xc + (int)(lastX * xc), yc + (int)(lastY * yc), xc + (int)(x * xc), yc + (int)(y * yc), 255);
+			lastX = x;
+			lastY = y;
+		}
 	}
-
-	int nType = 0;
-	if (m_type != NULL)
+	else if (kind == 'a' || kind == 'A')
 	{
-		switch (m_type[0])
+		static int peaks [256];
+		BYTE bars [256];
+
+		UpdateSpectrum();
+		for (int n = 0; n < 128; n++)
+			bars[n] = SpectrumByte(m_fftLeft[127 - n]);
+		for (int n = 128; n < 256; n++)
+			bars[n] = SpectrumByte(m_fftRight[n - 128]);
+
+		for (int n = 0; n < 256; n++)
 		{
-		case 's': case 'S': nType = 1; break; // spinner
-		case 'c': case 'C': nType = 2; break; // circle scope
-		case 'a': case 'A': nType = 3; break; // spectrum analyzer
+			peaks[n] = peaks[n] > 2 ? peaks[n] - 2 : 0;
+			if (peaks[n] < bars[n] * 2)
+				peaks[n] = bars[n] * 2;
 		}
+
+		for (int x = 0; x < width; x++)
+		{
+			int bin = (x * 256) / width;
+			float barHeight = ((float)bars[bin] * (float)height) / 256.0f;
+			BYTE shade = 255;
+			for (int y = height - (int)barHeight; y < height; y++)
+				*pSurfx->Pixel(x, y) = shade--;
+
+			float peakHeight = (float)peaks[bin] / 2.0f;
+			peakHeight = (peakHeight * (float)height) / 256.0f;
+			*pSurfx->Pixel(x, height - (int)peakHeight) = 255;
+		}
+
+		RenderEffect1(pSurfx);
+		RenderEffect2(pSurfx);
 	}
-
-	float t = (float) TheseusGetNow();
-
-	switch (nType)
+	else if (kind != 'c' && kind != 'C')
 	{
-	case 0: // Line Scope
+		int xc = width / 2;
+		int lastX = xc, lastY = 0;
+		for (int y = 0; y < count; y++)
 		{
-			int xCenter = pSurfx->m_nWidth / 2;
-			int xp = xCenter;
-			int yp = 0;
-
-			for (int y = 0; y < nSamples; y += 1)
-			{
-				long s = (((long)samples[y * 2 + lrc]) * pSurfx->m_nWidth) >> 16;
-				int x = xCenter + s;
-
-				pSurfx->Line(xp, yp, x, y, 255);
-				xp = x;
-				yp = y;
-			}
+			int x = xc + ((samples[y * 2 + channel] * width) >> 16);
+			pSurfx->Line(lastX, lastY, x, y, 255);
+			lastX = x;
+			lastY = y;
 		}
-		break;
-
-	case 1: // Spinner Scope
-		{
-			int xCenter = pSurfx->m_nWidth / 2;
-			int yCenter = pSurfx->m_nHeight / 2;
-
-			float step = 1.0f / (float)pSurfx->m_nWidth;
-
-			float firstX, firstY;
-			float prevX, prevY;
-
-			float A0 = 0.5f + rnd(0.2f);
-
-			float B0 = cosf(t * 0.2f);
-			float B1 = sinf(t * 0.2f);
-
-			for (float s = 0.0f; s <= 1.0; s += step)
-			{
-				float C0 = mag(s) * m_scale + m_offset;
-				float C1 = 2.1f * (s - 0.5f);
-
-				float X0 = B0 * C1 + B1 * C0;
-				float Y0 = -B0 * C0 + B1 * C1;
-
-				float X1 = B0 * C1 - B1 * C0;
-				float Y1 = B0 * C0 + B1 * C1;
-
-				if (s == 0.0f)
-				{
-					firstX = X0;
-					firstY = Y0;
-				}
-				else
-				{
-					pSurfx->Line(xCenter + (int)(prevX * xCenter), yCenter + (int)(prevY * yCenter),
-						xCenter + (int)(X0 * xCenter), yCenter + (int)(Y0 * yCenter), 255);
-				}
-
-				prevX = X0;
-				prevY = Y0;
-			}
-		}
-		break;
-
-	case 3: // Spectrum Analyzer
-		{
-			UpdateSpectrum();
-
-			static int peak_buf [256];
-			BYTE spectrum [256];
-
-			int i;
-			for (i = 0; i < 128; i += 1)
-			{
-				float n = logf(m_fftLeft[127 - i]) * 8.0f;
-				if (n <= 0.0f)
-					spectrum[i] = 0;
-				else if (n >= 255.0f)
-					spectrum[i] = 255;
-				else
-					spectrum[i] = (BYTE)n;
-			}
-
-			for (; i < 256; i += 1)
-			{
-				float n = logf(m_fftRight[i - 128]) * 8.0f;
-				if (n <= 0.0f)
-					spectrum[i] = 0;
-				else if (n >= 255.0f)
-					spectrum[i] = 255;
-				else
-					spectrum[i] = (BYTE)n;
-			}
-
-			for (i = 0; i < 256; i += 1)
-			{
-				if (peak_buf[i] > 2)
-					peak_buf[i] -= 2;
-				else
-					peak_buf[i] = 0;
-
-				int y = spectrum[i] * 2;
-				if (peak_buf[i] < y)
-					peak_buf[i] = y;
-			}
-
-			int nWidth = pSurfx->m_nWidth;
-			for (int x = 0; x < nWidth; x += 1)
-			{
-				float nHeight = ((((float)spectrum[(x * 256) / nWidth])) * (float)pSurfx->m_nHeight) / 256.0f;
-				BYTE bColor = 255;
-				for (int y = pSurfx->m_nHeight - (int)nHeight; y < pSurfx->m_nHeight; y += 1, bColor -= 1)
-					*pSurfx->Pixel(x, y) = bColor;
-
-				nHeight = (float)peak_buf[(x * 256) / nWidth];
-				nHeight /= 2.0f;
-				nHeight = (nHeight * (float)pSurfx->m_nHeight) / 256.0f;
-				*pSurfx->Pixel(x, pSurfx->m_nHeight - (int)nHeight) = 255;
-			}
-
-			RenderEffect1(pSurfx);
-			RenderEffect2(pSurfx);
-		}
-		break;
 	}
 }
 
+// Beat detector state, globals @ 0x0017e6f4..0x0017e70c in the binary.
+static struct
+{
+	int highNow, highLast, highTime;
+	int lowNow, lowLast, lowTime;
+	int flashing;
+} s_beat;
 
-// Bass beat detection for spectrum analyzer flash effect
-#define BASS_EXT_MEMORY 10
-
-struct bass_info {
-	int max_recent;
-	int max_old;
-	int time_last_max;
-	int min_recent;
-	int min_old;
-	int time_last_min;
-	int activated;
-} bass_info;
-
+// CAudioVisualizer::RenderEffect1(pSurfx)
+// Reconstructed from 5960 retail XBE @ 0x00063ef0. Bass = average of the
+// lowest 5 bins of each channel (each >> 4). Running high and low marks reset
+// every 10 frames (frame count @ 0x00188f50) into "last" values. The surface
+// flashes to 255 when bass passes 60% of the way from low to high, and rearms
+// once it drops under 40%.
 void CAudioVisualizer::RenderEffect1(CSurfx* pSurfx)
 {
-	static int t = 0;
+	static int frame = 0;
 
 	int bass = 0;
-	const int step = 5;
-	int i;
-	for (i = 0; i < step; i += 1)
-		bass += (m_fftLeft[i] >> 4) + (m_fftRight[i] >> 4);
-	bass /= (step * 2);
+	for (int n = 0; n < 5; n++)
+		bass += (m_fftLeft[n] >> 4) + (m_fftRight[n] >> 4);
+	bass /= 10;
 
-	if (bass > bass_info.max_recent)
-		bass_info.max_recent = bass;
+	if (bass > s_beat.highNow)
+		s_beat.highNow = bass;
+	if (bass < s_beat.lowNow)
+		s_beat.lowNow = bass;
 
-	if (bass < bass_info.min_recent)
-		bass_info.min_recent = bass;
-
-	if (t - bass_info.time_last_max > BASS_EXT_MEMORY)
+	if (frame - s_beat.highTime > 10)
 	{
-		bass_info.max_old = bass_info.max_recent;
-		bass_info.max_recent = 0;
-		bass_info.time_last_max = t;
+		s_beat.highLast = s_beat.highNow;
+		s_beat.highNow = 0;
+		s_beat.highTime = frame;
+	}
+	if (frame - s_beat.lowTime > 10)
+	{
+		s_beat.lowLast = s_beat.lowNow;
+		s_beat.lowNow = 0;
+		s_beat.lowTime = frame;
 	}
 
-	if (t - bass_info.time_last_min > BASS_EXT_MEMORY)
+	if (!s_beat.flashing && bass > (s_beat.highLast * 6 + s_beat.lowLast * 4) / 10)
 	{
-		bass_info.min_old = bass_info.min_recent;
-		bass_info.min_recent = 0;
-		bass_info.time_last_min = t;
+		memset(pSurfx->m_pels, 255, pSurfx->m_nWidth * pSurfx->m_nHeight);
+		s_beat.flashing = 1;
 	}
-
-	if (bass > (bass_info.max_old * 6 + bass_info.min_old * 4) / 10 && bass_info.activated == 0)
-	{
-		FillMemory(pSurfx->m_pels, pSurfx->m_nWidth * pSurfx->m_nHeight, 255);
-		bass_info.activated = 1;
-	}
-
-	if (bass < (bass_info.max_old * 4 + bass_info.min_old * 6) / 10 && bass_info.activated == 1)
-		bass_info.activated = 0;
-
-	t += 1;
+	frame++;
+	if (s_beat.flashing && bass < (s_beat.highLast * 4 + s_beat.lowLast * 6) / 10)
+		s_beat.flashing = 0;
 }
 
+// Overlay settings, initialized globals @ 0x00176034..0x00176040 in the binary.
+static int s_waveAmplitude = 50;
+static int s_waveShift = 30;
+static int s_waveMode = -1;
+static BYTE s_waveColor = 128;
 
-// Spectral overlay effect with Lissajous curve
-#define PI D3DX_PI
-
-struct sincos {
-	int i;
-	float *f;
-};
-static struct sincos cosw = { 0, NULL };
-static struct sincos sinw = { 0, NULL };
-
-int spectral_amplitude = 50;
-int spectral_shift = 30;
-int mode_spectre = -1;
-BYTE spectral_color = 128;
-
-void SetPixel(CSurfx* pSurfx, int x, int y, BYTE color)
+// Bounds checked 2x2 dot, inlined from 0x000640a0.
+static void PlotDot(CSurfx* pSurfx, int x, int y, BYTE color)
 {
-	if (x < 0 || y < 0 || x >= pSurfx->m_nWidth || y >= pSurfx->m_nHeight)
-		return;
-	*pSurfx->Pixel(x, y) = color;
+	static const int offsets[4][2] = { {0, 0}, {1, 0}, {1, 1}, {0, 1} };
+	for (int n = 0; n < 4; n++)
+	{
+		int px = x + offsets[n][0], py = y + offsets[n][1];
+		if (px >= 0 && py >= 0 && px < pSurfx->m_nWidth && py < pSurfx->m_nHeight)
+			*pSurfx->Pixel(px, py) = color;
+	}
 }
 
-void SetPixel2(CSurfx* pSurfx, int x, int y, BYTE color)
-{
-	SetPixel(pSurfx, x, y, color);
-	SetPixel(pSurfx, x + 1, y, color);
-	SetPixel(pSurfx, x + 1, y + 1, color);
-	SetPixel(pSurfx, x, y + 1, color);
-}
-
+// CAudioVisualizer::RenderEffect2(pSurfx)
+// Reconstructed from 5960 retail XBE @ 0x00064130. Every 3 + rnd(5) seconds it
+// moves to the next of 5 modes: one wave line, two lines (left and right),
+// four lines (two across, two down), or the two channels bent around a half
+// circle (mode 3 clips negative swings). Samples come from the high byte of
+// every fifth slot across the width, 4 pixels per segment, scaled by
+// height * 50 >> 12, offset height * 30 >> 8 from center. The half circle
+// tables are cos/sin(i / width * pi + pi / 2), rebuilt when the width changes
+// (globals @ 0x0017e774..0x0017e780). Last, two 64 point Lissajous trails
+// (k / 80, k / (80 * 1.756) and k / 187.2, k / (154.4 * 1.756)) slowly
+// rotating by k * 0.001, drawn as 2x2 dots and continuing from frame to
+// frame (k @ 0x00188f40).
 void CAudioVisualizer::RenderEffect2(CSurfx* pSurfx)
 {
-	int halfheight, halfwidth;
-	float old_y1, old_y2;
-	float y1 = (float)((((m_pcmLeft[0] + m_pcmRight[0]) >> 9) * spectral_amplitude * pSurfx->m_nHeight) >> 12);
-	float y2 = (float)((((m_pcmLeft[0] + m_pcmRight[0]) >> 9) * spectral_amplitude * pSurfx->m_nHeight) >> 12);
-	const int density_lines = 5;
-	const int step = 4;
-	const int shift = (spectral_shift * pSurfx->m_nHeight) >> 8;
+	static XTIME nextMode = 0.0f;
+	static float* cosTable = NULL;
+	static float* sinTable = NULL;
+	static int cosWidth = 0, sinWidth = 0;
+	static int curveStep = 0;
 
-	static XTIME timeToChange = 0.0f;
-	if (mode_spectre < 0 || TheseusGetNow() >= timeToChange)
+	const int width = pSurfx->m_nWidth;
+	const int height = pSurfx->m_nHeight;
+	const int segment = 4;
+	const int shift = (s_waveShift * height) >> 8;
+	const int midX = width >> 1;
+	const int midY = height >> 1;
+
+	float right = (float)((((m_pcmLeft[0] + m_pcmRight[0]) >> 9) * s_waveAmplitude * height) >> 12);
+	float left = right;
+
+	if (s_waveMode < 0 || TheseusGetNow() >= nextMode)
 	{
-		mode_spectre += 1;
-		timeToChange = TheseusGetNow() + 3.0f + rnd(5.0f);
+		s_waveMode++;
+		nextMode = TheseusGetNow() + 3.0f + rnd(5.0f);
+	}
+	if (s_waveMode > 4)
+		s_waveMode = 0;
+
+	if (cosWidth != width || sinWidth != width)
+	{
+		delete [] cosTable;
+		delete [] sinTable;
+		cosTable = sinTable = NULL;
+		cosWidth = sinWidth = 0;
+	}
+	if (cosWidth == 0 || cosTable == NULL)
+	{
+		cosWidth = width;
+		cosTable = new float [width];
+		for (int n = 0; n < width; n += segment)
+			cosTable[n] = cosf((float)n / width * D3DX_PI + (float)D3DX_PI / 2);
+	}
+	if (sinWidth == 0 || sinTable == NULL)
+	{
+		sinWidth = width;
+		sinTable = new float [width];
+		for (int n = 0; n < width; n += segment)
+			sinTable[n] = sinf((float)n / width * D3DX_PI + (float)D3DX_PI / 2);
 	}
 
-	if ((UINT)mode_spectre > 4)
-		mode_spectre = 0;
-
-	if (cosw.i != pSurfx->m_nWidth || sinw.i != pSurfx->m_nWidth)
+	if (s_waveMode == 3)
 	{
-		delete [] cosw.f;
-		delete [] sinw.f;
-		sinw.f = cosw.f = NULL;
-		sinw.i = cosw.i = 0;
+		if (right < 0) right = 0;
+		if (left < 0) left = 0;
 	}
 
-	if (cosw.i == 0 || cosw.f == NULL)
+	for (int n = segment; n < width; n += segment)
 	{
-		const float halfPI = (float)PI / 2;
-		cosw.i = pSurfx->m_nWidth;
-		cosw.f = new float [pSurfx->m_nWidth];
-		int i;
-		for (i = 0; i < pSurfx->m_nWidth; i += step)
-			cosw.f[i] = cosf((float)i / pSurfx->m_nWidth * PI + halfPI);
-	}
+		float lastRight = right, lastLeft = left;
+		int slot = (n << 8) / width / 5;
+		right = (float)(((m_pcmRight[slot] >> 8) * s_waveAmplitude * height) >> 12);
+		left = (float)(((m_pcmLeft[slot] >> 8) * s_waveAmplitude * height) >> 12);
 
-	if (sinw.i == 0 || sinw.f == NULL)
-	{
-		const float halfPI = (float)PI / 2;
-		sinw.i = pSurfx->m_nWidth;
-		sinw.f = new float [pSurfx->m_nWidth];
-		int i;
-		for (i = 0; i < pSurfx->m_nWidth; i += step)
-			sinw.f[i] = sinf((float)i / pSurfx->m_nWidth * PI + halfPI);
-	}
-
-	if (mode_spectre == 3)
-	{
-		if (y1 < 0) y1 = 0;
-		if (y2 < 0) y2 = 0;
-	}
-
-	halfheight = pSurfx->m_nHeight >> 1;
-	halfwidth  = pSurfx->m_nWidth >> 1;
-
-	int i;
-	for (i = step; i < pSurfx->m_nWidth; i += step)
-	{
-		old_y1 = y1;
-		old_y2 = y2;
-
-		y1 = (float)(((m_pcmRight[(i << 8) / pSurfx->m_nWidth / density_lines] >> 8) * spectral_amplitude * pSurfx->m_nHeight) >> 12);
-		y2 = (float)(((m_pcmLeft[(i << 8) / pSurfx->m_nWidth / density_lines] >> 8) * spectral_amplitude * pSurfx->m_nHeight) >> 12);
-
-		switch (mode_spectre)
+		switch (s_waveMode)
 		{
 		case 0:
-			pSurfx->Line(i - step, (int)(halfheight + shift + old_y2),
-				i, (int)(halfheight + shift + y2),
-				spectral_color);
+			pSurfx->Line(n - segment, (int)(midY + shift + lastLeft), n, (int)(midY + shift + left), s_waveColor);
 			break;
 
 		case 1:
-			pSurfx->Line(i - step, (int)(halfheight + shift + old_y1),
-				i, (int)(halfheight + shift + y1),
-				spectral_color);
-			pSurfx->Line(i - step, (int)(halfheight - shift + old_y2),
-				i, (int)(halfheight - shift + y2),
-				spectral_color);
+			pSurfx->Line(n - segment, (int)(midY + shift + lastRight), n, (int)(midY + shift + right), s_waveColor);
+			pSurfx->Line(n - segment, (int)(midY - shift + lastLeft), n, (int)(midY - shift + left), s_waveColor);
 			break;
 
 		case 2:
-			pSurfx->Line(i - step, (int)(halfheight + shift + old_y1),
-				i, (int)(halfheight + shift + y1),
-				spectral_color);
-			pSurfx->Line(i - step, (int)(halfheight - shift + old_y1),
-				i, (int)(halfheight - shift + y1),
-				spectral_color);
-			pSurfx->Line((int)(halfwidth + shift + old_y2), i - step,
-				(int)(halfwidth + shift + y2), i,
-				spectral_color);
-			pSurfx->Line((int)(halfwidth - shift + old_y2), i - step,
-				(int)(halfwidth - shift + y2), i,
-				spectral_color);
+			pSurfx->Line(n - segment, (int)(midY + shift + lastRight), n, (int)(midY + shift + right), s_waveColor);
+			pSurfx->Line(n - segment, (int)(midY - shift + lastRight), n, (int)(midY - shift + right), s_waveColor);
+			pSurfx->Line((int)(midX + shift + lastLeft), n - segment, (int)(midX + shift + left), n, s_waveColor);
+			pSurfx->Line((int)(midX - shift + lastLeft), n - segment, (int)(midX - shift + left), n, s_waveColor);
 			break;
 
 		case 3:
-			if (y1 < 0) y1 = 0;
-			if (y2 < 0) y2 = 0;
-			// FALL THROUGH
-
+			if (right < 0) right = 0;
+			if (left < 0) left = 0;
+			// fall through
 		case 4:
-			pSurfx->Line(
-				(int)(halfwidth  + cosw.f[i - step] * (shift + old_y1)),
-				(int)(halfheight + sinw.f[i - step] * (shift + old_y1)),
-				(int)(halfwidth  + cosw.f[i]        * (shift + y1)),
-				(int)(halfheight + sinw.f[i]        * (shift + y1)),
-				spectral_color);
-			pSurfx->Line(
-				(int)(halfwidth  - cosw.f[i - step] * (shift + old_y2)),
-				(int)(halfheight + sinw.f[i - step] * (shift + old_y2)),
-				(int)(halfwidth  - cosw.f[i]        * (shift + y2)),
-				(int)(halfheight + sinw.f[i]        * (shift + y2)),
-				spectral_color);
+			pSurfx->Line((int)(midX + cosTable[n - segment] * (shift + lastRight)), (int)(midY + sinTable[n - segment] * (shift + lastRight)),
+				(int)(midX + cosTable[n] * (shift + right)), (int)(midY + sinTable[n] * (shift + right)), s_waveColor);
+			pSurfx->Line((int)(midX - cosTable[n - segment] * (shift + lastLeft)), (int)(midY + sinTable[n - segment] * (shift + lastLeft)),
+				(int)(midX - cosTable[n] * (shift + left)), (int)(midY + sinTable[n] * (shift + left)), s_waveColor);
 			break;
 		}
 	}
 
-	if (mode_spectre == 3 || mode_spectre == 4)
+	if (s_waveMode == 3 || s_waveMode == 4)
 	{
-		pSurfx->Line(
-			(int)(halfwidth  + cosw.f[pSurfx->m_nWidth - step] * (shift + y1)),
-			(int)(halfheight + sinw.f[pSurfx->m_nWidth - step] * (shift + y1)),
-			(int)(halfwidth  - cosw.f[pSurfx->m_nWidth - step] * (shift + y2)),
-			(int)(halfheight + sinw.f[pSurfx->m_nWidth - step] * (shift + y2)),
-			spectral_color);
+		int last = width - segment;
+		pSurfx->Line((int)(midX + cosTable[last] * (shift + right)), (int)(midY + sinTable[last] * (shift + right)),
+			(int)(midX - cosTable[last] * (shift + left)), (int)(midY + sinTable[last] * (shift + left)), s_waveColor);
 	}
 
-#define curve_color 255
-#define curve_amplitude 50
-	static int x_curve = 0;
-
-	// Lissajous curve overlay
+	const float amplitude = 50.0f / 256;
+	const float spin = 0.001f;
+	const float base = 80.0f;
+	int k = curveStep;
+	for (int trail = 0; trail < 2; trail++)
 	{
-		int i, j, k;
-		float v, vr;
-		float x, y;
-		float amplitude = (float)curve_amplitude / 256;
-
-		for (j = 0; j < 2; j += 1)
+		k = curveStep;
+		for (int n = 0; n < 64; n++, k++)
 		{
-			v = 80;
-			vr = 0.001f;
-			k = x_curve;
-			for (i = 0; i < 64; i += 1)
-			{
-				x = cosf((float)(k) / (v + v * j * 1.34f)) * pSurfx->m_nHeight * amplitude;
-				y = sinf((float)(k) / (1.756f * (v + v * j * 0.93f))) * pSurfx->m_nHeight * amplitude;
-				SetPixel2(pSurfx, (int)(x * cosf((float)k * vr) + y * sinf((float)k * vr) + pSurfx->m_nWidth / 2), (int)(x * sinf((float)k * vr) - y * cosf((float)k * vr) + pSurfx->m_nHeight / 2), curve_color);
-				k++;
-			}
+			float cx = cosf((float)k / (base + base * trail * 1.34f)) * height * amplitude;
+			float cy = sinf((float)k / (1.756f * (base + base * trail * 0.93f))) * height * amplitude;
+			float a = (float)k * spin;
+			PlotDot(pSurfx, (int)(cx * cosf(a) + cy * sinf(a) + width / 2), (int)(cx * sinf(a) - cy * cosf(a) + height / 2), 255);
 		}
-
-		x_curve = k;
 	}
+	curveStep = k;
 }
 
-#endif // _XBOX. end CAudioVisualizer Xbox-only block
+#endif // _XBOX
 
 
 // ===== FFT ==================================================================
