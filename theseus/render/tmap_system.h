@@ -1,5 +1,7 @@
 #pragma once
 
+// A finished delta field: how many rows above a pixel can pull from, and the
+// 3 byte cells (see CSurfx::Fade).
 class DeltaFieldData
 {
 public:
@@ -11,6 +13,8 @@ public:
 };
 
 
+// 8-bit palettized drawing surface for the TMAP effects. Layout follows the
+// 5960 object at 0x0005f3f0.
 class CSurfx
 {
 public:
@@ -34,49 +38,37 @@ public:
 
 	inline BYTE* Pixel(int x, int y) { return &m_pels[mBytesPerRow * y + x]; }
 
+	// Live surface count and the fade scratch buffer they share.
 	static int sTempRef;
 	static long sTempSize;
 	static char* sTemp;
 
 private:
-    // Need this to prevent the compiler from using default copy ctor
-    CSurfx(const CSurfx&);
-    CSurfx& operator=(const CSurfx& rhs);
+	// Owns its pixels, so no copies.
+	CSurfx(const CSurfx&);
+	CSurfx& operator=(const CSurfx& rhs);
 };
 
+// Builds a warp field a few rows at a time so a style change doesn't stall a frame.
 class DeltaField
 {
 public:
 	DeltaField();
 
-	// Suck in a new grad field. Resize must be called after Assign().
+	// Resets the flags and restarts the field at the current size.
 	void Assign();
 
-	// Reinitiate/reset the computation of this grad field.
+	// Restarts the field if the size changed (or when forced).
 	void SetSize(long inWidth, long inHeight, bool inForceRegen = false);
 
-	// Compute a small portion of the grad field. Call GetField() to see if it finished.
+	// Computes the next row; returns how many are left.
 	int CalcSome();
 
-	// See if this delta field is 100% calculated
-	bool IsCalculated()
-	{
-		return mCurrentY == mHeight;
-	}
+	bool IsCalculated() { return mCurrentY == mHeight; }
+	bool IsCalculating() { return mCurrentY >= 0 && mCurrentY != mHeight; }
+	bool IsUninitialized() { return mCurrentY == -1; }
 
-	bool IsCalculating()
-	{
-		return mCurrentY >= 0 && mCurrentY != mHeight;
-	}
-
-	bool IsUninitialized()
-	{
-		return mCurrentY == -1;
-	}
-
-	// Returns a ptr to the buf of this grad field.
-	// Note: If the field is not 100% calculated, it will finish calculating
-	// and may take a couple seconds.
+	// The field, finished first if it wasn't; NULL if it was never sized.
 	DeltaFieldData* GetField();
 
 	void GetXY(float r, float theta, float x, float y, float& X, float& Y, bool& bPolar, bool bInit);
