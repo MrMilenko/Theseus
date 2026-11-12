@@ -2839,7 +2839,9 @@ public:
 	    m_scanSlow(false), m_autoStop(false), m_bScanBackward(false),
 	    m_backScanAccum(0.0f), m_digitAccum(0), m_digitTimer(0.0f),
 	    m_zoomScale(1.0f), m_zoomX(0.0f), m_zoomY(0.0f),
-	    m_osdTimer(0.0f), m_lastOsdSeconds(-1) {}
+	    m_osdTimer(0.0f), m_lastOsdSeconds(-1),
+	    m_navDomain(0), m_navTitle(0), m_navChapter(0), m_navAngle(0), m_navAngleCount(0),
+	    m_navVideoWidth(0), m_navVideoHeight(0) {}
 
 	DECLARE_NODE(CDVDPlayer, CNode)
 	DECLARE_NODE_PROPS()
@@ -2864,6 +2866,49 @@ public:
 	float m_zoomScale, m_zoomX, m_zoomY;
 	float m_osdTimer;       // throttle OnTimeChange
 	int m_lastOsdSeconds;   // detect second change
+
+	// What the script was last told, so a change fires once.
+	int m_navDomain, m_navTitle, m_navChapter, m_navAngle, m_navAngleCount;
+	int m_navVideoWidth, m_navVideoHeight;
+
+	// CDVDPlayer::Advance, 5960 @ 0x00065f10 (the part past the navigator
+	// calls, 0x00066029..0x0006639b), polls the navigator every frame and
+	// fires an event for each value that moved, in this order:
+	//     domain -> OnDomainChange, title -> OnTitleChange,
+	//     chapter -> OnChapterChange, h:m:s -> OnTimeChange,
+	//     angle or angle count -> OnAngleChange, audio -> OnAudioChange,
+	//     subtitle -> OnSubTitleChange, source video size -> OnVideoSizeChange
+	// Desktop already fires the time, audio and subtitle ones; these cover
+	// the rest from what mpv reports.
+	void ReportNavigationChanges() {
+		if (m_domain != m_navDomain) {
+			m_navDomain = m_domain;
+			CallFunction(this, "OnDomainChange");
+		}
+		if (m_title != m_navTitle) {
+			m_navTitle = m_title;
+			CallFunction(this, "OnTitleChange");
+		}
+		if (m_chapter != m_navChapter) {
+			m_navChapter = m_chapter;
+			CallFunction(this, "OnChapterChange");
+		}
+	}
+
+	void ReportAngleAndVideoSize() {
+		if (m_angle != m_navAngle || m_angleCount != m_navAngleCount) {
+			m_navAngle = m_angle;
+			m_navAngleCount = m_angleCount;
+			CallFunction(this, "OnAngleChange");
+		}
+		int w = 0, h = 0;
+		MediaPlayer_GetVideoTexture(&w, &h);
+		if (w != m_navVideoWidth || h != m_navVideoHeight) {
+			m_navVideoWidth = w;
+			m_navVideoHeight = h;
+			CallFunction(this, "OnVideoSizeChange");
+		}
+	}
 
 	// Update time + track properties from media player
 	void UpdateFromMediaPlayer() {
@@ -2941,12 +2986,16 @@ public:
 			// Ensure we stay visible while playing
 			if (!m_visible) m_visible = true;
 
+			ReportNavigationChanges();
+
 			// Fire time change callback only when the displayed second changes
 			int curSec = m_hours * 3600 + m_minutes * 60 + m_seconds;
 			if (curSec != m_lastOsdSeconds) {
 				m_lastOsdSeconds = curSec;
 				CallFunction(this, "OnTimeChange");
 			}
+
+			ReportAngleAndVideoSize();
 		} else if (mpState == MP_STOPPED && m_playbackMode != 0) {
 			m_playbackMode = 0;
 			m_scanSpeed = 1;
@@ -2955,6 +3004,7 @@ public:
 			m_title = 0;
 			m_domain = 0;
 			CallFunction(this, "OnPlaybackModeChange");
+			ReportNavigationChanges();
 		}
 
 		// Sync A-B repeat state
