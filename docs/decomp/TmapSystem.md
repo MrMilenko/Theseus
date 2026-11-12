@@ -335,6 +335,35 @@ binds that node's D3D palette to stage 0.
 5. Lock the texture and copy the surface in with an inlined Swizzler: per row, `IncU` per
    pixel, then `IncV` and `AddU(SwizzleU(imageWidth - size))` to skip the unused columns.
 
+## ImageFader
+
+| Offset | Field |
+|--------|-------|
+| 0x1c | type (warp style) |
+| 0x20 | changePeriod |
+| 0x24 | changePeriodRandomness |
+| 0x28 | current DeltaField |
+| 0x2c | next DeltaField |
+| 0x30 | next change time (double) |
+
+**RenderDynamicTexture (`0x0005e120`).**
+
+1. No current field: build one for `type` (new 0x3c bytes, style, Assign, SetSize to the
+   surface, all inlined) and set `next = changePeriod + rand() * randomness / 32767 + now`.
+2. Else, when `changePeriod > 0` and `next <= now`: `type += 1`, `next = changePeriod + now`,
+   free the current field and promote the next one.
+3. No next field: build one for `type + 1`.
+4. Current field unfinished: 10 CalcSome calls, copy its style back into `type`, return without
+   warping. Building a field this way takes `height / 10` frames.
+5. Next field unfinished: 5 CalcSome calls (guarded by a NULL check).
+6. Finish the current field if needed and run the in-place fade on the surface.
+
+If the timer fires on the frame after `type` was set, the promoted field is NULL and step 4
+dereferences it.
+
+**OnSetProperty (`0x0005e3f0`).** For the `type` property (offset 0x1c): free the current field,
+promote the next one, clear next. Returns 1 for everything.
+
 ## Notes
 
 - CSurfx operates on a raw BYTE array with manual pitch calculation.

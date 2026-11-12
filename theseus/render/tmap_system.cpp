@@ -1343,8 +1343,7 @@ void CDynamicTexture::Update()
 
 
 // ===== CImageFader ==========================================================
-// Applies a DeltaField warp effect to a CSurfx. Cycles through warp
-// styles on a timer.
+// Warps the surface through a DeltaField every frame, changing style on a timer.
 
 class CImageFader : public CNode
 {
@@ -1376,56 +1375,71 @@ START_NODE_PROPS(CImageFader, CNode)
 	NODE_PROP(pt_number, CImageFader, changePeriodRandomness)
 END_NODE_PROPS()
 
+// CImageFader::CImageFader()
+// Reconstructed from CImageFader_CreateNode @ 0x0005e030 (0x38 bytes):
+//     type = changePeriod = randomness = 0; field = nextField = NULL; nextChange = 0.0
 CImageFader::CImageFader() :
 	m_type(0),
 	m_changePeriod(0.0f),
 	m_changePeriodRandomness(0.0f)
 {
-	m_nextChangeTime = 0.0f;
 	m_pDeltaField = NULL;
 	m_pDeltaField2 = NULL;
+	m_nextChangeTime = 0.0f;
 }
 
+// CImageFader::~CImageFader()
+// Reconstructed from 5960 retail XBE @ 0x0005e0c0: frees both fields.
 CImageFader::~CImageFader()
 {
 	delete m_pDeltaField;
 	delete m_pDeltaField2;
 }
 
+// Inlined twice in 0x0005e120: new DeltaField, style, Assign, SetSize to the surface.
+static DeltaField* NewDeltaField(int style, CSurfx* pSurfx)
+{
+	DeltaField* field = new DeltaField;
+	field->m_nStyle = style;
+	field->Assign();
+	field->SetSize(pSurfx->m_nWidth, pSurfx->m_nHeight);
+	return field;
+}
+
+// CImageFader::RenderDynamicTexture(pSurfx)
+// Reconstructed from 5960 retail XBE @ 0x0005e120. Keeps the current warp
+// field plus the next style's field building in the background:
+//   - first frame: build the field for type and schedule the next change at
+//     now + changePeriod + rnd(randomness);
+//   - when changePeriod > 0 and that time comes: type++, next change at
+//     now + changePeriod, and the background field becomes current;
+//   - make sure the background field (style type + 1) exists;
+//   - while the current field is unfinished, compute 10 rows of it, copy its
+//     style back into type (it snaps bad styles to 0) and skip the warp;
+//   - otherwise compute 5 rows of the background field and fade the surface
+//     through the current one.
 void CImageFader::RenderDynamicTexture(CSurfx* pSurfx)
 {
 	if (m_pDeltaField == NULL)
 	{
-		m_pDeltaField = new DeltaField;
-		m_pDeltaField->m_nStyle = m_type;
-		m_pDeltaField->Assign();
-		m_pDeltaField->SetSize(pSurfx->m_nWidth, pSurfx->m_nHeight);
-
+		m_pDeltaField = NewDeltaField(m_type, pSurfx);
 		m_nextChangeTime = TheseusGetNow() + m_changePeriod + rnd(m_changePeriodRandomness);
 	}
 	else if (m_changePeriod > 0.0f && TheseusGetNow() >= m_nextChangeTime)
 	{
+		m_type++;
 		m_nextChangeTime = TheseusGetNow() + m_changePeriod;
-
-		m_type += 1;
-
 		delete m_pDeltaField;
 		m_pDeltaField = m_pDeltaField2;
 		m_pDeltaField2 = NULL;
 	}
 
 	if (m_pDeltaField2 == NULL)
-	{
-		m_pDeltaField2 = new DeltaField;
-		m_pDeltaField2->m_nStyle = m_type + 1;
-		m_pDeltaField2->Assign();
-		m_pDeltaField2->SetSize(pSurfx->m_nWidth, pSurfx->m_nHeight);
-	}
+		m_pDeltaField2 = NewDeltaField(m_type + 1, pSurfx);
 
 	if (m_pDeltaField->IsCalculating())
 	{
-		int i;
-		for (i = 0; i < 10; i += 1)
+		for (int n = 0; n < 10; n++)
 			m_pDeltaField->CalcSome();
 		m_type = m_pDeltaField->m_nStyle;
 		return;
@@ -1433,16 +1447,18 @@ void CImageFader::RenderDynamicTexture(CSurfx* pSurfx)
 
 	if (m_pDeltaField2->IsCalculating())
 	{
-		for (int i = 0; i < 5; i += 1)
-		{
-			if (m_pDeltaField2 != NULL)
-				m_pDeltaField2->CalcSome();
-		}
+		for (int n = 0; n < 5; n++)
+			m_pDeltaField2->CalcSome();
 	}
 
 	pSurfx->Fade(m_pDeltaField->GetField());
 }
 
+// CImageFader::OnSetProperty(pprd, pvValue)
+// Reconstructed from 5960 retail XBE @ 0x0005e3f0:
+//     if (prd->offset == 0x1c /* type */) { delete field; field = nextField; nextField = NULL; }
+//     return 1;
+// The next frame rebuilds the background field for the new type.
 bool CImageFader::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
 	if (PTR2INT(pprd->pbOffset) == offsetof(m_type))
@@ -1451,7 +1467,6 @@ bool CImageFader::OnSetProperty(const PRD* pprd, const void* pvValue)
 		m_pDeltaField = m_pDeltaField2;
 		m_pDeltaField2 = NULL;
 	}
-
 	return true;
 }
 
