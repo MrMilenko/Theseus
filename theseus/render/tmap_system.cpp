@@ -198,7 +198,8 @@ void CSurfx::Fade(char* inPix, long inBytesPerRow, long inX, long inY, DeltaFiel
 		curBufRow = sTemp + ((curBufRowNum + y) % bufRows) * inBytesPerRow;
 		for (x = 0; x < p; x += 1)
 		{
-			((unsigned long*)inPix)[x] = ((unsigned long*)curBufRow)[x];
+			// DWORD, not unsigned long, which is 8 bytes on 64-bit desktop builds.
+			((DWORD*)inPix)[x] = ((DWORD*)curBufRow)[x];
 		}
 
 		inPix += inBytesPerRow;
@@ -415,10 +416,11 @@ void CSurfx::Line(int sx, int sy, int ex, int ey, unsigned char color)
 	long xmov, ymov, dx, dy, t, j, lw;
 	long penExtents;
 
-	sx = (((long)(sx & 0x80000000)) >> 1) | (sx & 0x3FFFFFFF);
-	ex = (((long)(ex & 0x80000000)) >> 1) | (ex & 0x3FFFFFFF);
-	sy = (((long)(sy & 0x80000000)) >> 1) | (sy & 0x3FFFFFFF);
-	ey = (((long)(ey & 0x80000000)) >> 1) | (ey & 0x3FFFFFFF);
+	// int on purpose: through a 64-bit long a negative coordinate folds to a huge positive one.
+	sx = (((int)(sx & 0x80000000)) >> 1) | (sx & 0x3FFFFFFF);
+	ex = (((int)(ex & 0x80000000)) >> 1) | (ex & 0x3FFFFFFF);
+	sy = (((int)(sy & 0x80000000)) >> 1) | (sy & 0x3FFFFFFF);
+	ey = (((int)(ey & 0x80000000)) >> 1) | (ey & 0x3FFFFFFF);
 
 	lw = mLineWidth;
 	if (mLineWidth > 3) {
