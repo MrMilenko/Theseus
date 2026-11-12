@@ -899,20 +899,26 @@ CFile::~CFile()
 	delete m_date;
 }
 
+// CFile::readText   [script fn 'readText', FND 0x0017f918, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x00031960. Ghidra decompile:
+//     s = new CStrObject;
+//     if (m_path && file.Fetch(m_path)) { file.MakeUnicode(); s->Append(file.content); }
+//     return s;
+// MakeUnicode widens an ANSI file and strips the BOM off a UTF-16 one, so the
+// text reads right either way.
 CStrObject* CFile::readText()
 {
-	CStrObject* pStr = new CStrObject;
+	CStrObject* pText = new CStrObject;
+	if (m_path == NULL)
+		return pText;
 
-	if (m_path != NULL)
+	CActiveFile file;
+	if (file.Fetch(m_path))
 	{
-		CActiveFile file;
-		if (file.Fetch(m_path))
-		{
-			pStr->Append((TCHAR*)file.GetContent());
-		}
+		file.MakeUnicode();
+		pText->Append((const TCHAR*)file.GetContent());
 	}
-
-	return pStr;
+	return pText;
 }
 
 // ===== CFolder =====

@@ -100,6 +100,8 @@ START_NODE_FUN(CLiveAccounts, CNode)
     NODE_FUN_SV(GetFriendInvites)
     NODE_FUN_SV(GetNumberOfFriendsOnline)
     NODE_FUN_VIIS(LaunchEntryPoint)
+    NODE_FUN_II(IsPasswordEnabled)
+    NODE_FUN_IIS(VerifyPassword)
     // 5960 additions
     NODE_FUN_IV(GetLastLogonUser)
     NODE_FUN_SV(GetResult)
@@ -376,6 +378,66 @@ void CLiveAccounts::Logoff()
     m_bLogon = false;
     m_nCurrentIndex = -1;
     m_currentAccount = -1;
+}
+
+// XLive_EncodePasscode, 5960 @ 0x00069930. Turns the script's passcode text
+// into the 4 bytes an account stores, one per character:
+//     u d l r x y L R  ->  1 2 3 4 5 6 9 10, anything else keeps its low byte
+//     past the end of the text (or no text) -> 0
+static void EncodePasscode(const TCHAR* szPasscode, BYTE passcode[4])
+{
+    for (int i = 0; i < 4; i++)
+    {
+        BYTE b = 0;
+        if (szPasscode != NULL && *szPasscode != 0)
+            b = (BYTE)*szPasscode++;
+
+        switch (b)
+        {
+        case 'u': b = 1; break;
+        case 'd': b = 2; break;
+        case 'l': b = 3; break;
+        case 'r': b = 4; break;
+        case 'x': b = 5; break;
+        case 'y': b = 6; break;
+        case 'L': b = 9; break;
+        case 'R': b = 10; break;
+        }
+
+        passcode[i] = b;
+    }
+}
+
+// CLiveAccounts::IsPasswordEnabled   [script fn 'IsPasswordEnabled', FND 0x00188dc8, sig 3]
+// Reconstructed from 5960 retail XBE @ 0x000698b0. Ghidra decompile:
+//     if (dirty) EnumerateAccounts();
+//     if (index < count) return users[index].dwUserOptions & 1;
+//     return 0;
+// Bit 0 is XONLINE_USER_OPTION_REQUIRE_PASSCODE. Theseus reads the list
+// LoadFromHD keeps and also turns away a negative index.
+int CLiveAccounts::IsPasswordEnabled(int index)
+{
+    if (index < 0 || (DWORD)index >= g_NumUsers)
+        return 0;
+
+    return (g_Users[index].dwUserOptions & XONLINE_USER_OPTION_REQUIRE_PASSCODE) != 0;
+}
+
+// CLiveAccounts::VerifyPassword   [script fn 'VerifyPassword', FND 0x00188de0, sig 29]
+// Reconstructed from 5960 retail XBE @ 0x000698e0. Ghidra decompile:
+//     if (dirty) EnumerateAccounts();
+//     if (index >= count) return 1;
+//     XLive_EncodePasscode(password, &code);
+//     return code == *(DWORD*)users[index].passcode;
+// An index past the list passes. Theseus treats a negative one the same way.
+int CLiveAccounts::VerifyPassword(int index, const TCHAR* password)
+{
+    if (index < 0 || (DWORD)index >= g_NumUsers)
+        return 1;
+
+    BYTE passcode[4];
+    EncodePasscode(password, passcode);
+    return memcmp(passcode, g_Users[index].pin, sizeof(passcode)) == 0;
 }
 
 int CLiveAccounts::IsPasswordVerified()

@@ -2782,6 +2782,10 @@ public:
 	CStrObject* GetFriendInvites() { return new CStrObject; }
 	CStrObject* GetNumberOfFriendsOnline() { return new CStrObject(_T("0")); }
 	void LaunchEntryPoint(int, int, const TCHAR*) {}
+	// 5960 @ 0x000698b0 / 0x000698e0: an index past the account list reads
+	// as no passcode and a passcode that matches. Desktop has no accounts.
+	int IsPasswordEnabled(int) { return 0; }
+	int VerifyPassword(int, const TCHAR*) { return 1; }
 };
 
 IMPLEMENT_NODE("LiveAccounts", CLiveAccounts, CNode)
@@ -2816,6 +2820,8 @@ START_NODE_FUN(CLiveAccounts, CNode)
 	NODE_FUN_SV(GetFriendInvites)
 	NODE_FUN_SV(GetNumberOfFriendsOnline)
 	NODE_FUN_VIIS(LaunchEntryPoint)
+	NODE_FUN_II(IsPasswordEnabled)
+	NODE_FUN_IIS(VerifyPassword)
 END_NODE_FUN()
 
 // ============================================================================
