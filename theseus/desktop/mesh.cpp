@@ -9,7 +9,7 @@
 #include "shape_render.h"
 #include "runner.h"
 #include "asset_loader.h"
-#include "xip.h"
+#include "xip_archive.h"
 #include "file_util.h"
 #include "camera.h"
 #include "skin_assets.h"

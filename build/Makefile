@@ -830,7 +830,7 @@ endif
 DESKTOP_SRCS_FILE = \
 	$(DESKTOP_SRCS_HOST) \
 	$(THESEUS_SRC)/desktop/xbox_file.cpp \
-	$(THESEUS_SRC)/desktop/xip.cpp \
+	$(THESEUS_SRC)/render/xip_archive.cpp \
 	$(THESEUS_SRC)/shared/file_util.cpp \
 	$(THESEUS_SRC)/desktop/files.cpp \
 	$(THESEUS_SRC)/shared/activefile.cpp \
