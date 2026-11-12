@@ -1817,6 +1817,8 @@ int main(int argc, char* argv[]) {
         // Drive the xCloud->VGDB injection state machine (main-thread only).
         extern void XcloudVGames_Tick();
         XcloudVGames_Tick();
+        extern void GameArt_Tick();
+        GameArt_Tick();
         Frame_PhaseEnd(FP_TICKS);
 
         // bgfx owns presentation; its backend layer is the visible surface.

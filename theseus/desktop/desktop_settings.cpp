@@ -27,6 +27,8 @@ extern float g_masterVolume;
 extern bool g_useMilkdropViz, g_showAlbumCover;
 extern char g_musicRoot[512], g_moviesRoot[512], g_tvRoot[512];
 extern char g_tmdbKey[128], g_romsDir[512];
+extern bool g_fetchGameArt;
+extern char g_steamGridDbKey[128];
 extern char g_plexToken[256], g_plexClientId[64];
 extern char g_xcloudRefreshToken[2048];
 extern char g_jellyfinUrl[512], g_jellyfinToken[256], g_jellyfinUserId[64];
@@ -152,6 +154,8 @@ static const SettingDef kDefs[] = {
     S_PATH("TvRoot",     "Library", "Media", "TV Shows Folder", g_tvRoot, 0),
     S_STR("TMDBKey",     "Library", "Media", "TMDB API Key",    g_tmdbKey, "", SF_SECRET),
     S_PATH("RomsDir",    "Library", "Games", "ROMs Folder",     g_romsDir, 0),
+    S_BOOL("FetchGameArt", "Library", "Games", "Download Game Art", g_fetchGameArt, "1", 0),
+    S_STR("SteamGridDBKey", "Library", "Games", "SteamGridDB API Key", g_steamGridDbKey, "", SF_SECRET),
     S_STR("PlexToken",          "Library", "Media", "Plex Token",     g_plexToken,          "", SF_SECRET | SF_HIDDEN),
     S_STR("PlexClientId",       "Library", "Media", "Plex Client",    g_plexClientId,       "", SF_SECRET | SF_HIDDEN),
     S_STR("XcloudRefreshToken", "Library", "Media", "Xbox Sign-in",   g_xcloudRefreshToken, "", SF_SECRET | SF_HIDDEN),
