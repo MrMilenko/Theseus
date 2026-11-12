@@ -28,11 +28,13 @@ function initialize()
 	inQuickLaunchMenu = false;
 	inChangeTitleMenu = false;
 	AddKeyboardTitle = false;
-	bAdvancedMode =  GetSavedBooleanValue("MainMenu","AdvancedMode");
 }
 
 function buildconfigList() //written this way so u can easily rearrange and add, so dont change it!
 {
+	// Read here, not in initialize(): an Inline runs initialize() before it can
+	// see default.xap, so GetSavedBooleanValue was an unknown function there.
+	bAdvancedMode = GetSavedBooleanValue("MainMenu","AdvancedMode");
 	var i = 0;
 	configList = new Array;
 	configList[i] = "General Settings";
