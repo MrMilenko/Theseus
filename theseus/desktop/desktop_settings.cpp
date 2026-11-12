@@ -47,6 +47,10 @@ static void ApplyMsaa()       { g_msaaChangeRequested = true; }
 static void ApplyVsync()      { g_vsyncChangeRequested = true; }
 static void ApplyDisplay()    { g_displayChangeRequested = true; }
 static void ApplyProjection() { TheseusSetProjectionDirty(); }
+// A new library folder is read right away, like the Refresh buttons.
+extern "C" void MediaDB_ScanAndCache();
+static void ApplyMusic()   { DashMusic_Scan(DashMusic_GetConfiguredRoot()); }
+static void ApplyLibrary() { MediaDB_ScanAndCache(); }
 static void ApplyVolume()
 {
     DashAudio_SetMasterVolume(g_masterVolume);
@@ -90,6 +94,8 @@ static const char* kModeLbl[]  = { "Windowed", "Borderless", "Fullscreen" };
     { key, sec, page, label, SK_BOOL, &var, 0, def, fl, NOENUM, 0, 0, 0, NULL, NULL }
 #define S_PATH(key, sec, page, label, var, fl) \
     { key, sec, page, label, SK_PATH, var, (int)sizeof(var), "", fl, NOENUM, 0, 0, 0, NULL, NULL }
+#define S_FOLDER(key, sec, page, label, var, fn) \
+    { key, sec, page, label, SK_PATH, var, (int)sizeof(var), "", 0, NOENUM, 0, 0, 0, NULL, fn }
 #define S_STR(key, sec, page, label, var, def, fl) \
     { key, sec, page, label, SK_STRING, var, (int)sizeof(var), def, fl, NOENUM, 0, 0, 0, NULL, NULL }
 #define S_CRT(key, label, field, def, lo, hi) \
@@ -147,9 +153,9 @@ static const SettingDef kDefs[] = {
     S_CRT("CRT_ColorBleed", "Color Bleed",   colorBleed,        "1.000", 0.0f, 4.0f),
     S_CRT("CRT_Brightness", "Brightness",    brightness,        "1.050", 0.8f, 1.3f),
 
-    S_PATH("MusicRoot",  "Library", "Media", "Music Folder",    g_musicRoot, 0),
-    S_PATH("MoviesRoot", "Library", "Media", "Movies Folder",   g_moviesRoot, 0),
-    S_PATH("TvRoot",     "Library", "Media", "TV Shows Folder", g_tvRoot, 0),
+    S_FOLDER("MusicRoot",  "Library", "Media", "Music Folder",    g_musicRoot,  ApplyMusic),
+    S_FOLDER("MoviesRoot", "Library", "Media", "Movies Folder",   g_moviesRoot, ApplyLibrary),
+    S_FOLDER("TvRoot",     "Library", "Media", "TV Shows Folder", g_tvRoot,     ApplyLibrary),
     S_STR("TMDBKey",     "Library", "Media", "TMDB API Key",    g_tmdbKey, "", SF_SECRET),
     S_PATH("RomsDir",    "Library", "Games", "ROMs Folder",     g_romsDir, 0),
     S_STR("PlexToken",          "Library", "Media", "Plex Token",     g_plexToken,          "", SF_SECRET | SF_HIDDEN),

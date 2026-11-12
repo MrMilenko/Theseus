@@ -8,6 +8,7 @@
 // Desktop Tools (the ImGui windows) and Exit. B backs out a level, to the
 // sections, then closes. On a first run, or with Startup set to ask, it
 // opens on the Welcome screen instead, which offers and never insists.
+// Folders, keys and names are typed on its own keyboard, or straight in.
 
 #include "std.h"
 #include "dashapp.h"
@@ -35,12 +36,12 @@
 #include <unistd.h>
 #include <errno.h>
 #include <SDL.h>
+#include "imgui.h"
 #include <string>
 #include <vector>
 
 class CLevel;
 extern CLevel* g_pCurLevel;
-extern bool g_bLevelTransition;
 extern bool g_padModeEnabled, g_padModeActive;
 extern bool g_mediaFullscreen, g_xcloudFullscreen;
 extern void* g_pActiveKeyboard_void();
@@ -231,8 +232,9 @@ static const char* SettingHelp(const SettingDef& d)
     for (size_t i = 0; i < sizeof(kHelp) / sizeof(kHelp[0]); i++)
         if (strcmp(kHelp[i].key, d.key) == 0) return kHelp[i].help;
     if (d.flags & SF_RESTART) return "Takes effect the next time UIX Desktop starts.";
-    if (d.kind == SK_PATH)    return "Folders are typed in the Settings window, in Desktop Tools.";
-    if (d.kind == SK_STRING)  return "Typed in the Settings window, in Desktop Tools.";
+    if (d.kind == SK_PATH)    return "Select it to type or paste the full path.";
+    if (d.flags & SF_SECRET)  return "Select it to type or paste it. It stays hidden.";
+    if (d.kind == SK_STRING)  return "Select it to type or paste it.";
     return "Left and right change it.";
 }
 
@@ -259,6 +261,7 @@ enum Act {
     GA_STEAM, GA_RETROARCH, GA_ESDE, GA_CHOOSEFILE, GA_CATEGORY, GA_ADDGAME,
     GA_BROWSEUP, GA_BROWSE, GA_PLAYLIST,
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
+    GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_COUNT
 };
 
@@ -271,7 +274,7 @@ struct Row {
 };
 
 // What the pointer can land on.
-enum Target { T_SECTION, T_ROW, T_TAB, T_PROMPT };
+enum Target { T_SECTION, T_ROW, T_TAB, T_PROMPT, T_KEY };
 struct HitTarget { float x0, y0, x1, y1; int kind, index; };
 
 // The panel's place in the 640x480 layout.
@@ -287,10 +290,33 @@ enum {
     LIST_L = CONTENT_L + SECTIONS_W + 14,
     ROW_H = 24, ROW_GAP = 4,
     REPEAT_DELAY = 400, REPEAT_INTERVAL = 110,
+    FIELD_Y = BODY_Y + 4, FIELD_H = 32, KEYS_Y = BODY_Y + 50, KEY_H = 34, KEY_GAP = 5,
+};
+
+// The keyboard: four rows of ten characters, then the wide keys.
+enum { KEY_CHARS = 40, K_SHIFT = KEY_CHARS, K_SYMBOLS, K_SPACE, K_DELETE, K_PASTE, K_DONE, KEY_COUNT };
+static const char* const kKeyRows[3][4] = {
+    { "1234567890", "qwertyuiop", "asdfghjkl:", "zxcvbnm./-" },
+    { "1234567890", "QWERTYUIOP", "ASDFGHJKL:", "ZXCVBNM./-" },
+    { "1234567890", "!@#$%^&*()", "~`_=+[]{}\\", "|;'\",<>?/:" },
+};
+// The wide keys' left edges and widths, in keys.
+static const float kWideKeys[KEY_COUNT - KEY_CHARS][2] = {
+    { 0, 1.5f }, { 1.5f, 1.5f }, { 3, 3 }, { 6, 1.5f }, { 7.5f, 1.25f }, { 8.75f, 1.25f },
+};
+
+enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN };
+
+struct Editor {
+    bool on, secret, shift, symbols;
+    int what, arg, key;
+    std::string title, text;
+    size_t caret, limit;   // bytes
+    Uint32 since;
 };
 
 static struct Guide {
-    bool open, welcome, inPanel, startChecked, swallow, foldersDone;
+    bool open, welcome, inPanel, startChecked, swallow, foldersDone, settle;
     int section, page, cursor, scroll;
     View view;
     struct Frame { View view; int cursor, scroll; };
@@ -300,8 +326,8 @@ static struct Guide {
     unsigned held, repeatHeld;
     Uint32 repeatTime;
     int device;
-    bool pointerMoved;
-    float pointerX, pointerY;
+    bool pointerMoved, clickMoved;
+    float pointerX, pointerY, wheel;
 
     int copied;
     std::string result[GA_COUNT];
@@ -311,7 +337,8 @@ static struct Guide {
     int category, playlist;
 
     std::vector<HitTarget> targets;
-    int promptButtons[4];
+    int promptButtons[6];
+    Editor edit;
 } g;
 
 static void Add(const char* label, const char* value, const char* help, int act = GA_NONE, int arg = 0)
@@ -334,8 +361,8 @@ static void Build()
             if (d.flags & SF_HIDDEN) continue;
             if (strcmp(d.page, kPages[g.page]) != 0) continue;
             Setting_Display(d, val, sizeof(val));
-            bool editable = d.kind != SK_PATH && d.kind != SK_STRING;
-            Add(d.label, val, SettingHelp(d), editable ? GA_SETTING : GA_NONE, i);
+            bool typed = d.kind == SK_PATH || d.kind == SK_STRING;
+            Add(d.label, val, SettingHelp(d), typed ? GA_TEXT : GA_SETTING, i);
         }
         break;
     }
@@ -382,7 +409,9 @@ static void Build()
         std::string file = g.pickedPath.empty() ? "Choose" : NameOnly(g.pickedPath);
         Add("File", file.c_str(), g.pickedPath.empty() ? "A program, a shortcut or a ROM." : g.pickedPath.c_str(),
             GA_CHOOSEFILE);
-        Add("Name", g.pickedName.c_str(), "Taken from the file name. Rename it in the Title Maker (F3).");
+        Add("Name", g.pickedName.c_str(),
+            g.pickedPath.empty() ? "Taken from the file name." : "Taken from the file name. Select it to rename it.",
+            g.pickedPath.empty() ? GA_NONE : GA_NAME);
         Add("Category", kCategories[g.category], "Left and right change it.", GA_CATEGORY);
         Add("Add to Launcher", g.added.c_str(),
             g.pickedPath.empty() ? "Choose a file first." : "Adds it under the category above.", GA_ADDGAME);
@@ -430,15 +459,17 @@ static void Build()
             help = "Signed in as " + Jellyfin_GetUserName() + ".";
             Add("Jellyfin", "Signed in", help.c_str());
             Add("Sign Out of Jellyfin", "", NULL, GA_JELLYFINOUT);
-        } else if (Jellyfin_GetServerUrl().empty()) {
-            Add("Jellyfin", "No server", "Type the server address in the Settings window (Desktop Tools) first.",
-                GA_JELLYFIN);
-        } else if (Jellyfin_QuickConnectInFlight()) {
-            std::string code = Jellyfin_GetQuickConnectCode();
-            Add("Jellyfin", code.empty() ? "Asking..." : code.c_str(),
-                "In Jellyfin's web page open your account, then Quick Connect, and enter the code.", GA_JELLYFIN);
         } else {
-            Add("Jellyfin", "Sign In", "Quick Connect gives you a code to approve on the server.", GA_JELLYFIN);
+            std::string url = Jellyfin_GetServerUrl();
+            Add("Jellyfin Server", url.empty() ? "Not set" : url.c_str(),
+                "Your server's address, like 192.168.1.20:8096.", GA_JELLYFINURL);
+            if (!url.empty() && Jellyfin_QuickConnectInFlight()) {
+                std::string code = Jellyfin_GetQuickConnectCode();
+                Add("Jellyfin", code.empty() ? "Asking..." : code.c_str(),
+                    "In Jellyfin's web page open your account, then Quick Connect, and enter the code.", GA_JELLYFIN);
+            } else if (!url.empty()) {
+                Add("Jellyfin", "Sign In", "Quick Connect gives you a code to approve on the server.", GA_JELLYFIN);
+            }
         }
 
         if (Xcloud_HasToken()) {
@@ -481,7 +512,7 @@ static void Build()
         break;
     case GV_TOOLS:
         Add("Title Maker", "F3", "Names, icons and categories for the launcher.", GA_WINDOW, WIN_TITLEMAKER);
-        Add("Settings Window", "F4", "Every setting, including the folders and text you type.", GA_WINDOW, WIN_SETTINGS);
+        Add("Settings Window", "F4", "Every setting, in a desktop window.", GA_WINDOW, WIN_SETTINGS);
         Add("HDD Browser", "F5", "Look through the dashboard's drives.", GA_WINDOW, WIN_HDD);
         Add("Playlist Maker", "F6", "Make and edit playlists.", GA_WINDOW, WIN_PLAYLISTS);
         if (g_padModeEnabled)
@@ -528,7 +559,6 @@ static void ShowSection(int section)
 
 static void Open(bool welcome)
 {
-    fprintf(stderr, "[Guide] open%s\n", welcome ? " (welcome)" : "");
     g.open = true;
     g.welcome = welcome;
     g.inPanel = welcome;
@@ -555,6 +585,7 @@ static void Close()
     }
     g.open = false;
     g.welcome = false;
+    g.edit.on = false;
     g.swallow = true;
 }
 
@@ -605,6 +636,210 @@ static void OpenWindow(int which)
     }
 }
 
+// Typing
+
+static size_t PrevChar(const std::string& t, size_t i)
+{
+    if (i == 0) return 0;
+    i--;
+    while (i > 0 && ((unsigned char)t[i] & 0xC0) == 0x80) i--;
+    return i;
+}
+
+static size_t NextChar(const std::string& t, size_t i)
+{
+    if (i >= t.size()) return t.size();
+    i++;
+    while (i < t.size() && ((unsigned char)t[i] & 0xC0) == 0x80) i++;
+    return i;
+}
+
+bool Guide_Typing() { return g.open && g.edit.on; }
+
+static void EditOpen(int what, int arg, const char* title, const std::string& text, size_t limit, bool secret)
+{
+    Editor& e = g.edit;
+    e.on = true;
+    e.what = what;
+    e.arg = arg;
+    e.title = title;
+    e.text = text.size() > limit ? text.substr(0, limit) : text;
+    e.caret = e.text.size();
+    e.limit = limit;
+    e.secret = secret;
+    e.shift = e.symbols = false;
+    e.key = 10;
+    e.since = SDL_GetTicks();
+    SDL_StartTextInput();
+}
+
+static void EditClose()
+{
+    g.edit.on = false;
+    // Whatever closed it is still held; it isn't a press on the row.
+    g.settle = true;
+    Build();
+}
+
+// Trimmed, and a path copied from a file manager loses its quotes.
+static std::string Tidy(std::string s, bool path)
+{
+    size_t a = s.find_first_not_of(" \t"), b = s.find_last_not_of(" \t");
+    s = a == std::string::npos ? "" : s.substr(a, b - a + 1);
+    if (path && s.size() >= 2 && s[0] == '"' && s[s.size() - 1] == '"') s = s.substr(1, s.size() - 2);
+    return s;
+}
+
+static void EditDone()
+{
+    const Editor& e = g.edit;
+    switch (e.what) {
+    case ED_SETTING: {
+        const SettingDef& d = DesktopSettings_Table().defs[e.arg];
+        if (Setting_SetText(d, Tidy(e.text, d.kind == SK_PATH).c_str())) {
+            if (d.apply) d.apply();
+            SaveDesktopSettings();
+        }
+        break;
+    }
+    case ED_NAME: {
+        char clean[128];
+        Title_SanitizeName(Tidy(e.text, false).c_str(), clean, sizeof(clean));
+        if (clean[0]) { g.pickedName = clean; g.added.clear(); }
+        break;
+    }
+    case ED_JELLYFIN:
+        Jellyfin_SetServerUrl(Tidy(e.text, false));
+        break;
+    }
+    EditClose();
+}
+
+static void EditInsert(const char* s)
+{
+    Editor& e = g.edit;
+    std::string add;
+    for (const char* p = s; *p; p++)
+        if ((unsigned char)*p >= 0x20 && *p != 0x7F) add += *p;
+    if (add.empty() || e.text.size() + add.size() > e.limit) return;
+    e.text.insert(e.caret, add);
+    e.caret += add.size();
+}
+
+static void EditDelete(bool forward)
+{
+    Editor& e = g.edit;
+    size_t from = forward ? e.caret : PrevChar(e.text, e.caret);
+    size_t to = forward ? NextChar(e.text, e.caret) : e.caret;
+    e.text.erase(from, to - from);
+    e.caret = from;
+}
+
+static void EditPaste()
+{
+    char* clip = SDL_GetClipboardText();
+    if (!clip) return;
+    std::string line = clip;
+    SDL_free(clip);
+    EditInsert(line.substr(0, line.find_first_of("\r\n")).c_str());
+}
+
+static int KeyLayout() { return g.edit.symbols ? 2 : g.edit.shift ? 1 : 0; }
+
+// A key's row, left edge and width, in keys.
+static void KeySpan(int key, int* row, float* x, float* w)
+{
+    if (key < KEY_CHARS) { *row = key / 10; *x = (float)(key % 10); *w = 1.0f; return; }
+    *row = 4;
+    *x = kWideKeys[key - KEY_CHARS][0];
+    *w = kWideKeys[key - KEY_CHARS][1];
+}
+
+static void PressKey(int key)
+{
+    Editor& e = g.edit;
+    if (key < KEY_CHARS) {
+        char c[2] = { kKeyRows[KeyLayout()][key / 10][key % 10], 0 };
+        EditInsert(c);
+        e.shift = false;   // for one letter
+        return;
+    }
+    switch (key) {
+    case K_SHIFT:   e.shift = !e.shift; e.symbols = false; break;
+    case K_SYMBOLS: e.symbols = !e.symbols; e.shift = false; break;
+    case K_SPACE:   EditInsert(" "); break;
+    case K_DELETE:  EditDelete(false); break;
+    case K_PASTE:   EditPaste(); break;
+    case K_DONE:    EditDone(); break;
+    }
+}
+
+// Sideways wraps in the row; up and down land on the key under this one's middle.
+static void MoveKey(int dx, int dy)
+{
+    Editor& e = g.edit;
+    int row;
+    float x, w;
+    KeySpan(e.key, &row, &x, &w);
+    if (dx) {
+        if (row < 4) e.key = row * 10 + (e.key % 10 + dx + 10) % 10;
+        else e.key = KEY_CHARS + (e.key - KEY_CHARS + dx + KEY_COUNT - KEY_CHARS) % (KEY_COUNT - KEY_CHARS);
+        return;
+    }
+    float mid = x + w * 0.5f;
+    row = (row + dy + 5) % 5;
+    if (row < 4) { e.key = row * 10 + std::min(9, (int)mid); return; }
+    e.key = K_DONE;
+    for (int k = K_SHIFT; k < KEY_COUNT; k++)
+        if (mid >= kWideKeys[k - KEY_CHARS][0] && mid < kWideKeys[k - KEY_CHARS][0] + kWideKeys[k - KEY_CHARS][1]) {
+            e.key = k;
+            break;
+        }
+}
+
+// The pad on the keyboard: A types the key, X deletes, Y is a space, the
+// bumpers move the cursor, Start saves and B cancels.
+static void EditHandle(unsigned pressed)
+{
+    Editor& e = g.edit;
+    if (pressed & GUIDE_B)     { EditClose(); return; }
+    if (pressed & GUIDE_START) { EditDone(); return; }
+    if (pressed & GUIDE_UP)    MoveKey(0, -1);
+    if (pressed & GUIDE_DOWN)  MoveKey(0, 1);
+    if (pressed & GUIDE_LEFT)  MoveKey(-1, 0);
+    if (pressed & GUIDE_RIGHT) MoveKey(1, 0);
+    if (pressed & GUIDE_LB)    e.caret = PrevChar(e.text, e.caret);
+    if (pressed & GUIDE_RB)    e.caret = NextChar(e.text, e.caret);
+    if (pressed & GUIDE_X)     EditDelete(false);
+    if (pressed & GUIDE_Y)     EditInsert(" ");
+    if (pressed & GUIDE_A)     PressKey(e.key);
+}
+
+// A physical keyboard types straight in.
+static void EditEvent(const SDL_Event* ev)
+{
+    Editor& e = g.edit;
+    // Keys from before it opened belong to whatever opened it.
+    if (ev->common.timestamp < e.since) return;
+    g.device = 0;
+    if (ev->type == SDL_TEXTINPUT) { EditInsert(ev->text.text); return; }
+    const bool repeat = ev->key.repeat != 0;
+    switch (ev->key.keysym.sym) {
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER:  if (!repeat) EditDone(); break;
+    case SDLK_ESCAPE:    if (!repeat) EditClose(); break;
+    case SDLK_BACKSPACE: EditDelete(false); break;
+    case SDLK_DELETE:    EditDelete(true); break;
+    case SDLK_LEFT:      e.caret = PrevChar(e.text, e.caret); break;
+    case SDLK_RIGHT:     e.caret = NextChar(e.text, e.caret); break;
+    case SDLK_HOME:      e.caret = 0; break;
+    case SDLK_END:       e.caret = e.text.size(); break;
+    case SDLK_v:
+        if (ev->key.keysym.mod & (KMOD_CTRL | KMOD_GUI)) EditPaste();
+        break;
+    }
+}
+
 static bool Adjust(int dir)
 {
     if (g.cursor < 0 || g.cursor >= (int)g.rows.size()) return false;
@@ -634,6 +869,17 @@ static void Select()
     case GA_SETTING:
     case GA_CATEGORY:
         Adjust(1);
+        break;
+    case GA_TEXT: {
+        const SettingDef& d = DesktopSettings_Table().defs[r.arg];
+        EditOpen(ED_SETTING, r.arg, d.label, (const char*)d.ptr, (size_t)d.size - 1, (d.flags & SF_SECRET) != 0);
+        break;
+    }
+    case GA_NAME:
+        EditOpen(ED_NAME, 0, "Name", g.pickedName, 100, false);
+        break;
+    case GA_JELLYFINURL:
+        EditOpen(ED_JELLYFIN, 0, "Jellyfin Server", Jellyfin_GetServerUrl(), 500, false);
         break;
     case GA_PADTOOLS:
         Close();
@@ -733,7 +979,6 @@ static void Select()
         Build();
         break;
     case GA_JELLYFIN:
-        if (Jellyfin_GetServerUrl().empty()) break;
         if (Jellyfin_QuickConnectInFlight()) Jellyfin_CancelQuickConnect(); else Jellyfin_StartQuickConnect();
         Build();
         break;
@@ -797,6 +1042,7 @@ static void PressB()
 
 static void Handle(unsigned pressed)
 {
+    if (g.edit.on) { EditHandle(pressed); return; }
     if (pressed & GUIDE_B) { PressB(); return; }
     if (pressed & GUIDE_LB) PageStep(-1);
     if (pressed & GUIDE_RB) PageStep(1);
@@ -818,7 +1064,10 @@ static void Handle(unsigned pressed)
 static unsigned Presses(unsigned held)
 {
     unsigned pressed = held & ~g.held;
-    unsigned dirs = held & (GUIDE_UP | GUIDE_DOWN | GUIDE_LEFT | GUIDE_RIGHT);
+    // Directions repeat, and on the keyboard deleting and the cursor too.
+    unsigned repeats = GUIDE_UP | GUIDE_DOWN | GUIDE_LEFT | GUIDE_RIGHT;
+    if (g.edit.on) repeats |= GUIDE_X | GUIDE_LB | GUIDE_RB;
+    unsigned dirs = held & repeats;
     Uint32 now = SDL_GetTicks();
     if (dirs && dirs == g.repeatHeld) {
         if (now - g.repeatTime >= REPEAT_DELAY) {
@@ -838,10 +1087,11 @@ void Guide_Frame()
     unsigned held = Joy_GuideButtons(&g.device);
 
     if (g.swallow && !held) g.swallow = false;
+    if (g.settle) { g.held = held; g.settle = false; }
 
     // First run, or Startup is "Ask": once the dashboard is up, the
-    // welcome offers the ways in.
-    if (!g.startChecked && g_pCurLevel && !g_bLevelTransition) {
+    // welcome offers the ways in. Neither waits for the scene to settle.
+    if (!g.startChecked && g_pCurLevel) {
         g.startChecked = true;
         if (!g_welcomeDone || g_startupMode == 0) {
             Open(true);
@@ -849,7 +1099,7 @@ void Guide_Frame()
         }
     }
 
-    if (g_guideRequested && !g_bLevelTransition) {
+    if (g_guideRequested) {
         g_guideRequested = false;
         // Fullscreen video and a text field keep the buttons for themselves.
         if (g.open) Close();
@@ -867,57 +1117,100 @@ void Guide_Frame()
 
 // The pointer
 
+// Where a click left the guide, to tell a double click that would land on
+// the next screen's rows from quick clicks on the same row.
+static std::string Screen()
+{
+    char s[64];
+    snprintf(s, sizeof(s), "%d/%d/%d/%d/%d/", (int)g.view, (int)g.stack.size(), g.section, g.page, g.edit.on);
+    return s + g.browseDir;
+}
+
+static void Click(const HitTarget& t)
+{
+    switch (t.kind) {
+    case T_SECTION:
+        ShowSection(t.index);
+        g.inPanel = false;
+        break;
+    case T_ROW:
+        g.inPanel = true;
+        g.cursor = t.index;
+        Select();
+        break;
+    case T_TAB:
+        g.page = t.index;
+        g.cursor = g.scroll = 0;
+        Build();
+        break;
+    case T_PROMPT:
+        Handle((unsigned)t.index);
+        break;
+    case T_KEY:
+        g.edit.key = t.index;
+        PressKey(t.index);
+        break;
+    }
+}
+
 void Guide_HandleEvent(const SDL_Event* e)
 {
     if (!g.open) return;
     extern SDL_Window* g_pSDLWindow;
     if (!g_pSDLWindow) return;
     Uint32 win = SDL_GetWindowID(g_pSDLWindow);
+    // Events come in window points, the overlay lays out in pixels.
     float scale = Plat_GetDisplayScale();
     float x, y;
+    // A tool window over the guide keeps its own clicks.
+    const bool imgui = ImGui::GetIO().WantCaptureMouse;
+
+    if (g.edit.on && (e->type == SDL_TEXTINPUT || e->type == SDL_KEYDOWN)) {
+        if ((e->type == SDL_TEXTINPUT ? e->text.windowID : e->key.windowID) == win) EditEvent(e);
+        return;
+    }
 
     switch (e->type) {
     case SDL_MOUSEMOTION:
-        if (e->motion.windowID != win) return;
+        if (e->motion.windowID != win || imgui) return;
         ui_overlay_to_layout((float)e->motion.x * scale, (float)e->motion.y * scale, &x, &y);
         g.pointerX = x;
         g.pointerY = y;
         g.pointerMoved = true;
         g.device = 0;
         break;
-    case SDL_MOUSEWHEEL:
-        if (e->wheel.windowID != win || !g.inPanel) return;
-        MoveCursor(e->wheel.y > 0 ? -1 : e->wheel.y < 0 ? 1 : 0);
+    case SDL_MOUSEWHEEL: {
+        if (e->wheel.windowID != win || imgui) return;
+        // Whole notches, gathered from a trackpad's fractions too.
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+        g.wheel += e->wheel.preciseY;
+#else
+        g.wheel += (float)e->wheel.y;
+#endif
+        int step = (int)g.wheel;
+        g.wheel -= (float)step;
+        if (e->wheel.direction == SDL_MOUSEWHEEL_FLIPPED) step = -step;
+        for (; step > 0; step--) Handle(GUIDE_UP);
+        for (; step < 0; step++) Handle(GUIDE_DOWN);
         g.device = 0;
         break;
+    }
     case SDL_MOUSEBUTTONDOWN: {
-        if (e->button.windowID != win) return;
+        if (e->button.windowID != win || imgui) return;
         g.device = 0;
         if (e->button.button == SDL_BUTTON_RIGHT) { PressB(); return; }
         if (e->button.button != SDL_BUTTON_LEFT) return;
+        // The second half of a double click that opened something.
+        if (e->button.clicks > 1 && g.clickMoved) return;
         ui_overlay_to_layout((float)e->button.x * scale, (float)e->button.y * scale, &x, &y);
         for (size_t i = 0; i < g.targets.size(); i++) {
             const HitTarget t = g.targets[i];
             if (x < t.x0 || x >= t.x1 || y < t.y0 || y >= t.y1) continue;
-            switch (t.kind) {
-            case T_SECTION:
-                ShowSection(t.index);
-                g.inPanel = false;
-                break;
-            case T_ROW:
-                g.inPanel = true;
-                g.cursor = t.index;
-                Select();
-                break;
-            case T_TAB:
-                g.page = t.index;
-                g.cursor = g.scroll = 0;
-                Build();
-                break;
-            case T_PROMPT:
-                Handle((unsigned)t.index);
-                break;
-            }
+            std::string before = Screen();
+            Click(t);
+            g.clickMoved = Screen() != before;
+            // Spans are from the last frame drawn; a moved screen has new ones.
+            if (g.clickMoved) g.targets.clear();
             return;
         }
         break;
@@ -933,7 +1226,8 @@ static void Hover()
     for (size_t i = 0; i < g.targets.size(); i++) {
         const HitTarget& t = g.targets[i];
         if (g.pointerX < t.x0 || g.pointerX >= t.x1 || g.pointerY < t.y0 || g.pointerY >= t.y1) continue;
-        if (t.kind == T_ROW) { g.inPanel = true; g.cursor = t.index; }
+        if (t.kind == T_KEY) g.edit.key = t.index;
+        else if (t.kind == T_ROW) { g.inPanel = true; g.cursor = t.index; }
         else if (t.kind == T_SECTION && !g.inPanel && t.index != g.section) ShowSection(t.index);
         return;
     }
@@ -1070,6 +1364,76 @@ static void DrawPanel(float left, float right)
     DrawRows(left, right, top);
 }
 
+// The field over the keys. Secrets show as dots; a long line slides so
+// the cursor stays in sight.
+static void DrawEditor()
+{
+    const Editor& e = g.edit;
+    const float left = CONTENT_L, right = CONTENT_R, width = right - left, pad = 12.0f, size = 13.0f;
+
+    ui_style_glass(left, FIELD_Y, width, FIELD_H, 7, ui_style_color(UI_COLOR_PANE),
+                   ui_style_color(UI_COLOR_SELECTED_EDGE));
+    std::string shown;
+    size_t caret = 0;
+    if (e.secret) {
+        for (size_t i = 0; i < e.text.size(); i = NextChar(e.text, i)) {
+            if (i < e.caret) caret += 3;
+            shown += "\xE2\x80\xA2";
+        }
+    } else {
+        shown = e.text;
+        caret = e.caret;
+    }
+    const float room = width - 2 * pad;
+    size_t from = 0;
+    std::string lead;
+    while (from < caret &&
+           ui_overlay_text_width(UI_FONT_BOLD, size, (lead + shown.substr(from, caret - from)).c_str()) > room - 4) {
+        from = NextChar(shown, from);
+        lead = "...";
+    }
+    const float ty = FIELD_Y + (FIELD_H - size) * 0.5f;
+    if (shown.empty())
+        ui_overlay_text(UI_FONT_REGULAR, 11.0f, left + pad + 4, FIELD_Y + (FIELD_H - 11.0f) * 0.5f, UI_ALIGN_LEFT,
+                        ui_style_color(UI_COLOR_TEXT_DIM), "Empty");
+    else
+        ui_overlay_text(UI_FONT_BOLD, size, left + pad, ty, UI_ALIGN_LEFT, 0xFFFFFFFF,
+                        Fit(UI_FONT_BOLD, size, lead + shown.substr(from), room).c_str());
+    if ((SDL_GetTicks() - e.since) % 1000 < 600) {
+        float cx = left + pad + ui_overlay_text_width(UI_FONT_BOLD, size, (lead + shown.substr(from, caret - from)).c_str());
+        ui_overlay_rect(cx, ty - 1, 1.5f, size + 3, 0, ui_style_color(UI_COLOR_SELECTED_EDGE));
+    }
+
+    static const char* const kWideNames[KEY_COUNT - KEY_CHARS] = { "Shift", "#+=", "Space", "Delete", "Paste", "Done" };
+    const float unit = (width + KEY_GAP) / 10.0f;
+    const int layout = KeyLayout();
+    for (int k = 0; k < KEY_COUNT; k++) {
+        int row;
+        float x, w;
+        KeySpan(k, &row, &x, &w);
+        float kx = left + x * unit, ky = KEYS_Y + row * (KEY_H + KEY_GAP), kw = w * unit - KEY_GAP;
+        bool on = k == e.key, lit = (k == K_SHIFT && e.shift) || (k == K_SYMBOLS && e.symbols);
+        ui_style_row(kx, ky, kw, KEY_H, on);
+        char c[2] = { 0, 0 };
+        const char* label = c;
+        float ls = 13.0f;
+        if (k < KEY_CHARS) {
+            c[0] = kKeyRows[layout][k / 10][k % 10];
+        } else {
+            label = k == K_SYMBOLS && e.symbols ? "abc" : kWideNames[k - KEY_CHARS];
+            ls = 10.5f;
+        }
+        unsigned int color = on || k < KEY_CHARS ? 0xFFFFFFFF
+                           : lit ? ui_style_color(UI_COLOR_TITLE) : ui_style_color(UI_COLOR_TAB);
+        ui_overlay_text(UI_FONT_BOLD, ls, kx + kw * 0.5f, ky + (KEY_H - ls) * 0.5f, UI_ALIGN_CENTER, color, label);
+        AddTarget(kx, ky, kx + kw, ky + KEY_H, T_KEY, k);
+    }
+
+    ui_style_text(UI_TEXT_LINE, left, BODY_B + 8, UI_ALIGN_LEFT,
+                  ui_overlay_keyboard() ? "Type away. Enter saves, Esc cancels."
+                                        : "LB and RB move the cursor.");
+}
+
 static void Prompt(ui_style_prompt* p, int* n, int button, const char* key, const char* word, unsigned bits)
 {
     p[*n].button = button;
@@ -1081,20 +1445,31 @@ static void Prompt(ui_style_prompt* p, int* n, int button, const char* key, cons
 
 static void DrawPrompts()
 {
-    ui_style_prompt p[4];
+    ui_style_prompt p[6];
     int n = 0;
-    if (g.inPanel && g.cursor >= 0 && g.cursor < (int)g.rows.size()) {
+    if (g.edit.on) {
+        if (!ui_overlay_keyboard()) {
+            Prompt(p, &n, UI_BUTTON_A, NULL, "Type", GUIDE_A);
+            Prompt(p, &n, UI_BUTTON_X, NULL, "Delete", GUIDE_X);
+            Prompt(p, &n, UI_BUTTON_Y, NULL, "Space", GUIDE_Y);
+        }
+        Prompt(p, &n, UI_BUTTON_START, "ENTER", "Done", GUIDE_START);
+        Prompt(p, &n, UI_BUTTON_B, "ESC", "Cancel", GUIDE_B);
+    } else if (g.inPanel && g.cursor >= 0 && g.cursor < (int)g.rows.size()) {
         int act = g.rows[g.cursor].act;
         const char* word = act == GA_NONE ? NULL
                          : act == GA_SETTING || act == GA_CATEGORY ? "Change"
-                         : act == GA_VIEW ? "Open" : "Select";
+                         : act == GA_VIEW ? "Open"
+                         : act == GA_TEXT || act == GA_NAME || act == GA_JELLYFINURL ? "Edit" : "Select";
         if (word) Prompt(p, &n, UI_BUTTON_A, "ENTER", word, GUIDE_A);
     } else if (!g.inPanel) {
         Prompt(p, &n, UI_BUTTON_A, "ENTER", "Open", GUIDE_A);
     }
-    bool back = !g.welcome && g.inPanel;
-    Prompt(p, &n, UI_BUTTON_B, "ESC", back ? "Back" : "Close", GUIDE_B);
-    float starts[4], ends[4];
+    if (!g.edit.on) {
+        bool back = !g.welcome && g.inPanel;
+        Prompt(p, &n, UI_BUTTON_B, "ESC", back ? "Back" : "Close", GUIDE_B);
+    }
+    float starts[6], ends[6];
     ui_style_prompts(CONTENT_R, PROMPTS_Y, 15.0f, p, n, starts, ends);
     for (int i = 0; i < n; i++)
         AddTarget(starts[i] - 4, PROMPTS_Y - 4, ends[i] + 4, PROMPTS_Y + 19, T_PROMPT, g.promptButtons[i]);
@@ -1113,8 +1488,10 @@ void Guide_Render(int width, int height)
         float l = ui_overlay_layout_left(), r = ui_overlay_layout_right();
         ui_overlay_rect(l - 2, -2, r - l + 4, 484, 0, ui_style_color(UI_COLOR_SHADE));
         ui_style_panel(PANEL_X, PANEL_Y, PANEL_W, PANEL_H, 1.0f);
-        if (g.welcome) {
-            DrawHeader(ViewTitle());
+        if (g.edit.on) {
+            DrawHeader(g.edit.title.c_str());
+            DrawEditor();
+        } else if (g.welcome) {
             DrawPanel(CONTENT_L + 40, CONTENT_R - 40);
         } else {
             DrawHeader("Guide");
