@@ -89,6 +89,12 @@ CArrayElementReference::~CArrayElementReference()
 // the index, releases what was there and stores the value with a reference.
 void CArrayElementReference::Assign(CObject *pObject)
 {
+	// 5960 writes a[-1] in front of the array; refuse it instead.
+	if (!CHECK(m_nIndex >= 0))
+	{
+		g_pRunner->Error(_T("Array reference out of bounds"));
+		return;
+	}
 	if (m_nIndex >= m_pArray->m_nLength)
 		m_pArray->Grow(m_nIndex + 1);
 
@@ -303,6 +309,12 @@ CObject *CArrayObject::slice(CObject **rgparam, int nParam /*int nStart, int nEn
 	int end = nParam == 2 ? (int)rgparam[1]->Deref()->ToNum()->m_value : -1;
 	if (end < 0)
 		end += m_nLength + 1;
+	// 5960 reads past the array for a negative start or an end past the last
+	// element; keep both inside it.
+	if (start < 0)
+		start = 0;
+	if (end > m_nLength)
+		end = m_nLength;
 	int count = end - start;
 	if (count < 0)
 		count = 0;
