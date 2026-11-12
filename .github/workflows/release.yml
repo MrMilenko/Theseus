@@ -6,7 +6,8 @@ name: release
 #   nightly          main's head as the `nightly` pre-release (run by hand,
 #                    replaces the last one)
 # Only commits on main get released. Each job builds and hands its files to
-# `publish`, which makes the release in one go once every platform built.
+# `publish`, which writes SHA256SUMS.txt and makes the release in one go once
+# every platform built.
 
 on:
   push:
@@ -474,6 +475,13 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
+
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          sha256sum -- * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt .
+          cat SHA256SUMS.txt
 
       - name: Publish
         # nightly is one moving pre-release: drop the old one and its tag so
