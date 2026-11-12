@@ -288,6 +288,10 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0005d300 | `CPositionInterpolator::Interpolate` | `CPositionInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Catmull-Rom between interior keys, straight lines on the end spans, clamped at both ends. |
 | 0x0005d520 | `COrientationInterpolator_OnLoad` | `COrientationInterpolator::OnLoad` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Converts each axis+angle key into a quaternion once. |
 | 0x0005d5a0 | `COrientationInterpolator::Interpolate` | `COrientationInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Slerp between neighboring keys, clamped at both ends. |
+| 0x00060390 | `CStarField_CreateNode` | `CStarField::CStarField` (starfield.cpp) | [TMAP System](TmapSystem.md) | Factory for "StarField": 20 stars, speed 1. |
+| 0x00060430 | `CStarField_Advance` | `CStarField::Advance` (starfield.cpp) | [TMAP System](TmapSystem.md) | Moves every star toward the viewer and respawns the ones that pass it. |
+| 0x00060510 | `CStarField_RenderDynamicTexture` | `CStarField::RenderDynamicTexture` (starfield.cpp) | [TMAP System](TmapSystem.md) | Perspective-projects the stars into the 8-bit surface, brighter when closer. |
+| 0x00060640 | `FUN_00060640` | `CStarField::Update` (starfield.cpp) | [TMAP System](TmapSystem.md) | Grows the star array when `stars` goes up, keeping the old stars. |
 | 0x00061090 | `CBackgroundLoader::Fetch` | `CBackgroundLoader::Fetch` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Pulls the next pending request off the background loader queue. The loader thread spins on this. |
 | 0x00061760 | `CImageTexture::Load` | `CImageTexture::Load` (asset_loader.cpp) | [Asset Loader](AssetLoader.md) | Loads an XBX (Xbox swizzled) texture from a XIP entry into a D3D texture. |
 | 0x00061b40 | `CAudioClip::Cleanup` | `CAudioClip::Cleanup` (audio_system.cpp) | [Audio](AudioSystem.md) | Releases an audio clip's DirectSound buffer and waveform data. |

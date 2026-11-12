@@ -13,6 +13,7 @@ All node type strings confirmed in the 4920-5960 retail XBE.
 | ImageFader | 0x0002a1e0 | 0x0002a1c8 "CImageFader" |
 | AudioVisualizer | 0x0002a9e8 | 0x0002a9c4 "CAudioVisualizer" |
 | DotField | 0x0002a490 | 0x0002a47c "CDotField" |
+| StarField | | factory `0x00060390`, vtable `0x0002a368` |
 
 ## Properties
 
@@ -46,6 +47,11 @@ All node type strings confirmed in the 4920-5960 retail XBE.
 ### CDotField
 
 A particle effect rendered into the dynamic texture pipeline. Renders a field of dots that respond to audio levels and time. Used for the dashboard background animation.
+
+### CStarField
+
+- `stars` (pt_integer): how many stars (default 20)
+- `speed` (pt_number): depth units per second (default 1.0)
 
 ## Architecture
 
@@ -441,3 +447,21 @@ A plain 256 point radix-2 decimation-in-time FFT.
   `t = (re*c - im*s, im*c + re*s)`, `b = a - t`, `a = a + t`.
 - **Power (`0x0005f140`).** `out[i] = re^2 + im^2` for bins 0..128 (unrolled by 4), then bins 0
   and 128 times 0.25 (`0x0002beec`).
+
+## StarField
+
+`CStarField`, 0x2c bytes: stars 0x1c, speed 0x20, allocated count 0x24, star array
+0x28 (x, y, z floats). The only shipping use is the music visualizer scene.
+
+- **Factory (`0x00060390`).** stars 20, speed 1.0, no array.
+- **Grow (`0x00060640`).** When there's no array or `allocated < stars`: allocate `stars`
+  entries, zero them, copy the old `allocated` entries over, free the old block. New stars
+  start at z = 0, so the next Advance scatters them.
+- **Advance (`0x00060430`).** Node Advance, grow, then each star's z drops by
+  `speed * seconds`. A star at or past z = 0 respawns at `x, y = rand() * 2/32767 - 1`
+  (`0x0002bf74`) and `z = rand() * 1/32767 + 1.5` (`0x0002bf10`, `0x0002c184`).
+- **RenderDynamicTexture (`0x00060510`).** Grow, then for each star with z > 0:
+  `inv = 1 / z`, `x = (int)((x * inv + 1) * width * 0.5)`, the same for y with height. Off
+  the surface, the star's z is set to 0. On it, the pixel at `y * width + x` gets
+  `(int)((1 - (z - 1)) * 255)` (`0x0002bf38`), so stars brighten as they come closer.
+
