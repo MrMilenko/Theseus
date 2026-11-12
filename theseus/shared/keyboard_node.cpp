@@ -20,6 +20,12 @@ extern bool g_bActiveKey;
 extern bool g_bAsteriskFormatting;
 extern int g_nCurLanguage;
 
+#ifndef _XBOX
+// Desktop: the keyboard drawn last takes the physical keyboard (sdl_main.cpp).
+class CKeyboard;
+CKeyboard* g_pActiveKeyboard = NULL;
+#endif
+
 
 // ===== Layouts =============================================================
 // Six 16 bit key tables at 0x000211b8..0x00021498, reached through the
@@ -276,6 +282,11 @@ CKeyboard::CKeyboard()
 //     if (control) control->Release(); free(string); keys.ReleaseAll();
 CKeyboard::~CKeyboard()
 {
+#ifndef _XBOX
+	if (g_pActiveKeyboard == this)
+		g_pActiveKeyboard = NULL;
+#endif
+
 	CNode* owned[] = { m_text, m_frame, m_control };
 	for (int i = 0; i < 3; i++)
 	{
@@ -708,6 +719,9 @@ static const TCHAR* FunctionKeyLabel(WORD key)
 // g_bActiveKey says whether it is highlighted, and blanks are skipped.
 void CKeyboard::Render()
 {
+#ifndef _XBOX
+	g_pActiveKeyboard = this;
+#endif
 	const WORD* grid = Grid();
 
 	if (m_frame != NULL)
@@ -760,3 +774,37 @@ void CKeyboard::Render()
 			pKey->Render();
 	}
 }
+
+
+#ifndef _XBOX
+// ===== Desktop physical keyboard (Theseus) =================================
+// sdl_main.cpp and joystick.cpp reach the active keyboard through these
+// without seeing the class.
+
+void* g_pActiveKeyboard_void() { return (void*)g_pActiveKeyboard; }
+void Keyboard_ClearActive() { g_pActiveKeyboard = NULL; }
+
+// Typed text goes in like a script Insert.
+void Keyboard_InsertText(CKeyboard* pKb, const char* sz)
+{
+	if (pKb && sz)
+		pKb->Insert(sz);
+}
+
+// Editing keys by SDL keycode (values inlined so this file needs no SDL).
+void Keyboard_HandleKey(CKeyboard* pKb, int sdlKey)
+{
+	if (!pKb) return;
+	switch (sdlKey) {
+		case 0x08:        pKb->Backspace(); break;       // SDLK_BACKSPACE
+		case 0x7F:        pKb->Delete(); break;          // SDLK_DELETE
+		case 0x40000050:  pKb->CursorLeft(); break;      // SDLK_LEFT
+		case 0x4000004F:  pKb->CursorRight(); break;     // SDLK_RIGHT
+		case 0x0D:                                       // SDLK_RETURN
+		case 0x40000058:                                 // SDLK_KP_ENTER
+			pKb->selectKey(0, 0);
+			pKb->activate();
+			break;
+	}
+}
+#endif
