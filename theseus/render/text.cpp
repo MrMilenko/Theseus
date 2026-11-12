@@ -856,27 +856,37 @@ static TCHAR* CopyString(const TCHAR* sz)
 //         face = widen(face); if (wcscmp(face, fonts[0].face) == 0) free(face);
 //         else { fonts[count].face = face; fonts[count].file = copy(path); count++; }
 //         CloseHandle;
-// Theseus looks in its one font directory and takes XTF0 only, since that's
-// all CFont reads. A bad header still closes the file (5960 leaves it open).
-static void InitFontTable()
+// Theseus's font directory stands in for <app>fonts\ and its app directory
+// for the fallback. It takes XTF0 only, since that's all CFont reads. A bad
+// header still closes the file (5960 leaves it open).
+static HANDLE FindFontFiles(const TCHAR* szDir, TCHAR* szPath, WIN32_FIND_DATA* pfd)
 {
-	const TCHAR* szDir = TheseusGetFontDir();
-	int cchDir = (int)_tcslen(szDir);
-
-	TCHAR szPath[MAX_PATH];
 	_tcscpy(szPath, szDir);
-	_tcscpy(szPath + cchDir, _T("*.xtf"));
-
-	WIN32_FIND_DATA fd;
+	_tcscat(szPath, _T("*.xtf"));
 #ifdef _UNICODE
 	char szPathA[MAX_PATH];
 	Ansi(szPathA, szPath, MAX_PATH);
-	HANDLE hFind = TheseusFindFirstFile(szPathA, &fd);
+	return TheseusFindFirstFile(szPathA, pfd);
 #else
-	HANDLE hFind = TheseusFindFirstFile(szPath, &fd);
+	return TheseusFindFirstFile(szPath, pfd);
 #endif
+}
+
+static void InitFontTable()
+{
+	TCHAR szPath[MAX_PATH];
+	WIN32_FIND_DATA fd;
+
+	const TCHAR* szDir = TheseusGetFontDir();
+	HANDLE hFind = FindFontFiles(szDir, szPath, &fd);
 	if (hFind == INVALID_HANDLE_VALUE)
-		return;
+	{
+		szDir = TheseusGetAppDir();
+		hFind = FindFontFiles(szDir, szPath, &fd);
+		if (hFind == INVALID_HANDLE_VALUE)
+			return;
+	}
+	int cchDir = (int)_tcslen(szDir);
 
 	do
 	{

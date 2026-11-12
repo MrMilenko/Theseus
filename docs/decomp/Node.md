@@ -304,6 +304,6 @@ Variable and instance function reads are bounds checked (out of range reads give
 
 - **CNodeArray::RemoveNode moves bytes, not pointers.** The close-up copy uses `rep movsd` with a count of `(length - i - 1) >> 2` followed by `(length - i - 1) & 3` single bytes, so it moves `length - i - 1` bytes when it should move that many 4 byte pointers. Removing anything but one of the last few entries leaves stale pointers in the tail.
 - **Unknown Call signatures are silent.** Signature 6 and anything above 29 return null without reporting an error.
-- **Signature 29** (`int (int, str)`) exists in the dispatcher.
+- **Signature 29** (`int (int, str)`) exists in the dispatcher. Its one user is `LiveAccounts.VerifyPassword` (FND `0x00188de0`).
 - **The CNumArray and CIntArray SetSize bodies are one function** in the image; both property types call `0x0002f180`.
 - **CNode::OnLoad and CNodeClass::FindProp are not separate functions.** OnLoad carries its own inlined copy of FindMemberFunction, and the class compiler (`CClassCompiler::ParseProps`, `0x00036440`) calls CObject::FindProp directly on a class record, whose GetPropMap returns its `m_rgprd`.

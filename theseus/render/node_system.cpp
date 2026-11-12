@@ -317,6 +317,7 @@ static const SIGSHAPE c_rgSigShape[] =
 	{ 'v', "iis" },		// 26 sig_viis
 	{ 'n', "i" },		// 27 sig_ni
 	{ 'v', "is" },		// 28 sig_vis
+	{ 'i', "is" },		// 29 sig_iis
 };
 
 // CObject::Call
@@ -329,9 +330,9 @@ static const SIGSHAPE c_rgSigShape[] =
 // ""), calls, wraps an int or float result in a new CNumObject, and
 // Releases the converted temporaries. A wrong count reports "invalid number
 // of parameters" through the running script; an unknown signature returns
-// NULL. The binary also has a case 29 (int from int and string) that no
-// Theseus FND uses, so it isn't carried here. Theseus adds the CHECK on a
-// negative index, which would read before the FND table.
+// NULL. Case 29 is int from (int, string), which LiveAccounts.VerifyPassword
+// uses. Theseus adds the CHECK on a negative index, which would read before
+// the FND table.
 CObject* CObject::Call(int nFunction, CObject** rgparam, int nParam)
 {
 	if (!CHECK(nFunction >= 0))
@@ -414,6 +415,7 @@ CObject* CObject::Call(int nFunction, CObject** rgparam, int nParam)
 	case sig_ii:	nRet = (this->*f.pfn_ii)(nArg[0]); break;
 	case sig_iii:	nRet = (this->*f.pfn_iii)(nArg[0], nArg[1]); break;
 	case sig_is:	nRet = (this->*f.pfn_is)(szArg[0]); break;
+	case sig_iis:	nRet = (this->*f.pfn_iis)(nArg[0], szArg[1]); break;
 
 	case sig_nv:	flRet = (this->*f.pfn_nv)(); break;
 	case sig_ni:	flRet = (this->*f.pfn_ni)(nArg[0]); break;

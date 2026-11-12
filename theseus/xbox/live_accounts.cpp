@@ -48,12 +48,16 @@ public:
     CStrObject* GetNumberOfFriendsOnline();
     int InternalLogon(int index, const TCHAR* passcode);
     bool LoadFromHD();
+    void FindNewAccountFromMU(const XONLINE_USER_HD *previous, DWORD numPrevious);
     // 5960 additions
     int GetLastLogonUser();
     CStrObject* GetResult();
     void LaunchDashUpdate();
     int m_nCurrentIndex;
     bool m_bLogon;
+
+    int m_currentAccount;
+    int m_newAccountFromMU;
     
     bool m_fLogOnSuccess;
     bool m_fLogOnInProgress;
@@ -70,6 +74,10 @@ START_NODE_PROPS(CLiveAccounts, CNode)
     NODE_PROP(pt_boolean, CLiveAccounts, fLogOnSuccess)
     NODE_PROP(pt_boolean, CLiveAccounts, fLogOnInProgress)
     NODE_PROP(pt_integer, CLiveAccounts, nCurrentIndex)
+    // 5960 PRD @ 0x00176234 also has currentAccount (int, +0x24) and
+    // newAccountFromMU (int, +0x2c); both start at -1.
+    NODE_PROP(pt_integer, CLiveAccounts, currentAccount)
+    NODE_PROP(pt_integer, CLiveAccounts, newAccountFromMU)
 END_NODE_PROPS()
 
 #define _FND_CLASS CLiveAccounts
@@ -92,6 +100,8 @@ START_NODE_FUN(CLiveAccounts, CNode)
     NODE_FUN_SV(GetFriendInvites)
     NODE_FUN_SV(GetNumberOfFriendsOnline)
     NODE_FUN_VIIS(LaunchEntryPoint)
+    NODE_FUN_II(IsPasswordEnabled)
+    NODE_FUN_IIS(VerifyPassword)
     // 5960 additions
     NODE_FUN_IV(GetLastLogonUser)
     NODE_FUN_SV(GetResult)
@@ -99,7 +109,9 @@ START_NODE_FUN(CLiveAccounts, CNode)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-CLiveAccounts::CLiveAccounts() {}
+// The 5960 reset helper @ 0x00068fe0 starts currentAccount and
+// newAccountFromMU at -1.
+CLiveAccounts::CLiveAccounts() : m_currentAccount(-1), m_newAccountFromMU(-1) {}
 CLiveAccounts::~CLiveAccounts() {}
 
 XONLINE_USER_HD g_Users[XONLINE_MAX_STORED_ONLINE_USERS] = { 0 };
@@ -183,10 +195,16 @@ bool CLiveAccounts::LoadFromHD()
     if (!g_bStarted && !XboxLive_Startup())
         return false;
 
+    XONLINE_USER_HD previous[XONLINE_MAX_STORED_ONLINE_USERS];
+    DWORD numPrevious = g_NumUsers;
+    CopyMemory(previous, g_Users, sizeof(previous));
+
     ZeroMemory(g_Users, sizeof(g_Users));
     g_NumUsers = 0;
 
     HRESULT hr = _XOnlineGetUsersFromHD(g_Users, &g_NumUsers);
+    if (SUCCEEDED(hr))
+        FindNewAccountFromMU(previous, numPrevious);
     TCHAR buf[128];
     if (FAILED(hr) || g_NumUsers == 0)
     {
@@ -206,6 +224,34 @@ bool CLiveAccounts::LoadFromHD()
     }
 
     return true;
+}
+
+// newAccountFromMU, from CLiveAccounts::EnumerateAccounts @ 0x00069470:
+//     newAccountFromMU = -1;
+//     if (oldCount != 0) for each new user i:
+//         if ((options & 0x80000000) && FindByGamertag(old, name, 16) < 0)
+//             newAccountFromMU = i;
+// An account that came from an MU and wasn't in the last list is new. The
+// last one found wins. Theseus reads the hard drive list, where the MU bit
+// doesn't appear, so this stays -1 until the list includes MU accounts.
+void CLiveAccounts::FindNewAccountFromMU(const XONLINE_USER_HD *previous, DWORD numPrevious)
+{
+    m_newAccountFromMU = -1;
+    if (numPrevious == 0)
+        return;
+
+    for (DWORD i = 0; i < g_NumUsers; i++)
+    {
+        if ((g_Users[i].dwUserOptions & XONLINE_USER_OPTION_CAME_FROM_MU) == 0)
+            continue;
+
+        bool bKnown = false;
+        for (DWORD j = 0; j < numPrevious && !bKnown; j++)
+            bKnown = strncmp(g_Users[i].name, previous[j].name, sizeof(g_Users[i].name)) == 0;
+
+        if (!bKnown)
+            m_newAccountFromMU = (int)i;
+    }
 }
 
 int CLiveAccounts::GetNumberOfAccounts()
@@ -295,6 +341,7 @@ int CLiveAccounts::InternalLogon(int index, const TCHAR* passcode)
     OutputDebugString(buf);
 
     m_nCurrentIndex = index;
+    m_currentAccount = index;
     m_bLogon = true;
     m_fLogOnSuccess = true;
     m_fLogOnInProgress = false;
@@ -305,9 +352,31 @@ int CLiveAccounts::InternalLogon(int index, const TCHAR* passcode)
 
 
 
+static void EncodePasscode(const TCHAR* szPasscode, BYTE passcode[4]);
+
+// CLiveAccounts::Logon   [script fn 'Logon', FND 0x00188d80, sig 28]
+// The passcode gate is from 5960 @ 0x000699e0:
+//     if (index < count) {
+//         if (passcode && *passcode && Encode(passcode) != users[index].passcode)
+//             { m_hr = 0x80151006; CallFunction(this, L"OnInvalidPassword"); return; }
+//         ... XOnlineLogon ...
+//     }
+// An empty passcode skips the check, which is how the shipped scripts call it.
+// The logon after the gate is Theseus's own.
 void CLiveAccounts::Logon(int index, const TCHAR* passcode)
 {
     OutputDebugString(_T("[LiveAccounts] Logon() called\n"));
+
+    if (index >= 0 && (DWORD)index < g_NumUsers && passcode != NULL && *passcode != 0)
+    {
+        BYTE code[4];
+        EncodePasscode(passcode, code);
+        if (memcmp(code, g_Users[index].pin, sizeof(code)) != 0)
+        {
+            CallFunction(this, _T("OnInvalidPassword"));
+            return;
+        }
+    }
 
     int result = InternalLogon(index, passcode);
 
@@ -330,6 +399,67 @@ void CLiveAccounts::Logoff()
     OutputDebugString(_T("[LiveAccounts] Logoff() called\n"));
     m_bLogon = false;
     m_nCurrentIndex = -1;
+    m_currentAccount = -1;
+}
+
+// XLive_EncodePasscode, 5960 @ 0x00069930. Turns the script's passcode text
+// into the 4 bytes an account stores, one per character:
+//     u d l r x y L R  ->  1 2 3 4 5 6 9 10, anything else keeps its low byte
+//     past the end of the text (or no text) -> 0
+static void EncodePasscode(const TCHAR* szPasscode, BYTE passcode[4])
+{
+    for (int i = 0; i < 4; i++)
+    {
+        BYTE b = 0;
+        if (szPasscode != NULL && *szPasscode != 0)
+            b = (BYTE)*szPasscode++;
+
+        switch (b)
+        {
+        case 'u': b = 1; break;
+        case 'd': b = 2; break;
+        case 'l': b = 3; break;
+        case 'r': b = 4; break;
+        case 'x': b = 5; break;
+        case 'y': b = 6; break;
+        case 'L': b = 9; break;
+        case 'R': b = 10; break;
+        }
+
+        passcode[i] = b;
+    }
+}
+
+// CLiveAccounts::IsPasswordEnabled   [script fn 'IsPasswordEnabled', FND 0x00188dc8, sig 3]
+// Reconstructed from 5960 retail XBE @ 0x000698b0. Ghidra decompile:
+//     if (dirty) EnumerateAccounts();
+//     if (index < count) return users[index].dwUserOptions & 1;
+//     return 0;
+// Bit 0 is XONLINE_USER_OPTION_REQUIRE_PASSCODE. Theseus reads the list
+// LoadFromHD keeps and also turns away a negative index.
+int CLiveAccounts::IsPasswordEnabled(int index)
+{
+    if (index < 0 || (DWORD)index >= g_NumUsers)
+        return 0;
+
+    return (g_Users[index].dwUserOptions & XONLINE_USER_OPTION_REQUIRE_PASSCODE) != 0;
+}
+
+// CLiveAccounts::VerifyPassword   [script fn 'VerifyPassword', FND 0x00188de0, sig 29]
+// Reconstructed from 5960 retail XBE @ 0x000698e0. Ghidra decompile:
+//     if (dirty) EnumerateAccounts();
+//     if (index >= count) return 1;
+//     XLive_EncodePasscode(password, &code);
+//     return code == *(DWORD*)users[index].passcode;
+// An index past the list passes. Theseus treats a negative one the same way.
+int CLiveAccounts::VerifyPassword(int index, const TCHAR* password)
+{
+    if (index < 0 || (DWORD)index >= g_NumUsers)
+        return 1;
+
+    BYTE passcode[4];
+    EncodePasscode(password, passcode);
+    return memcmp(passcode, g_Users[index].pin, sizeof(passcode)) == 0;
 }
 
 int CLiveAccounts::IsPasswordVerified()

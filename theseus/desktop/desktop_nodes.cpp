@@ -1201,7 +1201,7 @@ class CDiscDrive : public CNode
 public:
 	static CDiscDrive* s_instance;
 
-	CDiscDrive() : m_discType(NULL), m_locked(false), m_pollTimer(2.0f) {
+	CDiscDrive() : m_discType(NULL), m_locked(false), m_bDeferNotification(false), m_pollTimer(2.0f) {
 		m_discType = strdup("none");
 		s_instance = this;
 	}
@@ -1211,10 +1211,22 @@ public:
 	DECLARE_NODE_FUNCTIONS()
 	TCHAR* m_discType;
 	bool   m_locked;
+	bool   m_bDeferNotification;
 	float  m_pollTimer;
+
+	// CDiscDrive::Advance, 5960 @ 0x00039f20: a change seen while locked sets
+	// bDeferNotification; once unlocked the next frame clears it and fires
+	// OnDiscInserted, or OnDiscRemoved when the drive is empty.
+	void FireDeferred() {
+		if (!m_bDeferNotification || m_locked) return;
+		m_bDeferNotification = false;
+		bool isNone = !m_discType || strcmp(m_discType, "none") == 0;
+		CallFunction(this, isNone ? "OnDiscRemoved" : "OnDiscInserted");
+	}
 
 	void Advance(float nSeconds) {
 		CNode::Advance(nSeconds);
+		FireDeferred();
 		m_pollTimer += nSeconds;
 		if (m_pollTimer < 2.0f) return;
 		m_pollTimer = 0.0f;
@@ -1240,6 +1252,8 @@ public:
 				CallFunction(this, "OnDiscInserted");
 			else if (isNone && !wasNone)
 				CallFunction(this, "OnDiscRemoved");
+		} else if (isNone != wasNone) {
+			m_bDeferNotification = true;
 		}
 	}
 
@@ -1308,13 +1322,17 @@ void DiscDrive_SetDiscType(const char* type) {
 		// Audio CD (or anything else): let the XAP script decide via OnDiscInserted
 		if (!dd->m_locked)
 			CallFunction(dd, "OnDiscInserted");
+		else
+			dd->m_bDeferNotification = true;
 		fprintf(stderr, "[DiscDrive] discType='%s', fired OnDiscInserted\n", type);
 	}
 }
 
+// 5960 PRD @ 0x00174550: discType, locked, bDeferNotification.
 START_NODE_PROPS(CDiscDrive, CNode)
 	NODE_PROP(pt_string, CDiscDrive, discType)
 	NODE_PROP(pt_boolean, CDiscDrive, locked)
+	NODE_PROP(pt_boolean, CDiscDrive, bDeferNotification)
 END_NODE_PROPS()
 
 #undef _FND_CLASS
@@ -2731,7 +2749,8 @@ END_NODE_FUN()
 class CLiveAccounts : public CNode
 {
 public:
-	CLiveAccounts() : m_nCurrentIndex(0), m_bLogon(false), m_fLogOnSuccess(false), m_fLogOnInProgress(false) {}
+	CLiveAccounts() : m_nCurrentIndex(0), m_bLogon(false), m_fLogOnSuccess(false), m_fLogOnInProgress(false),
+	                  m_currentAccount(-1), m_newAccountFromMU(-1) {}
 
 	DECLARE_NODE(CLiveAccounts, CNode)
 	DECLARE_NODE_PROPS()
@@ -2739,6 +2758,11 @@ public:
 
 	int m_nCurrentIndex;
 	bool m_bLogon, m_fLogOnSuccess, m_fLogOnInProgress;
+
+	// 5960 PRD @ 0x00176234: currentAccount and newAccountFromMU, both -1
+	// until a logon or an MU account shows up. Desktop has neither.
+	int m_currentAccount;
+	int m_newAccountFromMU;
 
 	int GetNumberOfAccounts() { return 0; }
 	int GetNumAccountsOnHD() { return 0; }
@@ -2758,6 +2782,10 @@ public:
 	CStrObject* GetFriendInvites() { return new CStrObject; }
 	CStrObject* GetNumberOfFriendsOnline() { return new CStrObject(_T("0")); }
 	void LaunchEntryPoint(int, int, const TCHAR*) {}
+	// 5960 @ 0x000698b0 / 0x000698e0: an index past the account list reads
+	// as no passcode and a passcode that matches. Desktop has no accounts.
+	int IsPasswordEnabled(int) { return 0; }
+	int VerifyPassword(int, const TCHAR*) { return 1; }
 };
 
 IMPLEMENT_NODE("LiveAccounts", CLiveAccounts, CNode)
@@ -2767,6 +2795,8 @@ START_NODE_PROPS(CLiveAccounts, CNode)
 	NODE_PROP(pt_boolean, CLiveAccounts, fLogOnSuccess)
 	NODE_PROP(pt_boolean, CLiveAccounts, fLogOnInProgress)
 	NODE_PROP(pt_integer, CLiveAccounts, nCurrentIndex)
+	NODE_PROP(pt_integer, CLiveAccounts, currentAccount)
+	NODE_PROP(pt_integer, CLiveAccounts, newAccountFromMU)
 END_NODE_PROPS()
 
 #undef _FND_CLASS
@@ -2790,6 +2820,8 @@ START_NODE_FUN(CLiveAccounts, CNode)
 	NODE_FUN_SV(GetFriendInvites)
 	NODE_FUN_SV(GetNumberOfFriendsOnline)
 	NODE_FUN_VIIS(LaunchEntryPoint)
+	NODE_FUN_II(IsPasswordEnabled)
+	NODE_FUN_IIS(VerifyPassword)
 END_NODE_FUN()
 
 // ============================================================================
@@ -2807,7 +2839,9 @@ public:
 	    m_scanSlow(false), m_autoStop(false), m_bScanBackward(false),
 	    m_backScanAccum(0.0f), m_digitAccum(0), m_digitTimer(0.0f),
 	    m_zoomScale(1.0f), m_zoomX(0.0f), m_zoomY(0.0f),
-	    m_osdTimer(0.0f), m_lastOsdSeconds(-1) {}
+	    m_osdTimer(0.0f), m_lastOsdSeconds(-1),
+	    m_navDomain(0), m_navTitle(0), m_navChapter(0), m_navAngle(0), m_navAngleCount(0),
+	    m_navVideoWidth(0), m_navVideoHeight(0) {}
 
 	DECLARE_NODE(CDVDPlayer, CNode)
 	DECLARE_NODE_PROPS()
@@ -2832,6 +2866,49 @@ public:
 	float m_zoomScale, m_zoomX, m_zoomY;
 	float m_osdTimer;       // throttle OnTimeChange
 	int m_lastOsdSeconds;   // detect second change
+
+	// What the script was last told, so a change fires once.
+	int m_navDomain, m_navTitle, m_navChapter, m_navAngle, m_navAngleCount;
+	int m_navVideoWidth, m_navVideoHeight;
+
+	// CDVDPlayer::Advance, 5960 @ 0x00065f10 (the part past the navigator
+	// calls, 0x00066029..0x0006639b), polls the navigator every frame and
+	// fires an event for each value that moved, in this order:
+	//     domain -> OnDomainChange, title -> OnTitleChange,
+	//     chapter -> OnChapterChange, h:m:s -> OnTimeChange,
+	//     angle or angle count -> OnAngleChange, audio -> OnAudioChange,
+	//     subtitle -> OnSubTitleChange, source video size -> OnVideoSizeChange
+	// Desktop already fires the time, audio and subtitle ones; these cover
+	// the rest from what mpv reports.
+	void ReportNavigationChanges() {
+		if (m_domain != m_navDomain) {
+			m_navDomain = m_domain;
+			CallFunction(this, "OnDomainChange");
+		}
+		if (m_title != m_navTitle) {
+			m_navTitle = m_title;
+			CallFunction(this, "OnTitleChange");
+		}
+		if (m_chapter != m_navChapter) {
+			m_navChapter = m_chapter;
+			CallFunction(this, "OnChapterChange");
+		}
+	}
+
+	void ReportAngleAndVideoSize() {
+		if (m_angle != m_navAngle || m_angleCount != m_navAngleCount) {
+			m_navAngle = m_angle;
+			m_navAngleCount = m_angleCount;
+			CallFunction(this, "OnAngleChange");
+		}
+		int w = 0, h = 0;
+		MediaPlayer_GetVideoTexture(&w, &h);
+		if (w != m_navVideoWidth || h != m_navVideoHeight) {
+			m_navVideoWidth = w;
+			m_navVideoHeight = h;
+			CallFunction(this, "OnVideoSizeChange");
+		}
+	}
 
 	// Update time + track properties from media player
 	void UpdateFromMediaPlayer() {
@@ -2909,12 +2986,16 @@ public:
 			// Ensure we stay visible while playing
 			if (!m_visible) m_visible = true;
 
+			ReportNavigationChanges();
+
 			// Fire time change callback only when the displayed second changes
 			int curSec = m_hours * 3600 + m_minutes * 60 + m_seconds;
 			if (curSec != m_lastOsdSeconds) {
 				m_lastOsdSeconds = curSec;
 				CallFunction(this, "OnTimeChange");
 			}
+
+			ReportAngleAndVideoSize();
 		} else if (mpState == MP_STOPPED && m_playbackMode != 0) {
 			m_playbackMode = 0;
 			m_scanSpeed = 1;
@@ -2923,6 +3004,7 @@ public:
 			m_title = 0;
 			m_domain = 0;
 			CallFunction(this, "OnPlaybackModeChange");
+			ReportNavigationChanges();
 		}
 
 		// Sync A-B repeat state
@@ -2938,6 +3020,16 @@ public:
 		MediaPlayer_RenderToScreen(0, 0);
 	}
 
+	// 5960 ends each user op on the navigator's answer (helper @ 0x000669f0
+	// and its inlined copies through 0x00067f00):
+	//     hr == 0x87840001 (UOP prohibited) or 0x80034013 -> OnProhibited
+	//     anything else                                   -> OnUserOpAllowed
+	// mpv takes every transport op; the disc menu, select and angle ops have
+	// nothing to act on in a file, so they report prohibited.
+	void ReportUserOp(bool bAllowed) {
+		CallFunction(this, bAllowed ? "OnUserOpAllowed" : "OnProhibited");
+	}
+
 	// === Transport ===
 	void init() {}
 
@@ -2951,6 +3043,7 @@ public:
 		}
 		MediaPlayer_Play();
 		m_playbackMode = 3;  // DPM_PLAYING
+		ReportUserOp(true);
 	}
 
 	void stop() {
@@ -2966,7 +3059,7 @@ public:
 		MediaPlayer_Stop();
 	}
 
-	void pause() { MediaPlayer_Pause(); }
+	void pause() { MediaPlayer_Pause(); ReportUserOp(true); }
 	void playOrPause() {
 		// If scanning, stop scan and resume normal playback
 		if (m_playbackMode == 5 || m_playbackMode == 8 || m_scanSpeed > 1 || m_bScanBackward) {
@@ -2977,11 +3070,13 @@ public:
 			MediaPlayer_SetSpeed(1.0);
 			MediaPlayer_Play();
 			m_playbackMode = 3;  // DPM_PLAYING
+			ReportUserOp(true);
 			return;
 		}
 		MediaPlayer_TogglePause();
+		ReportUserOp(true);
 	}
-	void resume() { MediaPlayer_Play(); }
+	void resume() { MediaPlayer_Play(); ReportUserOp(true); }
 
 	// === Scanning (fast forward/rewind with speed ramp) ===
 	void forwardScan() {
@@ -3007,6 +3102,7 @@ public:
 			MediaPlayer_SetSpeed((double)m_scanSpeed);
 		}
 		m_playbackMode = 5;  // DPM_SCANNING
+		ReportUserOp(true);
 	}
 
 	void backwardScan() {
@@ -3034,6 +3130,7 @@ public:
 		}
 		m_backScanAccum = 0.0f;
 		m_playbackMode = 5;  // DPM_SCANNING
+		ReportUserOp(true);
 	}
 
 	void stopScan() {
@@ -3044,48 +3141,53 @@ public:
 		MediaPlayer_SetSpeed(1.0);
 		MediaPlayer_Play();
 		m_playbackMode = 3;  // DPM_PLAYING
+		ReportUserOp(true);
 	}
 
 	// === Frame stepping ===
 	void frameAdvance() {
 		MediaPlayer_FrameStep();
 		m_playbackMode = 8;  // DPM_TRICKPLAY
+		ReportUserOp(true);
 	}
 
 	void frameReverse() {
 		MediaPlayer_FrameBackStep();
 		m_playbackMode = 8;  // DPM_TRICKPLAY
+		ReportUserOp(true);
 	}
 
 	// === Chapter navigation ===
-	void startChapter() { MediaPlayer_Seek(0); }
-	void nextChapter() { MediaPlayer_NextChapter(); }
-	void prevChapter() { MediaPlayer_PrevChapter(); }
+	void startChapter() { MediaPlayer_Seek(0); ReportUserOp(true); }
+	void nextChapter() { MediaPlayer_NextChapter(); ReportUserOp(true); }
+	void prevChapter() { MediaPlayer_PrevChapter(); ReportUserOp(true); }
 
 	// === Track selection ===
 	void nextAudioStream() {
 		MediaPlayer_NextAudioTrack();
 		UpdateTrackLanguages();  // refresh language strings after track change
 		CallFunction(this, "OnAudioChange");
+		ReportUserOp(true);
 	}
 
 	void nextSubtitle() {
 		MediaPlayer_NextSubtitleTrack();
 		UpdateTrackLanguages();  // refresh language strings after track change
 		CallFunction(this, "OnSubTitleChange");
+		ReportUserOp(true);
 	}
 
-	void nextAngle() {} // N/A for file playback
+	void nextAngle() { ReportUserOp(false); } // N/A for file playback
 
-	// === DVD menu navigation (no-ops for file playback) ===
-	void selectUp() {}
-	void selectDown() {}
-	void selectRight() {}
-	void selectLeft() {}
-	void activate() {}
-	void goUp() {}
-	void menu() {}
-	void titleMenu() {}
+	// === DVD menu navigation (nothing to navigate in a file) ===
+	void selectUp() { ReportUserOp(false); }
+	void selectDown() { ReportUserOp(false); }
+	void selectRight() { ReportUserOp(false); }
+	void selectLeft() { ReportUserOp(false); }
+	void activate() { ReportUserOp(false); }
+	void goUp() { ReportUserOp(false); }
+	void menu() { ReportUserOp(false); }
+	void titleMenu() { ReportUserOp(false); }
 
 	// === Zoom ===
 	void setScale(float scale) {
@@ -3112,6 +3214,7 @@ public:
 			MediaPlayer_ClearABLoop();
 			m_abRepeatState = 0;
 		}
+		ReportUserOp(true);
 	}
 
 	// === Digit entry (chapter jump) ===

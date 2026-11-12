@@ -1504,7 +1504,9 @@ bool CRunner::BinaryOperator(BYTE op)
 		case opSHL: fResult = (float)((ULONG)a << (ULONG)b); break;
 		case opSHR: fResult = (float)((ULONG)a >> (ULONG)b); break;
 
-		// opMod has no case in 5960 either; it falls out of the switch.
+		// opMod has no case in 5960's number switch (jump table @ 0x000385c4);
+		// it lands on the shared exit, which pushes the right operand as is.
+		default: fResult = b; break;
 		}
 
 		Push(fResult);
