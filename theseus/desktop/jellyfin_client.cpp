@@ -580,6 +580,7 @@ static std::string ArtHostPath(const std::string& itemId)
 
 std::string Jellyfin_ArtCachePath(const std::string& itemId)
 {
+    if (!Http_IsSafeFileId(itemId)) return "";
     return "E:\\Jellyfin\\" + itemId + ".jpg";
 }
 
@@ -612,7 +613,8 @@ static void ArtWorker(std::string itemId, std::string tag,
 
 void Jellyfin_QueueArtDownload(const std::string& itemId, const std::string& tag)
 {
-    if (itemId.empty()) return;
+    // The id comes off the server and ends up in a file path.
+    if (!Http_IsSafeFileId(itemId)) return;
     // Workers erase from the map on other threads, so it is only touched under the lock.
     std::atomic<bool>* flag;
     {

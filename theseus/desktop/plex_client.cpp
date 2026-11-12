@@ -652,6 +652,7 @@ static std::string Plex_ArtCacheHostPath(const std::string& ratingKey)
 // XBox-style path for the XAP. xboxfs routes E:\ -> Library/.
 std::string Plex_ArtCachePath(const std::string& ratingKey)
 {
+    if (!Http_IsSafeFileId(ratingKey)) return "";
     return "E:\\Plex\\" + ratingKey + ".jpg";
 }
 
@@ -674,7 +675,8 @@ static void ArtWorker(std::string ratingKey, std::string url,
 
 void Plex_QueueArtDownload(const std::string& ratingKey, const std::string& url)
 {
-    if (ratingKey.empty() || url.empty()) return;
+    // The key comes off the server and ends up in a file path.
+    if (!Http_IsSafeFileId(ratingKey) || url.empty()) return;
     // Workers erase from the map on other threads, so it is only touched under the lock.
     std::atomic<bool>* flag;
     {

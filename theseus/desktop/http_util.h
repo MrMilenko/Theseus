@@ -18,6 +18,10 @@ struct HttpResponse {
 std::string Http_GetToString(const std::string& url);
 bool        Http_GetToFile(const std::string& url, const std::string& outPath);
 
+// True when a server-supplied id is fine as a bare filename: letters, digits,
+// '-', '_' and inner dots only, 1 to 128 chars, never "." or "..".
+bool        Http_IsSafeFileId(const std::string& id);
+
 // Header + status-aware GET/POST. Non-2xx is NOT a failure; caller decides.
 HttpResponse Http_Get(const std::string& url, const HttpHeaders& headers = {});
 HttpResponse Http_Post(const std::string& url,

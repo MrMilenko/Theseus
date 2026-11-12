@@ -131,3 +131,13 @@ bool Http_GetToFile(const std::string& url, const std::string& outPath) {
     if (!moved) { remove(part.c_str()); return false; }
     return true;
 }
+
+bool Http_IsSafeFileId(const std::string& id) {
+    if (id.empty() || id.size() > 128 || id[0] == '.') return false;
+    for (char c : id) {
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+        if (!ok) return false;
+    }
+    return true;
+}
