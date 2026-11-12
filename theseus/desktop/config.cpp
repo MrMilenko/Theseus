@@ -9,7 +9,7 @@
 #include "runner.h"
 
 #include "timezone.h"
-#include "dashlocale.h"
+#include "locale_node.h"
 #include "xbe.h"
 #include "network.h"
 #include "config.h"

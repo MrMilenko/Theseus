@@ -863,7 +863,7 @@ DESKTOP_SRCS_SYSTEM = \
 	$(THESEUS_SRC)/desktop/config.cpp \
 	$(THESEUS_SRC)/desktop/joystick.cpp \
 	$(THESEUS_SRC)/shared/keyboard_node.cpp \
-	$(THESEUS_SRC)/desktop/locale.cpp \
+	$(THESEUS_SRC)/engine/locale_node.cpp \
 	$(THESEUS_SRC)/shared/timezone.cpp \
 	$(THESEUS_SRC)/desktop/debug.cpp \
 	$(THESEUS_SRC)/desktop/memutil.cpp \
