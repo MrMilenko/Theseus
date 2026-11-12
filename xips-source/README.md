@@ -1,40 +1,28 @@
 # xips-source
 
-Theseus-original XAP and XIP source. This directory holds the editable scene scripts and asset manifests for new dashboard content that ships alongside Theseus. Compiled `.xip` archives live under [`xboxfs/Q/Xips/`](../xboxfs/Q/Xips/); this is where their plain-text source comes from.
+Editable source for the scene archives Theseus adds or changes. The dashboard's scenes are XAP scripts plus meshes (`.xm`) and textures (`.xbx`), packed into `.xip` archives. The packed archives that ship are in [`Data/Xips/`](../Data/Xips/); this folder holds their plain text source so changes can be read, diffed and reviewed.
 
-## Why this directory exists
+## Why it exists
 
-The shipped `xboxfs/Q/Xips/` tree is mostly binary XIP archives carried forward from the UIX Lite release. Theseus runs those archives unmodified to preserve compatibility with community skins and the dashboard's existing scene contract. When Theseus needs to *add* its own scenes (a new launcher tab, the media player, future Theseus-only features), the source for those scenes goes here. The binary output gets packed into `xboxfs/Q/Xips/` separately.
-
-We are deliberately not yet doing a full extract of every shipped XIP into this tree. UIX Lite's XIPs remain the upstream canonical source for that content, and we don't want to fork them in the public repo until the divergence story is settled.
+Most of `Data/Xips/` is UIX Lite's XIP set, carried forward so community skins and the dashboard's scene contract keep working. When Theseus needs its own scenes (the media player, Plex and Jellyfin, desktop settings, orbs) or a change to a stock one, the source lands here. UIX Lite's XIPs still run on Theseus unchanged; Theseus's own archives can carry scenes UIX Lite's dashboard wouldn't load.
 
 ## Layout
 
-```
-xips-source/
-  README.md             this file
-  mediaplayer/          Theseus media player (replaces dashboard DVD player on desktop)
-```
+| Folder | Packs into | What it is |
+|---|---|---|
+| `default-desktop/` | `default.xip` (desktop) | The top level scripts for the desktop build: main menu, settings, hard drive, music, media player, Plex, Jellyfin, orbs |
+| `default-xbox/` | the Xbox `default.xip` (shipped here as `default-xbox.xip`) | The same top level scripts for the console build |
+| `default/` | | The earlier common copy both of those were forked from |
+| `mainmenu5/` | `mainmenu5.xip` | Main menu scene: the game pods and their meshes |
+| `settings3/` | `settings3.xip` | Settings scene |
+| `music/` | `music2.xip`, `music_copy3.xip`, `music_playedit2.xip` | Music screens |
+| `mediaplayer/` | `mediaplayer.xip`, `mediaplayer_action.xip` | The media library browser and action menu ([README](mediaplayer/README.md)) |
+| `plex/`, `jellyfin/` | `plex.xip`, `jellyfin.xip` | Plex and Jellyfin browsers |
 
-Each subdirectory holds one logical unit of work: typically one or more `.xap` script files plus any geometry, texture, or layout source they reference. A subdirectory is roughly one shipping `.xip` (with the option to inject loose `.xap` files into an existing archive like `default.xip`).
+The desktop and Xbox `default.xip` are separate because a few scenes reference nodes that only exist on one build, and a scene that names an unknown node fails to load. When you change one, check whether the other needs the same change.
 
-## Workflow
+## Working on scenes
 
-1. **Write loose `.xap` source here.** The XAP language is documented in [`docs/xap-contract.md`](../docs/xap-contract.md). Reference the existing dashboard XAPs (extracted via `xiptool`, see below) for scene patterns.
-2. **Iterate against a dev-mode build.** Theseus's desktop build supports loose-XAP loading at runtime when the dashboard's loose-load mode is enabled, which lets you edit-and-reload without repacking.
-3. **Pack to `.xip` when shipping.** The packing step uses `xiptool` from the UIX Desktop tools (`UIX-Desktop/tools/xiptool/`). Once a Python `xiptool.py` port lands in this repo, that becomes the canonical packer.
-4. **Drop the packed `.xip` into `xboxfs/Q/Xips/`** so the runtime build picks it up. For new entries injected into `default.xip`, the packer needs to merge into the existing archive rather than create a new one.
-
-## Current units
-
-### `mediaplayer/`
-
-Generic libmpv-backed video media player. Replaces the dashboard's DVD player on desktop. Repurposes the XONLINE main-menu tab via `xboxfs/C/UIX Configs/config.ini` (`Button3Action=GoToMedia()`).
-
-Backed by C++ node `CMediaCollection` (new, in `theseus/desktop/desktop_nodes.cpp`). `CDVDPlayer` is preserved as a no-op contract surface so XAPs still referencing it compile clean. Library roots + TMDB API key live in `xboxfs/C/UIX Configs/desktop.ini` under `[Library]`, editable in-app via the Settings window.
-
-Three-scene state machine (browser → action menu → seasons/episodes), then standalone fullscreen mpv playback layered on top of the dashboard. See `xips-source/mediaplayer/README.md` for the directory layout.
-
-## Note on UIX Lite divergence
-
-When Theseus's `xboxfs/Q/Xips/` content begins to diverge from UIX Lite's upstream archives (a Theseus-original `mediaplayer.xip`, modifications to `default.xip` to add `mediaplayer.xap`, etc.), the changes are intentionally Theseus-side and do not flow back to UIX Lite. The divergence is a deliberate split: UIX Lite's XIPs continue to work on a Theseus-powered dashboard unchanged, but Theseus's shipped XIPs may carry Theseus-only scenes that UIX Lite's dashboard binary would not load.
+1. **Read the contract.** Node types, functions, properties and callbacks are catalogued in [`docs/xap-contract.md`](../docs/xap-contract.md). The stock XAPs here are the best examples of scene patterns.
+2. **Iterate in Development Mode.** Pick Development Mode at launch (or set Startup Mode in Settings > General). It unpacks the shipped archives into folders under `Data/Xips/` in your user data folder and runs the scenes from those loose files. Edit there, or in the XAP editor (F2), and the scene reloads without repacking.
+3. **Bring the change back here** so it's reviewable, then repack the archive into `Data/Xips/`. There isn't an XIP packer in this repo yet, so repacking is done with an external tool for now.
