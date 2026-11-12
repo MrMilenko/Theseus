@@ -1036,13 +1036,15 @@ void CPalette::Update()
 
 #ifdef _XBOX
 	if (m_pPalette == NULL)
-		VERIFYHR(TheseusGetD3DDev()->CreatePalette(D3DPALETTE_256, &m_pPalette));
+		TheseusGetD3DDev()->CreatePalette(D3DPALETTE_256, &m_pPalette);
 
+	// A failed create or lock would leave nothing to write into.
 	D3DCOLOR* entries;
-	VERIFYHR(m_pPalette->Lock(&entries, D3DLOCK_NOOVERWRITE));
+	if (m_pPalette == NULL || FAILED(m_pPalette->Lock(&entries, D3DLOCK_NOOVERWRITE)))
+		return;
 	for (int n = 0; n < 256; n++)
 		entries[n] = 0xFF000000 | (m_palette[n] & 0x00FFFFFF);
-	VERIFYHR(m_pPalette->Unlock());
+	m_pPalette->Unlock();
 #endif
 }
 
@@ -1172,7 +1174,7 @@ LPDIRECT3DTEXTURE8 CDynamicTexture::GetTextureSurface()
 
 #ifdef _XBOX
 	if (m_palette != NULL && m_palette->IsKindOf(NODE_CLASS(CPalette)))
-		VERIFYHR(TheseusGetD3DDev()->SetPalette(0, ((CPalette*)m_palette)->m_pPalette));
+		TheseusGetD3DDev()->SetPalette(0, ((CPalette*)m_palette)->m_pPalette);
 #endif
 
 	return m_surface;
@@ -1216,7 +1218,8 @@ void CDynamicTexture::Update()
 		(void)rgpe;
 		Swizzler swz(m_nImageWidth, m_nImageHeight, 1);
 		D3DLOCKED_RECT lr;
-		VERIFYHR(m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD));
+		if (FAILED(m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD)))
+			return;
 		BYTE* dst = (BYTE*)lr.pBits;
 		const BYTE* src = m_pSurfx->m_pels;
 		for (int y = 0; y < m_size; y++, src += m_size)
@@ -1226,10 +1229,11 @@ void CDynamicTexture::Update()
 			swz.IncV();
 			swz.AddU(swz.SwizzleU(m_nImageWidth - m_size));
 		}
-		VERIFYHR(m_surface->UnlockRect(0));
+		m_surface->UnlockRect(0);
 #else
 		D3DLOCKED_RECT lr;
-		VERIFYHR(m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD));
+		if (FAILED(m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD)))
+			return;
 		uint32_t* pBase = (uint32_t*)lr.pBits;
 		// Texture is m_nImageWidth wide but we only fill m_size; respect
 		// the row stride or the data ends up smeared diagonally.
@@ -1331,7 +1335,7 @@ void CDynamicTexture::Update()
 				}
 			}
 		}
-		VERIFYHR(m_surface->UnlockRect(0));
+		m_surface->UnlockRect(0);
 #endif
 	}
 }
