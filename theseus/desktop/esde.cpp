@@ -1,4 +1,3 @@
-#include "platform.h"
 #include "esde.h"
 #include "platform_env.h"
 #include "app_paths.h"
@@ -7,13 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#ifdef THESEUS_HOST_WIN
-#include <io.h>
-#define strcasecmp _stricmp
-#else
-#include <dirent.h>
 #include <strings.h>
-#endif
+#include "host.h"
 
 // Lives here so the ES-DE scanner stays linkable on its own. sdl_main points
 // it at the saved value.
@@ -197,40 +191,15 @@ bool Esde_LastScanFoundSystemsXml(void)
 template <typename F>
 static void ForEachEntry(const char* dir, F cb)
 {
-#ifdef THESEUS_HOST_WIN
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s/*", dir);
-    struct _finddata_t fd;
-    intptr_t h = _findfirst(pattern, &fd);
-    if (h == -1) return;
-    do {
-        if (fd.name[0] == '.') continue;
-        if (!cb(fd.name, (fd.attrib & _A_SUBDIR) != 0)) break;
-    } while (_findnext(h, &fd) == 0);
-    _findclose(h);
-#else
-    DIR* d = opendir(dir);
+    HostDir* d = Host_OpenDir(dir);
     if (!d) return;
-    struct dirent* e;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        // readdir already knows the type. stat() per entry costs a network
-        // round trip, which on an SMB rom library is the whole scan.
-        bool isDir;
-        if (e->d_type == DT_DIR)       isDir = true;
-        else if (e->d_type == DT_REG) isDir = false;
-        else {
-            // Symlinks and anything readdir won't commit to still need a look.
-            char full[1024];
-            snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
-            struct stat st;
-            if (stat(full, &st) != 0) continue;
-            isDir = S_ISDIR(st.st_mode) != 0;
-        }
-        if (!cb(e->d_name, isDir)) break;
+    char name[256];
+    bool isDir;
+    while (Host_ReadDirType(d, name, sizeof(name), &isDir)) {
+        if (name[0] == '.') continue;
+        if (!cb(name, isDir)) break;
     }
-    closedir(d);
-#endif
+    Host_CloseDir(d);
 }
 
 // A .app is a directory on macOS, so extension wins over file type. Anything

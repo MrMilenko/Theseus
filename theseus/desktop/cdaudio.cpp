@@ -25,7 +25,7 @@
 // Platform: disc detection + TOC + track LBAs
 // ============================================================================
 
-#if defined(__linux__)
+#if defined(THESEUS_HOST_LINUX)
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -197,7 +197,7 @@ void CdAudio_Update()
 }
 
 // ---- B: SDL ring-buffer + raw-sector read (Linux) -------------------------
-#elif defined(__linux__)
+#elif defined(THESEUS_HOST_LINUX)
 
 #include <SDL.h>
 
@@ -246,7 +246,7 @@ static int SDLCALL ReaderFunc(void* arg)
     bool readOk = true;
 
 // ----- platform-specific device open + read -----
-#if defined(__linux__)
+#if defined(THESEUS_HOST_LINUX)
     int fd = OpenDevice();
     if (fd < 0) {
         fprintf(stderr, "[CdAudio] cannot open device\n");

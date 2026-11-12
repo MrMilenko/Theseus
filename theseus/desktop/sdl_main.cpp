@@ -39,13 +39,7 @@
 // Loads Data/shaders/<backend>/<name>.bin. Picks subdir from the active renderer.
 bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
 {
-#if defined(THESEUS_HOST_WIN)
-	const char* sub = "dx11";
-#elif defined(THESEUS_HOST_MAC)
-	const char* sub = "metal";
-#else
-	const char* sub = "spirv";
-#endif
+	const char* sub = Host_DefaultShaderDir();
 	switch (bgfx::getRendererType()) {
 		case bgfx::RendererType::Direct3D11: sub = "dx11";   break;
 		case bgfx::RendererType::Metal:      sub = "metal";  break;

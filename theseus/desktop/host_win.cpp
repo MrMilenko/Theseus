@@ -16,6 +16,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
+const char Host_PathSep = '\\';
+
 // Win32 takes '/' almost everywhere, but not everywhere. Hand it '\'.
 static void ToWin(char* dst, size_t size, const char* src) {
 	snprintf(dst, size, "%s", src);
@@ -163,6 +165,13 @@ bool Host_ReadDir(HostDir* dir, char* name, size_t nameSize, HostFileInfo* info)
 		info->size  = ((uint64_t)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
 		info->mtime = ToUnix(fd.ftLastWriteTime);
 	}
+	return true;
+}
+
+bool Host_ReadDirType(HostDir* dir, char* name, size_t nameSize, bool* isDir) {
+	HostFileInfo info;
+	if (!Host_ReadDir(dir, name, nameSize, &info)) return false;
+	*isDir = (info.attrs & HOST_ATTR_DIR) != 0;
 	return true;
 }
 

@@ -1261,17 +1261,7 @@ void RenderAboutWindow() {
     }
 
     ImGui::Text("Version: %s", s_version);
-    ImGui::Text("Platform: %s",
-#ifdef __APPLE__
-        "macOS"
-#elif defined(__linux__)
-        "Linux"
-#elif defined(THESEUS_HOST_WIN)
-        "Windows"
-#else
-        "Unknown"
-#endif
-    );
+    ImGui::Text("Platform: %s", Host_Name());
 
     ImGui::Spacing();
     ImGui::Separator();

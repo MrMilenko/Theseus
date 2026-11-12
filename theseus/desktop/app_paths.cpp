@@ -9,7 +9,6 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "platform.h"
 #include "host.h"
 
 // The only thing that stays with the binary. Nobody hand edits a .bin, and
@@ -40,45 +39,14 @@ const char* Plat_UserDataDir() {
     if (s_init) return s_dir;
     s_init = true;
 
-#ifdef THESEUS_HOST_WIN
-    const char* appdata = getenv("APPDATA");
-    if (appdata && *appdata)
-        snprintf(s_dir, sizeof(s_dir), "%s\\Theseus", appdata);
-    else
-        snprintf(s_dir, sizeof(s_dir), "%s\\AppData\\Roaming\\Theseus", PlatformHomeDir());
-#elif defined(THESEUS_HOST_MAC)
-    snprintf(s_dir, sizeof(s_dir), "%s/Library/Application Support/Theseus", PlatformHomeDir());
-#else
-    const char* xdg = getenv("XDG_DATA_HOME");
-    if (xdg && *xdg)
-        snprintf(s_dir, sizeof(s_dir), "%s/theseus", xdg);
-    else
-        snprintf(s_dir, sizeof(s_dir), "%s/.local/share/theseus", PlatformHomeDir());
-#endif
+    Host_UserDataDir(s_dir, sizeof(s_dir));
     return s_dir;
 }
 
 const char* Plat_ShippedDir() {
-#ifdef THESEUS_HOST_MAC
-    // Inside a .app the binary sits in Contents/MacOS and the payload in
-    // Contents/Resources. Loose builds keep everything beside the binary.
     static char s_dir[1024] = {0};
-    static bool s_init = false;
-    if (!s_init) {
-        s_init = true;
-        const char* exe = Plat_ExeDir();
-        size_t n = strlen(exe);
-        const char kTail[] = "/Contents/MacOS";
-        size_t t = sizeof(kTail) - 1;
-        if (n > t && strcmp(exe + n - t, kTail) == 0)
-            snprintf(s_dir, sizeof(s_dir), "%.*s/Contents/Resources", (int)(n - t), exe);
-        else
-            snprintf(s_dir, sizeof(s_dir), "%s", exe);
-    }
+    if (!s_dir[0]) Host_ShippedDir(Plat_ExeDir(), s_dir, sizeof(s_dir));
     return s_dir;
-#else
-    return Plat_ExeDir();
-#endif
 }
 
 static bool IsUserOwned(const char* logical) {

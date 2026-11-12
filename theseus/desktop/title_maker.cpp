@@ -23,13 +23,7 @@
 #include <algorithm>
 #include <string>
 
-#ifdef THESEUS_HOST_WIN
-#include <io.h>
-#include <direct.h>
-#include <process.h>
-#else
-#include <dirent.h>
-#endif
+#include "host.h"
 
 bool g_titleMakerOpen = false;
 
@@ -39,13 +33,8 @@ bool g_titleMakerOpen = false;
 
 static void TM_EnsureDir(const char* path) {
     struct stat st;
-    if (stat(path, &st) != 0) {
-#ifdef THESEUS_HOST_WIN
-        _mkdir(path);
-#else
-        mkdir(path, 0755);
-#endif
-    }
+    if (stat(path, &st) != 0)
+        Host_MakeDir(path);
 }
 
 static void TM_SanitizeName(char* name, int maxLen) {
@@ -526,7 +515,7 @@ static bool TM_DownloadSteamIcon(int appid, const char* titleID) {
                  "https://cdn.akamai.steamstatic.com/steam/apps/%d/%s",
                  appid, tryUrls[u]);
         if (Http_GetToFile(url, tmpPath) && stat(tmpPath, &ist) == 0 && ist.st_size > 1000) {
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
             char cmd[1024];
             snprintf(cmd, sizeof(cmd),
                 "sips -z 128 128 -s format jpeg \"%s\" --out \"%s\" >/dev/null 2>&1",
@@ -597,24 +586,12 @@ static void TM_ImportSteamLibrary(const char* steamPath,
     };
 
     for (int d = 0; d < libCount && gameCount < 256; d++) {
-#ifdef THESEUS_HOST_WIN
-        char searchBuf[512];
-        snprintf(searchBuf, sizeof(searchBuf), "%s\\appmanifest_*", libDirs[d]);
-        struct _finddata_t fd;
-        intptr_t hFind = _findfirst(searchBuf, &fd);
-        if (hFind != -1) {
-            do { ParseAppManifest(libDirs[d], fd.name); } while (_findnext(hFind, &fd) == 0 && gameCount < 256);
-            _findclose(hFind);
-        }
-#else
-        DIR* dir = opendir(libDirs[d]);
+        HostDir* dir = Host_OpenDir(libDirs[d]);
         if (!dir) continue;
-        struct dirent* ent;
-        while ((ent = readdir(dir)) != NULL && gameCount < 256) {
-            ParseAppManifest(libDirs[d], ent->d_name);
-        }
-        closedir(dir);
-#endif
+        char name[260];
+        while (gameCount < 256 && Host_ReadDir(dir, name, sizeof(name), NULL))
+            ParseAppManifest(libDirs[d], name);
+        Host_CloseDir(dir);
     }
 
     if (gameCount == 0) return;
@@ -808,7 +785,7 @@ void RenderTitleMaker() {
         ImGui::SameLine();
         if (ImGui::SmallButton("Find##xemu")) {
             const char* tryPaths[] = {
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
                 "/Applications/xemu.app",
                 "/opt/homebrew/bin/xemu",
                 "/usr/local/bin/xemu",
@@ -1364,16 +1341,11 @@ void RenderTitleMaker() {
             }
             ImGui::SameLine();
             if (ImGui::SmallButton("Find##st")) {
-                const char* user = NULL;
-#ifdef THESEUS_HOST_WIN
-                user = getenv("USERNAME");
-#else
-                user = getenv("USER");
-#endif
-                if (!user) user = "user";
+                const char* user = PlatformUserName();
+                if (!user || !*user) user = "user";
                 char buf[512];
                 const char* tryRoots[] = {
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
                     "/Users/%s/Library/Application Support/Steam",
 #elif defined(THESEUS_HOST_WIN)
                     "C:\\Program Files (x86)\\Steam",

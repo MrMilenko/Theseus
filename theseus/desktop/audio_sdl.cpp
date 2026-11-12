@@ -3,7 +3,6 @@
 // MP3, WAV, and XAP-script-driven audio cues. Intentionally does NOT
 // include std.h, to avoid #define new conflicts with STL.
 
-#include "platform.h"
 #include "app_paths.h"
 #include <SDL.h>
 #include <SDL_mixer.h>
@@ -15,16 +14,7 @@
 #include <map>
 #include <algorithm>
 #include <sys/stat.h>
-#ifdef THESEUS_HOST_WIN
-#include <io.h>
-#include <direct.h>
-#ifndef S_ISDIR
-#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
-#endif
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
+#include "host.h"
 
 #include "audio_sdl.h"
 #include "stb_image.h"
@@ -968,13 +958,9 @@ static bool IsM3UFile(const char* name)
 
 static long long FileMTime(const char* path)
 {
-    struct stat st;
-    if (stat(path, &st) != 0) return 0;
-#ifdef __APPLE__
-    return (long long)st.st_mtimespec.tv_sec;
-#else
-    return (long long)st.st_mtime;
-#endif
+    HostFileInfo info;
+    if (!Host_Stat(path, &info)) return 0;
+    return (long long)info.mtime;
 }
 
 static void ApplyDBToSong(const DBEntry& e, Song& s)
@@ -1093,23 +1079,12 @@ int DashMusic_Scan(const char* musicRoot)
             soundtrack.songs.push_back(BuildSong(full, StripExtension(songName)));
         };
 
-#ifdef THESEUS_HOST_WIN
-        char searchBuf[512];
-        snprintf(searchBuf, sizeof(searchBuf), "%s\\*", stPath.c_str());
-        struct _finddata_t fd;
-        intptr_t hFind = _findfirst(searchBuf, &fd);
-        if (hFind != -1) {
-            do { ProcessSongFile(fd.name); } while (_findnext(hFind, &fd) == 0);
-            _findclose(hFind);
-        }
-#else
-        DIR* stDir = opendir(stPath.c_str());
+        HostDir* stDir = Host_OpenDir(stPath.c_str());
         if (stDir) {
-            struct dirent* songEntry;
-            while ((songEntry = readdir(stDir)) != NULL) ProcessSongFile(songEntry->d_name);
-            closedir(stDir);
+            char songName[260];
+            while (Host_ReadDir(stDir, songName, sizeof(songName), NULL)) ProcessSongFile(songName);
+            Host_CloseDir(stDir);
         }
-#endif
 
         if (!soundtrack.songs.empty()) {
             if (soundtrack.albumPath.empty() && !fallbackArt.empty())
@@ -1163,43 +1138,20 @@ int DashMusic_Scan(const char* musicRoot)
         looseMusic.songs.push_back(BuildSong(full, StripExtension(fileName)));
     };
 
-#ifdef THESEUS_HOST_WIN
-    char searchBuf[512];
-    snprintf(searchBuf, sizeof(searchBuf), "%s\\*", musicRoot);
-    struct _finddata_t fd;
-    intptr_t hFind = _findfirst(searchBuf, &fd);
-    if (hFind == -1) {
-        fprintf(stderr, "[Audio] Music directory '%s' not found (this is OK if no music installed)\n", musicRoot);
-        return 0;
-    }
-    do {
-        std::string entryPath = std::string(musicRoot) + "/" + fd.name;
-        struct stat est;
-        if (stat(entryPath.c_str(), &est) == 0) {
-            if (S_ISDIR(est.st_mode))      ProcessSoundtrackDir(fd.name);
-            else if (IsM3UFile(fd.name))   ProcessM3UFile(fd.name);
-            else                           ProcessLooseFile(fd.name);
-        }
-    } while (_findnext(hFind, &fd) == 0);
-    _findclose(hFind);
-#else
-    DIR* rootDir = opendir(musicRoot);
+    HostDir* rootDir = Host_OpenDir(musicRoot);
     if (!rootDir) {
         fprintf(stderr, "[Audio] Music directory '%s' not found (this is OK if no music installed)\n", musicRoot);
         return 0;
     }
-    struct dirent* entry;
-    while ((entry = readdir(rootDir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
-        std::string entryPath = std::string(musicRoot) + "/" + entry->d_name;
-        struct stat est;
-        if (stat(entryPath.c_str(), &est) != 0) continue;
-        if (S_ISDIR(est.st_mode))             ProcessSoundtrackDir(entry->d_name);
-        else if (IsM3UFile(entry->d_name))    ProcessM3UFile(entry->d_name);
-        else                                  ProcessLooseFile(entry->d_name);
+    char entryName[260];
+    bool isDir;
+    while (Host_ReadDirType(rootDir, entryName, sizeof(entryName), &isDir)) {
+        if (entryName[0] == '.') continue;
+        if (isDir)                         ProcessSoundtrackDir(entryName);
+        else if (IsM3UFile(entryName))     ProcessM3UFile(entryName);
+        else                               ProcessLooseFile(entryName);
     }
-    closedir(rootDir);
-#endif
+    Host_CloseDir(rootDir);
 
     if (!looseMusic.songs.empty()) {
         bool merged = false;
