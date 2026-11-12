@@ -1,14 +1,17 @@
-// settingsfile.cpp: CSettingsFile, the dashboard's INI parser. Reads
-// .xbx and other key=value config files (UTF-16 with optional BOM),
-// preserves section / key ordering for round-trip writes. Decompiled
-// from the 5960 retail XBE; see docs/decomp/Settings.md.
+// settingsfile.cpp: CSettingsFile, the dashboard's ini reader and writer.
+// [section] headers and name=value lines, kept in memory as linked lists,
+// read through CActiveFile (so UTF-16 or ANSI) and written back whenever a
+// value changes. Rebuilt function by function from the 5960 retail XBE
+// (0x3bc00..0x3c260); see docs/decomp/Settings.md. The save path, the
+// batching and the larger value buffer are Theseus's.
 
 #include "std.h"
 #include "theseus.h"
 #include "settingsfile.h"
 #include "activefile.h"
 #include "xap_compile.h"
-// Get Program Path - No .xbe
+
+// Theseus: the folder the running XBE came from, without the file name.
 void XI_GetProgramPath( char* szBuffer )
 {
 #ifdef _XBOX
@@ -42,103 +45,93 @@ CSettingsFile::~CSettingsFile()
 	Close();
 }
 
-
+// Theseus: opens <dir>\Xbox.xbx.
 bool CSettingsFile::OpenDir(const TCHAR* szDir)
 {
-	TCHAR szFile [MAX_PATH];
-	_stprintf(szFile, _T("%s\\Xbox.xbx"), szDir);
-	return Open(szFile);
+	TCHAR path[MAX_PATH];
+	_stprintf(path, _T("%s\\Xbox.xbx"), szDir);
+	return Open(path);
 }
 
+// Copies from src into out up to the first null, CR, LF or stop character.
+// False when out (cap characters with the null) would overflow.
+static bool CopyField(const TCHAR*& src, TCHAR* out, int cap, TCHAR stop)
+{
+	TCHAR* end = out + cap - 1;
+	while (*src != 0 && *src != '\r' && *src != '\n' && *src != stop)
+	{
+		if (out >= end)
+			return false;
+		*out++ = *src++;
+	}
+	*out = 0;
+	return true;
+}
+
+// CSettingsFile::Open(path)
+// Reconstructed from 5960 retail XBE @ 0x0003bc00. Keeps a copy of the
+// path, fetches the file with CActiveFile and widens it, then reads it line
+// by line after SkipWhite: "[name]" makes or finds that section (a header
+// without its ']' is ignored), "name=value" goes into the current section,
+// "default" when none came first, and anything else is skipped. A section
+// or name past 255 characters, or a value past the buffer, closes the file
+// and fails. 5960's value buffer is 1024; Theseus's is 16384 since
+// cache.ini lines run long.
 bool CSettingsFile::Open(const TCHAR* szFile)
 {
-	CSettingsFileSection* pSection = NULL;
-
-	m_filePath = new TCHAR [_tcslen(szFile) + 1];
+	m_filePath = new TCHAR[_tcslen(szFile) + 1];
 	_tcscpy(m_filePath, szFile);
 
 	CActiveFile file;
 	if (!file.Fetch(m_filePath, false, true))
 		return false;
-
 #ifdef _UNICODE
 	m_unicode = file.IsUnicode();
 	file.MakeUnicode();
 #endif
 
-	const TCHAR* pch = (const TCHAR*)file.GetContent();
-	while (*pch != 0)
+	CSettingsFileSection* section = NULL;
+	const TCHAR* p = (const TCHAR*)file.GetContent();
+	while (*p != 0)
 	{
-		pch = SkipWhite(pch, none);
-
-		if (*pch == '[')
+		p = SkipWhite(p, none);
+		if (*p == '[')
 		{
-			pch += 1;
-
-			TCHAR szSectionName [256];
-			TCHAR* pchName = szSectionName;
-
-			while (*pch != 0 && *pch != '\r' && *pch != '\n' && *pch != ']')
+			p++;
+			TCHAR name[256];
+			if (!CopyField(p, name, countof(name), ']'))
 			{
-				if (pchName >= szSectionName + countof(szSectionName) - 1)
-				{
-						Close();
-					return false;
-				}
-				*pchName++ = *pch++;
+				Close();
+				return false;
 			}
-			*pchName = 0;
-
-			if (*pch == ']')
+			if (*p == ']')
 			{
-				pch += 1;
-				pSection = FindSection(szSectionName, true);
+				p++;
+				section = FindSection(name, true);
 			}
+			continue;
 		}
-		else
+
+		TCHAR name[256];
+		if (!CopyField(p, name, countof(name), '='))
 		{
-			TCHAR szName [256];
-			TCHAR* pchName = szName;
-			// Bumped from 1024. cache.ini packs 25 joined titles per
-			// segment, regularly exceeds 2KB. 16KB is well over what
-			// any sane ini value needs.
-			TCHAR szValue [16384];
-			TCHAR* pchValue = szValue;
-
-			while (*pch != '\0' && *pch != '\r' && *pch != '\n' && *pch != '=')
-			{
-				if (pchName >= szName + countof(szName) - 1)
-				{
-					Close();
-					return false;
-				}
-				*pchName++ = *pch++;
-			}
-			*pchName = 0;
-
-			if (*pch == '=')
-			{
-				pch += 1;
-
-				while (*pch != '\0' && *pch != '\r' && *pch != '\n')
-				{
-					if (pchValue >= szValue + countof(szValue) - 1)
-					{
-						Close();
-						return false;
-					}
-					*pchValue++ = *pch++;
-				}
-				*pchValue = 0;
-
-				if (pSection == NULL)
-					pSection = FindSection(_T("default"), true);
-
-				pSection->SetValue(szName, szValue);
-			}
+			Close();
+			return false;
 		}
+		if (*p != '=')
+			continue;
+		p++;
+
+		TCHAR value[16384];
+		if (!CopyField(p, value, countof(value), 0))
+		{
+			Close();
+			return false;
+		}
+		if (section == NULL)
+			section = FindSection(_T("default"), true);
+		section->SetValue(name, value);
 	}
-
 	return true;
 }
 
@@ -269,151 +262,143 @@ int CSettingsFile::WriteTo(const TCHAR* szPath)
 	}
 }
 
+// CSettingsFile::Close()
+// Reconstructed from 5960 retail XBE @ 0x0003c100: saves (and stays open
+// if that fails), then frees every section and the path.
 bool CSettingsFile::Close()
 {
 	if (!Save())
 		return false;
 
-	CSettingsFileSection* pNextSection;
-	CSettingsFileSection* pSection;
-	for (pSection = m_sections; pSection != NULL; pSection = pNextSection)
+	while (m_sections != NULL)
 	{
-		pNextSection = pSection->m_next;
-		delete pSection;
+		CSettingsFileSection* next = m_sections->m_next;
+		delete m_sections;
+		m_sections = next;
 	}
-
-	m_sections = NULL;
-
-	delete [] m_filePath;
+	delete[] m_filePath;
 	m_filePath = NULL;
-
 	return true;
 }
 
 CSettingsFileValue* CSettingsFileSection::FindValue(const TCHAR* szName)
 {
-	for (CSettingsFileValue* pValue = m_values; pValue != NULL; pValue = pValue->m_next)
-	{
-		if (_tcscmp(szName, pValue->m_name) == 0)
-			return pValue;
-	}
-
-	return NULL;
+	CSettingsFileValue* value = m_values;
+	while (value != NULL && _tcscmp(szName, value->m_name) != 0)
+		value = value->m_next;
+	return value;
 }
 
+static TCHAR* CopyString(const TCHAR* sz)
+{
+	TCHAR* copy = new TCHAR[_tcslen(sz) + 1];
+	_tcscpy(copy, sz);
+	return copy;
+}
+
+// CSettingsFile::FindSection(name, create)
+// Reconstructed from 5960 retail XBE @ 0x0003c150: a linear search by
+// name; with create set a missing section is made and pushed on the front.
 CSettingsFileSection* CSettingsFile::FindSection(const TCHAR* szSection, bool bCreate/*=false*/)
 {
-	CSettingsFileSection* pSection;
-	for (pSection = m_sections; pSection != NULL; pSection = pSection->m_next)
+	for (CSettingsFileSection* section = m_sections; section != NULL; section = section->m_next)
 	{
-		if (_tcscmp(szSection, pSection->m_name) == 0)
-			return pSection;
+		if (_tcscmp(szSection, section->m_name) == 0)
+			return section;
 	}
+	if (!bCreate)
+		return NULL;
 
-	if (bCreate)
-	{
-		pSection = new CSettingsFileSection;
-		pSection->m_name = new TCHAR [_tcslen(szSection) + 1];
-		_tcscpy(pSection->m_name, szSection);
-		pSection->m_next = m_sections;
-		m_sections = pSection;
-		return pSection;
-	}
-
-	return NULL;
+	CSettingsFileSection* made = new CSettingsFileSection;
+	made->m_name = CopyString(szSection);
+	made->m_next = m_sections;
+	m_sections = made;
+	return made;
 }
 
+// CSettingsFile::GetValue(section, name, out, size)
+// Reconstructed from 5960 retail XBE @ 0x0003c1e0. Clears out, looks in
+// the section (NULL means "default"), falling back to "default" when the
+// section doesn't exist, and copies at most size - 1 characters.
 bool CSettingsFile::GetValue(const TCHAR* szSection, const TCHAR* szName, TCHAR* szValueBuf, int cchValueBuf)
 {
 	szValueBuf[0] = 0;
 
-	if (szSection == NULL)
-		szSection = _T("default");
-
-	CSettingsFileSection* pSection = FindSection(szSection);
-	if (pSection == NULL)
-	{
-		// Also try default...
-		pSection = FindSection(_T("default"));
-		if (pSection == NULL)
-			return false;
-	}
-
-	CSettingsFileValue* pValue = pSection->FindValue(szName);
-	if (pValue == NULL)
+	CSettingsFileSection* section = FindSection(szSection != NULL ? szSection : _T("default"));
+	if (section == NULL)
+		section = FindSection(_T("default"));
+	if (section == NULL)
 		return false;
 
-	_tcsncpy(szValueBuf, pValue->m_value, cchValueBuf);
+	CSettingsFileValue* value = section->FindValue(szName);
+	if (value == NULL)
+		return false;
+	_tcsncpy(szValueBuf, value->m_value, cchValueBuf);
 	szValueBuf[cchValueBuf - 1] = 0;
-
 	return true;
 }
 
-
+// Sets a value, creating the section, and saves right away unless a batch
+// is open. NULL section means "default".
 void CSettingsFile::SetValue(const TCHAR* szSection, const TCHAR* szName, const TCHAR* szValue)
 {
-	if (szSection == NULL)
-		szSection = _T("default");
-
-	CSettingsFileSection* pSection = FindSection(szSection, true);
-
-	if (pSection->SetValue(szName, szValue))
-	{
-		m_dirty = true;
-		if (!m_batching)
-			Save();
-	}
+	CSettingsFileSection* section = FindSection(szSection != NULL ? szSection : _T("default"), true);
+	if (!section->SetValue(szName, szValue))
+		return;
+	m_dirty = true;
+	if (!m_batching)
+		Save();
 }
 
+// CSettingsFileSection::SetValue(name, value)
+// Reconstructed from 5960 retail XBE @ 0x0003c260. Finds the name or pushes
+// a new entry on the front, then false if the value is already that,
+// otherwise replaces it and returns true.
 bool CSettingsFileSection::SetValue(const TCHAR* szName, const TCHAR* szValue)
 {
-	CSettingsFileValue* pValue = FindValue(szName);
-	if (pValue == NULL)
+	CSettingsFileValue* value = FindValue(szName);
+	if (value == NULL)
 	{
-		pValue = new CSettingsFileValue;
-		pValue->m_name = new TCHAR [_tcslen(szName) + 1];
-		_tcscpy(pValue->m_name, szName);
-
-		pValue->m_next = m_values;
-		m_values = pValue;
+		value = new CSettingsFileValue;
+		value->m_name = CopyString(szName);
+		value->m_next = m_values;
+		m_values = value;
 	}
-
-	if (pValue->m_value != NULL && _tcscmp(pValue->m_value, szValue) == 0)
+	if (value->m_value != NULL && _tcscmp(value->m_value, szValue) == 0)
 		return false;
 
-	delete [] pValue->m_value;
-	pValue->m_value = new TCHAR [_tcslen(szValue) + 1];
-	_tcscpy(pValue->m_value, szValue);
-
+	delete[] value->m_value;
+	value->m_value = CopyString(szValue);
 	return true;
 }
 
 CSettingsFileSection::CSettingsFileSection()
 {
+	m_next = NULL;
 	m_name = NULL;
 	m_values = NULL;
 }
 
 CSettingsFileSection::~CSettingsFileSection()
 {
-	CSettingsFileValue* pNextValue;
-	for (CSettingsFileValue* pValue = m_values; pValue != NULL; pValue = pNextValue)
+	while (m_values != NULL)
 	{
-		pNextValue = pValue->m_next;
-		delete pValue;
+		CSettingsFileValue* next = m_values->m_next;
+		delete m_values;
+		m_values = next;
 	}
-
-	delete [] m_name;
+	delete[] m_name;
 }
 
 CSettingsFileValue::CSettingsFileValue()
 {
+	m_next = NULL;
 	m_name = NULL;
 	m_value = NULL;
 }
 
 CSettingsFileValue::~CSettingsFileValue()
 {
-	delete [] m_name;
-	delete [] m_value;
+	delete[] m_name;
+	delete[] m_value;
 }

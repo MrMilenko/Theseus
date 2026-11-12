@@ -41,3 +41,26 @@ The parser handles both Unicode and ANSI file formats at runtime. The `m_bUnicod
 ## XI_GetProgramPath()
 
 Utility function that resolves the directory containing the running XBE at runtime. Used to locate settings files relative to the dashboard's install path (e.g. `D:\Xbox.xbx` when running from the HDD, or the DVD path during development). Calls `XGetModuleFileName` and strips the executable name to get the directory.
+
+## CSettingsFile in the binary
+
+| Address | Name | What it does |
+|---------|------|--------------|
+| 0x0003bc00 | CSettingsFile::Open | Copies the path, fetches the file with `CActiveFile` and widens it, then parses it |
+| 0x0003bf00 | CSettingsFile::Save | Does nothing unless dirty; writes ANSI through `CreateFile` (`[name]\r\n`, `name=value\r\n`, each wide character narrowed) or Unicode through `_wfopen` and `fwprintf` (`[%s]\n`, `%s=%s\n`), then clears the dirty flag |
+| 0x0003c100 | CSettingsFile::Close | Saves (stays open if that fails), frees the sections and the path |
+| 0x0003c150 | CSettingsFile::FindSection | Linear search by name; with create set, pushes a new section on the front |
+| 0x0003c1e0 | CSettingsFile::GetValue | Clears the output, tries the section then `default`, `wcsncpy` and terminates at size - 1 |
+| 0x0003c260 | CSettingsFileSection::SetValue | Finds the name or pushes a new entry on the front; returns false when the value is unchanged |
+
+The object is 12 bytes: path, section list, dirty flag at +8 and the Unicode flag at +9. A section
+and a value are each 12 bytes too (next, name, then the value list or the value).
+
+`Open` reads lines after `SkipWhite` with no comment style. `[name]` (up to 255 characters, and only
+when the `]` is there) selects or creates a section. `name=value` lines (name up to 255, value up to
+1023) go into the current section, creating `default` when none came first. Lines without `=` are
+skipped. Overflowing any of the three buffers closes the file and fails.
+
+Theseus differences: the value buffer is 16384 characters (long cache.ini lines), saves go to
+`<file>.new` and replace the old file only when the write fully succeeded, writes can be batched
+with `BeginBatch` / `EndBatch`, and `XI_GetProgramPath` and `OpenDir` are Theseus helpers.
