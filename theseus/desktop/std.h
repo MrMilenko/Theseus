@@ -3,6 +3,9 @@
 // xbox/std.h.
 
 #include "platform.h"
+#ifdef _XBOX
+#error "desktop/std.h is the desktop prelude. Xbox code includes xbox/std.h."
+#endif
 #include "stdcfg.h"
 
 // Flag so toolbox/xboxinternals.h knows kernel types are already available

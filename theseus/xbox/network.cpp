@@ -1,11 +1,9 @@
-// network.cpp: net:: namespace implementation. The Xbox path drives
-// the dashboard's FTP server and the real XNet stack; the desktop
-// path stubs the namespace so callers (Discord relay, FTP widget,
-// IP display) compile without a real network backend.
+// network.cpp: net:: namespace implementation. Drives the dashboard's
+// FTP server and the real XNet stack. The desktop's stubs live in
+// desktop/desktop_stubs.cpp.
 #include "std.h"
 #include "network.h"
 
-#ifdef _XBOX
 #include "toolbox/ftpServer.h"
 #include "toolbox/driveManager.h"
 #include <xtl.h>
@@ -149,20 +147,3 @@ namespace net
 	}
 }
 
-#else // desktop: no FTP UI today; stubs let callers link.
-
-namespace net
-{
-	bool init()           { return true; }
-	void shutdown()       {}
-	void restart()        {}
-	bool isReady()        { return false; }
-	bool isFtpRunning()   { return false; }
-	DWORD getAddress()    { return 0; }
-	DWORD getSubnet()     { return 0; }
-	DWORD getGateway()    { return 0; }
-	DWORD getPrimaryDns() { return 0; }
-	DWORD getSecondaryDns(){ return 0; }
-}
-
-#endif // _XBOX
