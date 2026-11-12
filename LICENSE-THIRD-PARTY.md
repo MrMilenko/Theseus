@@ -50,6 +50,12 @@ Used by the desktop build:
 
 All of the above are GPL-3.0-compatible, either by being permissive (MIT, BSD, zlib, public domain) or by being LGPL (linkable from GPL).
 
+## Fonts
+
+| Font | License | Purpose |
+|---|---|---|
+| [Noto Sans](https://github.com/notofonts/latin-greek-cyrillic) Regular and Bold (`Data/Fonts/NotoSans-*.ttf`) | SIL Open Font License 1.1, [`Data/Fonts/NotoSans-OFL.txt`](Data/Fonts/NotoSans-OFL.txt) | The desktop guide's text |
+
 ## Xbox Dashboard Assets (`Data/`)
 
 The XIPs and skin assets in `Data/` are authored by [UIX Lite](https://github.com/OfficialTeamUIX/UIX-Lite) and contain TeamUIX modifications of dashboard scripts present on every retail Xbox console. The `uixdata` directory layout is a convention established by JbOnE's earlier source-level modification, *User.Interface.X* (UIX); Theseus follows that convention so the same content runs on both projects. UIX Lite's modifications are licensed under GPL-3.0-or-later. The underlying script formats and any unmodified original components are referenced for compatibility and preservation; Microsoft retains its rights to its original work. Every Xbox owner already possesses the equivalent original files on their console.
