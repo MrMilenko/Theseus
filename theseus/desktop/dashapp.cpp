@@ -826,9 +826,10 @@ void CleanupApp()
 
 void Advance()
 {
-	// Seconds since SDL started, same base on every host. GetTickCount on
-	// Windows is system uptime at 15.6 ms steps, and a float of that drifts.
-	XTIME now = (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+	// Seconds since launch, on every host. Scripts time things like the
+	// screensaver against 0, so an uptime base fires them on the first frame.
+	static const Uint64 s_clockStart = SDL_GetPerformanceCounter();
+	XTIME now = (double)(SDL_GetPerformanceCounter() - s_clockStart) / (double)SDL_GetPerformanceFrequency();
 	float nDelta = (float)(now - g_now);
 	if (nDelta == 0.0f)
 		nDelta = 0.001f;
