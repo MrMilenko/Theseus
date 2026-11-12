@@ -26,7 +26,7 @@ CNameSpace* g_classes;
 
 // Every hard failure hands back an empty string so callers stop cleanly.
 // 5960 points at a shared L"" (0x201c4 / 0x21b98) the same way.
-static const TCHAR szParseError[] = _T("");
+static const TCHAR szGiveUp[] = _T("");
 
 static inline bool IsLetter(TCHAR ch)
 {
@@ -50,9 +50,9 @@ static inline bool IsIdentChar(TCHAR ch)
 	return IsLetter(ch) || IsDigit(ch) || ch == '_';
 }
 
-static inline bool IsKeyword(const TCHAR* pchToken, int cchToken, const TCHAR* szKeyword, int cchKeyword)
+static inline bool IsKeyword(const TCHAR* pchTok, int cchTok, const TCHAR* szKeyword, int cchKeyword)
 {
-	return cchToken == cchKeyword && _tcsncmp(pchToken, szKeyword, cchKeyword) == 0;
+	return cchTok == cchKeyword && _tcsncmp(pchTok, szKeyword, cchKeyword) == 0;
 }
 
 
@@ -180,7 +180,7 @@ const TCHAR* SkipWhite(const TCHAR* pch, COMMENT_TYPE ct)
 // A letter or '_' starts an identifier (letters, digits, '_'). Otherwise a
 // word character starts a number or bare word, and anything else starts an
 // operator run that lasts until a blank or a word character.
-const TCHAR* Token(const TCHAR* pch, const TCHAR*& pchToken, int& cchToken, bool bAllowPaths, COMMENT_TYPE ct)
+const TCHAR* Token(const TCHAR* pch, const TCHAR*& pchTok, int& cchTok, bool bAllowPaths, COMMENT_TYPE ct)
 {
 	pch = SkipWhite(pch, ct);
 
@@ -188,7 +188,7 @@ const TCHAR* Token(const TCHAR* pch, const TCHAR*& pchToken, int& cchToken, bool
 	if (*pch == '"' || *pch == '\'')
 		chQuote = *pch++;
 
-	pchToken = pch;
+	pchTok = pch;
 
 	if (chQuote != 0)
 	{
@@ -219,7 +219,7 @@ const TCHAR* Token(const TCHAR* pch, const TCHAR*& pchToken, int& cchToken, bool
 			pch++;
 	}
 
-	cchToken = (int)(pch - pchToken);
+	cchTok = (int)(pch - pchTok);
 
 	if (chQuote != 0 && *pch == chQuote)
 		pch++;
@@ -262,12 +262,12 @@ static bool ReadHexEscape(const TCHAR*& pch, int& cch, int cDigits, TCHAR& chOut
 // when the output fills, the string ends on a backslash, or a hex escape is
 // short or bad. Returns the number of characters written.
 // \u only exists in wide builds, where TCHAR can hold it (5960 is wide).
-int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int cchToken)
+int ExpandCString(TCHAR* szOut, int cchOut, const TCHAR* pchTok, int cchTok)
 {
-	TCHAR* pchOut = szString;
-	TCHAR* pchEnd = szString + cchMaxString;
+	TCHAR* pchOut = szOut;
+	TCHAR* pchEnd = szOut + cchOut;
 
-	while (cchToken > 0)
+	while (cchTok > 0)
 	{
 		if (pchOut >= pchEnd)
 		{
@@ -275,8 +275,8 @@ int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int 
 			return -1;
 		}
 
-		TCHAR ch = *pchToken++;
-		cchToken--;
+		TCHAR ch = *pchTok++;
+		cchTok--;
 
 		if (ch != '\\')
 		{
@@ -284,14 +284,14 @@ int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int 
 			continue;
 		}
 
-		if (cchToken == 0)
+		if (cchTok == 0)
 		{
 			SyntaxError(_T("backslash at end of string"));
 			return -1;
 		}
 
-		ch = *pchToken++;
-		cchToken--;
+		ch = *pchTok++;
+		cchTok--;
 
 		switch (ch)
 		{
@@ -316,12 +316,12 @@ int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int 
 			break;
 
 		case 'x':
-			if (cchToken < 2)
+			if (cchTok < 2)
 			{
 				SyntaxError(_T("Invalid hex character escape sequence"));
 				return -1;
 			}
-			if (!ReadHexEscape(pchToken, cchToken, 2, ch))
+			if (!ReadHexEscape(pchTok, cchTok, 2, ch))
 			{
 				SyntaxError(_T("Invalid hex character"));
 				return -1;
@@ -330,12 +330,12 @@ int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int 
 
 #ifdef _UNICODE
 		case 'u':
-			if (cchToken < 4)
+			if (cchTok < 4)
 			{
 				SyntaxError(_T("Invalid Unicode character escape sequence"));
 				return -1;
 			}
-			if (!ReadHexEscape(pchToken, cchToken, 4, ch))
+			if (!ReadHexEscape(pchTok, cchTok, 4, ch))
 			{
 				SyntaxError(_T("Invalid Unicode character"));
 				return -1;
@@ -347,7 +347,7 @@ int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int 
 			if (ch < '0' || ch > '7')
 				break;
 
-			if (ch == '0' && cchToken > 0 && (*pchToken < '0' || *pchToken > '7'))
+			if (ch == '0' && cchTok > 0 && (*pchTok < '0' || *pchTok > '7'))
 			{
 				ch = '\0';
 				break;
@@ -355,8 +355,8 @@ int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int 
 
 			{
 				int nValue = ch - '0';
-				for (; cchToken != 0 && *pchToken >= '0' && *pchToken <= '7'; pchToken++, cchToken--)
-					nValue = nValue * 8 + (*pchToken - '0');
+				for (; cchTok != 0 && *pchTok >= '0' && *pchTok <= '7'; pchTok++, cchTok--)
+					nValue = nValue * 8 + (*pchTok - '0');
 				ch = (TCHAR)nValue;
 			}
 			break;
@@ -365,7 +365,7 @@ int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int 
 		*pchOut++ = ch;
 	}
 
-	return (int)(pchOut - szString);
+	return (int)(pchOut - szOut);
 }
 
 
@@ -377,13 +377,13 @@ int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int 
 // Case-insensitive prefix compare over the token length, same as the binary.
 const TCHAR* ParseBoolean(const TCHAR* pch, bool& b)
 {
-	const TCHAR* pchToken;
-	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
+	const TCHAR* pchTok;
+	int cchTok;
+	pch = Token(pch, pchTok, cchTok);
 
-	if (_tcsnicmp(pchToken, _T("true"), cchToken) == 0)
+	if (_tcsnicmp(pchTok, _T("true"), cchTok) == 0)
 		b = true;
-	else if (_tcsnicmp(pchToken, _T("false"), cchToken) == 0)
+	else if (_tcsnicmp(pchTok, _T("false"), cchTok) == 0)
 		b = false;
 	else
 		SyntaxError(_T("Invalid boolean value"));
@@ -393,15 +393,15 @@ const TCHAR* ParseBoolean(const TCHAR* pch, bool& b)
 
 // Copies a numeric token into a terminated buffer. 5960 copies blind into a
 // 64 character stack buffer; Theseus clamps long tokens and flags them.
-static void CopyNumberToken(TCHAR* szBuf, int cchBuf, const TCHAR* pchToken, int cchToken)
+static void CopyNumberToken(TCHAR* szBuf, int cchBuf, const TCHAR* pchTok, int cchTok)
 {
-	if (!CHECK(cchToken < cchBuf))
+	if (!CHECK(cchTok < cchBuf))
 	{
 		SyntaxError(_T("Number is too long"));
-		cchToken = cchBuf - 1;
+		cchTok = cchBuf - 1;
 	}
-	_tcsncpy(szBuf, pchToken, cchToken);
-	szBuf[cchToken] = '\0';
+	_tcsncpy(szBuf, pchTok, cchTok);
+	szBuf[cchTok] = '\0';
 }
 
 // ParseInteger / ParseNumber
@@ -411,24 +411,24 @@ static void CopyNumberToken(TCHAR* szBuf, int cchBuf, const TCHAR* pchToken, int
 // The CHECK on the length is Theseus's bounds fix.
 const TCHAR* ParseInteger(const TCHAR* pch, int& i)
 {
-	const TCHAR* pchToken;
-	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
+	const TCHAR* pchTok;
+	int cchTok;
+	pch = Token(pch, pchTok, cchTok);
 
 	TCHAR szNumber[64];
-	CopyNumberToken(szNumber, countof(szNumber), pchToken, cchToken);
+	CopyNumberToken(szNumber, countof(szNumber), pchTok, cchTok);
 	i = _ttoi(szNumber);
 	return pch;
 }
 
 const TCHAR* ParseNumber(const TCHAR* pch, float& n)
 {
-	const TCHAR* pchToken;
-	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
+	const TCHAR* pchTok;
+	int cchTok;
+	pch = Token(pch, pchTok, cchTok);
 
 	TCHAR szNumber[64];
-	CopyNumberToken(szNumber, countof(szNumber), pchToken, cchToken);
+	CopyNumberToken(szNumber, countof(szNumber), pchTok, cchTok);
 	n = (float)_tcstod(szNumber, NULL);
 	return pch;
 }
@@ -439,13 +439,13 @@ const TCHAR* ParseNumber(const TCHAR* pch, float& n)
 // No escape expansion: property strings are taken as written.
 const TCHAR* ParseString(const TCHAR* pch, TCHAR*& sz)
 {
-	const TCHAR* pchToken;
-	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
+	const TCHAR* pchTok;
+	int cchTok;
+	pch = Token(pch, pchTok, cchTok);
 
-	sz = new TCHAR[cchToken + 1];
-	CopyChars(sz, pchToken, cchToken);
-	sz[cchToken] = '\0';
+	sz = new TCHAR[cchTok + 1];
+	CopyChars(sz, pchTok, cchTok);
+	sz[cchTok] = '\0';
 	return pch;
 }
 
@@ -485,13 +485,13 @@ static bool ArrayRanOut(const TCHAR* pch)
 // Returns past the ']'. A missing '[' is a syntax error and returns "".
 // 5960 inlines the number read in ParseVecArray; Theseus calls ParseNumber so
 // the long token CHECK covers arrays too.
-const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray)
+const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbItems, int& cbArray)
 {
 	pch = SkipWhite(pch);
 	if (*pch != '[')
 	{
 		SyntaxError(_T("Expected '[' to start array"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	const TCHAR* pchFirst = pch + 1;
@@ -515,8 +515,8 @@ const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray)
 		return pch;
 
 	cbArray = cValues * sizeof(int);
-	pbArray = new BYTE[cbArray];
-	int* pnOut = (int*)pbArray;
+	pbItems = new BYTE[cbArray];
+	int* pnOut = (int*)pbItems;
 
 	g_nLine = nLineFirst;
 	for (pch = SkipWhite(pchFirst); *pch != ']' && !ArrayRanOut(pch); pch = SkipWhite(pch))
@@ -533,13 +533,13 @@ const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray)
 	return pch + 1;
 }
 
-const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int nVecSize)
+const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbItems, int& cbArray, int nVecSize)
 {
 	pch = SkipWhite(pch);
 	if (*pch != '[')
 	{
 		SyntaxError(_T("Expected '[' to start array"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	const TCHAR* pchFirst = pch + 1;
@@ -566,8 +566,8 @@ const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int n
 		return pch;
 
 	cbArray = cValues * sizeof(float);
-	pbArray = new BYTE[cbArray];
-	float* pnOut = (float*)pbArray;
+	pbItems = new BYTE[cbArray];
+	float* pnOut = (float*)pbItems;
 
 	g_nLine = nLineFirst;
 	for (pch = SkipWhite(pchFirst); *pch != ']' && !ArrayRanOut(pch); pch = SkipWhite(pch))
@@ -649,12 +649,12 @@ CFunction* CCompiler::CreateFunction()
 {
 #pragma push_macro("new")
 #undef new
-	CFunction* pFunction = new(m_nop) CFunction;
+	CFunction* pFn = new(m_nop) CFunction;
 #pragma pop_macro("new")
 
-	pFunction->m_codeSize = m_nop;
-	CopyMemory(pFunction->m_rgop, m_ops, m_nop);
-	return pFunction;
+	pFn->m_codeSize = m_nop;
+	CopyMemory(pFn->m_rgop, m_ops, m_nop);
+	return pFn;
 }
 
 
@@ -708,9 +708,9 @@ static const int nLowestPriority = 14;
 //     for (i = 0; i < 22; i++) if (t[i].ch1 == pch[0] && (!t[i].ch2 || t[i].ch2 == pch[1])) {
 //         *ppdoper = &t[i]; return pch + (t[i].ch2 ? 2 : 1); }
 //     return pch;
-const TCHAR* CFunctionCompiler::ParseOperator(const TCHAR* pch, const DOPER*& pdoper)
+const TCHAR* CFunctionCompiler::ParseOperator(const TCHAR* pch, const DOPER*& pOp)
 {
-	pdoper = NULL;
+	pOp = NULL;
 
 	pch = SkipWhite(pch);
 	if (*pch == '\0')
@@ -723,7 +723,7 @@ const TCHAR* CFunctionCompiler::ParseOperator(const TCHAR* pch, const DOPER*& pd
 		if (p->m_ch2 != 0 && p->m_ch2 != pch[1])
 			continue;
 
-		pdoper = p;
+		pOp = p;
 		return pch + (p->m_ch2 != 0 ? 2 : 1);
 	}
 
@@ -774,34 +774,34 @@ const TCHAR* CFunctionCompiler::ParseTerm(const TCHAR* pch)
 	{
 		const bool bString = (*pch == '"' || *pch == '\'');
 
-		const TCHAR* pchToken;
-		int cchToken;
-		pch = Token(pch, pchToken, cchToken);
+		const TCHAR* pchTok;
+		int cchTok;
+		pch = Token(pch, pchTok, cchTok);
 
 		if (bString)
 		{
 			Write(opStr);
 			TCHAR szText[1024];
-			int cchText = ExpandCString(szText, countof(szText), pchToken, cchToken);
+			int cchText = ExpandCString(szText, countof(szText), pchTok, cchTok);
 			if (cchText < 0)
-				return szParseError;
+				return szGiveUp;
 			WriteString(szText, cchText);
 		}
-		else if (cchToken == 0)
+		else if (cchTok == 0)
 		{
 			return pch;
 		}
-		else if (*pchToken == '.' || *pchToken == '-' || IsDigit(*pchToken))
+		else if (*pchTok == '.' || *pchTok == '-' || IsDigit(*pchTok))
 		{
 			// Theseus clamps over-long numbers; 5960 copies them blind.
 			TCHAR szNumber[256];
-			if (!CHECK(cchToken < countof(szNumber)))
+			if (!CHECK(cchTok < countof(szNumber)))
 			{
 				SyntaxError(_T("Number is too long"));
-				cchToken = countof(szNumber) - 1;
+				cchTok = countof(szNumber) - 1;
 			}
-			CopyChars(szNumber, pchToken, cchToken);
-			szNumber[cchToken] = '\0';
+			CopyChars(szNumber, pchTok, cchTok);
+			szNumber[cchTok] = '\0';
 
 			float nValue = (float)_tcstod(szNumber, NULL);
 			if (bNegate)
@@ -812,25 +812,25 @@ const TCHAR* CFunctionCompiler::ParseTerm(const TCHAR* pch)
 			Write(opNum);
 			WriteNumber(nValue);
 		}
-		else if (IsKeyword(pchToken, cchToken, _T("true"), 4))
+		else if (IsKeyword(pchTok, cchTok, _T("true"), 4))
 		{
 			Write(opNum);
 			WriteNumber(1.0f);
 		}
-		else if (IsKeyword(pchToken, cchToken, _T("false"), 5))
+		else if (IsKeyword(pchTok, cchTok, _T("false"), 5))
 		{
 			Write(opNum);
 			WriteNumber(0.0f);
 		}
-		else if (IsKeyword(pchToken, cchToken, _T("this"), 4))
+		else if (IsKeyword(pchTok, cchTok, _T("this"), 4))
 		{
 			Write(opThis);
 		}
-		else if (IsKeyword(pchToken, cchToken, _T("null"), 4))
+		else if (IsKeyword(pchTok, cchTok, _T("null"), 4))
 		{
 			Write(opNull);
 		}
-		else if (IsKeyword(pchToken, cchToken, _T("new"), 3))
+		else if (IsKeyword(pchTok, cchTok, _T("new"), 3))
 		{
 			const TCHAR* pchClass;
 			int cchClass;
@@ -869,7 +869,7 @@ const TCHAR* CFunctionCompiler::ParseTerm(const TCHAR* pch)
 		{
 			int iLocal = 0;
 			while (iLocal < m_nFrameSize &&
-			       !(m_rgstLocal[iLocal].cchName == cchToken && _tcsncmp(pchToken, m_rgstLocal[iLocal].pchName, cchToken) == 0))
+			       !(m_rgstLocal[iLocal].cchName == cchTok && _tcsncmp(pchTok, m_rgstLocal[iLocal].pchName, cchTok) == 0))
 			{
 				iLocal++;
 			}
@@ -882,7 +882,7 @@ const TCHAR* CFunctionCompiler::ParseTerm(const TCHAR* pch)
 			else
 			{
 				Write(opVar);
-				WriteString(pchToken, cchToken);
+				WriteString(pchTok, cchTok);
 			}
 		}
 	}
@@ -973,13 +973,13 @@ const TCHAR* CFunctionCompiler::ParseExp(const TCHAR* pch, int nPrio)
 				pch = ParseArray(pch);
 		}
 
-		const DOPER* pdoper;
-		const TCHAR* pchRight = ParseOperator(pch, pdoper);
-		if (pdoper == NULL || pdoper->m_pri != nPrio)
+		const DOPER* pOp;
+		const TCHAR* pchRight = ParseOperator(pch, pOp);
+		if (pOp == NULL || pOp->m_pri != nPrio)
 			return pch;
 
 		pch = ParseExp(pchRight, nPrio - 1);
-		Write(pdoper->m_op);
+		Write(pOp->m_op);
 	}
 }
 
@@ -1019,13 +1019,13 @@ const TCHAR* CFunctionCompiler::ParseIF(const TCHAR* pch)
 
 	pch = ParseStatement(pch + 1);
 
-	const TCHAR* pchToken;
-	int cchToken;
-	const TCHAR* pchAfter = Token(pch, pchToken, cchToken);
-	if (!IsKeyword(pchToken, cchToken, _T("else"), 4))
+	const TCHAR* pchTok;
+	int cchTok;
+	const TCHAR* pchAfter = Token(pch, pchTok, cchTok);
+	if (!IsKeyword(pchTok, cchTok, _T("else"), 4))
 	{
 		Fixup(nopSkipThen, GetAddress());
-		return pchToken;
+		return pchTok;
 	}
 
 	Write(opJump);
@@ -1054,7 +1054,7 @@ const TCHAR* CFunctionCompiler::ParseWHILE(const TCHAR* pch)
 	if (*pch != '(')
 	{
 		SyntaxError(_T("expected '('"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	int nopOuterTop = m_nopTopOfLoop;
@@ -1064,7 +1064,7 @@ const TCHAR* CFunctionCompiler::ParseWHILE(const TCHAR* pch)
 	if (*pch != ')')
 	{
 		SyntaxError(_T("expected ')'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	Write(opCond);
@@ -1102,34 +1102,34 @@ const TCHAR* CFunctionCompiler::ParseDO(const TCHAR* pch)
 
 	pch = ParseStatement(pch + 1);
 
-	const TCHAR* pchToken;
-	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
-	if (!IsKeyword(pchToken, cchToken, _T("while"), 5))
+	const TCHAR* pchTok;
+	int cchTok;
+	pch = Token(pch, pchTok, cchTok);
+	if (!IsKeyword(pchTok, cchTok, _T("while"), 5))
 	{
 		SyntaxError(_T("expected 'while'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	pch = SkipWhite(pch);
 	if (*pch != '(')
 	{
 		SyntaxError(_T("expected '('"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	pch = SkipWhite(ParseExpression(pch + 1));
 	if (*pch != ')')
 	{
 		SyntaxError(_T("expected ')'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	pch = SkipWhite(pch + 1);
 	if (*pch != ';')
 	{
 		SyntaxError(_T("expected ';'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	Write(opCond);
@@ -1165,14 +1165,14 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 	if (*pch != '(')
 	{
 		SyntaxError(_T("expected '('"));
-		return szParseError;
+		return szGiveUp;
 	}
 	pch++;
 
-	const TCHAR* pchToken;
-	int cchToken;
-	Token(pch, pchToken, cchToken);
-	if (IsKeyword(pchToken, cchToken, _T("var"), 3))
+	const TCHAR* pchTok;
+	int cchTok;
+	Token(pch, pchTok, cchTok);
+	if (IsKeyword(pchTok, cchTok, _T("var"), 3))
 	{
 		pch = ParseLocalVar(pch + 3);
 	}
@@ -1184,7 +1184,7 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 		if (*pch != ';')
 		{
 			SyntaxError(_T("expected ';'"));
-			return szParseError;
+			return szGiveUp;
 		}
 		pch++;
 	}
@@ -1196,7 +1196,7 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 	if (*pch != ';')
 	{
 		SyntaxError(_T("expected ';'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	const TCHAR* pchStep = pch + 1;
@@ -1209,7 +1209,7 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 	if (*pch != ')')
 	{
 		SyntaxError(_T("expected ')'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	Write(opCond);
@@ -1237,13 +1237,13 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 //     for (b = m_breaks; b; b = next) { next = b->next; *(int*)(m_ops + b->nop) = m_nop; delete b; }
 void CFunctionCompiler::FixupBreaks()
 {
-	BREAK* pBreak = m_breaks;
-	while (pBreak != NULL)
+	BREAK* pEntry = m_breaks;
+	while (pEntry != NULL)
 	{
-		BREAK* pNext = pBreak->m_next;
-		Fixup(pBreak->m_nop, GetAddress());
-		delete pBreak;
-		pBreak = pNext;
+		BREAK* pNext = pEntry->m_next;
+		Fixup(pEntry->m_nop, GetAddress());
+		delete pEntry;
+		pEntry = pNext;
 	}
 }
 
@@ -1259,20 +1259,20 @@ const TCHAR* CFunctionCompiler::ParseBREAK(const TCHAR* pch)
 	if (*pch != ';')
 	{
 		SyntaxError(_T("Missing ';'"));
-		return szParseError;
+		return szGiveUp;
 	}
 	if (m_nBreakables == 0)
 	{
 		SyntaxError(_T("unexpected 'break'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	Write(opJump);
 
-	BREAK* pBreak = new BREAK;
-	pBreak->m_nop = GetAddress();
-	pBreak->m_next = m_breaks;
-	m_breaks = pBreak;
+	BREAK* pEntry = new BREAK;
+	pEntry->m_nop = GetAddress();
+	pEntry->m_next = m_breaks;
+	m_breaks = pEntry;
 
 	WriteInteger(0);
 	return pch + 1;
@@ -1287,12 +1287,12 @@ const TCHAR* CFunctionCompiler::ParseCONTINUE(const TCHAR* pch)
 	if (*pch != ';')
 	{
 		SyntaxError(_T("Missing ';'"));
-		return szParseError;
+		return szGiveUp;
 	}
 	if (m_nBreakables == 0)
 	{
 		SyntaxError(_T("unexpected 'continue'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
 	Write(opJump);
@@ -1320,7 +1320,7 @@ static const TCHAR* ParseValueThenOp(CFunctionCompiler* pCompiler, const TCHAR* 
 		if (*pch != ';')
 		{
 			pCompiler->SyntaxError(_T("Missing ';'"));
-			return szParseError;
+			return szGiveUp;
 		}
 	}
 
@@ -1397,50 +1397,50 @@ const TCHAR* CFunctionCompiler::ParseStatement(const TCHAR* pch)
 	if (*pch == '{')
 		return ParseBlock(pch);
 
-	const TCHAR* pchToken;
-	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
+	const TCHAR* pchTok;
+	int cchTok;
+	pch = Token(pch, pchTok, cchTok);
 
 	Write(opStatement);
 	WriteInteger(g_nLine);
 
-	switch (cchToken)
+	switch (cchTok)
 	{
 	case 2:
-		if (_tcsncmp(pchToken, _T("if"), 2) == 0)
+		if (_tcsncmp(pchTok, _T("if"), 2) == 0)
 			return ParseIF(pch);
-		if (_tcsncmp(pchToken, _T("do"), 2) == 0)
+		if (_tcsncmp(pchTok, _T("do"), 2) == 0)
 			return ParseDO(pch);
 		break;
 
 	case 3:
-		if (_tcsncmp(pchToken, _T("var"), 3) == 0)
+		if (_tcsncmp(pchTok, _T("var"), 3) == 0)
 			return ParseLocalVar(pch);
-		if (_tcsncmp(pchToken, _T("for"), 3) == 0)
+		if (_tcsncmp(pchTok, _T("for"), 3) == 0)
 			return ParseFOR(pch);
 		break;
 
 	case 5:
-		if (_tcsncmp(pchToken, _T("while"), 5) == 0)
+		if (_tcsncmp(pchTok, _T("while"), 5) == 0)
 			return ParseWHILE(pch);
-		if (_tcsncmp(pchToken, _T("break"), 5) == 0)
+		if (_tcsncmp(pchTok, _T("break"), 5) == 0)
 			return ParseBREAK(pch);
-		if (m_bBehavior && _tcsncmp(pchToken, _T("sleep"), 5) == 0)
+		if (m_bBehavior && _tcsncmp(pchTok, _T("sleep"), 5) == 0)
 			return ParseSLEEP(pch);
 		break;
 
 	case 6:
-		if (_tcsncmp(pchToken, _T("return"), 6) == 0)
+		if (_tcsncmp(pchTok, _T("return"), 6) == 0)
 			return ParseRETURN(pch);
 		break;
 
 	case 8:
-		if (_tcsncmp(pchToken, _T("continue"), 8) == 0)
+		if (_tcsncmp(pchTok, _T("continue"), 8) == 0)
 			return ParseCONTINUE(pch);
 		break;
 	}
 
-	pch = ParseExpression(pchToken);
+	pch = ParseExpression(pchTok);
 	Write(opDrop);
 
 	if (*pch == '\0')
@@ -1448,7 +1448,7 @@ const TCHAR* CFunctionCompiler::ParseStatement(const TCHAR* pch)
 	if (*pch != ';')
 	{
 		SyntaxError(_T("expected ';'"));
-		return szParseError;
+		return szGiveUp;
 	}
 	return pch + 1;
 }
@@ -1470,7 +1470,7 @@ const TCHAR* CFunctionCompiler::ParseLocalVar(const TCHAR* pch)
 		if (!CHECK(m_nFrameSize < (int)countof(m_rgstLocal)))
 		{
 			SyntaxError(_T("Too many local variables"));
-			return szParseError;
+			return szGiveUp;
 		}
 
 		const int iSlot = m_nFrameSize++;
@@ -1505,9 +1505,9 @@ const TCHAR* CFunctionCompiler::ParseLocalVar(const TCHAR* pch)
 // CClassCompiler::CClassCompiler
 // Inlined in 5960 (CClass::ParseClassBody @0x33d60): a zeroed compiler
 // pointed at the class being built.
-CClassCompiler::CClassCompiler(CClass* pClass)
+CClassCompiler::CClassCompiler(CClass* pNewClass)
 {
-	m_targetClass = pClass;
+	m_targetClass = pNewClass;
 }
 
 // CClassCompiler::Compile
@@ -1561,51 +1561,51 @@ static void ReportUnknown(CCompiler* pCompiler, const TCHAR* szFormat, const TCH
 // Theseus spells "Expected a '}'" right; 5960 has a typo there.
 const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 {
-	const TCHAR* pchToken;
-	int cchToken;
-	pch = Token(pch, pchToken, cchToken);
+	const TCHAR* pchTok;
+	int cchTok;
+	pch = Token(pch, pchTok, cchTok);
 
-	if (IsKeyword(pchToken, cchToken, _T("DEF"), 3))
+	if (IsKeyword(pchTok, cchTok, _T("DEF"), 3))
 	{
 		const TCHAR* pchName;
 		int cchName;
 		pch = Token(pch, pchName, cchName, true);
 
-		CMember* pMember = new CMember;
-		pMember->m_memberIndex = m_targetClass->m_nVarCount++;
-		m_targetClass->AddMember(pchName, cchName, pMember);
+		CMember* pVar = new CMember;
+		pVar->m_memberIndex = m_targetClass->m_nVarCount++;
+		m_targetClass->AddMember(pchName, cchName, pVar);
 
 		Write(opDefNode);
-		WriteInteger(pMember->m_memberIndex);
+		WriteInteger(pVar->m_memberIndex);
 
 		pch = ParseNode(pch);
 	}
-	else if (IsKeyword(pchToken, cchToken, _T("USE"), 3))
+	else if (IsKeyword(pchTok, cchTok, _T("USE"), 3))
 	{
 		const TCHAR* pchName;
 		int cchName;
 		pch = Token(pch, pchName, cchName, true);
 
-		CMember* pMember = (CMember*)m_targetClass->GetMember(pchName, cchName);
-		if (pMember == NULL || pMember->m_obj != objMember)
+		CMember* pVar = (CMember*)m_targetClass->GetMember(pchName, cchName);
+		if (pVar == NULL || pVar->m_obj != objMember)
 		{
 			TCHAR szName[256];
 			CopyNameForMessage(szName, countof(szName), pchName, cchName);
 			SyntaxError(_T("Undefined USE '%s'"), szName);
-			return szParseError;
+			return szGiveUp;
 		}
 
 		Write(opUseNode);
-		WriteInteger(pMember->m_memberIndex);
+		WriteInteger(pVar->m_memberIndex);
 	}
-	else if (IsKeyword(pchToken, cchToken, _T("behavior"), 8))
+	else if (IsKeyword(pchTok, cchTok, _T("behavior"), 8))
 	{
 		CFunction* pBehavior;
 		pch = ParseFunction(pch, pBehavior, true);
 		if (pBehavior != NULL)
-			m_targetClass->SetMember(pchToken, cchToken, pBehavior);
+			m_targetClass->SetMember(pchTok, cchTok, pBehavior);
 	}
-	else if (IsKeyword(pchToken, cchToken, _T("function"), 8))
+	else if (IsKeyword(pchTok, cchTok, _T("function"), 8))
 	{
 		const TCHAR* pchName;
 		int cchName;
@@ -1613,23 +1613,23 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 		if (IsKeyword(pchName, cchName, _T("behavior"), 8))
 		{
 			SyntaxError(_T("invalid function name"));
-			return szParseError;
+			return szGiveUp;
 		}
 
-		CFunction* pFunction;
-		pch = ParseFunction(pch, pFunction);
-		if (pFunction != NULL)
-			m_targetClass->SetMember(pchName, cchName, pFunction);
+		CFunction* pFn;
+		pch = ParseFunction(pch, pFn);
+		if (pFn != NULL)
+			m_targetClass->SetMember(pchName, cchName, pFn);
 	}
-	else if (IsKeyword(pchToken, cchToken, _T("var"), 3))
+	else if (IsKeyword(pchTok, cchTok, _T("var"), 3))
 	{
 		pch = ParseMemberVar(pch);
 	}
-	else if (IsKeyword(pchToken, cchToken, _T("class"), 5))
+	else if (IsKeyword(pchTok, cchTok, _T("class"), 5))
 	{
 		pch = ParseClass(pch);
 	}
-	else if (IsKeyword(pchToken, cchToken, _T("import"), 6))
+	else if (IsKeyword(pchTok, cchTok, _T("import"), 6))
 	{
 		const TCHAR* pchName;
 		int cchName;
@@ -1639,54 +1639,54 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 		if (*pch != ',')
 		{
 			SyntaxError(_T("Expected ','"));
-			return szParseError;
+			return szGiveUp;
 		}
 
-		const TCHAR* pchURL;
-		int cchURL;
-		pch = Token(pch + 1, pchURL, cchURL);
+		const TCHAR* pchPath;
+		int cchPath;
+		pch = Token(pch + 1, pchPath, cchPath);
 
 		// Theseus fix: 5960 copies the url into its buffer without a length check.
-		TCHAR szURL[MAX_PATH];
-		if (!CHECK(cchURL < MAX_PATH))
+		TCHAR szPath[MAX_PATH];
+		if (!CHECK(cchPath < MAX_PATH))
 		{
 			SyntaxError(_T("Import path is too long"));
-			return szParseError;
+			return szGiveUp;
 		}
-		CopyChars(szURL, pchURL, cchURL);
-		szURL[cchURL] = '\0';
+		CopyChars(szPath, pchPath, cchPath);
+		szPath[cchPath] = '\0';
 
 		CClass* pImported = new CClass;
-		if (!pImported->Load(szURL))
+		if (!pImported->Load(szPath))
 		{
 			delete pImported;
-			return szParseError;
+			return szGiveUp;
 		}
 
 		g_classes->Define(pchName, cchName, (CNode*)pImported);
 	}
 	else
 	{
-		CNodeClass* pNodeClass = LookupClass(pchToken, cchToken);
-		if (pNodeClass == NULL)
-			pNodeClass = CNodeClass::FindByName(pchToken, cchToken);
-		if (pNodeClass == NULL)
+		CNodeClass* pNodeType = LookupClass(pchTok, cchTok);
+		if (pNodeType == NULL)
+			pNodeType = CNodeClass::FindByName(pchTok, cchTok);
+		if (pNodeType == NULL)
 		{
-			ReportUnknown(this, _T("Unknown class: %s"), pchToken, cchToken);
-			return szParseError;
+			ReportUnknown(this, _T("Unknown class: %s"), pchTok, cchTok);
+			return szGiveUp;
 		}
 
 		Write(opNewNode);
-		WriteString(pchToken, cchToken);
+		WriteString(pchTok, cchTok);
 
 		pch = SkipWhite(pch);
 		if (*pch == '{')
 		{
-			pch = ParseProps(pch + 1, pNodeClass);
+			pch = ParseProps(pch + 1, pNodeType);
 			if (*pch != '}')
 			{
 				SyntaxError(_T("Expected a '}'"));
-				return szParseError;
+				return szGiveUp;
 			}
 			pch++;
 		}
@@ -1735,7 +1735,7 @@ const TCHAR* CClassCompiler::ParseChildren(const TCHAR* pch)
 // arrays) and emitted as opInitProp, the PRD, then the value: strings as
 // length + characters, the rest as byte count + bytes.
 // See docs/decomp/Compiler.md for the type to reader table.
-const TCHAR* CClassCompiler::ParseProps(const TCHAR* pch, CNodeClass* pNodeClass)
+const TCHAR* CClassCompiler::ParseProps(const TCHAR* pch, CNodeClass* pNodeType)
 {
 	for (pch = SkipWhite(pch); *pch != '\0' && *pch != '}'; pch = SkipWhite(pch))
 	{
@@ -1752,16 +1752,16 @@ const TCHAR* CClassCompiler::ParseProps(const TCHAR* pch, CNodeClass* pNodeClass
 				if (IsKeyword(pchName, cchName, _T("behavior"), 8))
 				{
 					SyntaxError(_T("invalid function name"));
-					return szParseError;
+					return szGiveUp;
 				}
 			}
 
-			CFunction* pFunction;
-			pch = ParseFunction(pch, pFunction, bBehavior);
-			if (pFunction != NULL)
+			CFunction* pFn;
+			pch = ParseFunction(pch, pFn, bBehavior);
+			if (pFn != NULL)
 			{
 				int iFunction = m_targetClass->m_instanceFunctions.GetLength();
-				m_targetClass->m_instanceFunctions.AddNode((CNode*)pFunction);
+				m_targetClass->m_instanceFunctions.AddNode((CNode*)pFn);
 				Write(opFunction);
 				WriteString(pchName, cchName);
 				WriteInteger(iFunction);
@@ -1769,11 +1769,11 @@ const TCHAR* CClassCompiler::ParseProps(const TCHAR* pch, CNodeClass* pNodeClass
 			continue;
 		}
 
-		const PRD* pprd = pNodeClass->FindProp(pchName, cchName);
+		const PRD* pprd = pNodeType->FindProp(pchName, cchName);
 		if (pprd == NULL)
 		{
 			ReportUnknown(this, _T("Unknown property: %s"), pchName, cchName);
-			return szParseError;
+			return szGiveUp;
 		}
 
 		switch (pprd->nType)
@@ -1804,61 +1804,61 @@ const TCHAR* CClassCompiler::ParseProps(const TCHAR* pch, CNodeClass* pNodeClass
 			float v[4];
 			TCHAR* sz;
 		} value;
-		BYTE* pbArray = NULL;
-		int cbValue = 0;
+		BYTE* pbItems = NULL;
+		int cbData = 0;
 
 		switch (pprd->nType)
 		{
 		case pt_integer:
 			pch = ParseInteger(pch, value.i);
-			cbValue = sizeof(int);
+			cbData = sizeof(int);
 			break;
 
 		case pt_boolean:
 			pch = ParseBoolean(pch, value.b);
-			cbValue = sizeof(bool);
+			cbData = sizeof(bool);
 			break;
 
 		case pt_number:
 			pch = ParseNumber(pch, value.n);
-			cbValue = sizeof(float);
+			cbData = sizeof(float);
 			break;
 
 		case pt_vec3:
 		case pt_color:
 			pch = ParseVec3(pch, value.v);
-			cbValue = 3 * sizeof(float);
+			cbData = 3 * sizeof(float);
 			break;
 
 		case pt_vec4:
 		case pt_quaternion:
 			pch = ParseVec4(pch, value.v);
-			cbValue = 4 * sizeof(float);
+			cbData = 4 * sizeof(float);
 			break;
 
 		case pt_string:
 			pch = ParseString(pch, value.sz);
-			cbValue = _tcslen(value.sz);
+			cbData = _tcslen(value.sz);
 			break;
 
 		case pt_intarray:
-			pch = ParseIntArray(pch, pbArray, cbValue);
+			pch = ParseIntArray(pch, pbItems, cbData);
 			break;
 
 		case pt_numarray:
-			pch = ParseVecArray(pch, pbArray, cbValue, 1);
+			pch = ParseVecArray(pch, pbItems, cbData, 1);
 			break;
 
 		case pt_vec2array:
-			pch = ParseVecArray(pch, pbArray, cbValue, 2);
+			pch = ParseVecArray(pch, pbItems, cbData, 2);
 			break;
 
 		case pt_vec3array:
-			pch = ParseVecArray(pch, pbArray, cbValue, 3);
+			pch = ParseVecArray(pch, pbItems, cbData, 3);
 			break;
 
 		case pt_vec4array:
-			pch = ParseVecArray(pch, pbArray, cbValue, 4);
+			pch = ParseVecArray(pch, pbItems, cbData, 4);
 			break;
 
 		default:
@@ -1870,20 +1870,20 @@ const TCHAR* CClassCompiler::ParseProps(const TCHAR* pch, CNodeClass* pNodeClass
 
 		if (pprd->nType == pt_string)
 		{
-			WriteString(value.sz, cbValue);
+			WriteString(value.sz, cbData);
 			delete[] value.sz;
 		}
 		else
 		{
-			WriteInteger(cbValue);
-			if (pbArray != NULL)
+			WriteInteger(cbData);
+			if (pbItems != NULL)
 			{
-				Write(pbArray, cbValue);
-				delete[] pbArray;
+				Write(pbItems, cbData);
+				delete[] pbItems;
 			}
 			else
 			{
-				Write(&value, cbValue);
+				Write(&value, cbData);
 			}
 		}
 	}
@@ -1904,15 +1904,15 @@ const TCHAR* CClassCompiler::ParseMemberVar(const TCHAR* pch)
 		int cchName;
 		pch = Token(pch, pchName, cchName);
 
-		CMember* pMember = new CMember;
-		pMember->m_memberIndex = m_targetClass->m_nVarCount++;
-		m_targetClass->AddMember(pchName, cchName, pMember);
+		CMember* pVar = new CMember;
+		pVar->m_memberIndex = m_targetClass->m_nVarCount++;
+		m_targetClass->AddMember(pchName, cchName, pVar);
 
 		pch = SkipWhite(pch);
 		if (*pch == '=')
 		{
 			SyntaxError(_T("Sorry, class member initializers have not been implemented yet!"));
-			return szParseError;
+			return szGiveUp;
 		}
 
 		if (*pch != ',')
@@ -1936,12 +1936,12 @@ const TCHAR* CClassCompiler::ParseMemberVar(const TCHAR* pch)
 // Behaviors take no list. The body must start with '{' or there's no
 // function. The block is compiled, opNull opRet is appended as the implicit
 // "return null;" and the ops become the CFunction.
-const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFunction, bool bBehavior)
+const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFn, bool bBehavior)
 {
 	CFunctionCompiler body;
 	body.m_bBehavior = bBehavior;
 
-	pFunction = NULL;
+	pFn = NULL;
 	pch = SkipWhite(pch);
 
 	if (!bBehavior)
@@ -1959,7 +1959,7 @@ const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFuncti
 			if (!CHECK(body.m_nFrameSize < (int)countof(body.m_rgstLocal)))
 			{
 				SyntaxError(_T("Too many parameters"));
-				return szParseError;
+				return szGiveUp;
 			}
 
 			ST& local = body.m_rgstLocal[body.m_nFrameSize++];
@@ -1974,7 +1974,7 @@ const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFuncti
 		if (*pch != ')')
 		{
 			SyntaxError(_T("expected ')'\n"));
-			return szParseError;
+			return szGiveUp;
 		}
 		pch++;
 	}
@@ -1987,7 +1987,7 @@ const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFuncti
 	body.Write(opNull);
 	body.Write(opRet);
 
-	pFunction = body.CreateFunction();
+	pFn = body.CreateFunction();
 	return pch;
 }
 
@@ -2006,18 +2006,18 @@ const TCHAR* CClassCompiler::ParseClass(const TCHAR* pch)
 	if (*pch != '{')
 	{
 		SyntaxError(_T("Expected '{'\n"));
-		return szParseError;
+		return szGiveUp;
 	}
 
-	CClass* pClass = new CClass;
-	pch = pClass->ParseClassBody(pch + 1);
+	CClass* pNewClass = new CClass;
+	pch = pNewClass->ParseClassBody(pch + 1);
 	if (*pch != '}')
 	{
 		SyntaxError(_T("Expected '}'"));
-		return szParseError;
+		return szGiveUp;
 	}
 
-	g_classes->Define(pchName, cchName, (CNode*)pClass);
+	g_classes->Define(pchName, cchName, (CNode*)pNewClass);
 	return pch + 1;
 }
 
