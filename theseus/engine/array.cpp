@@ -96,6 +96,13 @@ CArrayElementReference::~CArrayElementReference()
 // Writing past the end stretches the array, filling the gap with nulls.
 void CArrayElementReference::Assign(CObject *pObject)
 {
+	// Theseus refuses a negative index; 5960 writes in front of the block.
+	if (m_nIndex < 0)
+	{
+		g_pRunner->Error(_T("Array reference out of bounds"));
+		return;
+	}
+
 	if (m_pArray->m_nLength <= m_nIndex)
 		m_pArray->Grow(m_nIndex + 1);
 
@@ -373,6 +380,12 @@ CObject *CArrayObject::slice(CObject **rgparam, int nParam /*int nStart, int nEn
 
 	if (nEnd < 0)
 		nEnd += m_nLength + 1;
+
+	// Theseus keeps the copy inside the array; 5960 reads past either end.
+	if (nStart < 0)
+		nStart = 0;
+	if (nEnd > m_nLength)
+		nEnd = m_nLength;
 
 	int nCount = nEnd - nStart;
 	if (nCount < 0)
