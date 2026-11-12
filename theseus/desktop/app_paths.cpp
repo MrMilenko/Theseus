@@ -7,7 +7,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
+#include <map>
+#include <string>
 
 #include "host.h"
 
@@ -93,6 +96,136 @@ static void CopyTree(const char* src, const char* dst) {
     Host_CloseDir(dir);
 }
 
+// Data/ is shipped content, so updates have to reach installs that already
+// have a copy. .shipped remembers what we copied (shipped size + mtime) and
+// what the user's copy looked like right after. A copy that still matches is
+// ours to replace; one the user changed is theirs and stays put.
+struct ShippedRec { uint64_t shipSize; int64_t shipTime; uint64_t userSize; int64_t userTime; };
+static std::map<std::string, ShippedRec> s_shipped;
+static bool s_shippedDirty = false;
+
+static std::string ShippedManifestPath() {
+    return std::string(Plat_UserDataDir()) + "/Data/.shipped";
+}
+
+static void LoadShippedManifest() {
+    FILE* f = fopen(ShippedManifestPath().c_str(), "r");
+    if (!f) return;
+    char line[1400];
+    while (fgets(line, sizeof(line), f)) {
+        char rel[1024]; unsigned long long ss, us; long long st, ut;
+        if (sscanf(line, "%llu %lld %llu %lld %1023[^\n]", &ss, &st, &us, &ut, rel) == 5)
+            s_shipped[rel] = { ss, st, us, ut };
+    }
+    fclose(f);
+}
+
+static void SaveShippedManifest() {
+    if (!s_shippedDirty) return;
+    std::string path = ShippedManifestPath(), tmp = path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "w");
+    if (!f) return;
+    for (const auto& kv : s_shipped)
+        fprintf(f, "%llu %lld %llu %lld %s\n", (unsigned long long)kv.second.shipSize, (long long)kv.second.shipTime,
+                (unsigned long long)kv.second.userSize, (long long)kv.second.userTime, kv.first.c_str());
+    if (fclose(f) == 0) Host_RenameReplace(tmp.c_str(), path.c_str());
+}
+
+static bool SameFileBytes(const char* a, const char* b) {
+    FILE* fa = fopen(a, "rb");
+    FILE* fb = fopen(b, "rb");
+    bool same = fa && fb;
+    char ba[65536], bb[65536];
+    while (same) {
+        size_t na = fread(ba, 1, sizeof(ba), fa), nb = fread(bb, 1, sizeof(bb), fb);
+        if (na != nb || memcmp(ba, bb, na) != 0) same = false;
+        if (na == 0) break;
+    }
+    if (fa) fclose(fa);
+    if (fb) fclose(fb);
+    return same;
+}
+
+// Copy beside the target, then swap it in, so a crash never leaves half a file.
+static bool ReplaceFile(const char* src, const char* dst) {
+    std::string part = std::string(dst) + ".part";
+    remove(part.c_str());
+    CopyFile(src, part.c_str());
+    HostFileInfo pi;
+    if (!Host_Stat(part.c_str(), &pi)) return false;
+    if (!Host_RenameReplace(part.c_str(), dst)) { remove(part.c_str()); return false; }
+    return true;
+}
+
+static void Remember(const std::string& rel, const HostFileInfo& ship, const char* dst) {
+    HostFileInfo ui;
+    if (!Host_Stat(dst, &ui)) return;
+    s_shipped[rel] = { ship.size, ship.mtime, ui.size, ui.mtime };
+    s_shippedDirty = true;
+}
+
+// Engine content: a stale copy of these breaks the dash, so on installs from
+// before .shipped existed a differing copy is set aside as .old and replaced.
+// Everything else (skins, music, orbs, screenshots) is left to the user.
+static bool IsEngineContent(const std::string& rel) {
+    static const char* kDirs[] = { "Data/Xips/", "Data/System/", "Data/Fonts/", "Data/Language/" };
+    for (const char* d : kDirs)
+        if (strncasecmp(rel.c_str(), d, strlen(d)) == 0) return true;
+    return false;
+}
+
+static void SyncShippedFile(const char* src, const char* dst, const std::string& rel) {
+    HostFileInfo ship, user;
+    if (!Host_Stat(src, &ship)) return;
+
+    if (!Host_Stat(dst, &user)) {
+        CopyFile(src, dst);
+        Remember(rel, ship, dst);
+        return;
+    }
+
+    auto it = s_shipped.find(rel);
+    if (it != s_shipped.end()) {
+        const ShippedRec& r = it->second;
+        bool shipChanged = r.shipSize != ship.size || r.shipTime != ship.mtime;
+        bool userUntouched = r.userSize == user.size && r.userTime == user.mtime;
+        if (shipChanged && userUntouched && ReplaceFile(src, dst)) {
+            Remember(rel, ship, dst);
+            fprintf(stderr, "[Paths] updated %s\n", rel.c_str());
+        }
+        return;
+    }
+
+    // Copied before .shipped existed, so we can't tell who last touched it.
+    if (SameFileBytes(src, dst)) {
+        Remember(rel, ship, dst);
+    } else if (IsEngineContent(rel)) {
+        std::string old = std::string(dst) + ".old";
+        if (Host_RenameReplace(dst, old.c_str()) && ReplaceFile(src, dst)) {
+            Remember(rel, ship, dst);
+            fprintf(stderr, "[Paths] updated %s (previous copy kept as .old)\n", rel.c_str());
+        }
+    }
+}
+
+static void SyncShippedTree(const char* src, const char* dst, const std::string& rel) {
+    Plat_MkdirP(dst);
+    HostDir* dir = Host_OpenDir(src);
+    if (!dir) return;
+    char name[260];
+    HostFileInfo info;
+    while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        char s[1024], d[1024];
+        snprintf(s, sizeof(s), "%s/%s", src, name);
+        snprintf(d, sizeof(d), "%s/%s", dst, name);
+        std::string r = rel + "/" + name;
+        if (info.attrs & HOST_ATTR_DIR) SyncShippedTree(s, d, r);
+        else                            SyncShippedFile(s, d, r);
+    }
+    Host_CloseDir(dir);
+}
+
 // Copy one tree into the user dir if it isn't there yet.
 static void SeedTree(const char* rel) {
     char dst[1024], src[1024];
@@ -120,6 +253,7 @@ void AppPaths_Init() {
     char dataDir[1024];
     snprintf(dataDir, sizeof(dataDir), "%s/Data", Plat_ShippedDir());
     Plat_MkdirP(AppPath_Tree("Data"));
+    LoadShippedManifest();
 
     HostDir* dir = Host_OpenDir(dataDir);
     if (!dir) return;
@@ -129,11 +263,13 @@ void AppPaths_Init() {
         if (!(info.attrs & HOST_ATTR_DIR)) continue;
         if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
         if (!strcasecmp(name, "shaders")) continue;
-        char rel[1024];
-        snprintf(rel, sizeof(rel), "Data/%s", name);
-        SeedTree(rel);
+        char src[1024], dst[1024];
+        snprintf(src, sizeof(src), "%s/%s", dataDir, name);
+        snprintf(dst, sizeof(dst), "%s/Data/%s", user, name);
+        SyncShippedTree(src, dst, std::string("Data/") + name);
     }
     Host_CloseDir(dir);
+    SaveShippedManifest();
 }
 
 const char* AppPathf(const char* fmt, ...) {
