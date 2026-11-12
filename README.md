@@ -192,7 +192,7 @@ Found a bug? Open an [issue](https://github.com/MrMilenko/Theseus/issues) or fin
 1. **Your OS and version**, and your GPU if it's a display problem
 2. **Which download you're running**: the file name carries the version and package. Help > About UIX Desktop shows it too
 3. **What you did, what you expected, and what happened instead**
-4. **`theseus.log`** from your user data folder (see [First run](#first-run)). If it crashed on the previous launch, attach `theseus.prev.log` as well
+4. **`theseus.log`** from your user data folder (see [First run](#first-run)). If it crashed on the previous launch, attach `theseus.prev.log` as well. A crash also leaves a report in the `crashes` folder there; attach the newest one
 
 On Windows, starting `theseus.exe` from a terminal sends the log to that terminal instead of the file.
 
