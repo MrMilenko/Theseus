@@ -107,50 +107,55 @@ public:
 
 
 
+// GenerateRadialAlphaMask   [no script binding; the four Get*AlphaMask build on it]
+// Reconstructed from 5960 retail XBE @ 0x00056110 (pixels in EAX, scale in
+// XMM0, pitch/width/height/factor/max on the stack, RET 0x14). Per pixel:
+//     d = sqrt(dx*dx + dy*dy)          dx, dy run -1..1 across the drawn block
+//     a = clamp((1 - clamp(d, 0, 1)) * factor, 0, max)
+//     pixel = (BYTE)(int)(a * 255) << 24     alpha only, color stays 0
+// Only the top-left width*scale by height*scale block is drawn; the rest of
+// each row and every row under it is cleared. 1.0 / 0.0 / 255.0 are the
+// binary's constants at 0x2bed8 / 0x2bee4 / 0x2bf38. Callers pass (factor,
+// max, scale): 0x562d0 (1, 1, 1), 0x563a0 (1, 1, 0.6875), 0x56470 (10, 0.8, 1),
+// 0x56540 (3, 1, 1). A round falloff has one sensible shape; this follows the
+// binary's clamps and integer halving rather than any other version of it.
 void GenerateRadialAlphaMask(BYTE *pbPels, int nPitch, int nWidth, int nHeight, float nFactor, float nMax, float nScale = 1.0f)
 {
-	LPDWORD pdwPels = (LPDWORD)pbPels;
-	int nRadialWidth = (int)((float)nWidth * nScale);
-	int nRadialHeight = (int)((float)nHeight * nScale);
-	int x, y;
+	const int cxDraw = (int)(nWidth * nScale);
+	const int cyDraw = (int)(nHeight * nScale);
+	const int halfX = cxDraw / 2;
+	const int halfY = cyDraw / 2;
+	const int rowBytes = nPitch & ~3;
 
-	for (y = 0; y < nRadialHeight; y += 1)
+	for (int y = 0; y < nHeight; y++)
 	{
-		for (x = 0; x < nRadialWidth; x += 1)
+		DWORD *pRow = (DWORD *)(pbPels + y * rowBytes);
+		int x = 0;
+
+		if (y < cyDraw)
 		{
-			float cx = (float)(x - nRadialWidth / 2) / (nRadialWidth / 2);
-			float cy = (float)(y - nRadialHeight / 2) / (nRadialHeight / 2);
-			float d = sqrtf(cx * cx + cy * cy);
+			float dy = (float)(y - halfY) / (float)halfY;
+			for (; x < cxDraw; x++)
+			{
+				float dx = (float)(x - halfX) / (float)halfX;
+				float d = sqrtf(dx * dx + dy * dy);
+				if (d < 0.0f)
+					d = 0.0f;
+				else if (d > 1.0f)
+					d = 1.0f;
 
-			if (d < 0.0f)
-				d = 0.0f;
-			else if (d > 1.0f)
-				d = 1.0f;
+				float a = (1.0f - d) * nFactor;
+				if (a < 0.0f)
+					a = 0.0f;
+				else if (a > nMax)
+					a = nMax;
 
-			float a = 1.0f - d;
-
-			a = a * nFactor;
-
-			if (a < 0.0f)
-				a = 0.0f;
-			else if (a > nMax)
-				a = nMax;
-
-			pdwPels[x] = ((BYTE)(a * 255.0f)) << 24;
+				pRow[x] = (DWORD)(BYTE)(int)(a * 255.0f) << 24;
+			}
 		}
 
-		for (; x < nWidth; x += 1)
-		{
-			pdwPels[x] = 0;
-		}
-
-		pdwPels += (nPitch >> 2);
-	}
-
-	for (; y < nHeight; y += 1)
-	{
-		memset(pdwPels, 0, nWidth << 2);
-		pdwPels += (nPitch >> 2);
+		for (; x < nWidth; x++)
+			pRow[x] = 0;
 	}
 }
 
