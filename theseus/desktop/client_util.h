@@ -7,22 +7,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sys/stat.h>
-#ifdef _WIN32
-#include <direct.h>
-#endif
+#include "host.h"
 
 // Join a worker thread if it is running.
 inline void JoinIf(std::thread& t) { if (t.joinable()) t.join(); }
 
-// Create a directory. POSIX mkdir takes (path, mode); the Windows CRT one
-// takes just (path).
-inline int Mkdir_(const char* path) {
-#ifdef _WIN32
-    return mkdir(path);
-#else
-    return mkdir(path, 0755);
-#endif
-}
+// Create a directory. 0 when it exists afterwards.
+inline int Mkdir_(const char* path) { return Host_MakeDir(path) ? 0 : -1; }
 
 // Random RFC 4122 version-4 UUID as a 36-char string plus NUL.
 inline void GenerateUUID(char out[37]) {

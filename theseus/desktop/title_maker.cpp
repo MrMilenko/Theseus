@@ -23,7 +23,7 @@
 #include <algorithm>
 #include <string>
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 #include <io.h>
 #include <direct.h>
 #include <process.h>
@@ -40,7 +40,7 @@ bool g_titleMakerOpen = false;
 static void TM_EnsureDir(const char* path) {
     struct stat st;
     if (stat(path, &st) != 0) {
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
         _mkdir(path);
 #else
         mkdir(path, 0755);
@@ -532,7 +532,7 @@ static bool TM_DownloadSteamIcon(int appid, const char* titleID) {
                 "sips -z 128 128 -s format jpeg \"%s\" --out \"%s\" >/dev/null 2>&1",
                 tmpPath, iconPath);
             bool resizeOk = (system(cmd) == 0);
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
             bool resizeOk = TM_CopyFile(tmpPath, iconPath);
 #else
             char cmd[1024];
@@ -597,7 +597,7 @@ static void TM_ImportSteamLibrary(const char* steamPath,
     };
 
     for (int d = 0; d < libCount && gameCount < 256; d++) {
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
         char searchBuf[512];
         snprintf(searchBuf, sizeof(searchBuf), "%s\\appmanifest_*", libDirs[d]);
         struct _finddata_t fd;
@@ -809,7 +809,7 @@ void RenderTitleMaker() {
                 "/Applications/xemu.app",
                 "/opt/homebrew/bin/xemu",
                 "/usr/local/bin/xemu",
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
                 "C:\\Program Files\\xemu\\xemu.exe",
                 "C:\\Program Files (x86)\\xemu\\xemu.exe",
 #else
@@ -1362,7 +1362,7 @@ void RenderTitleMaker() {
             ImGui::SameLine();
             if (ImGui::SmallButton("Find##st")) {
                 const char* user = NULL;
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
                 user = getenv("USERNAME");
 #else
                 user = getenv("USER");
@@ -1372,7 +1372,7 @@ void RenderTitleMaker() {
                 const char* tryRoots[] = {
 #ifdef __APPLE__
                     "/Users/%s/Library/Application Support/Steam",
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
                     "C:\\Program Files (x86)\\Steam",
                     "C:\\Program Files\\Steam",
                     "D:\\Steam",

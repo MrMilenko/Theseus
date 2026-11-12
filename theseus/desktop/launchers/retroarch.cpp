@@ -17,17 +17,20 @@
 #include <cstring>
 #include <sys/stat.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dirent.h>
-#endif
+#include "platform.h"
+#include "host.h"
 
 extern char s_retroarchPath[512];
 
 namespace {
 
-#ifdef _WIN32
+// Case-insensitive "name ends with ext", like a Win32 *.ext glob.
+bool HasExt(const char* name, const char* ext) {
+	size_t n = strlen(name), e = strlen(ext);
+	return n >= e && strcasecmp(name + n - e, ext) == 0;
+}
+
+#ifdef THESEUS_HOST_WIN
 const char  kPathSep     = '\\';
 const char* kRetroArchExe = "retroarch.exe";
 #else
@@ -88,7 +91,7 @@ bool ParseField(const char* query, const char* key, char* out, size_t outSize) {
 
 bool LooksAbsolute(const char* p) {
 	if (!p || !*p) return false;
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 	if (p[0] && p[1] == ':' && (p[2] == '\\' || p[2] == '/')) return true;
 	if (p[0] == '\\' && p[1] == '\\') return true;
 	return false;
@@ -185,7 +188,7 @@ int RetroArch_DiscoverInstall(const char* userOverride,
 
 	if (userOverride && *userOverride) append(userOverride);
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 	const char* candidates[] = {
 		"C:\\RetroArch",
 		"C:\\RetroArch-Win64",
@@ -197,7 +200,7 @@ int RetroArch_DiscoverInstall(const char* userOverride,
 		0
 	};
 	for (int i = 0; candidates[i]; i++) append(candidates[i]);
-#elif defined(__APPLE__)
+#elif defined(THESEUS_HOST_MAC)
 	const char* home = getenv("HOME");
 	if (home) {
 		char buf[512];
@@ -252,7 +255,7 @@ bool RetroArch_DiscoverPlaylistsDir(const char* installRoot,
 		snprintf(buf, sizeof(buf), "%s/Documents/RetroArch/playlists", home);
 		if (DirExists(buf)) { strncpy(outDir, buf, outSize - 1); outDir[outSize - 1] = 0; return true; }
 	}
-#elif !defined(_WIN32)
+#elif !defined(THESEUS_HOST_WIN)
 	const char* home = getenv("HOME");
 	if (home) {
 		snprintf(buf, sizeof(buf), "%s/.config/retroarch/playlists", home);
@@ -270,9 +273,9 @@ bool RetroArch_FindCoreForSystem(const char* installRoot, const char* systemName
 	if (outSize) outCoreFile[0] = '\0';
 	if (!installRoot || !*installRoot || !systemName || !*systemName) return false;
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 	const char* coreExt = ".dll";
-#elif defined(__APPLE__)
+#elif defined(THESEUS_HOST_MAC)
 	const char* coreExt = ".dylib";
 #else
 	const char* coreExt = ".so";
@@ -323,31 +326,17 @@ bool RetroArch_FindCoreForSystem(const char* installRoot, const char* systemName
 		fclose(fp);
 	};
 
-#ifdef _WIN32
-	char glob[700];
-	snprintf(glob, sizeof(glob), "%s\\*.info", infoDir);
-	WIN32_FIND_DATAA fd;
-	HANDLE h = FindFirstFileA(glob, &fd);
-	if (h != INVALID_HANDLE_VALUE) {
-		do {
-			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-			tryFile(fd.cFileName);
-			if (found) break;
-		} while (FindNextFileA(h, &fd));
-		FindClose(h);
-	}
-#else
-	DIR* d = opendir(infoDir);
+	HostDir* d = Host_OpenDir(infoDir);
 	if (d) {
-		struct dirent* ent;
-		while ((ent = readdir(d)) && !found) {
-			size_t len = strlen(ent->d_name);
-			if (len < 5 || strcmp(ent->d_name + len - 5, ".info") != 0) continue;
-			tryFile(ent->d_name);
+		char name[260];
+		HostFileInfo info;
+		while (!found && Host_ReadDir(d, name, sizeof(name), &info)) {
+			if (info.attrs & HOST_ATTR_DIR) continue;
+			if (!HasExt(name, ".info")) continue;
+			tryFile(name);
 		}
-		closedir(d);
+		Host_CloseDir(d);
 	}
-#endif
 	return found;
 }
 
@@ -565,34 +554,19 @@ int RetroArch_WalkPlaylists(const char* playlistsDir,
 	if (!playlistsDir || !*playlistsDir || !cb) return 0;
 	int total = 0;
 
-#ifdef _WIN32
-	char glob[700];
-	snprintf(glob, sizeof(glob), "%s\\*.lpl", playlistsDir);
-	WIN32_FIND_DATAA fd;
-	HANDLE h = FindFirstFileA(glob, &fd);
-	if (h != INVALID_HANDLE_VALUE) {
-		do {
-			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-			char filePath[900];
-			snprintf(filePath, sizeof(filePath), "%s\\%s", playlistsDir, fd.cFileName);
-			total += WalkOnePlaylist(filePath, cb, userdata);
-		} while (FindNextFileA(h, &fd));
-		FindClose(h);
-	}
-#else
-	DIR* d = opendir(playlistsDir);
+	HostDir* d = Host_OpenDir(playlistsDir);
 	if (d) {
-		struct dirent* ent;
-		while ((ent = readdir(d))) {
-			size_t len = strlen(ent->d_name);
-			if (len < 4 || strcmp(ent->d_name + len - 4, ".lpl") != 0) continue;
+		char name[260];
+		HostFileInfo info;
+		while (Host_ReadDir(d, name, sizeof(name), &info)) {
+			if (info.attrs & HOST_ATTR_DIR) continue;
+			if (!HasExt(name, ".lpl")) continue;
 			char filePath[900];
-			snprintf(filePath, sizeof(filePath), "%s/%s", playlistsDir, ent->d_name);
+			snprintf(filePath, sizeof(filePath), "%s%c%s", playlistsDir, kPathSep, name);
 			total += WalkOnePlaylist(filePath, cb, userdata);
 		}
-		closedir(d);
+		Host_CloseDir(d);
 	}
-#endif
 
 	// Also walk the recent-launches history under builtin/ which lives
 	// outside the top-level .lpl glob.
@@ -608,10 +582,10 @@ int RetroArch_EnumerateCores(const char* installRoot,
                               char outCores[][256], int maxCores) {
 	if (!installRoot || !*installRoot || !outCores || maxCores <= 0) return 0;
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 	const char* ext = ".dll";
 	char sep = '\\';
-#elif defined(__APPLE__)
+#elif defined(THESEUS_HOST_MAC)
 	const char* ext = ".dylib";
 	char sep = '/';
 #else
@@ -625,33 +599,18 @@ int RetroArch_EnumerateCores(const char* installRoot,
 	int n = 0;
 	size_t extLen = strlen(ext);
 
-#ifdef _WIN32
-	char glob[700];
-	snprintf(glob, sizeof(glob), "%s\\*%s", dir, ext);
-	WIN32_FIND_DATAA fd;
-	HANDLE h = FindFirstFileA(glob, &fd);
-	if (h == INVALID_HANDLE_VALUE) return 0;
-	do {
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-		strncpy(outCores[n], fd.cFileName, 255);
-		outCores[n][255] = '\0';
-		if (++n >= maxCores) break;
-	} while (FindNextFileA(h, &fd));
-	FindClose(h);
-#else
-	DIR* d = opendir(dir);
+	HostDir* d = Host_OpenDir(dir);
 	if (!d) return 0;
-	struct dirent* ent;
-	while ((ent = readdir(d)) && n < maxCores) {
-		size_t len = strlen(ent->d_name);
-		if (len < extLen) continue;
-		if (strcmp(ent->d_name + len - extLen, ext) != 0) continue;
-		strncpy(outCores[n], ent->d_name, 255);
+	char name[260];
+	HostFileInfo info;
+	while (n < maxCores && Host_ReadDir(d, name, sizeof(name), &info)) {
+		if (info.attrs & HOST_ATTR_DIR) continue;
+		if (!HasExt(name, ext)) continue;
+		strncpy(outCores[n], name, 255);
 		outCores[n][255] = '\0';
 		n++;
 	}
-	closedir(d);
-#endif
+	Host_CloseDir(d);
 
 	return n;
 }

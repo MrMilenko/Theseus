@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#endif
 #if defined(__APPLE__) || defined(__GLIBC__)
 #include <execinfo.h>
 #define HAS_BACKTRACE 1
@@ -135,3 +138,36 @@ bool Host_PickFile(const char* title, char* out, size_t outSize) {
 	while (n && (out[n - 1] == '\n' || out[n - 1] == '\r')) out[--n] = '\0';
 	return n > 0;
 }
+
+bool Host_ExePath(char* out, size_t outSize) {
+#ifdef __APPLE__
+	uint32_t sz = (uint32_t)outSize;
+	return _NSGetExecutablePath(out, &sz) == 0;
+#else
+	ssize_t len = readlink("/proc/self/exe", out, outSize - 1);
+	if (len <= 0) return false;
+	out[len] = '\0';
+	return true;
+#endif
+}
+
+void Host_OpenFolder(const char* dir) {
+	// Fork so a slow file manager can't stall us, and no shell is involved.
+	pid_t pid = fork();
+	if (pid == 0) {
+#ifdef __APPLE__
+		execlp("open", "open", dir, (char*)NULL);
+#else
+		// Under flatpak we want the host's file manager.
+		if (getenv("FLATPAK_ID"))
+			execlp("flatpak-spawn", "flatpak-spawn", "--host", "xdg-open", dir, (char*)NULL);
+		execlp("xdg-open", "xdg-open", dir, (char*)NULL);
+#endif
+		_exit(127);
+	}
+}
+
+bool Host_RegistryString(const char*, const char*, char*, size_t) { return false; }
+
+// Linux reads its TOC in cdaudio.cpp.
+int Host_CdReadToc(int*, int, bool*) { return -1; }

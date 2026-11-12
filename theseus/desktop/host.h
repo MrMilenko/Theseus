@@ -70,3 +70,12 @@ bool Host_Spawn(const char* spec, bool isUrl, bool isSteamUrl, const char* workd
                 char* err, size_t errSize);
 // Native "open file" dialog. False on cancel or when there isn't one.
 bool Host_PickFile(const char* title, char* out, size_t outSize);
+// Full path of the running executable.
+bool Host_ExePath(char* out, size_t outSize);
+// Show a folder in the OS file manager. Doesn't wait.
+void Host_OpenFolder(const char* dir);
+// A string value under HKEY_CURRENT_USER. Always false off Windows.
+bool Host_RegistryString(const char* subKey, const char* value, char* out, size_t outSize);
+// Audio CD in the first optical drive: track count and per-track lengths
+// in seconds. -1 when there's no readable disc.
+int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio);

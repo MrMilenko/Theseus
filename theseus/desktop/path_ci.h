@@ -3,11 +3,12 @@
 
 #pragma once
 
+#include "platform.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 #include <io.h>
 #else
 #include <dirent.h>
@@ -40,7 +41,7 @@ inline bool Plat_ResolveCaseInsensitive(char* resolvedPath, size_t maxLen) {
     char rebuilt[1024];
     rebuilt[0] = '\0';
     char* walk = tempPath;
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     if (tempPath[0] && tempPath[1] == ':') {
         snprintf(rebuilt, sizeof(rebuilt), "%c:", tempPath[0]);
         walk = tempPath + 2;
@@ -57,14 +58,14 @@ inline bool Plat_ResolveCaseInsensitive(char* resolvedPath, size_t maxLen) {
     char* components[64];
     int nComponents = 0;
     char* save = NULL;
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     char* tok = strtok_s(walk, "/", &save);
 #else
     char* tok = strtok_r(walk, "/", &save);
 #endif
     while (tok && nComponents < 64) {
         components[nComponents++] = tok;
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
         tok = strtok_s(NULL, "/", &save);
 #else
         tok = strtok_r(NULL, "/", &save);
@@ -89,7 +90,7 @@ inline bool Plat_ResolveCaseInsensitive(char* resolvedPath, size_t maxLen) {
 
         const char* dirToScan = rebuilt[0] ? rebuilt : ".";
         bool found = false;
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
         char searchBuf[1024];
         snprintf(searchBuf, sizeof(searchBuf), "%s%s*", dirToScan, needSlash ? "/" : "");
         struct _finddata_t fd;

@@ -454,7 +454,21 @@ clean:
 
 # Platform flags live in shared/platform.h. The old desktop spellings stay
 # retired, and code the Xbox build compiles never reads _WIN32, which is
-# true on the Xbox too.
+# true on the Xbox too. On desktop only the host layer (desktop/host_*)
+# talks to the OS by name: <windows.h> is host_win* only, _WIN32 is
+# platform.h and host_* only, and the Xbox-shaped core never asks which
+# host it's on. Vendored headers (stb, minimp3, imfilebrowser, imgui) are
+# left alone.
+LINT_DIRS    = $(THESEUS_SRC)/desktop $(THESEUS_SRC)/shared $(THESEUS_SRC)/engine \
+               $(THESEUS_SRC)/render $(THESEUS_SRC)/toolbox
+LINT_VENDOR  = --exclude-dir=third-party --exclude-dir=xdk --exclude-dir=imgui \
+               --exclude='stb_*.h' --exclude='minimp3.h' --exclude='imfilebrowser.h'
+LINT_SHAPED  = $(THESEUS_SRC)/shared $(THESEUS_SRC)/engine $(THESEUS_SRC)/render \
+               $(THESEUS_SRC)/toolbox $(THESEUS_SRC)/desktop/platform_shim.h \
+               $(THESEUS_SRC)/desktop/std.h $(THESEUS_SRC)/desktop/d3d8_sdl.h \
+               $(THESEUS_SRC)/desktop/xbox_file.cpp $(THESEUS_SRC)/desktop/xbox_path.h \
+               $(THESEUS_SRC)/desktop/xboxfs_drive.h $(THESEUS_SRC)/desktop/host.h
+LINT_HOSTTEST = THESEUS_HOST_(WIN|MAC|LINUX)
 .PHONY: lint-platform
 lint-platform:
 	@bad=0; \
@@ -463,11 +477,25 @@ lint-platform:
 	     --exclude-dir=third-party --exclude-dir=xdk --exclude-dir=imgui; then \
 	  echo "lint-platform: retired flag above. Use _XBOX or THESEUS_DESKTOP."; bad=1; \
 	fi; \
-	if grep -rnw '_WIN32' $(THESEUS_SRC)/shared $(THESEUS_SRC)/engine $(THESEUS_SRC)/render \
-	     --include='*.h' --include='*.cpp' --include='*.c' \
-	     --exclude='stb_*.h' --exclude='platform.h'; then \
-	  echo "lint-platform: _WIN32 above in Xbox-built code. Use THESEUS_HOST_WIN."; bad=1; \
+	if grep -rnE '^[[:space:]]*#[[:space:]]*include[[:space:]]*<(windows|winsock2|ws2tcpip|shellapi|commdlg|shlobj|dbghelp)[.]h>' \
+	     $(LINT_DIRS) --include='*.h' --include='*.cpp' --include='*.c' $(LINT_VENDOR) \
+	     | grep -v '/desktop/host_win[^/]*[.]cpp:'; then \
+	  echo "lint-platform: Windows header above. Only desktop/host_win*.cpp may include it."; bad=1; \
 	fi; \
+	if grep -rnw '_WIN32' $(LINT_DIRS) --include='*.h' --include='*.cpp' --include='*.c' \
+	     $(LINT_VENDOR) --exclude='platform.h' --exclude='host_*'; then \
+	  echo "lint-platform: _WIN32 above. It's true on the Xbox too; use THESEUS_HOST_WIN or host.h."; bad=1; \
+	fi; \
+	if grep -rnE '$(LINT_HOSTTEST)' $(LINT_SHAPED) \
+	     --include='*.h' --include='*.cpp' --include='*.c' $(LINT_VENDOR) --exclude='platform.h'; then \
+	  echo "lint-platform: host test above in Xbox-shaped code. Go through host.h."; bad=1; \
+	fi; \
+	for f in $$(grep -rlE '$(LINT_HOSTTEST)' $(THESEUS_SRC)/desktop \
+	     --include='*.h' --include='*.cpp' $(LINT_VENDOR) --exclude='host_*'); do \
+	  awk '/^[ \t]*#[ \t]*include[ \t]*"(platform|std)[.]h"/ { ok = 1 } \
+	       /$(LINT_HOSTTEST)/ { if (!ok) { print FILENAME ":" FNR ": host test before platform.h"; exit 1 } exit 0 }' $$f \
+	    || { echo "lint-platform: include platform.h before testing THESEUS_HOST_*."; bad=1; }; \
+	done; \
 	[ $$bad -eq 0 ] && echo "lint-platform: clean"; exit $$bad
 
 # ============================================================

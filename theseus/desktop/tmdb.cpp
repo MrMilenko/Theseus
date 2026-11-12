@@ -4,6 +4,7 @@
 
 #include "app_paths.h"
 #include "tmdb.h"
+#include "host.h"
 
 #include <cstdio>
 #include <cstring>
@@ -56,15 +57,10 @@ static std::string ShowKey(const char* title)
     return Slugify(title);
 }
 
-// Portable mkdir wrapper. POSIX mkdir takes (path, mode); MinGW's
-// <sys/stat.h> redeclares it as the MS-CRT one-arg variant.
+// Make one folder. 0 when it exists afterwards.
 static inline int Mkdir(const char* path)
 {
-#ifdef _WIN32
-    return mkdir(path);
-#else
-    return mkdir(path, 0755);
-#endif
+    return Host_MakeDir(path) ? 0 : -1;
 }
 
 static std::string CachePath(const char* prefix, const std::string& slug)

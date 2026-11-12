@@ -15,7 +15,7 @@
 #include <cstdio>
 #include <cmath>
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 #include <io.h>
 #include <direct.h>
 #else
@@ -50,7 +50,7 @@ static void Preloader_Mkdirp(const char* path) {
     for (char* p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
             _mkdir(tmp);
 #else
             mkdir(tmp, 0755);
@@ -58,7 +58,7 @@ static void Preloader_Mkdirp(const char* path) {
             *p = '/';
         }
     }
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     _mkdir(tmp);
 #else
     mkdir(tmp, 0755);
@@ -233,7 +233,7 @@ int Preloader_ExtractXIP(const char* xipPath, const char* outDir) {
 static int Preloader_ExtractAllXIPs(const char* xipsDir, char statusBuf[], int statusBufSize) {
     int totalXips = 0, count = 0;
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     // Windows: use _findfirst/_findnext
     char searchPath[1024];
     snprintf(searchPath, sizeof(searchPath), "%s\\*.xip", xipsDir);

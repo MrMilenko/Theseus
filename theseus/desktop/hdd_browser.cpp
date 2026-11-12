@@ -16,26 +16,13 @@
 #include <string>
 #include <algorithm>
 
-#ifndef _WIN32
-#include <dirent.h>
+#include "platform.h"
+#include "host.h"
 #include <sys/stat.h>
+#include <errno.h>
+#ifndef THESEUS_HOST_WIN
 #include <pwd.h>
 #include <unistd.h>
-#else
-#include <io.h>
-#include <direct.h>
-#include <sys/stat.h>
-#include <windows.h>
-#include <shlobj.h>
-// windows.h #defines CreateFile/CreateDirectory as A/W macros, which
-// collides with FATXReader::CreateFile / FATXReader::CreateDirectory.
-// Drop the macros so the class methods compile under their real names.
-#ifdef CreateFile
-#undef CreateFile
-#endif
-#ifdef CreateDirectory
-#undef CreateDirectory
-#endif
 #endif
 
 bool g_hddBrowserOpen = false;
@@ -112,7 +99,7 @@ static const char* GetDefaultQcow2Path() {
     const char* home = getenv("HOME");
     if (home)
         snprintf(path, sizeof(path), "%s/.local/share/xemu/xemu/xbox_hdd.qcow2", home);
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
     char* appdata = getenv("LOCALAPPDATA");
     if (appdata)
         snprintf(path, sizeof(path), "%s\\xemu\\xemu\\xbox_hdd.qcow2", appdata);
@@ -402,37 +389,18 @@ static int ImportFolderRecursive(FATXReader* part, uint32_t fatxDirCluster,
         }
     };
 
-#ifdef _WIN32
-    char searchBuf[1024];
-    snprintf(searchBuf, sizeof(searchBuf), "%s\\*", hostPath);
-    struct _finddata_t fd;
-    intptr_t hFind = _findfirst(searchBuf, &fd);
-    if (hFind == -1) {
-        fprintf(stderr, "[Import] _findfirst failed: '%s'\n", hostPath);
-        return 0;
-    }
-    do {
-        bool isDir = (fd.attrib & _A_SUBDIR) != 0;
-        bool isFile = !isDir;
-        ProcessEntry(fd.name, isDir, isFile);
-    } while (_findnext(hFind, &fd) == 0);
-    _findclose(hFind);
-#else
-    DIR* dir = opendir(hostPath);
+    HostDir* dir = Host_OpenDir(hostPath);
     if (!dir) {
-        fprintf(stderr, "[Import] opendir failed: '%s' (errno %d)\n", hostPath, errno);
+        fprintf(stderr, "[Import] cannot open folder: '%s'\n", hostPath);
         return 0;
     }
-    struct dirent* ent;
-    while ((ent = readdir(dir)) != nullptr) {
-        char fullPath[1024];
-        snprintf(fullPath, sizeof(fullPath), "%s/%s", hostPath, ent->d_name);
-        struct stat st;
-        if (stat(fullPath, &st) != 0) continue;
-        ProcessEntry(ent->d_name, S_ISDIR(st.st_mode), S_ISREG(st.st_mode));
+    char name[260];
+    HostFileInfo info;
+    while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+        bool isDir = (info.attrs & HOST_ATTR_DIR) != 0;
+        ProcessEntry(name, isDir, !isDir);
     }
-    closedir(dir);
-#endif
+    Host_CloseDir(dir);
     return imported;
 }
 

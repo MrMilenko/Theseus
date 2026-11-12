@@ -2,17 +2,17 @@
 //
 // TOC detection: platform ioctls, no extra deps.
 //   Linux  : <linux/cdrom.h>  CDROMREADTOCHDR / CDROMREADTOCENTRY
-//   Windows: <ntddcdrm.h>     DeviceIoControl  IOCTL_CDROM_READ_TOC
+//   Windows: IOCTL_CDROM_READ_TOC, in host_win_app.cpp
 //
 // Playback backends (first match wins):
 //   UIX_CDAUDIO           : libmpv audio-only handle
-//   Linux or Windows      : CDROMREADAUDIO / IOCTL_CDROM_RAW_READ + SDL audio
+//   Linux                 : CDROMREADAUDIO + SDL audio
 //   Anything else         : stubs (detection still works)
 //
-// The SDL ring-buffer backend is shared between Linux and Windows;
-// only the reader-thread ioctl differs.
 
 #include "cdaudio.h"
+#include "platform.h"
+#include "host.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -97,83 +97,15 @@ static CdDiscType PlatformReadTOC(int* outCount, int* outDurations, int maxTrack
 
 static void PlatformPopulatePlaybackInfo() {}  // already done in PlatformReadTOC
 
-#elif defined(_WIN32)
-
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#include <winioctl.h>
-#include <ntddcdrm.h>
-
-// RAW_READ_INFO / IOCTL_CDROM_RAW_READ: defined locally so we don't depend
-// on mingw-w64 version shipping them.
-struct CdRawReadInfo {
-    LARGE_INTEGER DiskOffset;   // LBA * 2048
-    ULONG         SectorCount;
-    ULONG         TrackMode;    // 2 = CDDA
-};
-#ifndef IOCTL_CDROM_RAW_READ
-// CTL_CODE(0x2, 0xF, METHOD_OUT_DIRECT=2, FILE_READ_ACCESS=1)
-#define IOCTL_CDROM_RAW_READ 0x0002403E
-#endif
-
-static char s_cdDriveLetter         = 0;
-static int  s_trackStartLBA[MAX_CDTRACKS] = {};
-static int  s_leadOutLBA            = 0;
-
-static HANDLE OpenCdromDevice()
-{
-    char path[] = "\\\\.\\D:";
-    for (char c = 'D'; c <= 'H'; ++c) {
-        char root[4] = { c, ':', '\\', 0 };
-        if (GetDriveTypeA(root) != DRIVE_CDROM) continue;
-        path[4] = c;
-        HANDLE h = CreateFileA(path, GENERIC_READ,
-                               FILE_SHARE_READ | FILE_SHARE_WRITE,
-                               nullptr, OPEN_EXISTING, 0, nullptr);
-        if (h != INVALID_HANDLE_VALUE) {
-            s_cdDriveLetter = c;
-            return h;
-        }
-    }
-    return INVALID_HANDLE_VALUE;
-}
+#elif defined(THESEUS_HOST_WIN)
 
 static CdDiscType PlatformReadTOC(int* outCount, int* outDurations, int maxTracks)
 {
     if (outCount) *outCount = 0;
-    HANDLE h = OpenCdromDevice();
-    if (h == INVALID_HANDLE_VALUE) return CD_NONE;
-
-    CDROM_TOC toc;
-    DWORD br = 0;
-    BOOL ok = DeviceIoControl(h, IOCTL_CDROM_READ_TOC,
-                               nullptr, 0, &toc, sizeof(toc), &br, nullptr);
-    CloseHandle(h);
-    if (!ok) return CD_NONE;
-
-    int count = toc.LastTrack - toc.FirstTrack + 1;
-    if (outCount) *outCount = count;
-
     bool allAudio = true;
-    for (int i = 0; i <= count; ++i) {  // +1 to include lead-out
-        int ti = toc.FirstTrack - 1 + i;  // index into TrackData
-        UCHAR* a = toc.TrackData[ti].Address;
-        int lba = ((int)a[1] * 60 + a[2]) * 75 + a[3] - 150;
-        if (lba < 0) lba = 0;
-
-        if (i < count) {
-            if (toc.TrackData[ti].Control & 4) allAudio = false;
-            s_trackStartLBA[i] = lba;
-            if (outDurations && i + 1 <= count) {
-                UCHAR* b = toc.TrackData[ti + 1].Address;
-                int t0 = (int)a[1] * 60 + a[2];
-                int t1 = (int)b[1] * 60 + b[2];
-                outDurations[i] = (t1 > t0) ? (t1 - t0) : 0;
-            }
-        } else {
-            s_leadOutLBA = lba;
-        }
-    }
+    int count = Host_CdReadToc(outDurations, maxTracks, &allAudio);
+    if (count < 0) return CD_NONE;
+    if (outCount) *outCount = count;
     return allAudio ? CD_AUDIO : CD_DATA;
 }
 
@@ -264,8 +196,8 @@ void CdAudio_Update()
     }
 }
 
-// ---- B: SDL ring-buffer + platform raw-sector read (Linux + Windows) -------
-#elif defined(__linux__) || defined(_WIN32)
+// ---- B: SDL ring-buffer + raw-sector read (Linux) -------------------------
+#elif defined(__linux__)
 
 #include <SDL.h>
 
@@ -350,47 +282,6 @@ static int SDLCALL ReaderFunc(void* arg)
     }
     close(fd);
 
-#elif defined(_WIN32)
-    char devPath[16];
-    snprintf(devPath, sizeof(devPath), "\\\\.\\%c:", s_cdDriveLetter ? s_cdDriveLetter : 'D');
-    HANDLE hDev = CreateFileA(devPath, GENERIC_READ,
-                              FILE_SHARE_READ | FILE_SHARE_WRITE,
-                              nullptr, OPEN_EXISTING, 0, nullptr);
-    if (hDev == INVALID_HANDLE_VALUE) {
-        fprintf(stderr, "[CdAudio] cannot open %s: error %lu\n", devPath, GetLastError());
-        SDL_AtomicSet(&s_atomPlaying, 0);
-        return -1;
-    }
-
-    while (!SDL_AtomicGet(&s_atomStop) && lba < ra.endLBA) {
-        if (SDL_AtomicGet(&s_atomPaused)) { SDL_Delay(20); continue; }
-        int n = CDDA_READ_BATCH;
-        if (lba + n > ra.endLBA) n = ra.endLBA - lba;
-
-        CdRawReadInfo rri;
-        rri.DiskOffset.QuadPart = (LONGLONG)lba * 2048;
-        rri.SectorCount = n;
-        rri.TrackMode   = 2;  // CDDA
-
-        DWORD br = 0;
-        if (!DeviceIoControl(hDev, IOCTL_CDROM_RAW_READ,
-                              &rri, sizeof(rri), buf, n * CDDA_FRAME_BYTES, &br, nullptr)) {
-            fprintf(stderr, "[CdAudio] IOCTL_CDROM_RAW_READ at LBA %d: error %lu\n", lba, GetLastError());
-            readOk = false; break;
-        }
-
-        int bytes = n * CDDA_FRAME_BYTES;
-        SDL_LockMutex(s_mutex);
-        while (!SDL_AtomicGet(&s_atomStop) && (CDDA_RING_BYTES - s_ringFill) < bytes)
-            SDL_CondWait(s_cond, s_mutex);
-        if (!SDL_AtomicGet(&s_atomStop)) {
-            for (int i = 0; i < bytes; i++) { s_ring[s_ringWrite]=buf[i]; s_ringWrite=(s_ringWrite+1)%CDDA_RING_BYTES; }
-            s_ringFill += bytes;
-        }
-        SDL_UnlockMutex(s_mutex);
-        lba += n;
-    }
-    CloseHandle(hDev);
 #endif  // platform read
 // ------------------------------------------------
 

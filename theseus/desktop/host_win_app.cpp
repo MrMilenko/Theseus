@@ -18,6 +18,8 @@
 #include <dbghelp.h>
 #include <avrt.h>
 #include <dwmapi.h>
+#include <winioctl.h>
+#include <ntddcdrm.h>
 
 #include <io.h>
 #include <signal.h>
@@ -192,4 +194,64 @@ bool Host_PickFile(const char* title, char* out, size_t outSize) {
 	if (!GetOpenFileNameA(&ofn)) return false;
 	snprintf(out, outSize, "%s", path);
 	return true;
+}
+
+bool Host_ExePath(char* out, size_t outSize) {
+	DWORD len = GetModuleFileNameA(NULL, out, (DWORD)outSize);
+	return len > 0 && len < outSize;
+}
+
+void Host_OpenFolder(const char* dir) {
+	ShellExecuteA(NULL, "open", dir, NULL, NULL, SW_SHOWNORMAL);
+}
+
+bool Host_RegistryString(const char* subKey, const char* value, char* out, size_t outSize) {
+	HKEY hKey;
+	if (RegOpenKeyExA(HKEY_CURRENT_USER, subKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) return false;
+	DWORD size = (DWORD)outSize;
+	DWORD type = 0;
+	bool ok = RegQueryValueExA(hKey, value, NULL, &type, (BYTE*)out, &size) == ERROR_SUCCESS &&
+	          (type == REG_SZ || type == REG_EXPAND_SZ);
+	RegCloseKey(hKey);
+	if (ok) out[outSize - 1] = '\0';
+	return ok;
+}
+
+static HANDLE OpenCdromDevice() {
+	char path[] = "\\\\.\\D:";
+	for (char c = 'D'; c <= 'H'; ++c) {
+		char root[4] = { c, ':', '\\', 0 };
+		if (GetDriveTypeA(root) != DRIVE_CDROM) continue;
+		path[4] = c;
+		HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+		                       nullptr, OPEN_EXISTING, 0, nullptr);
+		if (h != INVALID_HANDLE_VALUE) return h;
+	}
+	return INVALID_HANDLE_VALUE;
+}
+
+int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio) {
+	*allAudio = true;
+	HANDLE h = OpenCdromDevice();
+	if (h == INVALID_HANDLE_VALUE) return -1;
+
+	CDROM_TOC toc;
+	DWORD br = 0;
+	BOOL ok = DeviceIoControl(h, IOCTL_CDROM_READ_TOC, nullptr, 0, &toc, sizeof(toc), &br, nullptr);
+	CloseHandle(h);
+	if (!ok) return -1;
+
+	int count = toc.LastTrack - toc.FirstTrack + 1;
+	for (int i = 0; i < count; ++i) {
+		int ti = toc.FirstTrack - 1 + i;  // index into TrackData
+		if (toc.TrackData[ti].Control & 4) *allAudio = false;
+		if (durations && i < maxTracks) {
+			UCHAR* a = toc.TrackData[ti].Address;
+			UCHAR* b = toc.TrackData[ti + 1].Address;
+			int t0 = (int)a[1] * 60 + a[2];
+			int t1 = (int)b[1] * 60 + b[2];
+			durations[i] = (t1 > t0) ? (t1 - t0) : 0;
+		}
+	}
+	return count;
 }
