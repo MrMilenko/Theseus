@@ -31,7 +31,9 @@ done
 [ -d "$REPO/Library" ] && cp -r "$REPO/Library" "$APP/usr/bin/Library"
 [ -d "$SRC/lib" ] && cp -a "$SRC/lib/." "$APP/usr/lib/" || true
 
-KEEP_HOST="ld-linux|libc\.so|libm\.so|libdl\.so|libpthread|librt\.so|libgcc_s|libstdc\+\+|libGL|libEGL|libGLX|libGLdispatch|libOpenGL|libvulkan|libdrm|libX11|libXext\.|libXau|libXdmcp|libxcb|libwayland|libsystemd|libdbus|libudev|libasound|libpulse"
+# All of glibc stays on the host, libmvec and libresolv included: a bundled
+# piece of glibc next to the host's libc is a mismatch waiting to happen.
+KEEP_HOST="ld-linux|libc\.so|libm\.so|libmvec\.so|libresolv\.so|libanl\.so|libutil\.so|libdl\.so|libpthread|librt\.so|libgcc_s|libstdc\+\+|libGL|libEGL|libGLX|libGLdispatch|libOpenGL|libvulkan|libdrm|libX11|libXext\.|libXau|libXdmcp|libxcb|libwayland|libsystemd|libdbus|libudev|libasound|libpulse"
 
 walk() {
   ldd "$1" 2>/dev/null | awk '{print $1, $3}' | while read -r so path; do

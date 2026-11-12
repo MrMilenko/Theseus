@@ -162,10 +162,23 @@ jobs:
   release-linux:
     name: Release / Linux x64
     needs: gate
+    # Debian 12 has glibc 2.36, so the build and the libraries the AppImage
+    # carries start on SteamOS 3.5 and up. Ubuntu's glibc is newer than that,
+    # and 22.04's SDL is too old to build against.
     runs-on: ubuntu-latest
+    container: debian:bookworm
     env:
       TAG: ${{ needs.gate.outputs.tag }}
+      DEBIAN_FRONTEND: noninteractive
     steps:
+      - name: Container tools
+        # checkout wants git in the container for submodules, and the version
+        # stamp runs git on a tree the container user doesn't own.
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates
+          git config --global --add safe.directory '*'
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
@@ -176,8 +189,8 @@ jobs:
         # though the running binary uses bgfx/Vulkan.
         # cmake: GitHub runners preinstall it, but make it explicit.
         run: |
-          sudo apt update
-          sudo apt install -y build-essential pkg-config cmake \
+          apt-get update
+          apt-get install -y build-essential pkg-config cmake \
                               libsdl2-dev libsdl2-mixer-dev \
                               libvulkan-dev libx11-dev libgl-dev \
                               libmpv-dev libcurl4-openssl-dev libssl-dev \
@@ -185,6 +198,13 @@ jobs:
 
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
+
+      - name: Build GENie from source
+        # The genie checked into bx wants glibc 2.38, newer than Debian 12's.
+        run: |
+          git clone --depth 1 https://github.com/bkaradzic/GENie.git /tmp/genie
+          make -C /tmp/genie
+          cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
 
       - name: Build bgfx libs
         run: |
@@ -220,10 +240,42 @@ jobs:
         # One file for Debian and Arch alike, so the exclusion list in the
         # script only names libraries both actually ship.
         run: |
-          sudo apt-get install -y -qq patchelf wget file
+          apt-get install -y -qq patchelf wget file
           chmod +x build/mk-appimage.sh
           ./build/mk-appimage.sh ~/builds/theseus/desktop "UIX-Desktop-${TAG}-x86_64.AppImage"
           echo "APPIMAGE=UIX-Desktop-${TAG}-x86_64.AppImage" >> "$GITHUB_ENV"
+
+      - name: glibc baseline
+        # Fails if the binary or anything in the AppImage wants a newer glibc
+        # than SteamOS 3.5's 2.37 (3.6 has 2.39, 3.7 2.40, 3.8 2.41).
+        shell: bash
+        run: |
+          MAX=2.37
+          GLIBC_LIBS=$(find AppDir/usr/lib -regextype posix-extended \
+                       -regex '.*/(libc|libm|libmvec|libdl|libpthread|librt|libresolv)\.so.*')
+          if [ -n "$GLIBC_LIBS" ]; then
+            echo "::error::the AppImage bundles part of glibc: $GLIBC_LIBS"
+            exit 1
+          fi
+          BAD=0
+          NEWEST=0
+          while IFS= read -r -d '' F; do
+            head -c4 "$F" | cmp -s - <(printf '\177ELF') || continue
+            V=$(readelf -V -W "$F")
+            if grep -q GLIBC_PRIVATE <<< "$V"; then
+              echo "::error::$F uses GLIBC_PRIVATE"
+              BAD=1
+            fi
+            NEED=$(grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' <<< "$V" | sed 's/GLIBC_//' | sort -uV | tail -1 || true)
+            [ -n "$NEED" ] || continue
+            NEWEST=$(printf '%s\n%s\n' "$NEWEST" "$NEED" | sort -V | tail -1)
+            if [ "$(printf '%s\n%s\n' "$NEED" "$MAX" | sort -V | tail -1)" != "$MAX" ]; then
+              echo "::error::$F needs GLIBC_$NEED, newer than $MAX"
+              BAD=1
+            fi
+          done < <(find ~/builds/theseus/desktop/theseus ~/builds/theseus/desktop/lib AppDir -type f -print0 2>/dev/null)
+          echo "newest glibc needed: $NEWEST (limit $MAX)"
+          exit $BAD
 
       - name: Hand the files to publish
         uses: actions/upload-artifact@v4
@@ -237,10 +289,21 @@ jobs:
   release-linux-arm64:
     name: Release / Linux ARM64
     needs: gate
+    # Debian 12 for the same glibc reason as the x64 job.
     runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
     env:
       TAG: ${{ needs.gate.outputs.tag }}
+      DEBIAN_FRONTEND: noninteractive
     steps:
+      - name: Container tools
+        # checkout wants git in the container for submodules, and the version
+        # stamp runs git on a tree the container user doesn't own.
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates
+          git config --global --add safe.directory '*'
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.gate.outputs.sha }}
@@ -250,8 +313,8 @@ jobs:
         # libgl-dev: needed by projectM's cmake FindOpenGL probe.
         # cmake: GitHub runners preinstall it, but make it explicit.
         run: |
-          sudo apt update
-          sudo apt install -y build-essential pkg-config cmake \
+          apt-get update
+          apt-get install -y build-essential pkg-config cmake \
                               libsdl2-dev libsdl2-mixer-dev \
                               libvulkan-dev libx11-dev libgl-dev \
                               libmpv-dev libcurl4-openssl-dev libssl-dev \
@@ -307,10 +370,42 @@ jobs:
         # The bare binary needs the runner's exact FFmpeg sonames, which
         # newer distros like Debian trixie don't have. The AppImage carries them.
         run: |
-          sudo apt-get install -y -qq patchelf wget file
+          apt-get install -y -qq patchelf wget file
           chmod +x build/mk-appimage.sh
           ./build/mk-appimage.sh ~/builds/theseus/desktop "UIX-Desktop-${TAG}-aarch64.AppImage"
           echo "APPIMAGE=UIX-Desktop-${TAG}-aarch64.AppImage" >> "$GITHUB_ENV"
+
+      - name: glibc baseline
+        # Fails if the binary or anything in the AppImage wants a newer glibc
+        # than SteamOS 3.5's 2.37 (3.6 has 2.39, 3.7 2.40, 3.8 2.41).
+        shell: bash
+        run: |
+          MAX=2.37
+          GLIBC_LIBS=$(find AppDir/usr/lib -regextype posix-extended \
+                       -regex '.*/(libc|libm|libmvec|libdl|libpthread|librt|libresolv)\.so.*')
+          if [ -n "$GLIBC_LIBS" ]; then
+            echo "::error::the AppImage bundles part of glibc: $GLIBC_LIBS"
+            exit 1
+          fi
+          BAD=0
+          NEWEST=0
+          while IFS= read -r -d '' F; do
+            head -c4 "$F" | cmp -s - <(printf '\177ELF') || continue
+            V=$(readelf -V -W "$F")
+            if grep -q GLIBC_PRIVATE <<< "$V"; then
+              echo "::error::$F uses GLIBC_PRIVATE"
+              BAD=1
+            fi
+            NEED=$(grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' <<< "$V" | sed 's/GLIBC_//' | sort -uV | tail -1 || true)
+            [ -n "$NEED" ] || continue
+            NEWEST=$(printf '%s\n%s\n' "$NEWEST" "$NEED" | sort -V | tail -1)
+            if [ "$(printf '%s\n%s\n' "$NEED" "$MAX" | sort -V | tail -1)" != "$MAX" ]; then
+              echo "::error::$F needs GLIBC_$NEED, newer than $MAX"
+              BAD=1
+            fi
+          done < <(find ~/builds/theseus/desktop/theseus ~/builds/theseus/desktop/lib AppDir -type f -print0 2>/dev/null)
+          echo "newest glibc needed: $NEWEST (limit $MAX)"
+          exit $BAD
 
       - name: Hand the files to publish
         uses: actions/upload-artifact@v4
@@ -491,13 +586,12 @@ jobs:
             release) FLAGS=(--latest) ;;
             *)       FLAGS=(--prerelease --latest=false) ;;
           esac
+          TITLE="UIX Desktop ${TAG#v}"
           if [ "$CHANNEL" = nightly ]; then
             gh release delete nightly --cleanup-tag --yes || true
             NOTES=(--notes "Nightly build of main at $SHA. Not a release, expect rough edges.")
-            TITLE="UIX Desktop nightly"
           else
             NOTES=(--generate-notes)
-            TITLE="UIX Desktop ${TAG#v}"
           fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
