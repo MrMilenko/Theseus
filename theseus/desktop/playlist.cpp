@@ -33,6 +33,9 @@ void Playlist_LoadAll() {
         if (line[0] == '[') {
             const char* s = strstr(line, "[Playlist:");
             if (s) {
+                // The last item belongs to the playlist that's ending, and has
+                // to land before push_back can move the vector under cur.
+                if (cur && havePending) { cur->items.push_back(pending); pending = {}; havePending = false; }
                 Playlist p;
                 const char* nameStart = s + 10;
                 const char* nameEnd   = strrchr(nameStart, ']');
