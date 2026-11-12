@@ -710,7 +710,7 @@ CMP3Pump::~CMP3Pump()
 HRESULT CMP3Pump::Initialize(const char* szFilePath)
 {
 	// Load entire MP3 into memory (file I/O from a thread is simpler this way)
-	HANDLE hFile = CreateFileA(szFilePath, GENERIC_READ, FILE_SHARE_READ,
+	HANDLE hFile = TheseusCreateFile(szFilePath, GENERIC_READ, FILE_SHARE_READ,
 		NULL, OPEN_EXISTING, 0, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) return E_FAIL;
 

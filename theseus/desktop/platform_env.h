@@ -1,6 +1,6 @@
 // Home and user lookup that works the same on every desktop OS. Standalone
-// on purpose (only libc), so lean files that already include <windows.h> can
-// pull it without dragging the platform shim in. Both return a stable buffer,
+// on purpose (only libc), so host files can pull it without dragging the
+// platform shim in. Both return a stable buffer,
 // never NULL.
 
 #pragma once
@@ -13,10 +13,9 @@ inline const char* PlatformHomeDir() {
     static bool s_init = false;
     if (!s_init) {
         s_init = true;
+        // USERPROFILE is Windows' HOME; nothing else sets it.
         const char* h = getenv("HOME");
-#ifdef _WIN32
         if (!h || !*h) h = getenv("USERPROFILE");
-#endif
         if (h && *h) {
             size_t n = strlen(h);
             if (n >= sizeof(s_home)) n = sizeof(s_home) - 1;
@@ -32,13 +31,10 @@ inline const char* PlatformUserName() {
     static bool s_init = false;
     if (!s_init) {
         s_init = true;
-        const char* u;
-#ifdef _WIN32
-        u = getenv("USERNAME");
-#else
-        u = getenv("USER");
+        // Windows only sets USERNAME; POSIX sets USER or LOGNAME.
+        const char* u = getenv("USER");
         if (!u || !*u) u = getenv("LOGNAME");
-#endif
+        if (!u || !*u) u = getenv("USERNAME");
         if (u && *u) {
             size_t n = strlen(u);
             if (n >= sizeof(s_user)) n = sizeof(s_user) - 1;

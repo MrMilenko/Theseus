@@ -144,7 +144,7 @@ void CTitleArray::Update()
     MakePath(szFileName, GetUData(), _T("*.*"));
     FSCHAR szBuf [MAX_PATH];
     Ansi(szBuf, szFileName, countof (szBuf));
-    HANDLE hFind = FindFirstFile(szBuf, &fd);
+    HANDLE hFind = TheseusFindFirstFile(szBuf, &fd);
 
     if (hFind == INVALID_HANDLE_VALUE)
     {
@@ -169,17 +169,17 @@ void CTitleArray::Update()
 
 		AddTitle(szFileName);
     }
-    while (FindNextFile(hFind, &fd));
+    while (TheseusFindNextFile(hFind, &fd));
 
     if (ERROR_DEVICE_NOT_CONNECTED == GetLastError())
     {
-        FindClose(hFind);
+        TheseusFindClose(hFind);
         DeleteAll(false);
         LeaveCriticalSection(&m_rootLock);
         return;
     }
 
-	FindClose(hFind);
+	TheseusFindClose(hFind);
 
 	qsort(m_titles, m_titleCount, sizeof (CTitle), SortTitleCompare);
 
@@ -465,7 +465,7 @@ int ScanSavedGames(const TCHAR* szRoot, const TCHAR* szTitleID, CSave* rgsaves /
 
 		char szBuf [MAX_PATH];
 		Ansi(szBuf, szTitleDirWild, MAX_PATH);
-		hFind = FindFirstFile(szBuf, &fd);
+		hFind = TheseusFindFirstFile(szBuf, &fd);
 	}
 
 	if (hFind != INVALID_HANDLE_VALUE)
@@ -494,8 +494,8 @@ int ScanSavedGames(const TCHAR* szRoot, const TCHAR* szTitleID, CSave* rgsaves /
 
 			nSavedGameCount += 1;
 		}
-		while (FindNextFile(hFind, &fd));
-		FindClose(hFind);
+		while (TheseusFindNextFile(hFind, &fd));
+		TheseusFindClose(hFind);
 	}
 
     if (!bCancel)

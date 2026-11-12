@@ -5,7 +5,7 @@
 #include "std.h"
 #include "theseus.h"
 #include "node.h"
-#ifndef _DESKTOP
+#ifndef THESEUS_DESKTOP
 #include "overlay.h"
 #endif
 
@@ -36,7 +36,7 @@ END_NODE_PROPS()
 
 void COverlayAlert::Show(const TCHAR* szMessage)
 {
-#ifdef _DESKTOP
+#ifdef THESEUS_DESKTOP
     // Overlay UI removed on desktop; ImGui handles alerts.
     if (szMessage && *szMessage)
         fprintf(stderr, "[Alert] %s\n", szMessage);

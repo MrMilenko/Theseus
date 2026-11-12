@@ -9,13 +9,9 @@
 
 #include "app_paths.h"
 
+#include "host.h"
+
 #include <string.h>
-#include <errno.h>
-#ifdef _WIN32
-#include <direct.h>
-#else
-#include <sys/stat.h>
-#endif
 
 static inline const char* XboxFS_DriveToPrefix(char drive) {
     if (drive == 'C' || drive == 'c') return AppPath_Tree("Configs");
@@ -28,11 +24,7 @@ static inline const char* XboxFS_DriveToPrefix(char drive) {
 // Make one directory. True if it exists after.
 static inline bool Plat_Mkdir(const char* path) {
     if (!path || !*path) return false;
-#ifdef _WIN32
-    return _mkdir(path) == 0 || errno == EEXIST;
-#else
-    return mkdir(path, 0755) == 0 || errno == EEXIST;
-#endif
+    return Host_MakeDir(path);
 }
 
 // Make a directory and any missing parents. Accepts either slash style.

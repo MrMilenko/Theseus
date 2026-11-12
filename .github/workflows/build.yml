@@ -18,6 +18,13 @@ concurrency:
 # when authoring new shaders (offline by the contributor).
 
 jobs:
+  lint:
+    name: Lint / platform flags
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make -C build lint-platform
+
   desktop-macos:
     name: Desktop / macOS
     runs-on: macos-latest

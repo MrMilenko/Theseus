@@ -1,6 +1,7 @@
-// joystick.cpp: desktop CJoystick input. Maps SDL2 GameController
-// buttons and keyboard keys to dashboard script callbacks (OnADown,
-// OnMoveUp, etc.). Counterpart to xbox/input.cpp.
+// joystick.cpp: the desktop Joystick node. The node itself (binding,
+// properties, the secret key, the event rules) is rebuilt from the 5960
+// retail XBE (0x40620..0x41800); reading an SDL pad and the keyboard in
+// place of XInput is Theseus's. Counterpart to xbox/input.cpp.
 
 #include "std.h"
 #include "dashapp.h"
@@ -16,8 +17,6 @@
 
 float g_xaxis, g_yaxis;
 
-extern bool g_bWireframe;
-extern void CycleLanguage();
 
 bool g_bInputEnable = true;
 
@@ -74,6 +73,10 @@ public:
     bool m_enableRemote;
     bool m_enableGamepad;
 
+    // 5960's LastActivePort (PRD 0x001747e8) is the Xbox port that last gave
+    // input. Desktop folds the pad and keyboard into one player, so it stays 0.
+    int m_LastActivePort;
+
     void Advance(float nSeconds);
     bool OnSetProperty(const PRD *pprd, const void *pvValue);
 
@@ -109,6 +112,8 @@ public:
 protected:
     int CheckSecretKeySequence(char key);
     void ProcessSecretKeySequence(int flags);
+    void ButtonEvent(bool down, const char *downName, const char *upName, char key);
+    void MoveEvent(char key, const char *name);
     static void PollSDL(SDL_GameController* gc, JoySnapshot* out);
     void ProcessMediaKeys();
 };
@@ -148,6 +153,7 @@ NODE_PROP(pt_string, CJoystick, secretKey)
 NODE_PROP(pt_boolean, CJoystick, enableSecretKey)
 NODE_PROP(pt_boolean, CJoystick, enableGamepad)
 NODE_PROP(pt_boolean, CJoystick, enableRemote)
+NODE_PROP(pt_integer, CJoystick, LastActivePort)
 END_NODE_PROPS()
 
 #undef _FND_CLASS
@@ -160,67 +166,70 @@ NODE_FUN_VV(OnADown)
 NODE_FUN_VV(OnBDown)
 END_NODE_FUN()
 
-CJoystick::CJoystick() : m_frequency(20.0f),
-                         m_hat(-1.0f),
-                         m_xaxis(0.0f),
-                         m_yaxis(0.0f),
-                         m_xaxis2(0.0f),
-                         m_yaxis2(0.0f),
-                         m_a(0.0f),
-                         m_b(0.0f),
-                         m_x(0.0f),
-                         m_y(0.0f),
-                         m_black(0.0f),
-                         m_white(0.0f),
-                         m_left(0.0f),
-                         m_right(0.0f),
-                         m_leftThumb(0.0f),
-                         m_rightThumb(0.0f),
-                         m_start(0.0f),
-                         m_back(0.0f),
-                         m_secretKey(NULL),
-                         m_secretKeyLength(0),
-                         m_secretKeyCurrentIndex(0),
-                         m_enableSecretKey(false),
-                         m_eatSecretKey(false),
-                         m_enableRemote(true),
-                         m_enableGamepad(true),
-                         m_isBound(false),
-                         m_prevMediaKeys(0)
+// CJoystick::CJoystick()
+// Reconstructed from 5960 retail XBE @ 0x00040620: polls 20 times a second,
+// sticks and buttons at rest, no secret key, remote and gamepad enabled,
+// waiting for its first poll. The first Joystick made is bound right away.
+// Theseus starts hat at -1 and adds the desktop poll state.
+CJoystick::CJoystick()
 {
     m_bNeedsInit = true;
+    m_isBound = false;
+    m_frequency = 20.0f;
+    m_hat = -1.0f;
+    m_xaxis = m_yaxis = 0.0f;
+    m_xaxis2 = m_yaxis2 = 0.0f;
+    m_a = m_b = m_x = m_y = 0.0f;
+    m_black = m_white = 0.0f;
+    m_left = m_right = 0.0f;
+    m_leftThumb = m_rightThumb = 0.0f;
+    m_start = m_back = 0.0f;
+    m_secretKey = NULL;
+    m_secretKeyLength = 0;
+    m_secretKeyCurrentIndex = 0;
+    m_enableSecretKey = false;
+    m_eatSecretKey = false;
+    m_enableRemote = true;
+    m_enableGamepad = true;
+    m_LastActivePort = 0;
     m_nextRepeatTime = 0.0f;
     m_repeatInterval = 0.0f;
+    m_timeNextUpdate = 0.0f;
+    m_prevMediaKeys = 0;
     memset(&m_prevState, 0, sizeof(m_prevState));
 
     if (c_pBoundJoystick == NULL)
         Bind();
 }
 
+// CJoystick::~CJoystick()
+// Reconstructed from 5960 retail XBE @ 0x00040750: forgets itself as the
+// previous binding, hands the binding back to the previous one if it held
+// it, and frees the secret key.
 CJoystick::~CJoystick()
 {
     if (c_pPreviousBoundJoystick == this)
         c_pPreviousBoundJoystick = NULL;
-
     if (c_pBoundJoystick == this)
         c_pBoundJoystick = c_pPreviousBoundJoystick;
-
     delete[] m_secretKey;
 }
 
+// Script events go only to the bound joystick. 5960 also drops gamepad
+// events while enableGamepad is off; desktop's pad and keyboard always
+// count, and only remote events honor enableRemote.
 void CJoystick::CallFunction(const char *szFunc, bool bRemote /* = false */)
 {
-    if (c_pBoundJoystick == this)
-    {
-        if (bRemote && !m_enableRemote)
-        {
-            TRACE("Ignoring input from remote\n");
-            return;
-        }
-        // On desktop, always accept gamepad/keyboard input (no IR remote)
-        ::CallFunction(this, szFunc);
-    }
+    if (c_pBoundJoystick != this)
+        return;
+    if (bRemote && !m_enableRemote)
+        return;
+    ::CallFunction(this, szFunc);
 }
+
+// BindJoystick(node)
+// Reconstructed from 5960 retail XBE @ 0x00040790: NULL clears both
+// bindings; a Joystick node gets bound; anything else is ignored.
 void BindJoystick(CNode *pJoystickNode)
 {
     if (pJoystickNode == NULL)
@@ -229,12 +238,11 @@ void BindJoystick(CNode *pJoystickNode)
         CJoystick::c_pPreviousBoundJoystick = NULL;
         return;
     }
-
-    if (!pJoystickNode->IsKindOf(NODE_CLASS(CJoystick)))
-        return;
-
-    ((CJoystick *)pJoystickNode)->Bind();
+    if (pJoystickNode->IsKindOf(NODE_CLASS(CJoystick)))
+        ((CJoystick *)pJoystickNode)->Bind();
 }
+
+// Theseus: the four nav calls exist so scripts can name them; they do nothing.
 void CJoystick::OnMoveUp()
 {
 }
@@ -251,86 +259,86 @@ void CJoystick::OnBDown()
 {
 }
 
+// CJoystick::Bind()
+// Reconstructed from 5960 retail XBE @ 0x000407f0: the current binding
+// becomes the previous one and this takes over; once it has polled before,
+// it rereads the device so held buttons don't fire.
 void CJoystick::Bind()
 {
     c_pPreviousBoundJoystick = c_pBoundJoystick;
     c_pBoundJoystick = this;
-
-    if (!m_bNeedsInit)
-    {
-        CheckDevice();
-        PollSDL(c_controller, &m_prevState);
-    }
+    if (m_bNeedsInit)
+        return;
+    CheckDevice();
+    PollSDL(c_controller, &m_prevState);
 }
 
+// CJoystick::OnSetProperty(prd, value)
+// Reconstructed from 5960 retail XBE @ 0x00040820.
+//     isBound: true binds; false, if bound, unbinds and rebinds the previous
+//     secretKey: replaces the key (ending a sequence in progress), and a
+//         new key turns enableSecretKey on
+//     enableSecretKey: stores it; turning it off mid sequence ends it; the
+//         position restarts either way
+//     eatSecretKey, enableGamepad, enableRemote: stored here, not by the caller
 bool CJoystick::OnSetProperty(const PRD *pprd, const void *pvValue)
 {
-    if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_isBound))
+    intptr_t field = (intptr_t)pprd->pbOffset;
+    if (field == MEMBER_OFFSET(m_isBound))
     {
-        if (*(bool *)pvValue)
+        if (*(const bool *)pvValue)
         {
             Bind();
         }
         else if (c_pBoundJoystick == this)
         {
             c_pBoundJoystick = NULL;
-
             if (c_pPreviousBoundJoystick != NULL)
                 c_pPreviousBoundJoystick->Bind();
         }
+        return true;
     }
-    else if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_secretKey))
+
+    if (field == MEMBER_OFFSET(m_secretKey))
     {
-        // Delete the previous one if exists
         delete[] m_secretKey;
         m_secretKey = NULL;
         m_secretKeyLength = 0;
-
-        // Cancel if we are in the middle of sequence checking
-        if (m_secretKeyCurrentIndex)
+        if (m_secretKeyCurrentIndex != 0)
             ProcessSecretKeySequence(KS_END);
-
         m_secretKeyCurrentIndex = 0;
 
-        char *pszNewKey = *(char **)pvValue;
-        if (pszNewKey)
+        const char *key = *(char *const *)pvValue;
+        if (key != NULL)
         {
-            m_secretKeyLength = strlen(pszNewKey);
+            m_secretKeyLength = strlen(key);
             m_secretKey = new char[m_secretKeyLength + 1];
-            strcpy(m_secretKey, pszNewKey);
+            strcpy(m_secretKey, key);
             m_enableSecretKey = true;
         }
+        return true;
     }
-    else if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_enableSecretKey))
+
+    if (field == MEMBER_OFFSET(m_enableSecretKey))
     {
-        m_enableSecretKey = *(bool *)pvValue;
-
-        if (!m_enableSecretKey)
-        {
-            // Cancel if we are in the middle of sequence checking
-            if (m_secretKeyCurrentIndex && m_secretKeyCurrentIndex < m_secretKeyLength)
-                ProcessSecretKeySequence(KS_END);
-        }
-
+        m_enableSecretKey = *(const bool *)pvValue;
+        if (!m_enableSecretKey && m_secretKeyCurrentIndex != 0 && m_secretKeyCurrentIndex < m_secretKeyLength)
+            ProcessSecretKeySequence(KS_END);
         m_secretKeyCurrentIndex = 0;
-    }
-    else if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_eatSecretKey))
-    {
-        m_eatSecretKey = *(bool *)pvValue;
-        return false;
-    }
-    else if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_enableGamepad))
-    {
-        m_enableGamepad = *(bool *)pvValue;
-        return false;
-    }
-    else if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_enableRemote))
-    {
-        m_enableRemote = *(bool *)pvValue;
-        return false;
+        return true;
     }
 
-    return true;
+    bool *flag = NULL;
+    if (field == MEMBER_OFFSET(m_eatSecretKey))
+        flag = &m_eatSecretKey;
+    else if (field == MEMBER_OFFSET(m_enableGamepad))
+        flag = &m_enableGamepad;
+    else if (field == MEMBER_OFFSET(m_enableRemote))
+        flag = &m_enableRemote;
+    if (flag == NULL)
+        return true;
+    *flag = *(const bool *)pvValue;
+    return false;
 }
 
 // ============================================================================
@@ -365,9 +373,11 @@ void CJoystick::CheckDevice()
     }
 }
 
+// CJoystick::EnableGlobalInput(on)   [script fn 'EnableGlobalInput', FND 0x00181fb0, sig 14]
+// Reconstructed from 5960 retail XBE @ 0x00040b70: sets the global input switch.
 void CJoystick::EnableGlobalInput(int bEnable)
 {
-    g_bInputEnable = (bEnable != 0);
+    g_bInputEnable = bEnable != 0;
 }
 
 // ============================================================================
@@ -556,256 +566,170 @@ static bool EqualSnapshots(const JoySnapshot* a, const JoySnapshot* b)
     return true;
 }
 
+// Event names and secret key letters, in the binary's table order: the
+// eight analog buttons (0x00176640 down, 0x00176620 up, letters
+// "ABXYbwlr") and the eight digital ones (0x00176600 down, 0x001765e0 up,
+// letters at 0x000259a0, none for the d-pad). Start and Back raise the A and
+// B events.
+static const char *const s_analogDown[8] = { "OnADown", "OnBDown", "OnXDown", "OnYDown", "OnBlackDown", "OnWhiteDown", "OnLeftDown", "OnRightDown" };
+static const char *const s_analogUp[8]   = { "OnAUp", "OnBUp", "OnXUp", "OnYUp", "OnBlackUp", "OnWhiteUp", "OnLeftUp", "OnRightUp" };
+static const char s_analogKeys[8]        = { 'A', 'B', 'X', 'Y', 'b', 'w', 'l', 'r' };
+static const char *const s_digitalDown[8] = { "OnPressUp", "OnPressDown", "OnPressLeft", "OnPressRight", "OnADown", "OnBDown", "OnLeftThumbDown", "OnRightThumbDown" };
+static const char *const s_digitalUp[8]   = { "OnReleaseUp", "OnReleaseDown", "OnReleaseLeft", "OnReleaseRight", "OnAUp", "OnBUp", "OnLeftThumbUp", "OnRightThumbUp" };
+static const char s_digitalKeys[8]        = { 0, 0, 0, 0, 'S', 'P', 'Q', 'W' };
+
+// Fires down or up for one button, feeding a press to the secret key check.
+void CJoystick::ButtonEvent(bool down, const char *downName, const char *upName, char key)
+{
+    if (!down)
+    {
+        CallFunction(upName);
+        return;
+    }
+    int flags = CheckSecretKeySequence(key);
+    CallFunction(downName);
+    ProcessSecretKeySequence(flags);
+}
+
+// One step of a held direction: the secret key letter, then the move.
+void CJoystick::MoveEvent(char key, const char *name)
+{
+    int flags = CheckSecretKeySequence(key);
+    CallFunction(name);
+    ProcessSecretKeySequence(flags);
+}
+
+// CJoystick::Advance(dt)
+// Reconstructed from 5960 retail XBE @ 0x00041040; see notes on the Xbox
+// side in docs/decomp/Input.md. Only the bound joystick with input enabled
+// runs, at `frequency` polls a second; the first poll just records state.
+// A change while the screen saver is up only wakes it. Then:
+//   - the left stick (or the d-pad when the stick rests) sets xaxis/yaxis;
+//     a held direction fires OnMoveLeft/Right then OnMoveDown/Up at once,
+//     again after 0.3 s, then every 0.12 s
+//   - every analog and digital button that changed fires its down or up
+//     event, presses also stepping the secret key
+//   - Start with A and B fires OnReset
+//   - the stick coming back to rest fires OnMoveCenter
+// Theseus polls SDL (pad plus keyboard) instead of XInput, adds the media
+// keys, has no IR remote or progressive scan combo, and fires OnMoveCenter
+// last where 5960 fires it before the buttons.
 void CJoystick::Advance(float nSeconds)
 {
-    int k;
-
     CNode::Advance(nSeconds);
-
-    if (!g_bInputEnable)
-        return;
-
-    if (this != c_pBoundJoystick)
+    if (!g_bInputEnable || this != c_pBoundJoystick)
         return;
 
     CheckDevice();
-
     if (m_bNeedsInit)
     {
         PollSDL(c_controller, &m_prevState);
         m_timeNextUpdate = TheseusGetNow();
         m_bNeedsInit = false;
     }
-
-    if (m_timeNextUpdate > TheseusGetNow())
+    if (TheseusGetNow() < m_timeNextUpdate)
         return;
-
     m_timeNextUpdate = TheseusGetNow() + 1.0f / m_frequency;
 
     ProcessMediaKeys();
 
-    // Poll current state
-    JoySnapshot cur;
-    PollSDL(c_controller, &cur);
-
-    if (!EqualSnapshots(&cur, &m_prevState))
+    JoySnapshot now;
+    PollSDL(c_controller, &now);
+    if (!EqualSnapshots(&now, &m_prevState) && ResetScreenSaver())
     {
-        if (ResetScreenSaver())
-        {
-            // Screen saver was active, ignore this change
-            m_prevState = cur;
-            return;
-        }
+        m_prevState = now;
+        return;
     }
 
-    g_xaxis = g_yaxis = 0.0f;
-
-    bool bWasCentered = m_xaxis == 0.0f && m_yaxis == 0.0f;
-
-    // Thumbsticks
-    m_xaxis = cur.thumbLX;
-    m_yaxis = cur.thumbLY;
-    m_xaxis2 = cur.thumbRX;
-    m_yaxis2 = cur.thumbRY;
-
-    // D-Pad fallback when stick is centered
+    bool wasCentered = m_xaxis == 0.0f && m_yaxis == 0.0f;
+    m_xaxis = now.thumbLX;
+    m_yaxis = now.thumbLY;
+    m_xaxis2 = now.thumbRX;
+    m_yaxis2 = now.thumbRY;
     if (m_xaxis == 0.0f && m_yaxis == 0.0f)
     {
-        if (cur.digitalDown[0])      m_yaxis = 1.0f;   // Up
-        else if (cur.digitalDown[1]) m_yaxis = -1.0f;  // Down
-        if (cur.digitalDown[2])      m_xaxis = -1.0f;  // Left
-        else if (cur.digitalDown[3]) m_xaxis = 1.0f;   // Right
+        if (now.digitalDown[0])
+            m_yaxis = 1.0f;
+        else if (now.digitalDown[1])
+            m_yaxis = -1.0f;
+        if (now.digitalDown[2])
+            m_xaxis = -1.0f;
+        else if (now.digitalDown[3])
+            m_xaxis = 1.0f;
     }
+    g_xaxis = m_xaxis;
+    g_yaxis = m_yaxis;
 
-    g_xaxis += m_xaxis;
-    g_yaxis += m_yaxis;
-
-    // Stick + D-Pad typomatic repeat
+    bool centered = m_xaxis == 0.0f && m_yaxis == 0.0f;
+    if (centered)
     {
-        if (m_xaxis == 0.0f && m_yaxis == 0.0f)
-        {
-            m_nextRepeatTime = 0;
-            m_repeatInterval = REPEAT_DELAY;
-        }
-        else if (TheseusGetNow() >= m_nextRepeatTime)
-        {
-            if (m_xaxis != 0.0f)
-            {
-                k = CheckSecretKeySequence(m_xaxis < 0.0f ? 'L' : 'R');
-                CallFunction(m_xaxis < 0.0f ? "OnMoveLeft" : "OnMoveRight");
-                ProcessSecretKeySequence(k);
-            }
-
-            if (m_yaxis != 0.0f)
-            {
-                k = CheckSecretKeySequence(m_yaxis < 0.0f ? 'D' : 'U');
-                CallFunction(m_yaxis < 0.0f ? "OnMoveDown" : "OnMoveUp");
-                ProcessSecretKeySequence(k);
-            }
-
-            m_nextRepeatTime = TheseusGetNow() + m_repeatInterval;
-            m_repeatInterval = REPEAT_INTERVAL;
-        }
+        m_nextRepeatTime = 0;
+        m_repeatInterval = REPEAT_DELAY;
+    }
+    else if (TheseusGetNow() >= m_nextRepeatTime)
+    {
+        if (m_xaxis != 0.0f)
+            MoveEvent(m_xaxis < 0.0f ? 'L' : 'R', m_xaxis < 0.0f ? "OnMoveLeft" : "OnMoveRight");
+        if (m_yaxis != 0.0f)
+            MoveEvent(m_yaxis < 0.0f ? 'D' : 'U', m_yaxis < 0.0f ? "OnMoveDown" : "OnMoveUp");
+        m_nextRepeatTime = TheseusGetNow() + m_repeatInterval;
+        m_repeatInterval = REPEAT_INTERVAL;
     }
 
-    // Analog button transitions (A,B,X,Y,Black,White,LTrig,RTrig)
     for (int i = 0; i < 8; i++)
     {
-        bool bIsDown = cur.analogDown[i];
-        bool bWasDown = m_prevState.analogDown[i];
-
-        if (bIsDown != bWasDown)
-        {
-            static const char *rgszDown[] =
-                {
-                    "OnADown",
-                    "OnBDown",
-                    "OnXDown",
-                    "OnYDown",
-                    "OnBlackDown",
-                    "OnWhiteDown",
-                    "OnLeftDown",
-                    "OnRightDown"};
-
-            static const char *rgszUp[] =
-                {
-                    "OnAUp",
-                    "OnBUp",
-                    "OnXUp",
-                    "OnYUp",
-                    "OnBlackUp",
-                    "OnWhiteUp",
-                    "OnLeftUp",
-                    "OnRightUp"};
-
-            static const char rgszSecretKey[] =
-                {
-                    'A',
-                    'B',
-                    'X',
-                    'Y',
-                    'b', // Black
-                    'w', // White
-                    'l', // Left-trigger
-                    'r'  // Right-trigger
-                };
-
-            {
-                if (bIsDown)
-                    k = CheckSecretKeySequence(rgszSecretKey[i]);
-
-                CallFunction(bIsDown ? rgszDown[i] : rgszUp[i]);
-
-                if (bIsDown)
-                    ProcessSecretKeySequence(k);
-            }
-        }
+        if (now.analogDown[i] != m_prevState.analogDown[i])
+            ButtonEvent(now.analogDown[i], s_analogDown[i], s_analogUp[i], s_analogKeys[i]);
     }
-
-    // Digital button transitions (DPadU,D,L,R,Start,Back,LThumb,RThumb)
     for (int i = 0; i < 8; i++)
     {
-        if (cur.digitalDown[i] != m_prevState.digitalDown[i])
-        {
-            static const char *rgszDown[] =
-                {
-                    "OnPressUp",
-                    "OnPressDown",
-                    "OnPressLeft",
-                    "OnPressRight",
-                    "OnADown",  // Start -> A (same as original)
-                    "OnBDown",  // Back -> B (same as original)
-                    "OnLeftThumbDown",
-                    "OnRightThumbDown"};
-
-            static const char *rgszUp[] =
-                {
-                    "OnReleaseUp",
-                    "OnReleaseDown",
-                    "OnReleaseLeft",
-                    "OnReleaseRight",
-                    "OnAUp",   // Start -> A
-                    "OnBUp",   // Back -> B
-                    "OnLeftThumbUp",
-                    "OnRightThumbUp"};
-
-            static const char rgszSecretKey[] =
-                {
-                    '\0',
-                    '\0',
-                    '\0',
-                    '\0',
-                    'S', // Start
-                    'P', // Back
-                    'Q', // Left-thumb
-                    'W'  // Right-thumb
-                };
-
-            if (cur.digitalDown[i])
-                k = CheckSecretKeySequence(rgszSecretKey[i]);
-            CallFunction(cur.digitalDown[i] ? rgszDown[i] : rgszUp[i]);
-            if (cur.digitalDown[i])
-                ProcessSecretKeySequence(k);
-        }
+        if (now.digitalDown[i] != m_prevState.digitalDown[i])
+            ButtonEvent(now.digitalDown[i], s_digitalDown[i], s_digitalUp[i], s_digitalKeys[i]);
     }
 
-    // Start+A+B combo -> OnReset
-    if (cur.digitalDown[4] && cur.analogDown[0] && cur.analogDown[1])
+    if (now.digitalDown[4] && now.analogDown[0] && now.analogDown[1])
         CallFunction("OnReset");
-
-    // OnMoveCenter detection
-    bool bIsCentered = m_xaxis == 0.0f && m_yaxis == 0.0f;
-    if (!bWasCentered && bIsCentered)
+    if (!wasCentered && centered)
         CallFunction("OnMoveCenter");
 
-    m_prevState = cur;
+    m_prevState = now;
 }
 
+// CJoystick::CheckSecretKeySequence(key)
+// Reconstructed from 5960 retail XBE @ 0x00041790. With no key set (or
+// checking off) returns 0. A wrong press restarts the sequence (KS_END if
+// one was under way); a right one at the start adds KS_BEGIN, and the last
+// one adds KS_END | KS_VERIFIED and restarts.
 int CJoystick::CheckSecretKeySequence(char key)
 {
-    int nReturn = 0;
-
-    if (!m_enableSecretKey || m_secretKeyLength == 0 || !m_secretKey)
-    {
-        ASSERT(m_secretKeyCurrentIndex == 0);
+    if (!m_enableSecretKey || m_secretKeyLength == 0 || m_secretKey == NULL)
         return 0;
-    }
-
-    ASSERT(m_secretKeyCurrentIndex < m_secretKeyLength);
 
     if (key != m_secretKey[m_secretKeyCurrentIndex])
     {
-        if (m_secretKeyCurrentIndex)
-        {
-            nReturn |= KS_END;
-        }
+        int flags = m_secretKeyCurrentIndex != 0 ? KS_END : 0;
         m_secretKeyCurrentIndex = 0;
-        return nReturn;
+        return flags;
     }
 
-    if (m_secretKeyCurrentIndex == 0)
-    {
-        nReturn |= KS_BEGIN;
-    }
-
+    int flags = m_secretKeyCurrentIndex == 0 ? KS_BEGIN : 0;
     if (++m_secretKeyCurrentIndex == m_secretKeyLength)
     {
-        nReturn |= KS_END;
-        nReturn |= KS_VERIFIED;
+        flags |= KS_END | KS_VERIFIED;
         m_secretKeyCurrentIndex = 0;
     }
-
-    return nReturn;
+    return flags;
 }
 
+// CJoystick::ProcessSecretKeySequence(flags)
+// Reconstructed from 5960 retail XBE @ 0x00041800: OnKeyVerificationEnter,
+// OnKeyVerificationExit, OnKeyVerified, in that order, for the flags set.
 void CJoystick::ProcessSecretKeySequence(int flags)
 {
     if (flags & KS_BEGIN)
         CallFunction("OnKeyVerificationEnter");
-
     if (flags & KS_END)
         CallFunction("OnKeyVerificationExit");
-
     if (flags & KS_VERIFIED)
         CallFunction("OnKeyVerified");
 }

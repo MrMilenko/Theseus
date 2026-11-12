@@ -1,10 +1,9 @@
-// xap_vm.cpp: XAP script virtual machine.
+// xap_vm.cpp: the XAP script runner and the value objects it pushes around.
 //
-// Bytecode interpreter, runtime object system, and property binding.
-// Stack-based architecture with reference-counted objects, late-bound
-// variable lookup, and a context stack for nested function calls.
-// Executes bytecode produced by xap_compile.cpp. Decompiled from the
-// 5960 retail XBE; see docs/decomp/VM.md.
+// One byte per opcode, operands inline, a fixed operand stack and a linked
+// list of saved frames for nested calls. Everything on the stack is a
+// ref-counted CObject. Bodies follow the 5960 retail XBE's runner code
+// (0x36f70 to 0x39b90); docs/decomp/VM.md has the behavior in more detail.
 #include "std.h"
 #include "theseus.h"
 #include "node.h"
@@ -12,15 +11,7 @@
 #include "camera.h"
 #include "xap_compile.h"
 
-
-
-//#define LOCALTRACE TRACE
-#define LOCALTRACE 1 ? (void)0 : ::Trace
-
-// =========================================================================
-// Globals
-// =========================================================================
-
+// Shared runner state. 5960 keeps the same four at 0x17ae9c..0x17aea8.
 CObject* g_pThis;
 CRunner* g_pRunner;
 CObject** g_rgParam;
@@ -28,15 +19,20 @@ int g_nParam;
 
 extern bool g_bInputEnable;
 extern CCamera theCamera;
+extern CMathClass g_Math;
 
 CObject* LookupMember(CObject* pThis, const TCHAR* pchName, int cchName);
 
 // =========================================================================
-// Section 1: Runtime object types
+// Numbers and vectors
 // =========================================================================
 
-// CNumObject: numeric value (all XAP numbers are float).
-
+// CNumObject constructors   [type 2, vtable 0x22c50]
+// Reconstructed from 5960 retail XBE @ 0x00038fa0 (float form; the empty form
+// only shows up inlined). Decompile:
+//     m_nRefCount = 1; m_obj = 2; m_value = xmm0;
+// The string form has no standalone copy in the binary; CStrObject::ToNum
+// @ 0x32200 does the same (float)wcstod(sz, NULL) inline. Kept for runner.h.
 CNumObject::CNumObject()
 {
 	m_obj = objNumber;
@@ -55,20 +51,30 @@ CNumObject::CNumObject(const TCHAR* szValue)
 	m_value = (float)_tcstod(szValue, NULL);
 }
 
+// CNumObject::ToStr
+// Reconstructed from 5960 retail XBE @ 0x00038fd0. Decompile:
+//     n = swprintf(buf20, L"%f", (double)m_value); p = buf + n - 1;
+//     while (*p == '0') p--;  if (*p == '.') p--;  p[1] = 0;
+//     return new CStrObject(buf);
+// So 2.500000 prints as "2.5" and 3.000000 as "3". The binary's 20 characters
+// overflow from 1e12 up, so Theseus makes room for the biggest float.
 CStrObject* CNumObject::ToStr()
 {
-	TCHAR szBuf[20];
-	TCHAR* pch = szBuf + _stprintf(szBuf, _T("%f"), m_value) - 1;
-	// Strip trailing zeros
-	while (*pch == '0') pch--;
-	if (*pch == '.') pch--;
-	pch++;
-	*pch = '\0';
-	return new CStrObject(szBuf);
+	TCHAR szNum[64];
+	int cch = _stprintf(szNum, _T("%f"), m_value);
+
+	TCHAR* pchLast = &szNum[cch - 1];
+	while (*pchLast == '0')
+		pchLast--;
+	if (*pchLast == '.')
+		pchLast--;
+	pchLast[1] = '\0';
+
+	return new CStrObject(szNum);
 }
 
-// CVec3Object: 3D vector for XAP scripts.
-
+// Script-side Vector3. 5960 registers it as node class "Vector3" with x/y/z
+// number props (factory @ 0x39070, prop map @ 0x36fa0).
 class CVec3Object : public CObject
 {
 	DECLARE_NODE(CVec3Object, CObject)
@@ -88,10 +94,16 @@ START_NODE_PROPS(CVec3Object, CObject)
 	NODE_PROP(pt_number, CVec3Object, z)
 END_NODE_PROPS()
 
+// CVec3Object constructors   [type 16, vtable 0x22c88]
+// Reconstructed from 5960 retail XBE @ 0x00039070 (empty, via the factory)
+// and @ 0x000390c0 (copy). Decompile:
+//     m_obj = 0x10; m_x = v[0]; m_y = v[1]; m_z = v[2];     (or all 0)
 CVec3Object::CVec3Object()
 {
 	m_obj = objVec3;
-	m_x = m_y = m_z = 0.0f;
+	m_x = 0.0f;
+	m_y = 0.0f;
+	m_z = 0.0f;
 }
 
 CVec3Object::CVec3Object(const D3DXVECTOR3& v)
@@ -102,26 +114,45 @@ CVec3Object::CVec3Object(const D3DXVECTOR3& v)
 	m_z = v.z;
 }
 
+// CVec3Object::ToStr
+// Reconstructed from 5960 retail XBE @ 0x000390f0. Decompile:
+//     swprintf(buf60, L"%f %f %f", x, y, z); return new CStrObject(buf);
+// No zero trimming here, unlike numbers. Theseus sizes it for three huge floats.
 CStrObject* CVec3Object::ToStr()
 {
-	TCHAR szBuf[60];
-	_stprintf(szBuf, _T("%f %f %f"), m_x, m_y, m_z);
-	return new CStrObject(szBuf);
+	TCHAR szVec[160];
+	_stprintf(szVec, _T("%f %f %f"), m_x, m_y, m_z);
+	return new CStrObject(szVec);
 }
 
-// CLocalVariable: stack frame local with ref-counted value.
+// =========================================================================
+// Locals and late-bound names
+// =========================================================================
 
+// A stack slot for a script local. opLocal creates one the first time a
+// slot is touched; it holds one reference to whatever the local points at.
 class CLocalVariable : public CObject
 {
 public:
 	CLocalVariable();
 	~CLocalVariable();
 	CObject* Deref();
-	void Assign(CObject* pObject);
+	void Assign(CObject* pValue);
 	CObject* m_pValue;
 };
 
-CLocalVariable::CLocalVariable()  { m_pValue = NULL; }
+// CLocalVariable   [vtable 0x22e48]
+// Reconstructed from 5960 retail XBE @ 0x00037300 (ctor), 0x37340 (dtor),
+// 0x373a0 (Assign), 0x373d0 (Deref). Decompile:
+//     ctor:   m_value = NULL;
+//     dtor:   if (m_value) m_value->Release();
+//     Assign: if (m_value) m_value->Release(); m_value = p; if (p) p->AddRef();
+//     Deref:  v = m_value; if (v) v->AddRef(); this->Release(); return v;
+// Deref trades the reference to the slot for one to its value.
+CLocalVariable::CLocalVariable()
+{
+	m_pValue = NULL;
+}
 
 CLocalVariable::~CLocalVariable()
 {
@@ -129,33 +160,36 @@ CLocalVariable::~CLocalVariable()
 		m_pValue->Release();
 }
 
-void CLocalVariable::Assign(CObject* pObject)
+void CLocalVariable::Assign(CObject* pValue)
 {
 	if (m_pValue != NULL)
 		m_pValue->Release();
-	m_pValue = pObject;
-	if (m_pValue != NULL)
-		m_pValue->AddRef();
+	m_pValue = pValue;
+	if (pValue != NULL)
+		pValue->AddRef();
 }
 
 CObject* CLocalVariable::Deref()
 {
-	CObject* pObject = m_pValue;
-	if (pObject != NULL)
-		pObject->AddRef();
+	CObject* pValue = m_pValue;
+	if (pValue != NULL)
+		pValue->AddRef();
 	Release();
-	return pObject;
+	return pValue;
 }
 
-// CVarObject: late-bound variable name.
-
+// CVarObject constructor / destructor   [type 4, vtable 0x22cf8]
+// Reconstructed from 5960 retail XBE @ 0x00039400 and @ 0x000394c0. Decompile:
+//     m_length = cch; m_capacity = cch + 1; m_text = new WCHAR[cch + 1];
+//     memcpy(m_text, pch, cch * 2); m_text[cch] = 0;
+//     dtor: free(m_text);
 CVarObject::CVarObject(const TCHAR* pch, int cch)
 {
 	m_obj = objVariable;
 	m_length = cch;
 	m_capacity = cch + 1;
-	m_text = new TCHAR[m_capacity];
-	CopyChars(m_text, pch, cch);
+	m_text = new TCHAR[cch + 1];
+	memcpy(m_text, pch, cch * sizeof(TCHAR));
 	m_text[cch] = '\0';
 }
 
@@ -164,94 +198,109 @@ CVarObject::~CVarObject()
 	delete[] m_text;
 }
 
+// CVarObject::Deref
+// Reconstructed from 5960 retail XBE @ 0x000394e0. Decompile:
+//     if (!wcscmp(m_text, L"Math"))        obj = &g_Math;      (0x17fac8)
+//     else if (!wcscmp(m_text, L"camera")) obj = &theCamera;   (0x187fb0)
+//     else { obj = LookupMember(runner->m_self, m_text, len);
+//            if (!obj && runner->m_self != runner->m_thisRef)
+//                obj = LookupMember(runner->m_thisRef, m_text, len);
+//            if (!obj) { Error(L"Unknown object: %s", m_text); return 0; } }
+//     obj->AddRef(); r = obj->Deref(); this->Release(); return r;
+// The self-then-this lookup is CRunner::LookupVariable, inlined there.
 CObject* CVarObject::Deref()
 {
-	CObject* pObject;
+	CObject* pFound;
 
-	// Built-in globals
 	if (_tcscmp(m_text, _T("Math")) == 0)
-	{
-		extern CMathClass g_Math;
-		pObject = &g_Math;
-	}
+		pFound = &g_Math;
 	else if (_tcscmp(m_text, _T("camera")) == 0)
-	{
-		pObject = &theCamera;
-	}
+		pFound = &theCamera;
 	else
 	{
-		pObject = g_pRunner->LookupVariable(m_text, _tcslen(m_text));
-		if (pObject == NULL)
+		pFound = g_pRunner->LookupVariable(m_text, _tcslen(m_text));
+		if (pFound == NULL)
 		{
 			g_pRunner->Error(_T("Unknown object: %s"), m_text);
 			return NULL;
 		}
-
-		if (pObject->m_obj == objMember)
-		{
-			LOCALTRACE(_T("member\n"));
-		}
 	}
 
-	pObject->AddRef();
-	pObject = pObject->Deref();
+	pFound->AddRef();
+	CObject* pResolved = pFound->Deref();
 	Release();
-	return pObject;
+	return pResolved;
 }
 
-void CVarObject::Assign(CObject* pNewObject)
+// CVarObject::Assign
+// Reconstructed from 5960 retail XBE @ 0x000395b0. Decompile:
+//     obj = (self lookup, then this lookup, as in Deref);
+//     if (!obj) { Error(L"Unknown variable: %s", m_text); return; }
+//     obj->Assign(value);
+void CVarObject::Assign(CObject* pValue)
 {
-	CObject* pObject = g_pRunner->LookupVariable(m_text, _tcslen(m_text));
-	if (pObject == NULL)
-	{
+	CObject* pTarget = g_pRunner->LookupVariable(m_text, _tcslen(m_text));
+	if (pTarget != NULL)
+		pTarget->Assign(pValue);
+	else
 		g_pRunner->Error(_T("Unknown variable: %s"), m_text);
-		return;
-	}
-	pObject->Assign(pNewObject);
 }
 
-// CMemberVarObject: reference to an instance variable by index.
+// =========================================================================
+// Class members, bound methods, native function refs
+// =========================================================================
 
-CMemberVarObject::CMemberVarObject(CInstance* pObject, int nMember)
+// CMemberVarObject   [type 10, vtable 0x22da0]
+// Reconstructed from 5960 retail XBE @ 0x00039640 (ctor), 0x396c0 (dtor),
+// 0x39720 (Deref), 0x39760 (Assign). Decompile:
+//     ctor:   m_owner = inst; m_memberIndex = i; inst->AddRef();
+//     dtor:   m_owner->Release();
+//     Deref:  v = m_owner->m_vars[i] (NULL if i out of range);
+//             if (v) v->AddRef(); this->Release(); return v;
+//     Assign: old = m_owner->m_vars[i]; if (old) old->Release();
+//             m_owner->m_vars[i] = p (if in range); if (p) p->AddRef();
+// The range checks are what CNodeArray::GetNode/SetNode already do.
+CMemberVarObject::CMemberVarObject(CInstance* pInstance, int iMember)
 {
-	ASSERT(pObject != NULL);
-	ASSERT(nMember >= 0 && nMember < pObject->m_vars.GetLength());
-
 	m_obj = objMemberVar;
-	m_owner = pObject;
-	m_memberIndex = nMember;
-	m_owner->AddRef();
+	m_owner = pInstance;
+	m_memberIndex = iMember;
+	pInstance->AddRef();
 }
 
 CMemberVarObject::~CMemberVarObject()
 {
-	ASSERT(m_owner != NULL);
 	m_owner->Release();
 }
 
 CObject* CMemberVarObject::Deref()
 {
-	ASSERT(m_memberIndex >= 0 && m_memberIndex < m_owner->m_vars.GetLength());
-	CObject* pObj = m_owner->m_vars.GetNode(m_memberIndex);
-	if (pObj != NULL)
-		pObj->AddRef();
+	CObject* pValue = m_owner->m_vars.GetNode(m_memberIndex);
+	if (pValue != NULL)
+		pValue->AddRef();
 	Release();
-	return pObj;
+	return pValue;
 }
 
-void CMemberVarObject::Assign(CObject* pNewObject)
+void CMemberVarObject::Assign(CObject* pValue)
 {
-	ASSERT(m_memberIndex >= 0 && m_memberIndex < m_owner->m_vars.GetLength());
-	CObject* pOldObj = m_owner->m_vars.GetNode(m_memberIndex);
-	if (pOldObj != NULL)
-		pOldObj->Release();
-	m_owner->m_vars.SetNode(m_memberIndex, (CNode*)pNewObject);
-	if (pNewObject != NULL)
-		pNewObject->AddRef();
+	CNodeArray& vars = m_owner->m_vars;
+	CObject* pOld = vars.GetNode(m_memberIndex);
+	if (pOld != NULL)
+		pOld->Release();
+	vars.SetNode(m_memberIndex, (CNode*)pValue);
+	if (pValue != NULL)
+		pValue->AddRef();
 }
 
-// CMemberFunctionObject: reference to a scripted member function.
-
+// CMemberFunctionObject   [type 14, vtable 0x22d68]
+// Reconstructed from 5960 retail XBE @ 0x000397b0 (ctor) and @ 0x00039810
+// (Deref). Decompile:
+//     ctor:  m_owner = owner; m_function = fn;            (no AddRef)
+//     Deref: CRunner r(m_owner); r.ResetFunc(); r.m_ops = m_function->m_rgop;
+//            ret = r.Run(); this->Release(); return ret;
+// Reading a method without calling it runs it on a fresh runner. The owner
+// is a plain CObject in Theseus so non-instance nodes can hand these out.
 CMemberFunctionObject::CMemberFunctionObject(CObject* pOwner, CFunction* pFunction)
 {
 	m_obj = objMemberFunction;
@@ -259,19 +308,25 @@ CMemberFunctionObject::CMemberFunctionObject(CObject* pOwner, CFunction* pFuncti
 	m_function = pFunction;
 }
 
-CMemberFunctionObject::~CMemberFunctionObject() {}
+CMemberFunctionObject::~CMemberFunctionObject()
+{
+}
 
 CObject* CMemberFunctionObject::Deref()
 {
-	CRunner runner(m_owner);   // CObject*, no cast needed
-	runner.SetFunc(m_function);
-	CObject* pObject = runner.Run();
+	CRunner vm(m_owner);
+	vm.SetFunc(m_function);
+	CObject* pResult = vm.Run();
 	Release();
-	return pObject;
+	return pResult;
 }
 
-// CFunctionObject: reference to a native function.
-
+// CFunctionObject   [type 8, vtable 0x22cc0]
+// Reconstructed from 5960 retail XBE @ 0x00039920 (ctor), 0x39960 (dtor),
+// 0x399c0 (Call). Decompile:
+//     ctor: m_obj = 8; m_owner = NULL;
+//     dtor: if (m_owner) m_owner->Release();
+//     Call: return m_owner->Call(m_functionIndex, rgparam, nParam);
 CFunctionObject::CFunctionObject()
 {
 	m_obj = objFunctionRef;
@@ -284,13 +339,16 @@ CFunctionObject::~CFunctionObject()
 		m_owner->Release();
 }
 
-CObject* CFunctionObject::Call(CObject** rgparam, int nParam)
+CObject* CFunctionObject::Call(CObject** rgArgs, int nArgs)
 {
-	return m_owner->Call(m_functionIndex, rgparam, nParam);
+	return m_owner->Call(m_functionIndex, rgArgs, nArgs);
 }
 
-// CFunction: compiled bytecode.
-
+// CFunction   [type 13, vtable 0x22c18]
+// Reconstructed from 5960 retail XBE: the constructor is inlined in
+// CCompiler::CreateFunction @ 0x34670 (m_obj = 0xd, m_codeSize = 0) and the
+// destructor @ 0x39b00 does nothing of its own. m_name is Theseus's debug
+// name for the function, so Theseus frees it here.
 CFunction::CFunction()
 {
 	m_obj = objFunction;
@@ -300,10 +358,24 @@ CFunction::CFunction()
 
 CFunction::~CFunction()
 {
-	delete [] m_name;
+	delete[] m_name;
 }
 
-// CMember: named member variable (class scope).
+// CMember   [type 9, vtable 0x22dd8]
+// Reconstructed from 5960 retail XBE: ctor inlined in
+// CClassCompiler::ParseMemberVar @ 0x36ad0 (m_obj = 9, m_memberIndex = -1),
+// dtor @ 0x39b30, Deref @ 0x39b40, Assign @ 0x39b90. Decompile:
+//     Deref:  v = g_pThis->m_vars[i]; if (v) v->AddRef(); Release(); return v;
+//     Assign: old = g_pThis->m_vars[i]; if (old) old->Release();
+//             g_pThis->m_vars[i] = p; if (p) p->AddRef();
+// Same as CMemberVarObject but the instance is whatever g_pThis is right
+// now (LookupMember sets it). 5960 just casts g_pThis; Theseus checks first.
+static CInstance* MemberOwner()
+{
+	if (!CHECK(g_pThis != NULL && g_pThis->m_obj == objInstance))
+		return NULL;
+	return (CInstance*)g_pThis;
+}
 
 CMember::CMember()
 {
@@ -311,74 +383,83 @@ CMember::CMember()
 	m_memberIndex = -1;
 }
 
-CMember::~CMember() {}
+CMember::~CMember()
+{
+}
 
 CObject* CMember::Deref()
 {
-	ASSERT(g_pThis != NULL);
-	ASSERT(g_pThis->m_obj == objInstance);
-
-	CInstance* pThis = (CInstance*)g_pThis;
-
-	ASSERT(m_memberIndex >= 0 && m_memberIndex < pThis->m_vars.GetLength());
-
-	CObject* pObj = pThis->m_vars.GetNode(m_memberIndex);
-	if (pObj != NULL)
-		pObj->AddRef();
+	CInstance* pInstance = MemberOwner();
+	CObject* pValue = (pInstance != NULL) ? pInstance->m_vars.GetNode(m_memberIndex) : NULL;
+	if (pValue != NULL)
+		pValue->AddRef();
 	Release();
-	return pObj;
+	return pValue;
 }
 
-void CMember::Assign(CObject* pNewValue)
+void CMember::Assign(CObject* pValue)
 {
-	ASSERT(g_pThis != NULL);
-	ASSERT(g_pThis->m_obj == objInstance);
+	CInstance* pInstance = MemberOwner();
+	if (pInstance == NULL)
+		return;
 
-	CInstance* pThis = (CInstance*)g_pThis;
-
-	ASSERT(m_memberIndex >= 0 && m_memberIndex < pThis->m_vars.GetLength());
-
-	CObject* pObj = pThis->m_vars.GetNode(m_memberIndex);
-	if (pObj != NULL)
-		pObj->Release();
-	pThis->m_vars.SetNode(m_memberIndex, (CNode*)pNewValue);
-	if (pNewValue != NULL)
-		pNewValue->AddRef();
+	CObject* pOld = pInstance->m_vars.GetNode(m_memberIndex);
+	if (pOld != NULL)
+		pOld->Release();
+	pInstance->m_vars.SetNode(m_memberIndex, (CNode*)pValue);
+	if (pValue != NULL)
+		pValue->AddRef();
 }
 
-void CObject::Assign(CObject* pObject)
+// CObject::Assign
+// Reconstructed from 5960 retail XBE @ 0x00039900 (shared by CObject and
+// CNode). Decompile:
+//     Error(L"Cannot assign to objects");
+void CObject::Assign(CObject* pValue)
 {
 	g_pRunner->Error(_T("Cannot assign to objects"));
 }
 
-// CNodeArrayObject: script-accessible wrapper for CNodeArray.
+// =========================================================================
+// Node arrays as script arrays
+// =========================================================================
 
-CNodeArrayObject::CNodeArrayObject(CNodeArray* pNodeArray)
+// CNodeArrayObject constructor   [type 7, vtable 0x22d30]
+// Reconstructed from 5960 retail XBE: inlined in CProperty::Deref @ 0x38b00.
+//     m_obj = 7; m_nodeArray = (CNodeArray*)(node + prop offset);
+CNodeArrayObject::CNodeArrayObject(CNodeArray* pArray)
 {
 	m_obj = objNodeArray;
-	m_nodeArray = pNodeArray;
+	m_nodeArray = pArray;
 }
 
-CObject* CNodeArrayObject::Call(int nFunction, CObject** rgparam, int nParam)
+// CNodeArrayObject::Call
+// Reconstructed from 5960 retail XBE @ 0x000391a0. Decompile:
+//     0: return new CNumObject((float)m_nodeArray->m_length);
+//     1: p = rgparam[0]->Deref(); p->AddRef(); m_nodeArray->AddNode(p);
+//     2: p = rgparam[0]->Deref(); m_nodeArray->RemoveNode(p); p->Release();
+//     return NULL;
+// add keeps both the Deref reference and an extra one, so the array owns one.
+CObject* CNodeArrayObject::Call(int nFunction, CObject** rgArgs, int nArgs)
 {
 	switch (nFunction)
 	{
-	case 0: // length
+	case 0:
 		return new CNumObject((float)m_nodeArray->GetLength());
 
-	case 1: // add
+	case 1:
 		{
-			CObject* pObj = rgparam[0]->Deref();
-			pObj->AddRef();
-			m_nodeArray->AddNode((CNode*)pObj);
+			CObject* pItem = rgArgs[0]->Deref();
+			pItem->AddRef();
+			m_nodeArray->AddNode((CNode*)pItem);
 		}
 		break;
 
-	case 2: // remove
+	case 2:
 		{
-			CObject* pObj = rgparam[0]->Deref();
-			m_nodeArray->RemoveNode((CNode*)pObj);
-			pObj->Release();
+			CObject* pItem = rgArgs[0]->Deref();
+			m_nodeArray->RemoveNode((CNode*)pItem);
+			pItem->Release();
 		}
 		break;
 	}
@@ -386,56 +467,70 @@ CObject* CNodeArrayObject::Call(int nFunction, CObject** rgparam, int nParam)
 	return NULL;
 }
 
-CObject* CNodeArrayObject::Dot(CObject* pObj)
+// CNodeArrayObject::Dot
+// Reconstructed from 5960 retail XBE @ 0x00039260. Decompile:
+//     if (key->m_obj != objVariable) {
+//         i = (int)key->m_value;
+//         if (i < 0 || i >= m_nodeArray->m_length)
+//             { Error(L"Array reference out of bounds"); return 0; }
+//         n = m_nodeArray->m_rgpNode[i]; n->AddRef(); return n; }
+//     "length"(6) / "add"(3) / "remove"(6) -> new CFunctionObject
+//         { m_functionIndex = 0 / 1 / 2, m_owner = this }; this->AddRef();
+//     else return CObject::Dot(key);
+CObject* CNodeArrayObject::Dot(CObject* pKey)
 {
-	if (pObj->m_obj == objVariable)
+	if (pKey->m_obj != objVariable)
 	{
-		CVarObject* pVar = (CVarObject*)pObj;
-
-		int nFunc = -1;
-		if (pVar->m_length == 6 && _tcsncmp(pVar->m_text, _T("length"), pVar->m_length) == 0)
-			nFunc = 0;
-		else if (pVar->m_length == 3 && _tcsncmp(pVar->m_text, _T("add"), pVar->m_length) == 0)
-			nFunc = 1;
-		else if (pVar->m_length == 6 && _tcsncmp(pVar->m_text, _T("remove"), pVar->m_length) == 0)
-			nFunc = 2;
-
-		if (nFunc >= 0)
-		{
-			CFunctionObject* pFun = new CFunctionObject;
-			pFun->m_functionIndex = nFunc;
-			pFun->m_owner = this;
-			AddRef();
-			return pFun;
-		}
-	}
-	else
-	{
-		// Array indexing
-		int n = (int)((CNumObject*)pObj)->m_value;
-		if (n < 0 || n >= m_nodeArray->GetLength())
+		int iItem = (int)((CNumObject*)pKey)->m_value;
+		if (iItem < 0 || iItem >= m_nodeArray->GetLength())
 		{
 			g_pRunner->Error(_T("Array reference out of bounds"));
 			return NULL;
 		}
 
-		CNode* pNode = m_nodeArray->GetNode(n);
-		pNode->AddRef();
-		return pNode;
+		CNode* pItem = m_nodeArray->GetNode(iItem);
+		pItem->AddRef();
+		return pItem;
 	}
 
-	return CObject::Dot(pObj);
+	static const struct { const TCHAR* sz; int cch; } c_rgMethod[] =
+	{
+		{ _T("length"), 6 },
+		{ _T("add"), 3 },
+		{ _T("remove"), 6 },
+	};
+
+	CVarObject* pName = (CVarObject*)pKey;
+	for (int iMethod = 0; iMethod < 3; iMethod++)
+	{
+		if (pName->m_length != c_rgMethod[iMethod].cch)
+			continue;
+		if (_tcsncmp(pName->m_text, c_rgMethod[iMethod].sz, c_rgMethod[iMethod].cch) != 0)
+			continue;
+
+		CFunctionObject* pRef = new CFunctionObject;
+		pRef->m_functionIndex = iMethod;
+		pRef->m_owner = this;
+		AddRef();
+		return pRef;
+	}
+
+	return CObject::Dot(pKey);
 }
 
 // =========================================================================
-// Section 2: Property system. Bridges XAP scripts to C++ node properties.
+// Node properties seen from script
 // =========================================================================
 
-CProperty::CProperty(CObject* pNode, const PRD* pprd)
+// CProperty constructor / destructor   [vtable 0x22e10]
+// Reconstructed from 5960 retail XBE @ 0x00038a20 and @ 0x00038aa0. Decompile:
+//     ctor: m_node = node; m_pprd = prd; node->AddRef();
+//     dtor: m_node->Release();
+CProperty::CProperty(CObject* pOwner, const PRD* pprd)
 {
-	m_node = pNode;
+	m_node = pOwner;
 	m_pprd = pprd;
-	pNode->AddRef();
+	pOwner->AddRef();
 }
 
 CProperty::~CProperty()
@@ -443,126 +538,128 @@ CProperty::~CProperty()
 	m_node->Release();
 }
 
+// CProperty::Deref
+// Reconstructed from 5960 retail XBE @ 0x00038b00. Reads the field at
+// m_node + prd offset and wraps it by type: integer / boolean / number become
+// a CNumObject, vec3 a CVec3Object, node is returned AddRef'd as is, string
+// becomes a CStrObject, children and nodearray become a CNodeArrayObject over
+// the field itself. Any other type: Error(L"Unknown property type"). The
+// property reference is released either way. Theseus reads the field before
+// the release so the value can't go away under it.
 CObject* CProperty::Deref()
 {
-	void* pvValue = (BYTE*)m_node + (int)m_pprd->pbOffset;
+	BYTE* pbField = (BYTE*)m_node + (int)m_pprd->pbOffset;
+	CObject* pWrapped;
 
 	switch (m_pprd->nType)
 	{
-	case pt_string:
-		{
-			CStrObject* pStr = new CStrObject(*(TCHAR**)pvValue);
-			Release();
-			return pStr;
-		}
-	case pt_number:
-		{
-			float n = *(float*)pvValue;
-			Release();
-			return new CNumObject(n);
-		}
 	case pt_integer:
-		{
-			int n = *(int*)pvValue;
-			Release();
-			return new CNumObject((float)n);
-		}
+		pWrapped = new CNumObject((float)*(int*)pbField);
+		break;
+
 	case pt_boolean:
-		{
-			bool n = *(bool*)pvValue;
-			Release();
-			return new CNumObject((float)n);
-		}
-	case pt_node:
-		{
-			CNode* pNode = *(CNode**)pvValue;
-			if (pNode != NULL) pNode->AddRef();
-			Release();
-			return pNode;
-		}
-	case pt_vec3:
-		{
-			D3DXVECTOR3 v = *(D3DXVECTOR3*)pvValue;
-			Release();
-			return new CVec3Object(v);
-		}
-	case pt_nodearray:
+		pWrapped = new CNumObject((float)*(bool*)pbField);
+		break;
+
+	case pt_number:
+		pWrapped = new CNumObject(*(float*)pbField);
+		break;
+
 	case pt_children:
-		{
-			CNodeArrayObject* pRet = new CNodeArrayObject((CNodeArray*)pvValue);
-			Release();
-			return pRet;
-		}
+	case pt_nodearray:
+		pWrapped = new CNodeArrayObject((CNodeArray*)pbField);
+		break;
+
+	case pt_vec3:
+		pWrapped = new CVec3Object(*(D3DXVECTOR3*)pbField);
+		break;
+
+	case pt_node:
+		pWrapped = *(CNode**)pbField;
+		if (pWrapped != NULL)
+			pWrapped->AddRef();
+		break;
+
+	case pt_string:
+		pWrapped = new CStrObject(*(TCHAR**)pbField);
+		break;
+
+	default:
+		g_pRunner->Error(_T("Unknown property type"));
+		return NULL;
 	}
 
-	g_pRunner->Error(_T("Unknown property type"));
-	return NULL;
+	Release();
+	return pWrapped;
 }
 
-void CProperty::Assign(CObject* pObject)
+// CProperty::Assign
+// Reconstructed from 5960 retail XBE @ 0x00038d70. Decompile:
+//     if (!value && type != pt_node) { Error(L"Illegal null assignement"); return; }
+//     integer: n = value->Deref()->ToNum(); SetProperty(prd, &(int)n->m_value);
+//     boolean: b = n->m_value != 0;         SetProperty(prd, &b);
+//     number:  SetProperty(prd, &n->m_value);              (then n->Release())
+//     vec3:    v = value->Deref(); if (v->m_obj == objVec3) SetProperty(prd, &v->m_x);
+//     node:    p = value ? value->Deref() : NULL; SetProperty(prd, &p);
+//     string:  s = value->Deref()->ToStr(); SetProperty(prd, &s->m_text); s->Release();
+// "assignement" is the binary's spelling. Theseus passes the byte count to
+// SetProperty.
+void CProperty::Assign(CObject* pValue)
 {
-	if (pObject == NULL && m_pprd->nType != pt_node)
+	const PROP_TYPE type = m_pprd->nType;
+	if (pValue == NULL && type != pt_node)
 	{
 		g_pRunner->Error(_T("Illegal null assignement"));
 		return;
 	}
 
-	switch (m_pprd->nType)
+	if (type == pt_integer || type == pt_boolean || type == pt_number)
 	{
-	case pt_string:
+		CNumObject* pNumber = pValue->Deref()->ToNum();
+		float n = pNumber->m_value;
+		if (type == pt_integer)
 		{
-			CStrObject* pStr = pObject->Deref()->ToStr();
-			const TCHAR* sz = pStr->GetSz();
-			m_node->SetProperty(m_pprd, &sz, pStr->GetLength());
-			pStr->Release();
+			int i = (int)n;
+			m_node->SetProperty(m_pprd, &i, sizeof(i));
 		}
-		break;
-	case pt_number:
+		else if (type == pt_boolean)
 		{
-			CNumObject* pNum = pObject->Deref()->ToNum();
-			m_node->SetProperty(m_pprd, &pNum->m_value, sizeof(float));
-			pNum->Release();
+			bool b = (n != 0.0f);
+			m_node->SetProperty(m_pprd, &b, sizeof(b));
 		}
-		break;
-	case pt_integer:
+		else
 		{
-			CNumObject* pNum = pObject->Deref()->ToNum();
-			int n = (int)pNum->m_value;
-			m_node->SetProperty(m_pprd, &n, sizeof(int));
-			pNum->Release();
+			m_node->SetProperty(m_pprd, &n, sizeof(n));
 		}
-		break;
-	case pt_boolean:
-		{
-			CNumObject* pNum = pObject->Deref()->ToNum();
-			bool b = pNum->m_value != 0.0f;
-			m_node->SetProperty(m_pprd, &b, sizeof(bool));
-			pNum->Release();
-		}
-		break;
-	case pt_vec3:
-		{
-			CVec3Object* pVec = (CVec3Object*)pObject->Deref();
-			if (pVec->m_obj != objVec3)
-				TRACE(_T("\001Expected a Vector3 object!\n"));
-			else
-				m_node->SetProperty(m_pprd, &pVec->m_x, sizeof(float) * 3);
-		}
-		break;
-	case pt_node:
-		{
-			CNode* pNode = NULL;
-			if (pObject != NULL)
-				pNode = (CNode*)pObject->Deref();
-			m_node->SetProperty(m_pprd, &pNode, sizeof(CNode*));
-		}
-		break;
+		pNumber->Release();
+	}
+	else if (type == pt_vec3)
+	{
+		CObject* pVec = pValue->Deref();
+		if (pVec->m_obj == objVec3)
+			m_node->SetProperty(m_pprd, &((CVec3Object*)pVec)->m_x, 3 * sizeof(float));
+	}
+	else if (type == pt_node)
+	{
+		CObject* pTarget = (pValue == NULL) ? NULL : pValue->Deref();
+		m_node->SetProperty(m_pprd, &pTarget, sizeof(pTarget));
+	}
+	else if (type == pt_string)
+	{
+		CStrObject* pText = pValue->Deref()->ToStr();
+		const TCHAR* szText = pText->GetSz();
+		m_node->SetProperty(m_pprd, &szText, pText->GetLength());
+		pText->Release();
 	}
 }
 
-CObject* CNode::Dot(CObject* pObj)
+// CNode::Dot / CNode::ToStr   [CNode vtable 0x219f8 slots 12 and 8]
+// Reconstructed from 5960 retail XBE @ 0x00038f30 and @ 0x00038f40. Decompile:
+//     Dot:   return CObject::Dot(key);
+//     ToStr: return new CStrObject(GetNodeClass()->m_className);
+CObject* CNode::Dot(CObject* pKey)
 {
-	return CObject::Dot(pObj);
+	return CObject::Dot(pKey);
 }
 
 CStrObject* CNode::ToStr()
@@ -571,171 +668,182 @@ CStrObject* CNode::ToStr()
 }
 
 // =========================================================================
-// Section 3: Helper functions
+// Free helpers
 // =========================================================================
 
-CObject* Dereference(CObject* pObject)
+// Dereference
+// Reconstructed from 5960 retail XBE @ 0x000372e0. Decompile:
+//     while (p) { q = p->Deref(); if (q == p) break; p = q; } return p;
+// Keeps following references until something answers with itself.
+CObject* Dereference(CObject* p)
 {
-	CObject* pLast = pObject;
-	while (pObject != NULL)
+	for (;;)
 	{
-		pObject = pLast->Deref();
-		if (pObject == pLast)
-			break;
-		pLast = pObject;
+		if (p == NULL)
+			return NULL;
+		CObject* pNext = p->Deref();
+		if (pNext == p)
+			return p;
+		p = pNext;
 	}
-	return pObject;
 }
 
+// LookupClass
+// Reconstructed from 5960 retail XBE: inlined at the top of CreateNewObject
+// @ 0x37580 as g_classes->Lookup(name) (0x32ca0) plus an objClass check.
 CClass* LookupClass(const TCHAR* pchName, int cchName)
 {
 	extern CNameSpace* g_classes;
-	CObject* pObject = g_classes->Lookup(pchName, cchName);
-	if (pObject == NULL || pObject->m_obj != objClass)
-		return NULL;
-	return (CClass*)pObject;
-}
-
-CObject* CreateNewObject(const TCHAR* pchClassName, int cchClassName, CObject** rgparam, int nParam)
-{
-	g_rgParam = rgparam;
-	g_nParam = nParam;
-
-	// Check scripted classes first
-	CClass* pClass = LookupClass(pchClassName, cchClassName);
-	if (pClass != NULL)
-		return pClass->CreateNode();
-
-	// Try built-in node types
-	CObject* pNode = NewNode(pchClassName, cchClassName);
-	if (pNode != NULL)
-		return pNode;
-
+	CObject* pFound = g_classes->Lookup(pchName, cchName);
+	if (pFound != NULL && pFound->m_obj == objClass)
+		return (CClass*)pFound;
 	return NULL;
 }
 
+// CreateNewObject
+// Reconstructed from 5960 retail XBE @ 0x00037580. Decompile:
+//     g_rgParam = rgparam; g_nParam = nParam;
+//     c = g_classes->Lookup(name); if (c && c->m_obj == objClass) return c->CreateNode();
+//     nc = CNodeClass::FindByName(name); if (nc && (o = nc->CreateNode())) return o;
+//     return 0;
+// The constructor args ride in g_rgParam / g_nParam for Date, Array and friends.
+CObject* CreateNewObject(const TCHAR* pchClassName, int cchClassName, CObject** rgArgs, int nArgs)
+{
+	g_rgParam = rgArgs;
+	g_nParam = nArgs;
+
+	CClass* pScripted = LookupClass(pchClassName, cchClassName);
+	if (pScripted != NULL)
+		return pScripted->CreateNode();
+
+	return NewNode(pchClassName, cchClassName);
+}
+
+// ExecuteScript
+// Reconstructed from 5960 retail XBE @ 0x00036fb0. Decompile:
+//     CFunctionCompiler c; c.ParseBlock(sz); if (c.m_bError) return false;
+//     c.Write(opRet); f = c.CreateFunction();
+//     CRunner r(obj); r.ResetFunc(); r.m_ops = f->m_rgop; r.Run();
+//     delete f; return true;
 bool ExecuteScript(CObject* pObject, const TCHAR* szScript)
 {
-	CFunctionCompiler compiler;
-	compiler.ParseBlock(szScript);
-	if (compiler.HadError())
+	CFunctionCompiler fc;
+	fc.ParseBlock(szScript);
+	if (fc.HadError())
 		return false;
 
-	compiler.Write(opRet);
-	CFunction* pFunction = compiler.CreateFunction();
+	fc.Write(opRet);
+	CFunction* pScript = fc.CreateFunction();
 
-	CRunner runner(pObject);
-	runner.SetFunc(pFunction);
-	runner.Run();
-
-	delete pFunction;
+	CRunner vm(pObject);
+	vm.SetFunc(pScript);
+	vm.Run();
+	delete pScript;
 	return true;
 }
 
-bool CallFunction(CObject* pObject, const TCHAR* szFunc, int nParam, CObject** rgParam)
+// CallFunction
+// Reconstructed from 5960 retail XBE @ 0x000371a0. Decompile:
+//     g_pThis = obj; CRunner r(obj); r.ResetFunc();
+//     if (!(r.m_ops = r.LookupFunction(name, wcslen(name), r.m_self))) return false;
+//     for (i = 0; i < n; i++) r.m_stack[r.m_sp++] = rgParam[i];
+//     r.Run(); return true;
+// The arguments go on the stack as is; the caller's references move with them.
+bool CallFunction(CObject* pObject, const TCHAR* szFunc, int nArgs, CObject** rgArgs)
 {
 	g_pThis = pObject;
-	CRunner runner(pObject);
-	if (!runner.SetFunc(szFunc))
+
+	CRunner vm(pObject);
+	if (!vm.SetFunc(szFunc))
 		return false;
 
-	for (int i = 0; i < nParam; i++)
-		runner.Push(rgParam[i]);
+	for (int iArg = 0; iArg < nArgs; iArg++)
+		vm.Push(rgArgs[iArg]);
 
-	runner.Run();
+	vm.Run();
 	return true;
 }
 
-// =========================================================================
-// Section 4: Member lookup. Resolves names through the scene hierarchy.
-// =========================================================================
-
+// FindMember   [no binary symbol; LookupMember @ 0x399e0 does this inline]
+//     for (c = cls; c; c = c->m_baseClass) if ((m = c->GetMember(name))) return m;
+// node_system.cpp uses it to find member functions too.
 CObject* FindMember(CNodeClass* pClass, const TCHAR* pchName, int cchName)
 {
-	for ( ; pClass != NULL; pClass = pClass->m_baseClass)
+	while (pClass != NULL)
 	{
-		CObject* pObj = pClass->GetMember(pchName, cchName);
-		if (pObj != NULL)
-			return pObj;
+		CObject* pMember = pClass->GetMember(pchName, cchName);
+		if (pMember != NULL)
+			return pMember;
+		pClass = pClass->m_baseClass;
 	}
 	return NULL;
 }
 
-CObject* LookupMember(CObject* pThis, const TCHAR* pchName, int cchName)
+// LookupMember
+// Reconstructed from 5960 retail XBE @ 0x000399e0. Decompile:
+//     g_pThis = obj;
+//     if (obj->m_obj == objNode && (prd = obj->FindProp(name)))
+//         { p = new CProperty(obj, prd); p->m_nRefCount = 0; return p; }
+//     if ((m = obj->GetMember(name))) return m;
+//     for (c = obj->GetNodeClass(); c; c = c->m_baseClass)
+//         if ((m = c->GetMember(name))) return m;
+//     for (p = obj->m_parent; p; p = p->m_parent)
+//         if ((m = LookupMember(p, name))) return m;
+//     return 0;
+// Order is: node property, own members, class chain, then each ancestor.
+// The CProperty starts at zero refs; the caller's AddRef is the first one.
+CObject* LookupMember(CObject* pObj, const TCHAR* pchName, int cchName)
 {
-#ifdef _DEBUG0
-	TCHAR szBuf [256];
-	int cch = cchName;
-	if (cch > 255)
-		cch = 255;
-	CopyChars(szBuf, pchName, cch);
-	szBuf[cch] = 0;
-	TRACE(_T("LookupMember: 0x%08x '%s'\n"), pThis, szBuf);
-#endif
+	g_pThis = pObj;
 
-	ASSERT(pThis != NULL);
-
-	g_pThis = pThis;
-
-	// Check node properties
-	if (pThis->m_obj == objNode)
+	if (pObj->m_obj == objNode)
 	{
-		CNode* pNode = (CNode*)pThis;
-		const PRD* pprd = pNode->FindProp(pchName, cchName);
+		const PRD* pprd = pObj->FindProp(pchName, cchName);
 		if (pprd != NULL)
 		{
-			CObject* pObj = new CProperty(pNode, pprd);
-			pObj->m_nRefCount = 0;
-			return pObj;
+			CProperty* pProp = new CProperty(pObj, pprd);
+			pProp->m_nRefCount = 0;
+			return pProp;
 		}
 	}
 
-	// Check instance members
-	{
-		CObject* pObject = pThis->GetMember(pchName, cchName);
-		if (pObject != NULL)
-			return pObject;
-	}
+	CObject* pFound = pObj->GetMember(pchName, cchName);
+	if (pFound == NULL)
+		pFound = FindMember(pObj->GetNodeClass(), pchName, cchName);
 
-	// Check class hierarchy
-	{
-		CObject* pObj = FindMember(pThis->GetNodeClass(), pchName, cchName);
-		if (pObj != NULL)
-			return pObj;
-	}
+	for (CObject* pUp = pObj->m_parent; pFound == NULL && pUp != NULL; pUp = pUp->m_parent)
+		pFound = LookupMember(pUp, pchName, cchName);
 
-	// Walk parent chain
-	{
-		for (CObject* pObject = pThis->m_parent; pObject != NULL; pObject = pObject->m_parent)
-		{
-			CObject* pObj = LookupMember(pObject, pchName, cchName);
-			if (pObj != NULL)
-				return pObj;
-		}
-	}
-
-	return NULL;
+	return pFound;
 }
 
 // =========================================================================
-// Section 5: CRunner, the bytecode interpreter.
+// CRunner setup and the operand stack
 // =========================================================================
 
-CRunner::CRunner(CObject* pObject)
+// CRunner::CRunner / ~CRunner
+// Reconstructed from 5960 retail XBE: the runner is built on the stack in
+// CallFunction @ 0x371a0, ExecuteScript @ 0x36fb0 and
+// CMemberFunctionObject::Deref @ 0x39810, always the same way:
+//     m_sp = m_nop = 0; m_ops = NULL; m_self = m_thisRef = obj;
+//     m_bError = false; m_nextContext = NULL; zero the stack;
+// and torn down with ResetFunc. 5960's stack holds 100 entries; Theseus's
+// holds 256 (see runner.h). Theseus also starts the line at 0 so an error
+// before the first statement doesn't print a junk line number.
+CRunner::CRunner(CObject* pOwner)
 {
-	ASSERT(pObject != NULL);
-
-	m_nop = 0;
-	m_ops = NULL;
+	memset(m_stack, 0, sizeof(m_stack));
 	m_sp = 0;
-	m_spBase = 0;
 	m_spFrame = 0;
-	m_self = pObject;
-	m_thisRef = pObject;
-	m_bError = false;
+	m_spBase = 0;
+	m_ops = NULL;
+	m_nop = 0;
+	m_self = pOwner;
+	m_thisRef = pOwner;
 	m_nextContext = NULL;
+	m_bError = false;
+	m_nLine = 0;
 	m_wakeup = 0.0f;
-	ZeroMemory(m_stack, sizeof(m_stack));
 }
 
 CRunner::~CRunner()
@@ -743,639 +851,673 @@ CRunner::~CRunner()
 	ResetFunc();
 }
 
+// CRunner::SetFunc   [inlined at each runner site in 5960]
+// By name: ResetFunc, then m_ops = LookupFunction(name) (see CallFunction).
+// By function: ResetFunc, then m_ops = fn->m_rgop with nop/sp/frame at 0.
+// Theseus also clears the line number and the sleep deadline here.
 bool CRunner::SetFunc(const TCHAR* szFunc)
 {
 	ResetFunc();
-	m_ops = LookupFunction(szFunc, _tcslen(szFunc), m_thisRef);
-	return m_ops != NULL;
+	BYTE* pbCode = LookupFunction(szFunc, _tcslen(szFunc), m_thisRef);
+	m_ops = pbCode;
+	return pbCode != NULL;
 }
 
 void CRunner::SetFunc(CFunction* pFunction)
 {
 	ResetFunc();
+	m_ops = pFunction->m_rgop;
 	m_nop = 0;
 	m_sp = 0;
 	m_spFrame = 0;
-	m_ops = pFunction->m_rgop;
 	m_nLine = 0;
 	m_wakeup = 0.0f;
 }
 
+// CRunner::ResetFunc
+// Reconstructed from 5960 retail XBE @ 0x00037400. Decompile:
+//     while (m_sp) { p = m_stack[--m_sp]; m_stack[m_sp] = 0; if (p) p->Release(); }
+//     m_bError = 0; m_nop = 0; m_wakeup = 0.0; m_sp = 0; m_spFrame = 0;
 void CRunner::ResetFunc()
 {
-	while (m_sp > 0)
+	while (m_sp != 0)
 	{
-		m_sp--;
-		CObject* pObj = m_stack[m_sp];
-		m_stack[m_sp] = NULL;
-		if (pObj != NULL)
-			pObj->Release();
+		CObject* pSlot = Pop();
+		if (pSlot != NULL)
+			pSlot->Release();
 	}
+
 	m_bError = false;
 	m_nop = 0;
-	m_sp = 0;
-	m_spFrame = 0;
 	m_wakeup = 0.0f;
+	m_spFrame = 0;
 }
 
-// Stack operations
-
-void CRunner::Push(float nValue)   { Push(new CNumObject(nValue)); }
-void CRunner::Push(int nValue)     { Push(new CNumObject((float)nValue)); }
-
-void CRunner::Push(const TCHAR* szValue, int nLen)
+// CRunner::Push family
+// Reconstructed from 5960 retail XBE @ 0x00037450 / 0x374b0 (numbers),
+// 0x37510 (string). Decompile:
+//     m_stack[m_sp++] = new CNumObject(n);
+//     if (cch == -1) cch = wcslen(sz); m_stack[m_sp++] = new CStrObject(sz, cch);
+// The object form is inlined everywhere as m_stack[m_sp++] = p. 5960 never
+// checks the top; Theseus drops the push instead of running off the end.
+void CRunner::Push(float n)
 {
-	if (nLen == -1) nLen = _tcslen(szValue);
-	Push(new CStrObject(szValue, nLen));
+	Push(new CNumObject(n));
+}
+
+void CRunner::Push(int n)
+{
+	Push(new CNumObject((float)n));
+}
+
+void CRunner::Push(const TCHAR* pch, int cch)
+{
+	if (cch == -1)
+		cch = _tcslen(pch);
+	Push(new CStrObject(pch, cch));
 }
 
 void CRunner::Push(CObject* pObject)
 {
-	if (m_sp >= countof(m_stack))
+	if (!CHECK(m_sp < countof(m_stack)))
 	{
-		TRACE(_T("\001Script stack overflow!\n"));
-		pObject->Release();
+		if (pObject != NULL)
+			pObject->Release();
 		return;
 	}
-	m_stack[m_sp++] = pObject;
+	m_stack[m_sp] = pObject;
+	m_sp++;
 }
 
+// CRunner::Pop   [inlined in 5960 as p = m_stack[--m_sp]; m_stack[m_sp] = 0]
+// Theseus refuses to pop an empty stack.
 CObject* CRunner::Pop()
 {
-	ASSERT(m_sp > 0);
-	m_sp--;
-	CObject* pObject = m_stack[m_sp];
-	m_stack[m_sp] = NULL;
-	return pObject;
+	if (!CHECK(m_sp != 0))
+		return NULL;
+	CObject*& rTop = m_stack[--m_sp];
+	CObject* pTop = rTop;
+	rTop = NULL;
+	return pTop;
 }
 
+// CRunner::Error
+// Reconstructed from 5960 retail XBE @ 0x000375e0. Decompile:
+//     if (m_bError) return;
+//     vswprintf(msg, 512, fmt, args);
+//     if (m_nLine == 0) swprintf(out, L"###...\n###Runtime Error\n\n%s\n###...", msg);
+//     else swprintf(out, L"###...\n###Runtime Error\n\nLine: %d\n\n%s\n###...", m_nLine, msg);
+//     m_bError = 1;
+// Only the first error of a run is reported; Run stops on the flag. Retail
+// builds the text and shows it nowhere. Theseus keeps the core of that text
+// without the # banners, sends it to the trace output with the house error
+// marker, and pops a message box on desktop.
 void CRunner::Error(const TCHAR* szFmt, ...)
 {
 	if (m_bError)
 		return;
+	m_bError = true;
 
+	TCHAR szWhat[512];
 	va_list args;
 	va_start(args, szFmt);
-
-	TCHAR szBuffer[512];
-	_vsntprintf(szBuffer, countof(szBuffer), szFmt, args);
-
-	TCHAR szMessage[1024];
-	if (m_nLine == 0)
-		_stprintf(szMessage, _T("Runtime Error\n\n%s"), szBuffer);
-	else
-		_stprintf(szMessage, _T("Runtime Error\n\nLine: %d\n\n%s"), m_nLine, szBuffer);
-
-	Trace(_T("\001\007%s\n"), szMessage);
-
-#ifdef _DEBUG
-	DumpStack();
-#endif
-
-#ifdef UIX_DESKTOP
-	extern int TheseusMessageBox(const char* szText, unsigned int uType);
-	TheseusMessageBox(szMessage, 0);
-#endif
-
+	_vsntprintf(szWhat, countof(szWhat), szFmt, args);
 	va_end(args);
-	m_bError = true;
+
+	TCHAR szReport[1024];
+	if (m_nLine == 0)
+		_stprintf(szReport, _T("Runtime Error\n\n%s"), szWhat);
+	else
+		_stprintf(szReport, _T("Runtime Error\n\nLine: %d\n\n%s"), m_nLine, szWhat);
+
+	Trace(_T("\001\007%s\n"), szReport);
+
+#ifdef THESEUS_DESKTOP
+	extern int TheseusMessageBox(const char* szText, unsigned int uType);
+	TheseusMessageBox(szReport, 0);
+#endif
 }
 
-// Context stack for nested calls
-
-void CRunner::PushContext(UINT nParam)
+// CRunner::PushContext
+// Reconstructed from 5960 retail XBE @ 0x00037690. Decompile:
+//     c = new RUNCONTEXT;  c->m_ops = m_ops; c->m_nop = m_nop;
+//     c->m_spFrame = m_spFrame; c->m_self = m_self; c->m_thisRef = m_thisRef;
+//     c->m_sp = m_sp - nParam - 1; c->m_next = m_nextContext; m_nextContext = c;
+// The saved sp sits under the callee and its arguments, so returning drops both.
+void CRunner::PushContext(UINT nArgs)
 {
-	RUNCONTEXT* pCtx = new RUNCONTEXT;
-	pCtx->m_ops = m_ops;
-	pCtx->m_nop = m_nop;
-	pCtx->m_spFrame = m_spFrame;
-	pCtx->m_self = m_self;
-	pCtx->m_thisRef = m_thisRef;
-	pCtx->m_sp = m_sp - (nParam + 1);
-	pCtx->m_nextContext = m_nextContext;
-	m_nextContext = pCtx;
+	RUNCONTEXT* pSaved = new RUNCONTEXT;
+	pSaved->m_nextContext = m_nextContext;
+	pSaved->m_ops = m_ops;
+	pSaved->m_nop = m_nop;
+	pSaved->m_spFrame = m_spFrame;
+	pSaved->m_self = m_self;
+	pSaved->m_thisRef = m_thisRef;
+	pSaved->m_sp = m_sp - (nArgs + 1);
+	m_nextContext = pSaved;
 }
 
-void CRunner::PopContext()
+// Releases and clears a run of stack slots, bottom first. 5960 writes this
+// loop out inline in PopContext, opNew and opCall.
+static void ReleaseRange(CObject** rgSlot, UINT cSlot)
 {
-	RUNCONTEXT* pCtx = m_nextContext;
-	ASSERT(pCtx != NULL);
-
-	CObject* pRetObject = Dereference(Pop());
-
-	m_ops = pCtx->m_ops;
-	m_nop = pCtx->m_nop;
-	m_spFrame = pCtx->m_spFrame;
-	m_self = pCtx->m_self;
-	m_thisRef = pCtx->m_thisRef;
-	g_pThis = m_thisRef;
-
-	UINT i;
-	for (i = pCtx->m_sp; i < m_sp; i++)
+	for (UINT iSlot = 0; iSlot < cSlot; iSlot++)
 	{
-		if (m_stack[i] != NULL)
+		if (rgSlot[iSlot] != NULL)
 		{
-			m_stack[i]->Release();
-			m_stack[i] = NULL;
+			rgSlot[iSlot]->Release();
+			rgSlot[iSlot] = NULL;
 		}
 	}
-
-	m_sp = pCtx->m_sp;
-	m_nextContext = pCtx->m_nextContext;
-	delete pCtx;
-
-	Push(pRetObject);
 }
 
-// Main execution loop
+// CRunner::PopContext
+// Reconstructed from 5960 retail XBE @ 0x000376e0. Decompile:
+//     c = m_nextContext; ret = Dereference(Pop());
+//     m_ops/m_nop/m_spFrame/m_self = c->...; g_pThis = m_thisRef = c->m_thisRef;
+//     for (i = c->m_sp; i < m_sp; i++) if (m_stack[i]) { m_stack[i]->Release(); m_stack[i] = 0; }
+//     m_sp = c->m_sp; m_nextContext = c->m_next; delete c; m_stack[m_sp++] = ret;
+void CRunner::PopContext()
+{
+	RUNCONTEXT* pSaved = m_nextContext;
+	CObject* pResult = Dereference(Pop());
 
+	m_ops = pSaved->m_ops;
+	m_nop = pSaved->m_nop;
+	m_spFrame = pSaved->m_spFrame;
+	m_self = pSaved->m_self;
+	m_thisRef = pSaved->m_thisRef;
+	g_pThis = pSaved->m_thisRef;
+
+	ReleaseRange(&m_stack[pSaved->m_sp], m_sp - pSaved->m_sp);
+	m_sp = pSaved->m_sp;
+
+	m_nextContext = pSaved->m_nextContext;
+	delete pSaved;
+
+	Push(pResult);
+}
+
+// CRunner::Run
+// Reconstructed from 5960 retail XBE @ 0x000377b0. Decompile:
+//     m_spBase = m_sp;
+//     while (!m_bError) if (!Step(&ret)) break;
+// Theseus hands back whatever the outermost return left (NULL on error).
 CObject* CRunner::Run()
 {
 	m_spBase = m_sp;
-	for (;;)
-	{
-		if (m_bError) return NULL;
 
-#ifdef _DEBUG
-		// Make sure everything on the stack has been cleaned up!
-		{
-			for (UINT i = 0; i < 20; i += 1)
-				ASSERT(m_stack[m_sp + i] == NULL);
-		}
-#endif
-		CObject* pRetObj = NULL;
-		if (!Step(&pRetObj))
-			return pRetObj;
-	}
+	CObject* pResult = NULL;
+	while (!m_bError && Step(&pResult))
+		pResult = NULL;
+
+	return m_bError ? NULL : pResult;
 }
 
 // =========================================================================
-// Section 6: Opcode interpreter
+// One instruction
 // =========================================================================
 
+// CRunner::Step
+// Reconstructed from 5960 retail XBE @ 0x00037800 (1880 bytes, one switch on
+// the opcode byte). Sets g_pRunner, fetches the opcode and runs it; returns
+// false to stop (outermost return, error, or an opcode it doesn't know).
+// Each case is described next to its code below; the full write-up with the
+// decompile excerpts is in docs/decomp/VM.md. Theseus adds the stack checks
+// on opFrame and opCall and the null check on opCall.
 bool CRunner::Step(CObject** ppRetObj)
 {
 	g_pRunner = this;
 
-	BYTE op = m_ops[m_nop++];
-	switch (op)
+	const BYTE opcode = m_ops[m_nop];
+	m_nop++;
+
+	switch (opcode)
 	{
-	default:
-		ASSERT(FALSE); // Lost in space!
-		return NULL;
-
-	case opSleep:
-		{
-			CObject* pObj = Dereference(Pop());
-			if (pObj == NULL)      { Error(_T("illegal null reference")); return false; }
-			if (pObj->m_obj != objNumber) { Error(_T("expected a number")); return false; }
-			m_wakeup = TheseusGetNow() + ((CNumObject*)pObj)->m_value;
-			pObj->Release();
-			return true;
-		}
-
-	case opStatement:
-		m_nLine = FetchInt();
-		LOCALTRACE(_T("opStatement: line %d, sp %d\n"), m_nLine, m_sp);
-		break;
-
-	case opDrop:
-		{
-			LOCALTRACE(_T("opDrop\n"));
-			CObject* pObject = Pop();
-			if (pObject != NULL) pObject->Release();
-		}
-		break;
-
-	case opFrame:
-		{
-			int nFrameSize = FetchInt();
-			LOCALTRACE(_T("opFrame: %d\n"), nFrameSize);
-
-#ifdef _DEBUG
-			// Make sure everything on the stack has been cleaned up!
-			{
-				for (UINT i = m_sp; i < m_sp + nFrameSize; i += 1)
-					ASSERT(m_stack[i] == NULL);
-			}
-#endif
-			m_sp += nFrameSize;
-			m_spBase = m_sp;
-			ASSERT(m_sp < sizeof (m_stack) / sizeof (CObject*));
-		}
-		break;
-
-	case opEndFrame:
-		{
-			int nFrameSize = FetchInt();
-			LOCALTRACE(_T("opEndFrame: %d\n"), nFrameSize);
-			while (nFrameSize-- > 0)
-			{
-				m_sp--;
-				if (m_stack[m_sp] != NULL)
-				{
-					m_stack[m_sp]->Release();
-					m_stack[m_sp] = NULL;
-				}
-			}
-			m_spBase = m_sp;
-		}
-		break;
-
+	// Push null.
 	case opNull:
 		Push((CObject*)NULL);
-		break;
+		return true;
 
-	case opThis:
-		ASSERT(m_self != NULL);
-		m_self->AddRef();
-		Push(m_self);
-		break;
-
+	// int nArgs, string class. Build it with the arguments sitting on the
+	// stack, release them, and leave the new object in their place.
 	case opNew:
 		{
-			LOCALTRACE(_T("opNew\n"));
-			int nParam = FetchInt();
-			int cch;
-			const TCHAR* pch = FetchString(cch);
-			CObject** rgparam = &m_stack[m_sp - nParam];
+			int nArgs = FetchInt();
+			int cchClass;
+			const TCHAR* pchClass = FetchString(cchClass);
+			UINT spArgs = m_sp - nArgs;
 
-			CObject* pObj = CreateNewObject(pch, cch, rgparam, nParam);
-			if (pObj == NULL)
+			CObject* pNew = CreateNewObject(pchClass, cchClass, &m_stack[spArgs], nArgs);
+			if (pNew == NULL)
 			{
-				TCHAR szBuf[256];
-				if (cch > 255) cch = 255;
-				CopyChars(szBuf, pch, cch);
-				szBuf[cch] = '\0';
-				Error(_T("Failed to create new object: \"%s\""), szBuf);
-				return NULL;
+				TCHAR szClass[256];
+				int cchShown = (cchClass < 255) ? cchClass : 255;
+				memcpy(szClass, pchClass, cchShown * sizeof(TCHAR));
+				szClass[cchShown] = '\0';
+				Error(_T("Failed to create new object: \"%s\""), szClass);
+				return false;
 			}
 
-			for (int i = 0; i < nParam; i++)
-			{
-				if (rgparam[i] != NULL) { rgparam[i]->Release(); rgparam[i] = NULL; }
-			}
-			m_sp -= nParam;
-			Push(pObj);
+			ReleaseRange(&m_stack[spArgs], nArgs);
+			m_sp = spArgs;
+			Push(pNew);
 		}
-		break;
+		return true;
 
-	case opAssign:
+	// string name. Push an unresolved name; it binds when dereferenced.
+	case opVar:
 		{
-			LOCALTRACE(_T("opAssign\n"));
-			CObject* pRight = Dereference(Pop());
-			CObject* pLeft = Pop();
-			if (pLeft == NULL) { Error(_T("cannot assign to null")); return NULL; }
-			pLeft->Assign(pRight);
-			pLeft->Release();
-			Push(pRight);
+			int cchName;
+			const TCHAR* pchName = FetchString(cchName);
+			Push(new CVarObject(pchName, cchName));
 		}
-		break;
+		return true;
 
+	// uint target.
+	case opJump:
+		m_nop = FetchUInt();
+		return true;
+
+	// uint target. Pop a value; true (nonzero number) falls through, false
+	// or null jumps.
+	case opCond:
+		{
+			CObject* pTest = Dereference(Pop());
+			bool bTaken = false;
+			if (pTest != NULL)
+			{
+				CNumObject* pAsNum = pTest->ToNum();
+				bTaken = (pAsNum->m_value != 0.0f);
+				pAsNum->Release();
+				pTest->Release();
+			}
+
+			UINT nopElse = FetchUInt();
+			if (!bTaken)
+				m_nop = nopElse;
+		}
+		return true;
+
+	// byte nArgs. The callee sits under its arguments. A native function
+	// ref runs right here; a bound method or a named script function gets a
+	// new frame; a bare name tries the built-ins first, then the script
+	// function lookup.
+	case opCall:
+		{
+			int nArgs = m_ops[m_nop];
+			m_nop++;
+
+			// Theseus: not enough on the stack is a stop, not a wild read.
+			if (!CHECK(m_sp > (UINT)nArgs))
+				return false;
+
+			UINT spCallee = m_sp - nArgs - 1;
+			CObject* pCallee = m_stack[spCallee];
+			CObject** rgArgs = &m_stack[spCallee + 1];
+
+			// Theseus: calling null is an error instead of a crash.
+			if (pCallee == NULL)
+			{
+				Error(_T("call on null"));
+				return false;
+			}
+
+			if (pCallee->m_obj == objFunctionRef)
+			{
+				m_stack[spCallee] = NULL;
+				CObject* pResult = ((CFunctionObject*)pCallee)->Call(rgArgs, nArgs);
+				pCallee->Release();
+
+				ReleaseRange(rgArgs, nArgs);
+				m_sp = spCallee;
+				Push(pResult);
+				return true;
+			}
+
+			if (pCallee->m_obj == objMemberFunction)
+			{
+				CMemberFunctionObject* pMethod = (CMemberFunctionObject*)pCallee;
+				pMethod->AddRef();
+				PushContext(nArgs);
+				m_spFrame = spCallee + 1;
+				m_self = pMethod->m_owner;
+				m_ops = pMethod->m_function->m_rgop;
+				m_nop = 0;
+				return true;
+			}
+
+			CVarObject* pName = (CVarObject*)pCallee;
+			CObject* pResult = NULL;
+			if (ExecuteBuiltIn(pName->m_text, pName->m_length, nArgs, rgArgs, pResult))
+			{
+				// The built-in consumed the argument references.
+				memset(rgArgs, 0, nArgs * sizeof(CObject*));
+				m_stack[spCallee] = NULL;
+				m_sp = spCallee;
+				Push(pResult);
+				pCallee->Release();
+				return true;
+			}
+
+			CObject* pOwner;
+			BYTE* pbCode = LookupFunction(pName->m_text, pName->m_length, pOwner);
+			if (pbCode == NULL)
+			{
+				TCHAR szName[32];
+				int cchShown = (pName->m_length < 31) ? pName->m_length : 31;
+				_tcsncpy(szName, pName->m_text, cchShown);
+				szName[cchShown] = '\0';
+				Error(_T("unknown function: %s"), szName);
+				return false;
+			}
+
+			PushContext(nArgs);
+			m_self = pOwner;
+			g_pThis = pOwner;
+			m_spFrame = spCallee + 1;
+			m_ops = pbCode;
+			m_nop = 0;
+		}
+		return true;
+
+	// Return. Inside a call, restore the caller and leave the result on its
+	// stack. At the outermost level, hand back the top of stack and stop.
+	case opRet:
+		if (m_nextContext == NULL)
+		{
+			if (ppRetObj != NULL)
+				*ppRetObj = (m_sp == 0) ? NULL : Pop();
+			return false;
+		}
+		PopContext();
+		return true;
+
+	// string literal.
+	case opStr:
+		{
+			int cchText;
+			const TCHAR* pchText = FetchString(cchText);
+			Push(pchText, cchText);
+		}
+		return true;
+
+	// float literal.
+	case opNum:
+		Push(FetchFloat());
+		return true;
+
+	case opAdd: case opSub: case opMul: case opDiv:
+	case opEQ: case opNE: case opLT: case opGT: case opLE: case opGE:
+	case opMod: case opSHL: case opSHR:
+	case opAnd: case opOr: case opXor:
+		return BinaryOperator(opcode);
+
+	// a.b pushes a then the name b; a[i] pushes a then i, which gets
+	// resolved first. Either way the left side is resolved one step and
+	// asked for the member.
 	case opDot:
 	case opArray:
 		{
-			LOCALTRACE(_T("%d %s: \"%s\"\n"), m_nop - 1, op == opDot ? "opDot" : "opArray");
-
-			CObject* pRight = Pop();
-			CObject* pLeft = Pop();
-
-			if (pRight == NULL || pLeft == NULL) { Error(_T("illegal null reference")); return NULL; }
-
-			if (op == opArray)
-				pRight = Dereference(pRight);
-
-			ASSERT(pRight->m_obj == objVariable || pRight->m_obj == objNumber || pRight->m_obj == objString);
-
-			CObject* pRealLeft = pLeft->Deref();
-			if (pRealLeft == NULL) { Error(_T("illegal null reference")); return NULL; }
-
-			CObject* pDot = pRealLeft->Dot(pRight);
-			if (pDot == NULL)
+			CObject* pKey = Pop();
+			CObject* pBase = Pop();
+			if (pBase == NULL || pKey == NULL)
 			{
-				if (pRight->m_obj == objVariable)
-					Error(_T("Unknown member: %s"), ((CVarObject*)pRight)->m_text);
-				else
-				{
-					CStrObject* pStr = pRight->ToStr();
-					Error(_T("Unknown member: %s"), pStr->GetSz());
-					pStr->Release();
-				}
+				Error(_T("illegal null reference"));
+				return false;
 			}
 
-			Push(pDot);
-			pRealLeft->Release();
-			pRight->Release();
-		}
-		break;
+			if (opcode == opArray)
+				pKey = Dereference(pKey);
 
-	case opNeg:
-		{
-			CObject* pObj = Dereference(Pop());
-			if (pObj == NULL || pObj->m_obj != objNumber) { Error(_T("expected a number")); return NULL; }
-			Push(-((CNumObject*)pObj)->m_value);
-			pObj->Release();
-		}
-		break;
-
-	case opAdd: case opSub: case opMul: case opDiv: case opMod:
-	case opEQ:  case opNE:  case opLT:  case opLE:  case opGT: case opGE:
-	case opAnd: case opXor: case opOr:  case opSHL: case opSHR:
-		if (!BinaryOperator(op))
-			return NULL;
-		break;
-
-	case opCall:
-		{
-			LOCALTRACE(_T("opCall sp=%d\n"), m_sp);
-
-			int nParam = m_ops[m_nop++];
-			ASSERT(m_sp >= (UINT)(nParam + 1));
-			CObject* pFun = (CVarObject*)m_stack[m_sp - (nParam + 1)];
-			CObject** rgparam = &m_stack[m_sp - nParam];
-
-			if (pFun == NULL) { Error(_T("call on null")); return NULL; }
-
-			if (pFun->m_obj == objFunctionRef)
+			CObject* pTarget = pBase->Deref();
+			if (pTarget == NULL)
 			{
-				m_stack[m_sp - (nParam + 1)] = NULL;
-
-				CFunctionObject* pFunction = (CFunctionObject*)pFun;
-				CObject* pRetObj = pFunction->Call(rgparam, nParam);
-				pFun->Release();
-
-				for (int i = 0; i < nParam; i++)
-				{
-					if (rgparam[i] != NULL) { rgparam[i]->Release(); rgparam[i] = NULL; }
-				}
-				m_sp -= nParam + 1;
-				LOCALTRACE(_T("opCall(done) sp=%d\n"), m_sp);
-				Push(pRetObj);
+				Error(_T("illegal null reference"));
+				return false;
 			}
-			else if (pFun->m_obj == objMemberFunction)
+
+			CObject* pMember = pTarget->Dot(pKey);
+			if (pMember == NULL)
 			{
-				CMemberFunctionObject* pFunction = (CMemberFunctionObject*)pFun;
-				pFunction->AddRef();
-
-#ifdef _DEBUG
-				LOCALTRACE(_T("Call2 %s\n"), pFunction->m_function->m_name);
-#endif
-				PushContext(nParam);
-
-				m_spFrame = m_sp - nParam;
-
-				ASSERT(pFunction->m_owner != NULL);
-				m_self = pFunction->m_owner;
-				m_ops = pFunction->m_function->m_rgop;
-				m_nop = 0;
-			}
-			else
-			{
-				CVarObject* pFunction = (CVarObject*)pFun;
-				int cch = pFunction->m_length;
-				const TCHAR* pch = pFunction->m_text;
-
-				CObject* pRetObj = NULL;
-				if (ExecuteBuiltIn(pch, cch, nParam, rgparam, pRetObj))
+				if (pKey->m_obj == objVariable)
 				{
-					for (int i = 0; i < nParam; i++)
-						rgparam[i] = NULL;
-					m_sp -= nParam + 1;
-					Push(pRetObj);
-					pFun->Release();
+					Error(_T("Unknown member: %s"), ((CVarObject*)pKey)->m_text);
 				}
 				else
 				{
-					CObject* pThis;
-					BYTE* pop = LookupFunction(pch, cch, pThis);
-					if (pop == NULL)
-					{
-						TCHAR szFunc[32];
-						if (cch > countof(szFunc) - 1) cch = countof(szFunc) - 1;
-						_tcsncpy(szFunc, pch, cch);
-						szFunc[cch] = 0;
-						Error(_T("unknown function: %s"), szFunc);
-						return NULL;
-					}
-
-					PushContext(nParam);
-					m_self = pThis;
-					g_pThis = pThis;
-					m_spFrame = m_sp - nParam;
-					m_ops = pop;
-					m_nop = 0;
+					CStrObject* pKeyText = pKey->ToStr();
+					Error(_T("Unknown member: %s"), pKeyText->GetSz());
+					pKeyText->Release();
 				}
 			}
-		}
-		break;
 
-	case opRet:
-		if (m_nextContext != NULL)
-		{
-			PopContext();
+			Push(pMember);
+			pTarget->Release();
+			pKey->Release();
 		}
-		else
-		{
-			if (ppRetObj != NULL)
-				*ppRetObj = m_sp > 0 ? Pop() : NULL;
-			return false;
-		}
-		break;
+		return true;
 
-	case opCond:
+	// Pop the value (resolved) and the target, assign, and leave the value.
+	case opAssign:
 		{
-			LOCALTRACE(_T("opCond\n"));
-			bool bCond = false;
-			CObject* pObj = Dereference(Pop());
-			if (pObj != NULL)
+			CObject* pValue = Dereference(Pop());
+			CObject* pTarget = Pop();
+			if (pTarget == NULL)
 			{
-				CNumObject* pNum = pObj->ToNum();
-				if (pNum->m_value != 0.0f)
-					bCond = true;
-				pNum->Release();
-				pObj->Release();
+				Error(_T("cannot assign to null"));
+				return false;
 			}
-
-			if (bCond)
-				m_nop += sizeof(UINT);
-			else
-				m_nop = FetchUInt();
+			pTarget->Assign(pValue);
+			pTarget->Release();
+			Push(pValue);
 		}
-		break;
+		return true;
 
-	case opJump:
-		LOCALTRACE(_T("opJump\n"));
-		m_nop = FetchUInt();
-		break;
-
-	case opVar:
-		{
-			LOCALTRACE(_T("opVar\n"));
-			int cch;
-			const TCHAR* pch = FetchString(cch);
-
-#ifdef _DEBUG
-			{
-				TCHAR szBuf [256];
-				CopyChars(szBuf, pch, cch);
-				szBuf[cch] = '\0';
-				LOCALTRACE(_T("opVar: \"%s\"\n"), szBuf);
-			}
-#endif
-
-			Push(new CVarObject(pch, cch));
-		}
-		break;
-
+	// int index. Push the local's slot, creating it on first use.
 	case opLocal:
 		{
-			LOCALTRACE(_T("opLocal\n"));
-			int nLocal = FetchInt();
+			CObject*& rSlot = m_stack[m_spFrame + FetchInt()];
+			if (rSlot == NULL)
+				rSlot = new CLocalVariable;
+			rSlot->AddRef();
+			Push(rSlot);
+		}
+		return true;
 
-			ASSERT(m_spFrame + nLocal < m_sp);
-			CObject* pObject = m_stack[m_spFrame + nLocal];
-			if (pObject == NULL)
+	// Push the current self.
+	case opThis:
+		m_self->AddRef();
+		Push(m_self);
+		return true;
+
+	// int count. Reserve the locals and mark the new base.
+	case opFrame:
+		{
+			int nLocals = FetchInt();
+
+			// Theseus: a frame that won't fit is an error, not a stack overrun.
+			if (nLocals < 0 || m_sp + (UINT)nLocals > countof(m_stack))
 			{
-				pObject = new CLocalVariable;
-				m_stack[m_spFrame + nLocal] = pObject;
+				Error(_T("script stack overflow"));
+				return false;
 			}
-			pObject->AddRef();
-			Push(pObject);
-		}
-		break;
 
-	case opStr:
+			m_sp += nLocals;
+			m_spBase = m_sp;
+		}
+		return true;
+
+	// int line. Remember it for error messages.
+	case opStatement:
+		m_nLine = FetchInt();
+		return true;
+
+	// Negate a number.
+	case opNeg:
 		{
-			int cch;
-			const TCHAR* pch = FetchString(cch);
-			Push(pch, cch);
+			CObject* pValue = Dereference(Pop());
+			if (pValue == NULL || pValue->m_obj != objNumber)
+			{
+				Error(_T("expected a number"));
+				return false;
+			}
+			// 5960 computes 0.0 - v here, which gives +0 for 0; Theseus keeps -v.
+			float n = ((CNumObject*)pValue)->m_value;
+			pValue->Release();
+			Push(-n);
 		}
-		break;
+		return true;
 
-	case opNum:
-		Push(FetchFloat());
-		break;
-	}
-
-	return true;
-}
-
-// =========================================================================
-// Section 7: Binary operators
-// =========================================================================
-
-bool CRunner::BinaryOperator(BYTE op)
-{
-	LOCALTRACE(_T("opOperator: %d\n"), op);
-
-	CObject* pRight = Dereference(Pop());
-	CObject* pLeft = Dereference(Pop());
-
-	// Null comparison
-	if (pLeft == NULL || pRight == NULL || pLeft->m_obj == objNode && pRight->m_obj == objNode)
-	{
-		float fValue;
-		switch (op)
+	// Throw away the top of stack.
+	case opDrop:
 		{
-		default: Error(_T("illegal null reference")); return false;
-		case opEQ: fValue = (pLeft == pRight) ? 1.0f : 0.0f; Push(fValue); break;
-		case opNE: fValue = (pLeft != pRight) ? 1.0f : 0.0f; Push(fValue); break;
+			CObject* pTop = Pop();
+			if (pTop != NULL)
+				pTop->Release();
 		}
+		return true;
 
-		if (pRight != NULL) pRight->Release();
-		if (pLeft != NULL) pLeft->Release();
+	// int count. Release that many locals off the top.
+	case opEndFrame:
+		{
+			for (int nLocals = FetchInt(); nLocals > 0; nLocals--)
+			{
+				CObject* pLocal = Pop();
+				if (pLocal != NULL)
+					pLocal->Release();
+			}
+			m_spBase = m_sp;
+		}
+		return true;
+
+	// Pop a number of seconds and set the wake time; the caller checks
+	// IsSleeping between steps.
+	case opSleep:
+		{
+			CObject* pDelay = Dereference(Pop());
+			if (pDelay == NULL)
+			{
+				Error(_T("illegal null reference"));
+				return false;
+			}
+			if (pDelay->m_obj != objNumber)
+			{
+				Error(_T("expected a number"));
+				return false;
+			}
+			m_wakeup = ((CNumObject*)pDelay)->m_value + TheseusGetNow();
+			pDelay->Release();
+		}
 		return true;
 	}
 
-	// String comparison (non-add operators)
-	if (op != opAdd && pLeft->m_obj == objString && pRight->m_obj == objString)
-	{
-		int nCmp = _tcscmp(((CStrObject*)pLeft)->GetSz(), ((CStrObject*)pRight)->GetSz());
-		bool bValue;
+	// Any other byte stops the runner.
+	return false;
+}
 
-		switch (op)
+// =========================================================================
+// Two-operand operators
+// =========================================================================
+
+// CRunner::BinaryOperator
+// Reconstructed from 5960 retail XBE @ 0x00037fe0. Pops right then left,
+// both fully resolved, and picks a path:
+//   - either is null, or both are nodes: only == and != work, comparing
+//     identity; anything else is "illegal null reference".
+//   - both strings and not +: wcscmp, then == != < <= > >= push 1 or 0;
+//     anything else is "type mismatch".
+//   - both numbers: arithmetic, comparisons (1 or 0), and the integer ops
+//     & | ^ << >> on the values truncated to integers.
+//   - otherwise + concatenates the two ToStr forms, and anything else is
+//     "type mismatch error".
+// Full write-up in docs/decomp/VM.md. Theseus keeps its own integer
+// conversion for the bit ops.
+bool CRunner::BinaryOperator(BYTE op)
+{
+	CObject* pB = Dereference(Pop());
+	CObject* pA = Dereference(Pop());
+
+	if (pA == NULL || pB == NULL || (pA->m_obj == objNode && pB->m_obj == objNode))
+	{
+		if (op != opEQ && op != opNE)
 		{
-		default: Error(_T("type mismatch")); return false;
-		case opEQ: bValue = nCmp == 0; break;
-		case opNE: bValue = nCmp != 0; break;
-		case opLT: bValue = nCmp < 0;  break;
-		case opLE: bValue = nCmp <= 0; break;
-		case opGT: bValue = nCmp > 0;  break;
-		case opGE: bValue = nCmp >= 0; break;
+			Error(_T("illegal null reference"));
+			return false;
 		}
-		Push(bValue);
+
+		bool bSame = (pA == pB);
+		Push((op == opEQ) == bSame ? 1.0f : 0.0f);
+
+		if (pB != NULL)
+			pB->Release();
+		if (pA != NULL)
+			pA->Release();
+		return true;
 	}
-	else if (pLeft->m_obj == objNumber && pRight->m_obj == objNumber)
-	{
-		// Numeric operations
-		float fL = ((CNumObject*)pLeft)->m_value;
-		float fR = ((CNumObject*)pRight)->m_value;
-		float fValue;
 
-#ifdef _DEBUG
-		double intptr;
-#endif
+	const int typeA = pA->m_obj;
+	const int typeB = pB->m_obj;
+
+	if (typeA == objString && typeB == objString && op != opAdd)
+	{
+		int nOrder = _tcscmp(((CStrObject*)pA)->GetSz(), ((CStrObject*)pB)->GetSz());
+		bool bResult;
 
 		switch (op)
 		{
-		case opEQ:  fValue = (fL == fR) ? 1.0f : 0.0f; break;
-		case opNE:  fValue = (fL != fR) ? 1.0f : 0.0f; break;
-		case opLT:  fValue = (fL < fR)  ? 1.0f : 0.0f; break;
-		case opLE:  fValue = (fL <= fR) ? 1.0f : 0.0f; break;
-		case opGT:  fValue = (fL > fR)  ? 1.0f : 0.0f; break;
-		case opGE:  fValue = (fL >= fR) ? 1.0f : 0.0f; break;
-		case opAdd: fValue = fL + fR; break;
-		case opSub: fValue = fL - fR; break;
-		case opMul: fValue = fL * fR; break;
-		case opDiv: fValue = fL / fR; break;
+		case opEQ: bResult = (nOrder == 0); break;
+		case opNE: bResult = (nOrder != 0); break;
+		case opLT: bResult = (nOrder < 0);  break;
+		case opGT: bResult = (nOrder > 0);  break;
+		case opLE: bResult = (nOrder <= 0); break;
+		case opGE: bResult = (nOrder >= 0); break;
+		default:
+			Error(_T("type mismatch"));
+			return false;
+		}
+		Push(bResult);
+	}
+	else if (typeA == objNumber && typeB == objNumber)
+	{
+		float a = ((CNumObject*)pA)->m_value;
+		float b = ((CNumObject*)pB)->m_value;
+		float fResult;
 
-		case opAnd:
-#ifdef _DEBUG
-			if (modf(fL, &intptr) != 0 || modf(fR, &intptr) != 0)
-			{
-				Error(_T("type mismatch"));
-				return false;
-			}
-#endif
-			fValue = (float)((ULONG)fL & (ULONG)fR);
-			break;
+		switch (op)
+		{
+		case opAdd: fResult = a + b; break;
+		case opSub: fResult = a - b; break;
+		case opMul: fResult = a * b; break;
+		case opDiv: fResult = a / b; break;
 
-		case opXor:
-#ifdef _DEBUG
-			if (modf(fL, &intptr) != 0 || modf(fR, &intptr) != 0)
-			{
-				Error(_T("type mismatch"));
-				return false;
-			}
-#endif
-			fValue = (float)((ULONG)fL ^ (ULONG)fR);
-			break;
+		case opEQ: fResult = (a == b) ? 1.0f : 0.0f; break;
+		case opNE: fResult = (a != b) ? 1.0f : 0.0f; break;
+		case opLT: fResult = (a <  b) ? 1.0f : 0.0f; break;
+		case opGT: fResult = (a >  b) ? 1.0f : 0.0f; break;
+		case opLE: fResult = (a <= b) ? 1.0f : 0.0f; break;
+		case opGE: fResult = (a >= b) ? 1.0f : 0.0f; break;
 
-		case opOr:
-#ifdef _DEBUG
-			if (modf(fL, &intptr) != 0 || modf(fR, &intptr) != 0)
-			{
-				Error(_T("type mismatch"));
-				return false;
-			}
-#endif
-			fValue = (float)((ULONG)fL | (ULONG)fR);
-			break;
+		case opAnd: fResult = (float)((ULONG)a & (ULONG)b); break;
+		case opOr:  fResult = (float)((ULONG)a | (ULONG)b); break;
+		case opXor: fResult = (float)((ULONG)a ^ (ULONG)b); break;
+		case opSHL: fResult = (float)((ULONG)a << (ULONG)b); break;
+		case opSHR: fResult = (float)((ULONG)a >> (ULONG)b); break;
 
-		case opSHL: fValue = (float)((ULONG)fL << (ULONG)fR); break;
-		case opSHR: fValue = (float)((ULONG)fL >> (ULONG)fR); break;
+		// opMod has no case in 5960's number switch (jump table @ 0x000385c4);
+		// it lands on the shared exit, which pushes the right operand as is.
+		default: fResult = b; break;
 		}
 
-		Push(fValue);
+		Push(fResult);
 	}
 	else if (op == opAdd)
 	{
-		// String concatenation
-		CStrObject* pStrL = pLeft->ToStr();
-		CStrObject* pStrR = pRight->ToStr();
-		Push(pStrL->concat(pStrR->GetSz()));
-		pStrL->Release();
-		pStrR->Release();
+		CStrObject* pTextA = pA->ToStr();
+		CStrObject* pTextB = pB->ToStr();
+		Push(pTextA->concat(pTextB->GetSz()));
+		pTextA->Release();
+		pTextB->Release();
 	}
 	else
 	{
@@ -1383,129 +1525,134 @@ bool CRunner::BinaryOperator(BYTE op)
 		return false;
 	}
 
-	pLeft->Release();
-	pRight->Release();
+	pA->Release();
+	pB->Release();
 	return true;
 }
 
 // =========================================================================
-// Section 8: Built-in functions (EnableInput, eval, launch, alert, log)
+// Built-in script functions
 // =========================================================================
 
-BOOL CRunner::ExecuteBuiltIn(const TCHAR* pchName, int cchName, int nParam, CObject** rgParam, CObject*& pRetObj)
+// CRunner::ExecuteBuiltIn
+// Reconstructed from 5960 retail XBE @ 0x00038620. Matches the name by
+// length then text, and returns TRUE when it handled the call:
+//   EnableInput(b)  sets g_bInputEnable from the number   else "Invalid parameter"
+//   eval(s)         ExecuteScript(m_self, s)               else "Bad launch" (sic)
+//   launch(p [,d])  d defaults to p up to its last \ or /, then
+//                   CleanFilePath both and XWriteTitleInfoAndReboot   else "Bad launch"
+//   DebugBreak()    nothing in retail
+//   alert(s)        debug print of s with "%s"             else "Bad alert"
+//   log(s)          nothing in retail                      else "Bad log!"
+// Theseus prints log() on desktop, routes alert() through Alert, and
+// launches through the desktop launcher on desktop.
+static bool IsBuiltIn(const TCHAR* pchName, int cchName, const TCHAR* szBuiltIn)
+{
+	return cchName == (int)_tcslen(szBuiltIn) && _tcsncmp(pchName, szBuiltIn, cchName) == 0;
+}
+
+BOOL CRunner::ExecuteBuiltIn(const TCHAR* pchName, int cchName, int nArgs, CObject** rgArgs, CObject*& pRetObj)
 {
 	pRetObj = NULL;
 
-	if (cchName == 11 && _tcsncmp(pchName, _T("EnableInput"), cchName) == 0)
+	if (IsBuiltIn(pchName, cchName, _T("EnableInput")))
 	{
-		if (nParam == 1)
-		{
-			CObject* pObj = Dereference(rgParam[0]);
-			CNumObject* pNum = pObj->ToNum();
-			g_bInputEnable = (bool)(pNum->m_value != 0.0f);
-		}
+		if (nArgs == 1)
+			g_bInputEnable = (Dereference(rgArgs[0])->ToNum()->m_value != 0.0f);
 		else
 			Error(_T("Invalid parameter"));
 		return TRUE;
 	}
 
-	if (cchName == 4 && _tcsncmp(pchName, _T("eval"), cchName) == 0)
+	if (IsBuiltIn(pchName, cchName, _T("eval")))
 	{
-		if (nParam == 1)
+		if (nArgs == 1)
 		{
-			CObject* pObject = Dereference(rgParam[0]);
-			CStrObject* pStr = pObject->ToStr();
-			ExecuteScript(m_self, pStr->GetSz());
-			pStr->Release();
-			pObject->Release();
+			CObject* pArg = Dereference(rgArgs[0]);
+			CStrObject* pScript = pArg->ToStr();
+			ExecuteScript(m_self, pScript->GetSz());
+			pScript->Release();
+			pArg->Release();
 		}
 		else
 			Error(_T("Bad launch"));
 		return TRUE;
 	}
 
-	if (cchName == 6 && _tcsncmp(pchName, _T("launch"), cchName) == 0)
+	if (IsBuiltIn(pchName, cchName, _T("launch")))
 	{
-		if (nParam == 1 || nParam == 2)
+		if (nArgs < 1 || nArgs > 2)
 		{
-			CObject* pObject1 = Dereference(rgParam[0]);
-			CStrObject* pStr1 = pObject1->ToStr();
-			const TCHAR* sz1 = pStr1->GetSz();
+			Error(_T("Bad launch"));
+			return TRUE;
+		}
 
-			TCHAR sz2[MAX_PATH];
-			if (nParam == 2)
-			{
-				CObject* pObject2 = Dereference(rgParam[1]);
-				CStrObject* pStr2 = pObject2->ToStr();
-				_tcscpy(sz2, pStr2->GetSz());
-				pStr2->Release();
-				pObject2->Release();
-			}
-			else
-			{
-				_tcscpy(sz2, sz1);
-				TCHAR* pch = _tcsrchr(sz2, '/');
-				if (pch != NULL) *pch = '\\';
-				pch = _tcsrchr(sz2, '\\');
-				ASSERT(pch != NULL);
-				*pch = 0;
-			}
+		CObject* pPathArg = Dereference(rgArgs[0]);
+		CStrObject* pPath = pPathArg->ToStr();
+		const TCHAR* szPath = pPath->GetSz();
 
-			TRACE(_T("Launch title: %s, %s\n"), sz1, sz2);
+		// Theseus: script paths longer than MAX_PATH get cut instead of overrunning.
+		TCHAR szDir[MAX_PATH];
+		szDir[MAX_PATH - 1] = '\0';
+		if (nArgs == 1)
+		{
+			_tcsncpy(szDir, szPath, MAX_PATH - 1);
+			TCHAR* pchSep = _tcsrchr(szDir, '/');
+			if (pchSep != NULL)
+				*pchSep = '\\';
+			pchSep = _tcsrchr(szDir, '\\');
+			// Theseus: a bare file name keeps the whole path instead of writing through NULL.
+			if (CHECK(pchSep != NULL))
+				*pchSep = '\0';
+		}
+		else
+		{
+			CObject* pDirArg = Dereference(rgArgs[1]);
+			CStrObject* pDir = pDirArg->ToStr();
+			_tcsncpy(szDir, pDir->GetSz(), MAX_PATH - 1);
+			pDir->Release();
+			pDirArg->Release();
+		}
 
 #if defined(_XBOX)
-			FSCHAR ssz1[MAX_PATH];
-			FSCHAR ssz2[MAX_PATH];
-			CleanFilePath(ssz1, sz1);
-			CleanFilePath(ssz2, sz2);
-			XWriteTitleInfoAndReboot(ssz1, ssz2, LDT_NONE, 0, NULL);
+		FSCHAR szXbe[MAX_PATH];
+		FSCHAR szXbeDir[MAX_PATH];
+		CleanFilePath(szXbe, szPath);
+		CleanFilePath(szXbeDir, szDir);
+		XWriteTitleInfoAndReboot(szXbe, szXbeDir, LDT_NONE, 0, NULL);
 #else
-			extern void DesktopLaunchTitle(const char*);
-			DesktopLaunchTitle(sz2);
+		// Theseus: desktop hands the title to its own launcher.
+		extern void DesktopLaunchTitle(const char*);
+		DesktopLaunchTitle(szDir);
 #endif
-			pStr1->Release();
-			pObject1->Release();
-		}
-		else
-			Error(_T("Bad launch"));
+
+		pPath->Release();
+		pPathArg->Release();
 		return TRUE;
 	}
 
-	if (cchName == 10 && _tcsncmp(pchName, _T("DebugBreak"), cchName) == 0)
+	if (IsBuiltIn(pchName, cchName, _T("DebugBreak")))
+		return TRUE;
+
+	if (IsBuiltIn(pchName, cchName, _T("alert")) || IsBuiltIn(pchName, cchName, _T("log")))
 	{
-#ifdef _DEBUG
-		_CrtDbgBreak();
+		bool bAlert = (cchName == 5);
+		if (nArgs != 1)
+		{
+			Error(bAlert ? _T("Bad alert") : _T("Bad log!"));
+			return TRUE;
+		}
+
+		CObject* pArg = Dereference(rgArgs[0]);
+		CStrObject* pText = pArg->ToStr();
+		if (bAlert)
+			Alert(_T("%s"), pText->GetSz());
+#ifdef THESEUS_DESKTOP
+		else
+			Trace(_T("%s\n"), pText->GetSz()); // Theseus: desktop prints log() lines
 #endif
-		return TRUE;
-	}
-
-	if (cchName == 5 && _tcsncmp(pchName, _T("alert"), cchName) == 0)
-	{
-		if (nParam == 1)
-		{
-			CObject* pObject = Dereference(rgParam[0]);
-			CStrObject* pStr = pObject->ToStr();
-			Alert(_T("%s"), pStr->GetSz());
-			pStr->Release();
-			pObject->Release();
-		}
-		else
-			Error(_T("Bad alert"));
-		return TRUE;
-	}
-
-	if (cchName == 3 && _tcsncmp(pchName, _T("log"), cchName) == 0)
-	{
-		if (nParam == 1)
-		{
-			CObject* pObject = Dereference(rgParam[0]);
-			CStrObject* pStr = pObject->ToStr();
-			TRACE(_T("%s\n"), pStr->GetSz());
-			pStr->Release();
-			pObject->Release();
-		}
-		else
-			Error(_T("Bad log!"));
+		pText->Release();
+		pArg->Release();
 		return TRUE;
 	}
 
@@ -1513,34 +1660,33 @@ BOOL CRunner::ExecuteBuiltIn(const TCHAR* pchName, int cchName, int nParam, CObj
 }
 
 // =========================================================================
-// Section 9: Function lookup. Resolves by name through scene hierarchy.
+// Name lookup
 // =========================================================================
 
+// CRunner::LookupFunction
+// Reconstructed from 5960 retail XBE @ 0x000389b0. Decompile:
+//     owner = m_self;
+//     if ((f = m_self->FindMemberFunction(name))) return f->m_rgop;
+//     for (p = m_self->m_parent; p; p = p->m_parent)
+//         if ((m = LookupMember(p, name))) {
+//             owner = p; return m->m_obj == objFunction ? m->m_rgop : (BYTE*)m; }
+//     owner = NULL; return NULL;
+// A non-function hit comes back as a raw pointer, as in the binary.
 BYTE* CRunner::LookupFunction(const TCHAR* pchName, int cchName, CObject*& pOwner)
 {
 	pOwner = m_self;
 
-	// Check self first
-	{
-		CFunction* pFunction = m_self->FindMemberFunction(pchName, cchName);
-		if (pFunction != NULL)
-			return pFunction->m_rgop;
-	}
+	CFunction* pOwn = m_self->FindMemberFunction(pchName, cchName);
+	if (pOwn != NULL)
+		return pOwn->m_rgop;
 
-	// Walk parent chain
+	for (CObject* pUp = m_self->m_parent; pUp != NULL; pUp = pUp->m_parent)
 	{
-		for (CObject* pObject = m_self->m_parent; pObject != NULL; pObject = pObject->m_parent)
+		CObject* pFound = LookupMember(pUp, pchName, cchName);
+		if (pFound != NULL)
 		{
-			CObject* pObj = LookupMember(pObject, pchName, cchName);
-			if (pObj != NULL)
-			{
-				pOwner = pObject;
-				if (pObj->m_obj == objFunction)
-					return ((CFunction*)pObj)->m_rgop;
-
-				ASSERT(FALSE);
-				return (BYTE*)pObj;
-			}
+			pOwner = pUp;
+			return (pFound->m_obj == objFunction) ? ((CFunction*)pFound)->m_rgop : (BYTE*)pFound;
 		}
 	}
 
@@ -1548,40 +1694,12 @@ BYTE* CRunner::LookupFunction(const TCHAR* pchName, int cchName, CObject*& pOwne
 	return NULL;
 }
 
+// CRunner::LookupVariable   [inlined in CVarObject::Deref / Assign]
+// Try self, and if self isn't the script's this, try this too.
 CObject* CRunner::LookupVariable(const TCHAR* pchName, int cchName)
 {
-	CObject* pObject = LookupMember(m_self, pchName, cchName);
-	if (pObject != NULL || m_self == m_thisRef)
-		return pObject;
-	return LookupMember(m_thisRef, pchName, cchName);
+	CObject* pFound = LookupMember(m_self, pchName, cchName);
+	if (pFound == NULL && m_self != m_thisRef)
+		pFound = LookupMember(m_thisRef, pchName, cchName);
+	return pFound;
 }
-
-#ifdef _DEBUG
-void CRunner::DumpStack()
-{
-	TRACE(_T("\nStack Trace\n{\n"));
-
-	TRACE(_T("ops: 0x%08x\n"), m_ops);
-	TRACE(_T("nop: %d\n"), m_nop);
-	TRACE(_T("spFrame: %d\n"), m_spFrame);
-	TRACE(_T("sp: %d\n"), m_sp);
-	TRACE(_T("self:\n")); m_self->Dump();
-	TRACE(_T("this:\n")); m_thisRef->Dump();
-
-	for (RUNCONTEXT* pContext = m_nextContext; pContext != NULL; pContext = pContext->m_nextContext)
-	{
-		TRACE(_T("{\nContext: 0x%08x\n"), pContext);
-
-		TRACE(_T("ops: 0x%08x\n"), pContext->m_ops);
-		TRACE(_T("nop: %d\n"), pContext->m_nop);
-		TRACE(_T("spFrame: %d\n"), pContext->m_spFrame);
-		TRACE(_T("sp: %d\n"), pContext->m_sp);
-		TRACE(_T("self:\n")); pContext->m_self->Dump();
-		TRACE(_T("this:\n")); pContext->m_thisRef->Dump();
-
-		TRACE(_T("}\n"));
-	}
-
-	TRACE(_T("}\n"));
-}
-#endif

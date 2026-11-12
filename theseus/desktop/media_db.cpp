@@ -12,6 +12,7 @@
 #include "tmdb.h"
 #include "playlist.h"
 #include "media_db.h"
+#include "host.h"
 
 // ============================================================================
 // CMediaCollection - filesystem-backed library of movies + TV shows.
@@ -19,7 +20,6 @@
 // a stateful query API to XAP (SetCurrentShow / GetSeasonName / etc.).
 // ============================================================================
 
-#include <dirent.h>
 #include <sys/stat.h>
 #include <vector>
 #include <string>
@@ -27,6 +27,8 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <algorithm>
+#include <ctype.h>
 
 #define MEDIADB_MAGIC   "TMDB"
 #define MEDIADB_VERSION 2u   // v2: + overview, voteAverage, tmdbId on movies/shows
@@ -182,22 +184,115 @@ static std::string ParseEpisodeTitle(const std::string& filename, int& seasonOut
 	return rest;
 }
 
-static std::string FindFirstVideoFile(const std::string& dir)
+// Season and episode out of a bare filename, for ordering only. Takes S01E02,
+// s1e2 and 1x02 anywhere in the name, as long as it starts on a word break.
+static bool ParseSeasonEpisode(const char* name, int& season, int& episode)
 {
-	DIR* d = opendir(dir.c_str());
-	if (!d) return "";
-	struct dirent* e;
-	while ((e = readdir(d)))
+	for (const char* p = name; *p; p++)
 	{
-		if (e->d_name[0] == '.') continue;
-		if (IsVideoExt(e->d_name))
+		if (p != name && isalnum((unsigned char)p[-1])) continue;
+		const char* q = p;
+		bool sForm = (*q == 'S' || *q == 's');
+		if (sForm) q++;
+		const char* d = q;
+		int s = 0;
+		while (isdigit((unsigned char)*q)) s = s * 10 + (*q++ - '0');
+		int sDigits = (int)(q - d);
+		if (sDigits < 1 || sDigits > 2) continue;
+		if (sForm ? (*q != 'E' && *q != 'e') : (*q != 'x' && *q != 'X')) continue;
+		q++;
+		d = q;
+		int e = 0;
+		while (isdigit((unsigned char)*q)) e = e * 10 + (*q++ - '0');
+		int eDigits = (int)(q - d);
+		if (eDigits < 1 || eDigits > 3 || (!sForm && eDigits < 2)) continue;
+		season = s; episode = e;
+		return true;
+	}
+	return false;
+}
+
+// Filename compare where digit runs count as numbers, so "Ep 2" lands before "Ep 10".
+static int NaturalCompare(const char* a, const char* b)
+{
+	while (*a && *b)
+	{
+		if (isdigit((unsigned char)*a) && isdigit((unsigned char)*b))
 		{
-			std::string out = dir + "/" + e->d_name;
-			closedir(d);
-			return out;
+			while (*a == '0') a++;
+			while (*b == '0') b++;
+			const char* na = a; const char* nb = b;
+			while (isdigit((unsigned char)*a)) a++;
+			while (isdigit((unsigned char)*b)) b++;
+			size_t la = a - na, lb = b - nb;
+			if (la != lb) return la < lb ? -1 : 1;
+			int c = strncmp(na, nb, la);
+			if (c) return c;
+			continue;
+		}
+		int ca = tolower((unsigned char)*a), cb = tolower((unsigned char)*b);
+		if (ca != cb) return ca < cb ? -1 : 1;
+		a++; b++;
+	}
+	return (*a != 0) - (*b != 0);
+}
+
+static const char* BaseName(const std::string& path)
+{
+	size_t slash = path.find_last_of('/');
+	return path.c_str() + (slash == std::string::npos ? 0 : slash + 1);
+}
+
+// Numbered episodes in (season, episode) order, anything unnumbered after them by name.
+static void SortEpisodes(std::vector<EpisodeRec>& eps)
+{
+	std::stable_sort(eps.begin(), eps.end(), [](const EpisodeRec& x, const EpisodeRec& y) {
+		const char* nx = BaseName(x.path);
+		const char* ny = BaseName(y.path);
+		int sx = 0, ex = 0, sy = 0, ey = 0;
+		bool hx = ParseSeasonEpisode(nx, sx, ex);
+		bool hy = ParseSeasonEpisode(ny, sy, ey);
+		if (hx != hy) return hx;
+		if (hx && sx != sy) return sx < sy;
+		if (hx && ex != ey) return ex < ey;
+		return NaturalCompare(nx, ny) < 0;
+	});
+}
+
+// First video at or below dir. depth 1 is this level only; 2 also covers a
+// Season folder or similar sitting under the title folder.
+static std::string FindFirstVideoFile(const std::string& dir, int depth = 1)
+{
+	HostDir* d = Host_OpenDir(dir.c_str());
+	if (!d) return "";
+	std::vector<std::string> subdirs;
+	std::string out;
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
+	{
+		if (eName[0] == '.') continue;
+		if (IsVideoExt(eName))
+		{
+			out = dir + "/" + eName;
+			break;
+		}
+		if (depth > 1)
+		{
+			std::string sub = dir + "/" + eName;
+			struct stat st;
+			if (stat(sub.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+				subdirs.push_back(sub);
 		}
 	}
-	closedir(d);
+	Host_CloseDir(d);
+	if (!out.empty()) return out;
+
+	// Files win over folders, so only descend once this level came up empty.
+	for (size_t i = 0; i < subdirs.size(); i++)
+	{
+		out = FindFirstVideoFile(subdirs[i], depth - 1);
+		if (!out.empty()) return out;
+	}
 	return "";
 }
 
@@ -207,21 +302,30 @@ static std::string FindFirstVideoFile(const std::string& dir)
 static void ScanMoviesInto(std::vector<MovieRec>& out)
 {
 	out.clear();
-	DIR* d = opendir(kMoviesRoot);
+	HostDir* d = Host_OpenDir(kMoviesRoot);
 	if (!d) return;
-	struct dirent* e;
-	while ((e = readdir(d)))
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
 	{
-		if (e->d_name[0] == '.') continue;
-		std::string folder = std::string(kMoviesRoot) + "/" + e->d_name;
+		if (eName[0] == '.') continue;
+		std::string folder = std::string(kMoviesRoot) + "/" + eName;
 		struct stat st;
-		if (stat(folder.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+		if (stat(folder.c_str(), &st) != 0) continue;
 
-		std::string videoPath = FindFirstVideoFile(folder);
+		std::string videoPath;
+		std::string title = eName;
+		if (S_ISDIR(st.st_mode)) {
+			videoPath = FindFirstVideoFile(folder, 2);
+		} else if (IsVideoExt(eName)) {
+			// Movies dropped straight in the root, no folder per title.
+			videoPath = folder;
+			size_t dot = title.find_last_of('.');
+			if (dot != std::string::npos) title.erase(dot);
+		}
 		if (videoPath.empty()) continue;
 
 		MovieRec m;
-		m.title = e->d_name;
+		m.title = title;
 		m.path  = videoPath;
 		m.year  = ParseYearFromTitle(m.title);
 		out.push_back(m);
@@ -229,40 +333,40 @@ static void ScanMoviesInto(std::vector<MovieRec>& out)
 		BumpProgress(n);
 		if ((n % 50) == 0) printf("[MediaDB] Movies: %d found\n", n);
 	}
-	closedir(d);
+	Host_CloseDir(d);
 	printf("[MediaDB] Movie scan done: %d total\n", (int)out.size());
 }
 
 static void ScanShowSeasons(ShowRec& show)
 {
-	DIR* d = opendir(show.path.c_str());
+	HostDir* d = Host_OpenDir(show.path.c_str());
 	if (!d) return;
-	struct dirent* e;
-	while ((e = readdir(d)))
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
 	{
-		if (e->d_name[0] == '.') continue;
-		std::string seasonDir = show.path + "/" + e->d_name;
+		if (eName[0] == '.') continue;
+		std::string seasonDir = show.path + "/" + eName;
 		struct stat st;
 		if (stat(seasonDir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
-		// Only "Season N" folders.
-		if (strncmp(e->d_name, "Season", 6) != 0) continue;
+		if (strncasecmp(eName, "Season", 6) != 0 &&
+		    strncasecmp(eName, "Specials", 8) != 0) continue;
 
 		SeasonRec s;
-		s.name = e->d_name;
+		s.name = eName;
 
-		DIR* sd = opendir(seasonDir.c_str());
+		HostDir* sd = Host_OpenDir(seasonDir.c_str());
 		if (!sd) continue;
-		struct dirent* se;
-		while ((se = readdir(sd)))
+		char seName[260];
+		while (Host_ReadDir(sd, seName, sizeof(seName), NULL))
 		{
-			if (se->d_name[0] == '.') continue;
-			if (!IsVideoExt(se->d_name)) continue;
+			if (seName[0] == '.') continue;
+			if (!IsVideoExt(seName)) continue;
 			EpisodeRec ep;
-			ep.path = seasonDir + "/" + se->d_name;
-			ep.title = ParseEpisodeTitle(se->d_name, ep.season, ep.episode);
+			ep.path = seasonDir + "/" + seName;
+			ep.title = ParseEpisodeTitle(seName, ep.season, ep.episode);
 			s.episodes.push_back(ep);
 		}
-		closedir(sd);
+		Host_CloseDir(sd);
 
 		// Sort episodes by episode number.
 		for (size_t i = 1; i < s.episodes.size(); i++)
@@ -275,24 +379,72 @@ static void ScanShowSeasons(ShowRec& show)
 
 		show.seasons.push_back(s);
 	}
-	closedir(d);
+	Host_CloseDir(d);
+
+	// Episodes sitting straight in the show folder, no Season dirs. Common
+	// enough that dropping the show entirely just looks like nothing loaded.
+	if (show.seasons.empty())
+	{
+		SeasonRec s;
+		s.name = "Season 1";
+		HostDir* fd = Host_OpenDir(show.path.c_str());
+		if (!fd) return;
+		char feName[260];
+		while (Host_ReadDir(fd, feName, sizeof(feName), NULL))
+		{
+			if (feName[0] == '.') continue;
+			if (!IsVideoExt(feName)) continue;
+			EpisodeRec ep;
+			ep.path = show.path + "/" + feName;
+			ep.title = ParseEpisodeTitle(feName, ep.season, ep.episode);
+			s.episodes.push_back(ep);
+		}
+		Host_CloseDir(fd);
+		SortEpisodes(s.episodes);
+		if (!s.episodes.empty()) show.seasons.push_back(s);
+	}
 }
 
 static void ScanShowsInto(std::vector<ShowRec>& out)
 {
 	out.clear();
-	DIR* d = opendir(kTvRoot);
+	HostDir* d = Host_OpenDir(kTvRoot);
 	if (!d) return;
-	struct dirent* e;
-	while ((e = readdir(d)))
+	char eName[260];
+	while (Host_ReadDir(d, eName, sizeof(eName), NULL))
 	{
-		if (e->d_name[0] == '.') continue;
-		std::string folder = std::string(kTvRoot) + "/" + e->d_name;
+		if (eName[0] == '.') continue;
+		std::string folder = std::string(kTvRoot) + "/" + eName;
 		struct stat st;
-		if (stat(folder.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+		if (stat(folder.c_str(), &st) != 0) continue;
 
 		ShowRec sh;
-		sh.title = e->d_name;
+		if (!S_ISDIR(st.st_mode))
+		{
+			// A loose episode in the root. Its own one episode show, so it
+			// is at least reachable instead of invisible.
+			if (!IsVideoExt(eName)) continue;
+			std::string title = eName;
+			size_t dot = title.find_last_of('.');
+			if (dot != std::string::npos) title.erase(dot);
+
+			SeasonRec s;
+			s.name = "Season 1";
+			EpisodeRec ep;
+			ep.path  = folder;
+			ep.title = ParseEpisodeTitle(eName, ep.season, ep.episode);
+			s.episodes.push_back(ep);
+
+			// Keyed on the file itself so every loose show stays its own entry.
+			sh.title = title;
+			sh.path  = folder;
+			sh.seasons.push_back(s);
+			out.push_back(sh);
+			BumpProgress((int)out.size());
+			continue;
+		}
+
+		sh.title = eName;
 		sh.path  = folder;
 		ScanShowSeasons(sh);
 		if (!sh.seasons.empty()) {
@@ -302,7 +454,7 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 			if ((n % 10) == 0) printf("[MediaDB] Shows: %d found\n", n);
 		}
 	}
-	closedir(d);
+	Host_CloseDir(d);
 	printf("[MediaDB] Show scan done: %d total\n", (int)out.size());
 }
 
@@ -331,6 +483,9 @@ static void WriteCacheTo(const std::vector<MovieRec>& movies,
 {
 	// Write atomically: temp file + rename so a kill mid-write never
 	// leaves the cache truncated.
+	// TMDB workers checkpoint in parallel and share the one temp file, so take turns.
+	static std::mutex s_writeMutex;
+	std::lock_guard<std::mutex> writeLock(s_writeMutex);
 	std::string tmp = std::string(path) + ".tmp";
 	FILE* f = fopen(tmp.c_str(), "wb");
 	if (!f) return;
@@ -385,7 +540,7 @@ static void WriteCacheTo(const std::vector<MovieRec>& movies,
 	}
 
 	fclose(f);
-	rename(tmp.c_str(), path);
+	Host_RenameReplace(tmp.c_str(), path);
 	printf("[MediaDB] Saved cache: %u movies, %u shows\n", nMovies, nShows);
 }
 
@@ -406,8 +561,10 @@ static bool LoadCache()
 		fclose(f); return false;
 	}
 
-	g_movies.clear();
-	g_shows.clear();
+	// Parsed into locals and swapped in under the lock, since a scan thread
+	// may be publishing at the same time.
+	std::vector<MovieRec> movies;
+	std::vector<ShowRec>  shows;
 
 	uint32_t nMovies;
 	if (fread(&nMovies, 4, 1, f) != 1) { fclose(f); return false; }
@@ -418,7 +575,7 @@ static bool LoadCache()
 		if (!ReadStr(f, m.title) || !ReadStr(f, m.path) ||
 		    fread(&y, 2, 1, f) != 1)
 		{
-			fclose(f); g_movies.clear(); return false;
+			fclose(f); return false;
 		}
 		m.year = y;
 		uint16_t vote = 0;
@@ -427,11 +584,11 @@ static bool LoadCache()
 		    fread(&vote, 2, 1, f) != 1 ||
 		    fread(&tid,  4, 1, f) != 1)
 		{
-			fclose(f); g_movies.clear(); return false;
+			fclose(f); return false;
 		}
 		m.voteAverage = vote / 10.0f;
 		m.tmdbId      = tid;
-		g_movies.push_back(m);
+		movies.push_back(m);
 	}
 
 	uint32_t nShows;
@@ -472,10 +629,15 @@ static bool LoadCache()
 			}
 			sh.seasons.push_back(sn);
 		}
-		g_shows.push_back(sh);
+		shows.push_back(sh);
 	}
 
 	fclose(f);
+	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
+		g_movies.swap(movies);
+		g_shows.swap(shows);
+	}
 	printf("[MediaDB] Loaded cache: %u movies, %u shows\n", nMovies, nShows);
 	return true;
 }
@@ -511,9 +673,11 @@ public:
 	int m_curSelKind;   // 0 = movie, 1 = show
 	int m_curSelIdx;
 
-	int GetMovieCount() { return (int)g_movies.size(); }
+	// A scan thread swaps these vectors out, so every read takes g_dbMutex.
+	int GetMovieCount() { std::lock_guard<std::mutex> lock(g_dbMutex); return (int)g_movies.size(); }
 	CStrObject* GetMovieTitle(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_movies.size()) return new CStrObject;
 		// Strip trailing " (YYYY)" for cleaner display.
 		std::string t = g_movies[i].title;
@@ -523,6 +687,7 @@ public:
 	}
 	CStrObject* GetMovieMeta(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_movies.size()) return new CStrObject;
 		char buf[64];
 		if (g_movies[i].year > 0)
@@ -533,13 +698,15 @@ public:
 	}
 	CStrObject* GetMoviePath(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_movies.size()) return new CStrObject;
 		return new CStrObject(_T(g_movies[i].path.c_str()));
 	}
 
-	int GetShowCount() { return (int)g_shows.size(); }
+	int GetShowCount() { std::lock_guard<std::mutex> lock(g_dbMutex); return (int)g_shows.size(); }
 	CStrObject* GetShowTitle(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_shows.size()) return new CStrObject;
 		std::string t = g_shows[i].title;
 		size_t p = t.rfind(" (");
@@ -548,6 +715,7 @@ public:
 	}
 	CStrObject* GetShowMeta(int i)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_shows.size()) return new CStrObject;
 		int totalEps = 0;
 		for (size_t s = 0; s < g_shows[i].seasons.size(); s++)
@@ -567,11 +735,13 @@ public:
 	}
 	int GetSeasonCount()
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return 0;
 		return (int)g_shows[m_curShowIdx].seasons.size();
 	}
 	CStrObject* GetSeasonName(int sIdx)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return new CStrObject;
 		if (sIdx < 0 || sIdx >= (int)g_shows[m_curShowIdx].seasons.size()) return new CStrObject;
 		return new CStrObject(_T(g_shows[m_curShowIdx].seasons[sIdx].name.c_str()));
@@ -580,12 +750,14 @@ public:
 	void SetCurrentSeason(int i) { m_curSeasonIdx = i; }
 	int GetEpisodeCount()
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return 0;
 		if (m_curSeasonIdx < 0 || m_curSeasonIdx >= (int)g_shows[m_curShowIdx].seasons.size()) return 0;
 		return (int)g_shows[m_curShowIdx].seasons[m_curSeasonIdx].episodes.size();
 	}
 	CStrObject* GetEpisodeTitle(int epIdx)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return new CStrObject;
 		if (m_curSeasonIdx < 0 || m_curSeasonIdx >= (int)g_shows[m_curShowIdx].seasons.size()) return new CStrObject;
 		const std::vector<EpisodeRec>& eps = g_shows[m_curShowIdx].seasons[m_curSeasonIdx].episodes;
@@ -594,6 +766,7 @@ public:
 	}
 	CStrObject* GetEpisodePath(int epIdx)
 	{
+		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curShowIdx < 0 || m_curShowIdx >= (int)g_shows.size()) return new CStrObject;
 		if (m_curSeasonIdx < 0 || m_curSeasonIdx >= (int)g_shows[m_curShowIdx].seasons.size()) return new CStrObject;
 		const std::vector<EpisodeRec>& eps = g_shows[m_curShowIdx].seasons[m_curSeasonIdx].episodes;
@@ -822,7 +995,8 @@ static void EnrichMoviesTmdb(std::vector<MovieRec>& movies, std::vector<ShowRec>
 					m.tmdbId      = tm.tmdbId;
 					hits.fetch_add(1);
 				} else {
-					m.tmdbId = -1;
+					// A failed lookup stays 0 so the next scan asks again.
+					if (!tm.failed) m.tmdbId = -1;
 					misses.fetch_add(1);
 				}
 			}
@@ -889,7 +1063,7 @@ static void EnrichShowsTmdb(std::vector<ShowRec>& shows, std::vector<MovieRec>& 
 					s.tmdbId      = ts.tmdbId;
 					hits.fetch_add(1);
 				} else {
-					s.tmdbId = -1;
+					if (!ts.failed) s.tmdbId = -1;
 					misses.fetch_add(1);
 				}
 			}

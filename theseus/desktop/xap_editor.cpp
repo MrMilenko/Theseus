@@ -19,20 +19,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#define strcasecmp _stricmp
-#ifndef S_ISDIR
-#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
-#endif
-#else
-#include <dirent.h>
-#endif
-
-#undef fopen
-#undef _tfopen
+#include "host.h"
+#include "safe_save.h"
 
 // Implemented in group.cpp
 extern "C" int CollectInlineNodes(CNode* pRoot, CInstance* pRootInst, void* outBuf, int maxEntries);
@@ -149,15 +137,18 @@ void XapEditor_LoadFile(const char* path) {
 static void XapEditor_SaveFile() {
     if (!g_xapEditorPath[0]) return;
     std::string text = s_editor.GetText();
-    FILE* f = fopen(g_xapEditorPath, "wb");
+    SafeSave save(g_xapEditorPath, "wb");
+    FILE* f = save.f;
     if (!f) {
         snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Failed to save!");
         g_xapEditorStatusTime = (float)SDL_GetTicks() / 1000.0f;
         return;
     }
     fwrite(text.c_str(), 1, text.size(), f);
-    fclose(f);
-    snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Saved %zu bytes", text.size());
+    if (save.Commit())
+        snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Saved %zu bytes", text.size());
+    else
+        snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Failed to save!");
     g_xapEditorStatusTime = (float)SDL_GetTicks() / 1000.0f;
 }
 
@@ -177,43 +168,22 @@ void XapEditor_Cleanup() {}
 // ============================================================================
 
 static void XapEditor_ScanDir(const char* dir, char fileList[][512], int* count, int maxFiles) {
-#ifdef _WIN32
-    char searchPath[512];
-    snprintf(searchPath, sizeof(searchPath), "%s\\*", dir);
-    struct _finddata_t fd;
-    intptr_t hFind = _findfirst(searchPath, &fd);
-    if (hFind == -1) return;
-    do {
-        if (fd.name[0] == '.') continue;
-        if (*count >= maxFiles) break;
-        char fullpath[512];
-        snprintf(fullpath, sizeof(fullpath), "%s\\%s", dir, fd.name);
-        if (fd.attrib & _A_SUBDIR)
-            XapEditor_ScanDir(fullpath, fileList, count, maxFiles);
-        else if (strlen(fd.name) > 4 && _stricmp(fd.name + strlen(fd.name) - 4, ".xap") == 0) {
-            strncpy(fileList[*count], fullpath, 511);
-            (*count)++;
-        }
-    } while (_findnext(hFind, &fd) == 0);
-    _findclose(hFind);
-#else
-    DIR* d = opendir(dir);
+    HostDir* d = Host_OpenDir(dir);
     if (!d) return;
-    struct dirent* entry;
-    while ((entry = readdir(d)) != NULL && *count < maxFiles) {
-        if (entry->d_name[0] == '.') continue;
+    char name[260];
+    bool isDir;
+    while (*count < maxFiles && Host_ReadDirType(d, name, sizeof(name), &isDir)) {
+        if (name[0] == '.') continue;
         char fullpath[512];
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", dir, entry->d_name);
-        struct stat fst;
-        if (stat(fullpath, &fst) == 0 && S_ISDIR(fst.st_mode))
+        snprintf(fullpath, sizeof(fullpath), "%s%c%s", dir, Host_PathSep, name);
+        if (isDir)
             XapEditor_ScanDir(fullpath, fileList, count, maxFiles);
-        else if (strlen(entry->d_name) > 4 && strcasecmp(entry->d_name + strlen(entry->d_name) - 4, ".xap") == 0) {
+        else if (strlen(name) > 4 && strcasecmp(name + strlen(name) - 4, ".xap") == 0) {
             strncpy(fileList[*count], fullpath, 511);
             (*count)++;
         }
     }
-    closedir(d);
-#endif
+    Host_CloseDir(d);
 }
 
 // ============================================================================

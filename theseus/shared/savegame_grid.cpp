@@ -363,7 +363,7 @@ static bool FindDLCFolderByIndex(const char* titleIDChar, int dlcIndex,
 	_snprintf(searchPath, MAX_PATH, "E:\\TDATA\\%s\\$c\\*", titleIDChar);
 
 	WIN32_FIND_DATAA findData;
-	HANDLE hFind = FindFirstFileA(searchPath, &findData);
+	HANDLE hFind = TheseusFindFirstFile(searchPath, &findData);
 	if (hFind == INVALID_HANDLE_VALUE)
 		return false;
 
@@ -385,9 +385,9 @@ static bool FindDLCFolderByIndex(const char* titleIDChar, int dlcIndex,
 			}
 			currentIndex++;
 		}
-	} while (FindNextFileA(hFind, &findData));
+	} while (TheseusFindNextFile(hFind, &findData));
 
-	FindClose(hFind);
+	TheseusFindClose(hFind);
 	return found;
 }
 
@@ -804,7 +804,7 @@ void CSavedGameGrid::RefreshDiskFreeSpace()
 #endif
 
 	ULARGE_INTEGER availBytes, totalBytes, freeBytes;
-	if (!GetDiskFreeSpaceEx(path, &availBytes, &totalBytes, &freeBytes))
+	if (!TheseusGetDiskFreeSpaceEx(path, &availBytes, &totalBytes, &freeBytes))
 	{
 		// Treat query failures as a "full empty disk" so the UI shows
 		// 0 free instead of stale values from the previous device.
@@ -1792,7 +1792,7 @@ bool ContentMetaParse(const TCHAR *wszMetaPath, TCHAR *outName, int outLen)
 	bool inSection = false;
 	bool matchLang = false;
 
-	for (size_t i = 0; i < bytesRead - 2; i += 2)
+	for (size_t i = 0; i + 1 < bytesRead; i += 2)
 	{
 		if (buf[i + 1] == 0 && buf[i] >= 32 && buf[i] <= 126)
 		{
@@ -1802,18 +1802,22 @@ bool ContentMetaParse(const TCHAR *wszMetaPath, TCHAR *outName, int outLen)
 
 			size_t len = i - start;
 			char asciiBuf[256] = {};
-			for (size_t j = 0; j < len && j < sizeof(asciiBuf) - 1; j += 2)
-				asciiBuf[j / 2] = buf[start + j];
+			size_t nOut = 0;
+			for (size_t j = 0; j < len && nOut < sizeof(asciiBuf) - 1; j += 2)
+				asciiBuf[nOut++] = buf[start + j];
 
-			asciiBuf[len / 2] = '\0';
+			asciiBuf[nOut] = '\0';
 			const char *str = asciiBuf;
 
 			if (str[0] == '[' && str[strlen(str) - 1] == ']')
 			{
 				// Normalize and compare
 				char sectionLang[32] = {};
-				strncpy(sectionLang, str + 1, strlen(str) - 2); // strip brackets
-				sectionLang[strlen(str) - 2] = '\0';
+				size_t cbLang = strlen(str) - 2; // strip brackets
+				if (cbLang > sizeof(sectionLang) - 1)
+					cbLang = sizeof(sectionLang) - 1;
+				strncpy(sectionLang, str + 1, cbLang);
+				sectionLang[cbLang] = '\0';
 				_strlwr(sectionLang);
 
 				matchLang = (_stricmp(langCodeA, sectionLang) == 0 || strcmp(sectionLang, "default") == 0);
@@ -2306,7 +2310,7 @@ static int ScanDLContentCount(const char *titleID)
 	_snprintf(dlcPath, MAX_PATH, "E:\\TDATA\\%s\\$c\\*", titleID);
 
 	WIN32_FIND_DATAA findData;
-	HANDLE hFind = FindFirstFileA(dlcPath, &findData);
+	HANDLE hFind = TheseusFindFirstFile(dlcPath, &findData);
 	if (hFind == INVALID_HANDLE_VALUE)
 		return 0;
 
@@ -2321,9 +2325,9 @@ static int ScanDLContentCount(const char *titleID)
 		{
 			dlcCount++;
 		}
-	} while (FindNextFileA(hFind, &findData));
+	} while (TheseusFindNextFile(hFind, &findData));
 
-	FindClose(hFind);
+	TheseusFindClose(hFind);
 	return dlcCount;
 }
 
@@ -2492,10 +2496,10 @@ int CSavedGameGrid::IsDLContentPartial()
 	          titleIDChar, dlcFolder);
 
 	WIN32_FIND_DATAA metaData;
-	HANDLE hMeta = FindFirstFileA(metaPath, &metaData);
+	HANDLE hMeta = TheseusFindFirstFile(metaPath, &metaData);
 	if (hMeta == INVALID_HANDLE_VALUE)
 		return 1; // No ContentMeta = partial download
-	FindClose(hMeta);
+	TheseusFindClose(hMeta);
 	return 0; // ContentMeta exists = complete
 }
 

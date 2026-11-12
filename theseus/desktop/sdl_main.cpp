@@ -28,9 +28,8 @@
 #include "display.h"
 #include "esde.h"
 #include "esde_vgames.h"
-#include <signal.h>
 
-#include <SDL_syswm.h>
+#include "host.h"
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 #include <cstring>
@@ -40,24 +39,17 @@
 // Loads Data/shaders/<backend>/<name>.bin. Picks subdir from the active renderer.
 bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
 {
-#if defined(_WIN32)
-	const char* sub = "dx11";
-#elif defined(__APPLE__)
-	const char* sub = "metal";
-#else
-	const char* sub = "spirv";
-#endif
+	const char* sub = Host_DefaultShaderDir();
 	switch (bgfx::getRendererType()) {
 		case bgfx::RendererType::Direct3D11: sub = "dx11";   break;
 		case bgfx::RendererType::Metal:      sub = "metal";  break;
 		case bgfx::RendererType::Vulkan:     sub = "spirv";  break;
 		case bgfx::RendererType::OpenGL:     sub = "glsl";   break;
+		case bgfx::RendererType::OpenGLES:   sub = "essl";   break;
 		default: break;
 	}
 	char path[512];
 	snprintf(path, sizeof(path), "%s", AppPathf("Data/shaders/%s/%s.bin", sub, name));
-	// fopen is macro-routed through xboxfs.h's translator and AppPathf is
-	// absolute, so this relies on XboxFS_IsHostPath to skip the drive remap.
 	FILE* f = fopen(path, "rb");
 	if (!f) {
 		fprintf(stderr, "bgfx: shader file not found: %s\n", path);
@@ -74,92 +66,7 @@ bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
 	bgfx::setName(sh, name);
 	return sh;
 }
-#ifdef __APPLE__
-#include <mach-o/dyld.h>  // _NSGetExecutablePath
-#endif
-#ifdef __linux__
-#include <sys/wait.h>
-#endif
-
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#include <process.h>
-#include <dbghelp.h>
-#include <avrt.h>
-#include <dwmapi.h>
-#pragma comment(lib, "dbghelp.lib")
-
-// Watchdog: dumps main thread stack to hang_dump.txt after 10s of detected hang
-static DWORD WINAPI HangWatchdog(LPVOID param) {
-    DWORD mainThread = (DWORD)(uintptr_t)param;
-    while (true) {
-        Sleep(2000);
-        extern volatile bool g_hangCheck;
-        extern volatile DWORD g_hangStartTime;
-        if (!g_hangCheck) continue;
-        if (GetTickCount() - g_hangStartTime < 10000) continue;
-
-        FILE* f = fopen("hang_dump.txt", "w");
-        if (!f) continue;
-        fprintf(f, "=== HANG DETECTED (>10s) ===\n");
-        fprintf(f, "Main thread ID: %lu\n\n", mainThread);
-
-        HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, mainThread);
-        if (hThread) {
-            SuspendThread(hThread);
-            CONTEXT ctx = {};
-            ctx.ContextFlags = CONTEXT_FULL;
-            GetThreadContext(hThread, &ctx);
-
-            SymInitialize(GetCurrentProcess(), NULL, TRUE);
-            STACKFRAME64 sf = {};
-            sf.AddrPC.Offset = ctx.Rip; sf.AddrPC.Mode = AddrModeFlat;
-            sf.AddrFrame.Offset = ctx.Rbp; sf.AddrFrame.Mode = AddrModeFlat;
-            sf.AddrStack.Offset = ctx.Rsp; sf.AddrStack.Mode = AddrModeFlat;
-
-            fprintf(f, "Call stack:\n");
-            for (int i = 0; i < 50; i++) {
-                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), hThread, &sf, &ctx, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
-                    break;
-                char symBuf[sizeof(SYMBOL_INFO) + 256];
-                SYMBOL_INFO* sym = (SYMBOL_INFO*)symBuf;
-                sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-                sym->MaxNameLen = 255;
-                DWORD64 disp = 0;
-                if (SymFromAddr(GetCurrentProcess(), sf.AddrPC.Offset, &disp, sym))
-                    fprintf(f, "  [%d] %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
-                else
-                    fprintf(f, "  [%d] 0x%llx\n", i, (unsigned long long)sf.AddrPC.Offset);
-            }
-            SymCleanup(GetCurrentProcess());
-            ResumeThread(hThread);
-            CloseHandle(hThread);
-        }
-        fclose(f);
-        fprintf(stderr, "[Watchdog] Hang dump written to hang_dump.txt\n");
-        g_hangCheck = false;
-    }
-    return 0;
-}
-volatile bool g_hangCheck = false;
-volatile DWORD g_hangStartTime = 0;
-#define strcasecmp _stricmp
-#define rmdir _rmdir
-#ifndef S_ISDIR
-#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
-#endif
-#ifndef S_ISREG
-#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
-#endif
-#else
 #include <unistd.h>
-#include <dirent.h>
-#if defined(__APPLE__) || defined(__GLIBC__)
-#include <execinfo.h>
-#define HAS_BACKTRACE 1
-#endif
-#endif
 
 // Dear ImGui
 #include "imgui.h"
@@ -174,27 +81,6 @@ volatile DWORD g_hangStartTime = 0;
 #define STBI_ONLY_PNG
 #define STBI_ONLY_BMP
 #include "stb_image.h"
-
-// Platform code uses native file I/O; undo Xbox filesystem macros
-// Dashboard engine files (config.cpp, Runner.cpp, xip.cpp, etc.) keep the macros
-// so they think they're on an Xbox. We don't.
-#undef fopen
-#undef _tfopen
-#ifdef _WIN32
-#undef CreateFile
-#undef CreateFileA
-#undef FindFirstFile
-#undef FindFirstFileA
-#undef FindNextFile
-#undef FindNextFileA
-#undef FindClose
-#undef GetFileAttributes
-#undef GetFileAttributesA
-#undef GetFileAttributesEx
-#undef GetFileAttributesExA
-#undef RemoveDirectory
-#undef RemoveDirectoryA
-#endif
 
 // Virtual games database
 VirtualGameDB g_vgames = {};
@@ -246,16 +132,44 @@ struct CRTDefaults {
 } g_crtDefaults;
 static float s_crtTime = 0.0f;
 
-#ifdef _WIN32
-// Force discrete GPU on Optimus / switchable laptops. bgfx exports its own
-// pair, so skip under BGFX to avoid the dup-symbol link error.
-#endif
+// --graphics-debug also leaves a perf trail testers can attach to a report:
+// one line every 5 seconds in theseus_perf.log in the user data dir.
+static void WritePerfLogLine()
+{
+    static FILE* s_log = NULL;
+    static Uint32 s_last = 0;
+    Uint32 now = SDL_GetTicks();
+    if (s_last && now - s_last < 5000) return;
+    s_last = now;
+
+    if (!s_log) {
+        char path[512];
+        snprintf(path, sizeof(path), "%s/theseus_perf.log", Plat_UserDataDir());
+        s_log = fopen(path, "w");
+        if (!s_log) return;
+        fprintf(s_log, "# sec fps frame_ms gpu_ms render_wait_incl_vsync events advance scene imgui ticks present "
+                       "draws_scene draws_bgfx nodes world state repeats disk load_max\n");
+    }
+    FrameSnapshot f;
+    Frame_Read(&f);
+    fprintf(s_log, "%u %.1f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.0f %.0f %.0f %.0f %.0f %.0f %.1f %.0f\n",
+            now / 1000, f.fps, f.frameMs, f.gpuMs, f.phaseMs[FP_GPU_WAIT],
+            f.phaseMs[FP_EVENTS], f.phaseMs[FP_ADVANCE],
+            f.phaseMs[FP_SCENE_SETUP] + f.phaseMs[FP_SCENE_TREE] + f.phaseMs[FP_SCENE_END],
+            f.phaseMs[FP_IMGUI], f.phaseMs[FP_TICKS], f.phaseMs[FP_PRESENT],
+            f.count[FC_DRAW_SCENE] + f.count[FC_DRAW_SUBSET], f.hostDraws, f.count[FC_NODE_VISITS],
+            f.count[FC_UPDATE_WORLD], f.count[FC_STATE_CALLS], f.count[FC_STATE_REPEATS],
+            f.count[FC_DISK_QUERIES], f.maxLoadMs);
+    fflush(s_log);
+}
 
 // `--graphics-debug` dumper. Writes GPU / driver / vsync / MSAA / display info
-// to stderr and theseus_graphics.log next to the binary.
+// to stderr and theseus_graphics.log in the user data dir.
 static void DumpGraphicsInfo()
 {
-    FILE* logFp = fopen("theseus_graphics.log", "w");
+    char logPath[512];
+    snprintf(logPath, sizeof(logPath), "%s/theseus_graphics.log", Plat_UserDataDir());
+    FILE* logFp = fopen(logPath, "w");
 
     auto write2 = [&logFp](const char* line) {
         fprintf(stderr, "%s", line);
@@ -312,14 +226,6 @@ int g_argc = 0;
 char** g_argv = NULL;
 
 // Game process tracking; hide dashboard while game runs, soft restart on exit
-#ifdef _WIN32
-static DWORD  s_gamePID = 0;        // PID of launched game (0 = none)
-#else
-#include <signal.h>
-#include <spawn.h>
-extern char **environ;
-static pid_t  s_gamePID = 0;        // PID of launched game (0 = none)
-#endif
 static bool   s_gameRunning = false; // true while waiting for game to exit
 static bool   s_softRestartPending = false; // reinit after game exits
 
@@ -346,7 +252,6 @@ static void ApplyEffectiveMute()
 void ApplyEffectiveMute_Public() { ApplyEffectiveMute(); }
 bool g_startMinimized = false;
 bool g_graphicsDebug = false;
-extern double g_perfDrawMs, g_perfImguiMs, g_perfSwapMs, g_perfFrameMs, g_perfFps;
 float g_muteOverlayTimer = 0.0f; // seconds remaining to show the overlay toast
 
 // Instance lists for recreating GPU resources on device reset.
@@ -585,9 +490,10 @@ static void RereadLegacyFromDisk() {
 }
 
 void SaveDesktopSettings() {
-    Plat_MkdirP("Configs");
+    Plat_MkdirP(AppPath_Tree("Configs"));
     RereadLegacyFromDisk();
-    FILE* fp = fopen(AppPath("Configs/desktop.ini"), "w");
+    SafeSave save(AppPath("Configs/desktop.ini"));
+    FILE* fp = save.f;
     if (!fp) return;
     fprintf(fp, "[Desktop]\n");
     fprintf(fp, "XemuPath=%s\n", s_xemuPath);
@@ -648,13 +554,13 @@ void SaveDesktopSettings() {
     fprintf(fp, "JellyfinUserId=%s\n",   g_jellyfinUserId);
     fprintf(fp, "JellyfinClientId=%s\n", g_jellyfinClientId);
     fprintf(fp, "JellyfinUserName=%s\n", g_jellyfinUserName);
-    // Legacy Q:\System\config.ini sections (aliased to this file by xboxfs.h).
+    // Legacy Q:\System\config.ini sections (aliased to this file by xbox_path.h).
     fprintf(fp, "\n[Progressive]\n");
     fprintf(fp, "Use 720p=%s\n",        g_use720p);
     fprintf(fp, "Use Progressive=%s\n", g_useProgressive);
     fprintf(fp, "\n[Dashboard Settings]\n");
     fprintf(fp, "Current Skin=%s\n",    g_currentSkin);
-    fclose(fp);
+    save.Commit();
 }
 
 // Helper: returns true when ImGui has an active text input widget (Title Maker, inspector search, etc.)
@@ -1003,12 +909,30 @@ static void PreSwapOverlays() {
         ImGui::SetNextWindowBgAlpha(0.6f);
         ImGui::SetNextWindowPos(ImVec2(8, 30), ImGuiCond_FirstUseEver);
         if (ImGui::Begin("##perf", nullptr, fl)) {
-            ImGui::Text("FPS:    %.1f", g_perfFps);
-            ImGui::Text("Frame:  %.2f ms", g_perfFrameMs);
+            FrameSnapshot f;
+            Frame_Read(&f);
+            ImGui::Text("FPS:     %.1f   (%.2f ms)", f.fps, f.frameMs);
+            ImGui::Text("GPU:     %.2f ms   render wait %.2f ms (incl. vsync)", f.gpuMs, f.phaseMs[FP_GPU_WAIT]);
             ImGui::Separator();
-            ImGui::Text("Draw:   %.2f ms", g_perfDrawMs);
-            ImGui::Text("ImGui:  %.2f ms", g_perfImguiMs);
-            ImGui::Text("Swap:   %.2f ms", g_perfSwapMs);
+            ImGui::Text("Events:  %.2f ms", f.phaseMs[FP_EVENTS]);
+            ImGui::Text("Advance: %.2f ms", f.phaseMs[FP_ADVANCE]);
+            ImGui::Text("Scene:   %.2f  (setup %.2f, tree %.2f)",
+                        f.phaseMs[FP_SCENE_SETUP] + f.phaseMs[FP_SCENE_TREE] + f.phaseMs[FP_SCENE_END],
+                        f.phaseMs[FP_SCENE_SETUP], f.phaseMs[FP_SCENE_TREE]);
+            ImGui::Text("  material %.2f  world %.2f  draw %.2f",
+                        f.phaseMs[FP_TREE_MATERIAL], f.phaseMs[FP_TREE_WORLD], f.phaseMs[FP_TREE_DRAW]);
+            ImGui::Text("ImGui:   %.2f ms", f.phaseMs[FP_IMGUI]);
+            ImGui::Text("Ticks:   %.2f ms", f.phaseMs[FP_TICKS]);
+            ImGui::Text("Present: %.2f ms", f.phaseMs[FP_PRESENT]);
+            ImGui::Separator();
+            ImGui::Text("Draws:   scene %.0f+%.0f   bgfx %.0f",
+                        f.count[FC_DRAW_SCENE], f.count[FC_DRAW_SUBSET], f.hostDraws);
+            ImGui::Text("Nodes:   %.0f visit / %.0f skip", f.count[FC_NODE_VISITS], f.count[FC_NODE_SKIPS]);
+            ImGui::Text("World:   %.0f   State: %.0f / %.0f repeat",
+                        f.count[FC_UPDATE_WORLD], f.count[FC_STATE_CALLS], f.count[FC_STATE_REPEATS]);
+            ImGui::Text("Transient: vb %.0f KB  ib %.0f KB", f.transientVbKB, f.transientIbKB);
+            ImGui::Text("Disk: %.1f/frame   Load: %.0f ms (max %.0f)",
+                        f.count[FC_DISK_QUERIES], f.lastLoadMs, f.maxLoadMs);
         }
         ImGui::End();
     }
@@ -1047,14 +971,6 @@ int  g_windowResolution = 720;
 // Display mode. 0=windowed, 1=borderless desktop, 2=exclusive fullscreen.
 int  g_windowMode = 0;
 bool g_displayChangeRequested = false;
-
-// Per-pass timings populated each frame in the main loop. Read by the
-// --graphics-debug overlay. Single-frame ms; FPS is EMA-smoothed.
-double g_perfDrawMs  = 0.0;
-double g_perfImguiMs = 0.0;
-double g_perfSwapMs  = 0.0;
-double g_perfFrameMs = 0.0;
-double g_perfFps     = 0.0;
 
 // bgfx reset flags from g_vsyncMode + g_msaaSamples. bgfx has no adaptive
 // vsync, so only an explicit "off" (mode 2) disables it; the default and
@@ -1181,6 +1097,7 @@ void RenderXcloudOverlay()
 
 #if defined(THESEUS_HAVE_WEBRTC)
 #include "xcloud_video.h"
+#include "safe_save.h"
 #include <vector>
 
 
@@ -1272,65 +1189,6 @@ int g_mediaPlaybackExited = 0;
 
 // ReloadSceneFromEditor is now in xap_editor.cpp
 
-static void crash_handler(int sig) {
-    fprintf(stderr, "\n[CRASH] Signal %d (%s)\n", sig, sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : "OTHER");
-    fflush(stderr);
-#ifdef HAS_BACKTRACE
-    void* bt[64];
-    int n = backtrace(bt, 64);
-    backtrace_symbols_fd(bt, n, 2);
-#endif
-#ifndef _WIN32
-    _exit(128 + sig);
-#else
-    exit(128 + sig);
-#endif
-}
-
-#ifdef _WIN32
-#include <windows.h>
-#include <dbghelp.h>
-#pragma comment(lib, "dbghelp.lib")
-static LONG WINAPI WindowsCrashHandler(EXCEPTION_POINTERS* ep) {
-    fprintf(stderr, "\n[CRASH] Exception 0x%08lX at address 0x%p\n",
-            ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
-    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
-        fprintf(stderr, "[CRASH] %s address 0x%p\n",
-                ep->ExceptionRecord->ExceptionInformation[0] ? "Writing" : "Reading",
-                (void*)ep->ExceptionRecord->ExceptionInformation[1]);
-    }
-    // Walk the stack
-    HANDLE process = GetCurrentProcess();
-    SymInitialize(process, NULL, TRUE);
-    STACKFRAME64 frame = {};
-    CONTEXT* ctx = ep->ContextRecord;
-    frame.AddrPC.Offset = ctx->Rip;
-    frame.AddrPC.Mode = AddrModeFlat;
-    frame.AddrFrame.Offset = ctx->Rbp;
-    frame.AddrFrame.Mode = AddrModeFlat;
-    frame.AddrStack.Offset = ctx->Rsp;
-    frame.AddrStack.Mode = AddrModeFlat;
-    fprintf(stderr, "[CRASH] Stack trace:\n");
-    for (int i = 0; i < 32; i++) {
-        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, ctx, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
-            break;
-        char symBuf[sizeof(SYMBOL_INFO) + 256];
-        SYMBOL_INFO* sym = (SYMBOL_INFO*)symBuf;
-        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-        sym->MaxNameLen = 255;
-        DWORD64 disp = 0;
-        if (SymFromAddr(process, frame.AddrPC.Offset, &disp, sym))
-            fprintf(stderr, "  [%d] %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
-        else
-            fprintf(stderr, "  [%d] 0x%p\n", i, (void*)frame.AddrPC.Offset);
-    }
-    fflush(stderr);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-#endif
-
-
-
 // Inspector panel (DrawSelectionHighlight, RenderNodeTree, RenderInspectorPanel,
 // etc.) is now in inspector.cpp
 // RenderXAPEditor is now in xap_editor.cpp
@@ -1342,76 +1200,17 @@ int main(int argc, char* argv[]) {
     g_argv = argv;
     s_execPath = argv[0];
 
-#ifdef _WIN32
-    // /SUBSYSTEM:WINDOWS so explorer launches don't pop a console, but
-    // attach to a parent shell when one exists so stdout/stderr show up.
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-        freopen("CONOUT$", "w", stdout);
-        freopen("CONOUT$", "w", stderr);
-        freopen("CONIN$", "r", stdin);
-    } else {
-        // Launched from Explorer, so there's no console and every fprintf
-        // below goes nowhere. Tee to a log the user can actually send back.
-        char logPath[1024];
-        Plat_MkdirP(Plat_UserDataDir());
-        snprintf(logPath, sizeof(logPath), "%s/theseus.log", Plat_UserDataDir());
-        if (freopen(logPath, "w", stdout)) {
-            setvbuf(stdout, NULL, _IOLBF, 0);
-            _dup2(_fileno(stdout), _fileno(stderr));
-        }
-    }
-
-    //Milenko-Testing: I don't run windows, i googled this. don't know if it will work as intended.
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-    DwmEnableMMCSS(TRUE);
     {
-        DWORD taskIdx = 0;
-        AvSetMmThreadCharacteristicsW(L"Games", &taskIdx);
+        char logPath[1024];
+        snprintf(logPath, sizeof(logPath), "%s/theseus.log", Plat_UserDataDir());
+        Host_ConsoleOrLog(logPath);
     }
-    typedef BOOL (WINAPI *SetProcessInfoFn)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
-    HMODULE hKernel = GetModuleHandleA("kernel32.dll");
-    if (hKernel) {
-        SetProcessInfoFn pSetProcessInformation =
-            (SetProcessInfoFn)GetProcAddress(hKernel, "SetProcessInformation");
-        if (pSetProcessInformation) {
-            PROCESS_POWER_THROTTLING_STATE pt = {0};
-            pt.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-            pt.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-            pt.StateMask = 0; // 0 == opt out of throttling
-            pSetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof(pt));
-        }
-    }
-#endif
+    Host_BoostProcess();
+
 
     // Change working directory to the executable's directory so that
     // relative paths (xboxfs/, etc.) work when launched from Finder/Explorer.
-    {
-        char exeDir[1024];
-#ifdef _WIN32
-        // GetModuleFileName + strip filename
-        DWORD len = GetModuleFileNameA(NULL, exeDir, sizeof(exeDir));
-        if (len > 0) {
-            char* last = strrchr(exeDir, '\\');
-            if (last) *last = '\0';
-            _chdir(exeDir);
-        }
-#elif defined(__APPLE__)
-        uint32_t sz = sizeof(exeDir);
-        if (_NSGetExecutablePath(exeDir, &sz) == 0) {
-            char* last = strrchr(exeDir, '/');
-            if (last) *last = '\0';
-            chdir(exeDir);
-        }
-#else
-        ssize_t len = readlink("/proc/self/exe", exeDir, sizeof(exeDir) - 1);
-        if (len > 0) {
-            exeDir[len] = '\0';
-            char* last = strrchr(exeDir, '/');
-            if (last) *last = '\0';
-            chdir(exeDir);
-        }
-#endif
-    }
+    chdir(Plat_ExeDir());
 
     // Before anything reads a config.
     AppPaths_Init();
@@ -1442,13 +1241,7 @@ int main(int argc, char* argv[]) {
 #if !defined(ASAN_ACTIVE)
     // ASan installs its own SIGSEGV/SIGBUS handlers; ours would eat them.
     // Skip our handler entirely on asan builds.
-#  ifdef _WIN32
-    SetUnhandledExceptionFilter(WindowsCrashHandler);
-#  else
-    signal(SIGSEGV, crash_handler);
-    signal(SIGBUS, crash_handler);
-#  endif
-    signal(SIGABRT, crash_handler);
+    Host_InstallCrashHandler(Plat_UserDataDir(), Plat_ShippedDir());
 #endif
 
 #undef ASAN_ACTIVE // Clean up
@@ -1509,31 +1302,16 @@ int main(int argc, char* argv[]) {
 
     // bgfx::init. nwh = NSWindow* on macOS, HWND on Win32, Window on X11.
     {
-        SDL_SysWMinfo wmi;
-        SDL_VERSION(&wmi.version);
-        if (!SDL_GetWindowWMInfo(g_pSDLWindow, &wmi)) {
-            fprintf(stderr, "SDL_GetWindowWMInfo failed: %s\n", SDL_GetError());
-        } else {
+        void* nwh = NULL;
+        void* ndt = NULL;
+        bool wayland = false;
+        if (Host_NativeWindow(g_pSDLWindow, &nwh, &ndt, &wayland)) {
             bgfx::PlatformData pd;
             std::memset(&pd, 0, sizeof(pd));
-#  if defined(__APPLE__)
-            pd.nwh = wmi.info.cocoa.window;
-#  elif defined(_WIN32)
-            pd.nwh = wmi.info.win.window;
-#  else
-            // Branch on SDL's actual subsystem. Feeding x11 lanes to
-            // bgfx on a Wayland session hands RADV a NULL Display and
-            // it crashes in vkGetPhysicalDeviceSurfaceSupportKHR.
-            if (wmi.subsystem == SDL_SYSWM_WAYLAND) {
-                pd.ndt  = wmi.info.wl.display;
-                pd.nwh  = wmi.info.wl.surface;
-                pd.type = bgfx::NativeWindowHandleType::Wayland;
-            } else {
-                pd.ndt  = wmi.info.x11.display;
-                pd.nwh  = (void*)(uintptr_t)wmi.info.x11.window;
-                pd.type = bgfx::NativeWindowHandleType::Default; // X11
-            }
-#  endif
+            pd.nwh  = nwh;
+            pd.ndt  = ndt;
+            pd.type = wayland ? bgfx::NativeWindowHandleType::Wayland
+                              : bgfx::NativeWindowHandleType::Default;
             bgfx::Init bgfxInit;
             bgfxInit.platformData       = pd;
             // Pixels, not points. On a HiDPI display the drawable is larger
@@ -1885,6 +1663,8 @@ int main(int argc, char* argv[]) {
     Uint64 fpsCapPrev = SDL_GetPerformanceCounter();
     Uint64 perfFreq = SDL_GetPerformanceFrequency();
     while (running) {
+        Frame_Begin();
+        Frame_PhaseBegin(FP_EVENTS);
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             // Let ImGui handle events first
@@ -1973,6 +1753,13 @@ int main(int argc, char* argv[]) {
                         Keyboard_InsertText(g_pActiveKeyboard, event.text.text);
                     break;
                 case SDL_KEYDOWN:
+                    // Ctrl+Q quits from anywhere, same as File > Quit.
+                    if (event.key.keysym.sym == SDLK_q && (event.key.keysym.mod & (KMOD_CTRL | KMOD_GUI))) {
+                        SDL_Event quit;
+                        quit.type = SDL_QUIT;
+                        SDL_PushEvent(&quit);
+                        break;
+                    }
                     // Esc / Q / Backspace quits the xCloud stream and drops
                     // back to the dashboard.
                     if (g_xcloudFullscreen) {
@@ -2104,6 +1891,7 @@ int main(int argc, char* argv[]) {
                     break;
             }
         }
+        Frame_PhaseEnd(FP_EVENTS);
 
         // All panels are floating ImGui windows in the main window now.
         {
@@ -2137,13 +1925,9 @@ int main(int argc, char* argv[]) {
                 newArgv[g_argc + 1] = NULL;
             }
 
-#ifdef _WIN32
             // Show window again if it was hidden (game launch)
             if (g_pSDLWindow) SDL_ShowWindow(g_pSDLWindow);
-            _execv(g_argv[0], newArgv);
-#else
             execv(g_argv[0], newArgv);
-#endif
             // fallthrough if execv fails
             fprintf(stderr, "[Desktop] execv failed: %s\n", strerror(errno));
         }
@@ -2208,7 +1992,10 @@ int main(int argc, char* argv[]) {
             ApplyEffectiveMute();
         }
 
-        if (!g_mediaFullscreen && !g_xcloudFullscreen) Advance();
+        if (!g_mediaFullscreen && !g_xcloudFullscreen) {
+            FramePhaseScope advance(FP_ADVANCE);
+            Advance();
+        }
 
         // Same idea under bgfx: allocate / resize the offscreen FB to
         // window size, point view 0 at it so the scene draws there
@@ -2225,7 +2012,6 @@ int main(int argc, char* argv[]) {
         }
 
         // Render 3D scene (viewport set to left portion; Present() skips swap when inspector is open)
-        Uint64 tDraw0 = SDL_GetPerformanceCounter();
         if (g_mediaFullscreen) {
             extern void MediaUI_DrawFullscreenVideo();
             MediaUI_DrawFullscreenVideo();
@@ -2234,7 +2020,6 @@ int main(int argc, char* argv[]) {
         } else {
             Draw();
         }
-        Uint64 tDraw1 = SDL_GetPerformanceCounter();
 
         // Force fill before ImGui so overlays render solid. Must go through
         // the wrapper, otherwise the wrapper cache stays at WIREFRAME and
@@ -2248,9 +2033,9 @@ int main(int argc, char* argv[]) {
         }
 
         // Overlays (menu bar, inspector, Title Maker, etc.); always render
-        Uint64 tImgui0 = SDL_GetPerformanceCounter();
+        Frame_PhaseBegin(FP_IMGUI);
         if (IDirect3DDevice8::s_preSwapCB) IDirect3DDevice8::s_preSwapCB();
-        Uint64 tImgui1 = SDL_GetPerformanceCounter();
+        Frame_PhaseEnd(FP_IMGUI);
 
         // FPS cap: sleep until budget elapsed. 0 = unlimited.
         if (g_fpsCap > 0) {
@@ -2288,28 +2073,32 @@ int main(int argc, char* argv[]) {
             MilkdropWindow_Shutdown();
         s_prevToggle = g_useMilkdropViz;
 
+        Frame_PhaseBegin(FP_TICKS);
         MilkdropWindow_Tick();
 
         // Drive the xCloud->VGDB injection state machine (main-thread only).
         extern void XcloudVGames_Tick();
         XcloudVGames_Tick();
+        Frame_PhaseEnd(FP_TICKS);
 
-        // Swap
-        Uint64 tSwap0 = SDL_GetPerformanceCounter();
         // bgfx owns presentation; its backend layer is the visible surface.
         // No GL drawable, so no SDL_GL_SwapWindow.
+        Frame_PhaseBegin(FP_PRESENT);
         bgfx::frame();
-        Uint64 tSwap1 = SDL_GetPerformanceCounter();
+        Frame_PhaseEnd(FP_PRESENT);
 
         if (g_graphicsDebug) {
-            double freq = (double)perfFreq;
-            g_perfDrawMs  = (tDraw1 - tDraw0)   * 1000.0 / freq;
-            g_perfImguiMs = (tImgui1 - tImgui0) * 1000.0 / freq;
-            g_perfSwapMs  = (tSwap1 - tSwap0)   * 1000.0 / freq;
-            g_perfFrameMs = (tSwap1 - tDraw0)   * 1000.0 / freq;
-            double instFps = (g_perfFrameMs > 0.0) ? 1000.0 / g_perfFrameMs : 0.0;
-            g_perfFps = (g_perfFps == 0.0) ? instFps : 0.9 * g_perfFps + 0.1 * instFps;
+            Frame_RequestGpuTiming();
+            const bgfx::Stats* st = bgfx::getStats();
+            float gpuMs = 0.0f, waitMs = 0.0f;
+            if (st->gpuTimerFreq > 0)
+                gpuMs = (float)((double)(st->gpuTimeEnd - st->gpuTimeBegin) * 1000.0 / (double)st->gpuTimerFreq);
+            if (st->cpuTimerFreq > 0)
+                waitMs = (float)((double)st->waitRender * 1000.0 / (double)st->cpuTimerFreq);
+            Frame_AddHostStats(gpuMs, waitMs, (int)st->numDraw, st->transientVbUsed, st->transientIbUsed);
         }
+        Frame_End();
+        if (g_graphicsDebug) WritePerfLogLine();
 
         // (Old code re-applied Mix_Volume(-1, 0) every frame while muted.
         //  Removed: rapid per-frame volume writes on playing channels were

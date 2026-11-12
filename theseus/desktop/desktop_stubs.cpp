@@ -8,6 +8,7 @@
 #include "runner.h"
 #include "titlecollection.h"
 #include "discmanager.h"
+#include "network.h"
 
 // g_titles - from TitleCollection.cpp (removed)
 CTitleArray g_titles[9];
@@ -108,7 +109,8 @@ int CXBExecutable::ReadFile(const char* szFileName, const bool, const bool) {
     strncpy(m_szFileName, szFileName, sizeof(m_szFileName) - 1);
 
     // Try to open the real file first
-    const char* translated = XboxFS_TranslatePath(szFileName);
+    char translated[512];
+    XboxPath_Translate(szFileName, translated, sizeof(translated));
     FILE* f = fopen(translated, "rb");
     if (f) {
         // Real XBE file exists; read header for title info.
@@ -138,3 +140,17 @@ int CXBExecutable::ReadFile(const char* szFileName, const bool, const bool) {
     return 0;
 }
 
+// net:: from xbox/network.cpp. No FTP UI on desktop today.
+namespace net
+{
+	bool init()           { return true; }
+	void shutdown()       {}
+	void restart()        {}
+	bool isReady()        { return false; }
+	bool isFtpRunning()   { return false; }
+	DWORD getAddress()    { return 0; }
+	DWORD getSubnet()     { return 0; }
+	DWORD getGateway()    { return 0; }
+	DWORD getPrimaryDns() { return 0; }
+	DWORD getSecondaryDns(){ return 0; }
+}

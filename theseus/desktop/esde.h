@@ -26,6 +26,10 @@ struct EsdeGame {
 // Systems whose rom folder exists and holds at least one matching file.
 int Esde_ScanSystems(const char* esdeRoot, EsdeSystem* out, int maxOut);
 
+// False when the last scan never located an es_systems.xml, which is a
+// different failure from locating one and matching no roms.
+bool Esde_LastScanFoundSystemsXml(void);
+
 // Games for one system, subfolders included. Names come from gamelist.xml
 // where it has them, the filename otherwise.
 int Esde_ScanGames(const char* esdeRoot, const EsdeSystem* sys, EsdeGame* out, int maxOut);

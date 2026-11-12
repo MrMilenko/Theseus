@@ -7,18 +7,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
+#include <map>
+#include <string>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <direct.h>
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
+#include "host.h"
 
 // The only thing that stays with the binary. Nobody hand edits a .bin, and
 // packagers want it read only.
@@ -30,26 +24,14 @@ const char* Plat_ExeDir() {
     if (s_init) return s_dir;
     s_init = true;
 
-#ifdef _WIN32
-    DWORD len = GetModuleFileNameA(NULL, s_dir, sizeof(s_dir));
-    if (len > 0) {
-        char* last = strrchr(s_dir, '\\');
-        if (last) *last = '\0';
-    }
-#elif defined(__APPLE__)
-    uint32_t sz = sizeof(s_dir);
-    if (_NSGetExecutablePath(s_dir, &sz) == 0) {
+    if (Host_ExePath(s_dir, sizeof(s_dir))) {
         char* last = strrchr(s_dir, '/');
+        char* back = strrchr(s_dir, '\\');
+        if (back > last) last = back;
         if (last) *last = '\0';
+    } else {
+        s_dir[0] = '\0';
     }
-#else
-    ssize_t len = readlink("/proc/self/exe", s_dir, sizeof(s_dir) - 1);
-    if (len > 0) {
-        s_dir[len] = '\0';
-        char* last = strrchr(s_dir, '/');
-        if (last) *last = '\0';
-    }
-#endif
     if (!s_dir[0]) strcpy(s_dir, ".");
     return s_dir;
 }
@@ -60,45 +42,14 @@ const char* Plat_UserDataDir() {
     if (s_init) return s_dir;
     s_init = true;
 
-#ifdef _WIN32
-    const char* appdata = getenv("APPDATA");
-    if (appdata && *appdata)
-        snprintf(s_dir, sizeof(s_dir), "%s\\Theseus", appdata);
-    else
-        snprintf(s_dir, sizeof(s_dir), "%s\\AppData\\Roaming\\Theseus", PlatformHomeDir());
-#elif defined(__APPLE__)
-    snprintf(s_dir, sizeof(s_dir), "%s/Library/Application Support/Theseus", PlatformHomeDir());
-#else
-    const char* xdg = getenv("XDG_DATA_HOME");
-    if (xdg && *xdg)
-        snprintf(s_dir, sizeof(s_dir), "%s/theseus", xdg);
-    else
-        snprintf(s_dir, sizeof(s_dir), "%s/.local/share/theseus", PlatformHomeDir());
-#endif
+    Host_UserDataDir(s_dir, sizeof(s_dir));
     return s_dir;
 }
 
 const char* Plat_ShippedDir() {
-#ifdef __APPLE__
-    // Inside a .app the binary sits in Contents/MacOS and the payload in
-    // Contents/Resources. Loose builds keep everything beside the binary.
     static char s_dir[1024] = {0};
-    static bool s_init = false;
-    if (!s_init) {
-        s_init = true;
-        const char* exe = Plat_ExeDir();
-        size_t n = strlen(exe);
-        const char kTail[] = "/Contents/MacOS";
-        size_t t = sizeof(kTail) - 1;
-        if (n > t && strcmp(exe + n - t, kTail) == 0)
-            snprintf(s_dir, sizeof(s_dir), "%.*s/Contents/Resources", (int)(n - t), exe);
-        else
-            snprintf(s_dir, sizeof(s_dir), "%s", exe);
-    }
+    if (!s_dir[0]) Host_ShippedDir(Plat_ExeDir(), s_dir, sizeof(s_dir));
     return s_dir;
-#else
-    return Plat_ExeDir();
-#endif
 }
 
 static bool IsUserOwned(const char* logical) {
@@ -130,36 +81,149 @@ static void CopyTree(const char* src, const char* dst) {
     struct stat st;
     if (stat(src, &st) != 0) return;
     Plat_MkdirP(dst);
-#ifdef _WIN32
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s/*", src);
-    struct _finddata_t fd;
-    intptr_t h = _findfirst(pattern, &fd);
-    if (h == -1) return;
-    do {
-        if (!strcmp(fd.name, ".") || !strcmp(fd.name, "..")) continue;
-        char s[1024], d[1024];
-        snprintf(s, sizeof(s), "%s/%s", src, fd.name);
-        snprintf(d, sizeof(d), "%s/%s", dst, fd.name);
-        if (fd.attrib & _A_SUBDIR) CopyTree(s, d);
-        else                       CopyFile(s, d);
-    } while (_findnext(h, &fd) == 0);
-    _findclose(h);
-#else
-    DIR* dir = opendir(src);
+    HostDir* dir = Host_OpenDir(src);
     if (!dir) return;
-    struct dirent* e;
-    while ((e = readdir(dir)) != NULL) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    char name[260];
+    HostFileInfo info;
+    while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
         char s[1024], d[1024];
-        snprintf(s, sizeof(s), "%s/%s", src, e->d_name);
-        snprintf(d, sizeof(d), "%s/%s", dst, e->d_name);
-        struct stat es;
-        if (stat(s, &es) == 0 && S_ISDIR(es.st_mode)) CopyTree(s, d);
-        else                                          CopyFile(s, d);
+        snprintf(s, sizeof(s), "%s/%s", src, name);
+        snprintf(d, sizeof(d), "%s/%s", dst, name);
+        if (info.attrs & HOST_ATTR_DIR) CopyTree(s, d);
+        else                            CopyFile(s, d);
     }
-    closedir(dir);
-#endif
+    Host_CloseDir(dir);
+}
+
+// Data/ is shipped content, so updates have to reach installs that already
+// have a copy. .shipped remembers what we copied (shipped size + mtime) and
+// what the user's copy looked like right after. A copy that still matches is
+// ours to replace; one the user changed is theirs and stays put.
+struct ShippedRec { uint64_t shipSize; int64_t shipTime; uint64_t userSize; int64_t userTime; };
+static std::map<std::string, ShippedRec> s_shipped;
+static bool s_shippedDirty = false;
+
+static std::string ShippedManifestPath() {
+    return std::string(Plat_UserDataDir()) + "/Data/.shipped";
+}
+
+static void LoadShippedManifest() {
+    FILE* f = fopen(ShippedManifestPath().c_str(), "r");
+    if (!f) return;
+    char line[1400];
+    while (fgets(line, sizeof(line), f)) {
+        char rel[1024]; unsigned long long ss, us; long long st, ut;
+        if (sscanf(line, "%llu %lld %llu %lld %1023[^\n]", &ss, &st, &us, &ut, rel) == 5)
+            s_shipped[rel] = { ss, st, us, ut };
+    }
+    fclose(f);
+}
+
+static void SaveShippedManifest() {
+    if (!s_shippedDirty) return;
+    std::string path = ShippedManifestPath(), tmp = path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "w");
+    if (!f) return;
+    for (const auto& kv : s_shipped)
+        fprintf(f, "%llu %lld %llu %lld %s\n", (unsigned long long)kv.second.shipSize, (long long)kv.second.shipTime,
+                (unsigned long long)kv.second.userSize, (long long)kv.second.userTime, kv.first.c_str());
+    if (fclose(f) == 0) Host_RenameReplace(tmp.c_str(), path.c_str());
+}
+
+static bool SameFileBytes(const char* a, const char* b) {
+    FILE* fa = fopen(a, "rb");
+    FILE* fb = fopen(b, "rb");
+    bool same = fa && fb;
+    char ba[65536], bb[65536];
+    while (same) {
+        size_t na = fread(ba, 1, sizeof(ba), fa), nb = fread(bb, 1, sizeof(bb), fb);
+        if (na != nb || memcmp(ba, bb, na) != 0) same = false;
+        if (na == 0) break;
+    }
+    if (fa) fclose(fa);
+    if (fb) fclose(fb);
+    return same;
+}
+
+// Copy beside the target, then swap it in, so a crash never leaves half a file.
+static bool ReplaceFile(const char* src, const char* dst) {
+    std::string part = std::string(dst) + ".part";
+    remove(part.c_str());
+    CopyFile(src, part.c_str());
+    HostFileInfo pi;
+    if (!Host_Stat(part.c_str(), &pi)) return false;
+    if (!Host_RenameReplace(part.c_str(), dst)) { remove(part.c_str()); return false; }
+    return true;
+}
+
+static void Remember(const std::string& rel, const HostFileInfo& ship, const char* dst) {
+    HostFileInfo ui;
+    if (!Host_Stat(dst, &ui)) return;
+    s_shipped[rel] = { ship.size, ship.mtime, ui.size, ui.mtime };
+    s_shippedDirty = true;
+}
+
+// Engine content: a stale copy of these breaks the dash, so on installs from
+// before .shipped existed a differing copy is set aside as .old and replaced.
+// Everything else (skins, music, orbs, screenshots) is left to the user.
+static bool IsEngineContent(const std::string& rel) {
+    static const char* kDirs[] = { "Data/Xips/", "Data/System/", "Data/Fonts/", "Data/Language/" };
+    for (const char* d : kDirs)
+        if (strncasecmp(rel.c_str(), d, strlen(d)) == 0) return true;
+    return false;
+}
+
+static void SyncShippedFile(const char* src, const char* dst, const std::string& rel) {
+    HostFileInfo ship, user;
+    if (!Host_Stat(src, &ship)) return;
+
+    if (!Host_Stat(dst, &user)) {
+        CopyFile(src, dst);
+        Remember(rel, ship, dst);
+        return;
+    }
+
+    auto it = s_shipped.find(rel);
+    if (it != s_shipped.end()) {
+        const ShippedRec& r = it->second;
+        bool shipChanged = r.shipSize != ship.size || r.shipTime != ship.mtime;
+        bool userUntouched = r.userSize == user.size && r.userTime == user.mtime;
+        if (shipChanged && userUntouched && ReplaceFile(src, dst)) {
+            Remember(rel, ship, dst);
+            fprintf(stderr, "[Paths] updated %s\n", rel.c_str());
+        }
+        return;
+    }
+
+    // Copied before .shipped existed, so we can't tell who last touched it.
+    if (SameFileBytes(src, dst)) {
+        Remember(rel, ship, dst);
+    } else if (IsEngineContent(rel)) {
+        std::string old = std::string(dst) + ".old";
+        if (Host_RenameReplace(dst, old.c_str()) && ReplaceFile(src, dst)) {
+            Remember(rel, ship, dst);
+            fprintf(stderr, "[Paths] updated %s (previous copy kept as .old)\n", rel.c_str());
+        }
+    }
+}
+
+static void SyncShippedTree(const char* src, const char* dst, const std::string& rel) {
+    Plat_MkdirP(dst);
+    HostDir* dir = Host_OpenDir(src);
+    if (!dir) return;
+    char name[260];
+    HostFileInfo info;
+    while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        char s[1024], d[1024];
+        snprintf(s, sizeof(s), "%s/%s", src, name);
+        snprintf(d, sizeof(d), "%s/%s", dst, name);
+        std::string r = rel + "/" + name;
+        if (info.attrs & HOST_ATTR_DIR) SyncShippedTree(s, d, r);
+        else                            SyncShippedFile(s, d, r);
+    }
+    Host_CloseDir(dir);
 }
 
 // Copy one tree into the user dir if it isn't there yet.
@@ -189,39 +253,23 @@ void AppPaths_Init() {
     char dataDir[1024];
     snprintf(dataDir, sizeof(dataDir), "%s/Data", Plat_ShippedDir());
     Plat_MkdirP(AppPath_Tree("Data"));
+    LoadShippedManifest();
 
-#ifdef _WIN32
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s/*", dataDir);
-    struct _finddata_t fd;
-    intptr_t h = _findfirst(pattern, &fd);
-    if (h == -1) return;
-    do {
-        if (!(fd.attrib & _A_SUBDIR)) continue;
-        if (!strcmp(fd.name, ".") || !strcmp(fd.name, "..")) continue;
-        if (!strcasecmp(fd.name, "shaders")) continue;
-        char rel[1024];
-        snprintf(rel, sizeof(rel), "Data/%s", fd.name);
-        SeedTree(rel);
-    } while (_findnext(h, &fd) == 0);
-    _findclose(h);
-#else
-    DIR* dir = opendir(dataDir);
+    HostDir* dir = Host_OpenDir(dataDir);
     if (!dir) return;
-    struct dirent* e;
-    while ((e = readdir(dir)) != NULL) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-        if (!strcasecmp(e->d_name, "shaders")) continue;
-        char probe[1024];
-        snprintf(probe, sizeof(probe), "%s/%s", dataDir, e->d_name);
-        struct stat es;
-        if (stat(probe, &es) != 0 || !S_ISDIR(es.st_mode)) continue;
-        char rel[1024];
-        snprintf(rel, sizeof(rel), "Data/%s", e->d_name);
-        SeedTree(rel);
+    char name[260];
+    HostFileInfo info;
+    while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+        if (!(info.attrs & HOST_ATTR_DIR)) continue;
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        if (!strcasecmp(name, "shaders")) continue;
+        char src[1024], dst[1024];
+        snprintf(src, sizeof(src), "%s/%s", dataDir, name);
+        snprintf(dst, sizeof(dst), "%s/Data/%s", user, name);
+        SyncShippedTree(src, dst, std::string("Data/") + name);
     }
-    closedir(dir);
-#endif
+    Host_CloseDir(dir);
+    SaveShippedManifest();
 }
 
 const char* AppPathf(const char* fmt, ...) {
@@ -251,23 +299,7 @@ const char* AppPath_Tree(const char* tree) {
 
 void Plat_OpenInFileManager(const char* dir) {
     if (!dir || !*dir) return;
-#ifdef _WIN32
-    ShellExecuteA(NULL, "open", dir, NULL, NULL, SW_SHOWNORMAL);
-#else
-    // Fork so a slow file manager can't stall us, and no shell is involved.
-    pid_t pid = fork();
-    if (pid == 0) {
-#ifdef __APPLE__
-        execlp("open", "open", dir, (char*)NULL);
-#else
-        // Under flatpak we want the host's file manager.
-        if (getenv("FLATPAK_ID"))
-            execlp("flatpak-spawn", "flatpak-spawn", "--host", "xdg-open", dir, (char*)NULL);
-        execlp("xdg-open", "xdg-open", dir, (char*)NULL);
-#endif
-        _exit(127);
-    }
-#endif
+    Host_OpenFolder(dir);
 }
 
 const char* AppPath(const char* logical) {

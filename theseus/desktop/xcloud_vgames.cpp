@@ -9,6 +9,7 @@
 // threaded. Re-runnable: prior streaming entries are cleared before a refresh.
 
 #include "xcloud_client.h"
+#include "http_util.h"
 #include "virtual_games.h"
 #include "xcloud_vgames.h"
 
@@ -26,7 +27,7 @@ static void ClearStreamingEntries()
         if (g_vgames.games[i].valid && VGames_IsStreaming(g_vgames.games[i]))
             g_vgames.games[i].valid = false;
     }
-    g_vgames.generation++;
+    VGames_Compact();
 }
 
 static void Inject()
@@ -38,7 +39,8 @@ static void Inject()
     int nGames = 0;
     for (size_t i = 0; i < games.size(); i++) {
         const XcloudGame& g = games[i];
-        if (!g.playable || g.titleId.empty()) continue;
+        // The id doubles as the icon filename, so it has to be a safe one.
+        if (!g.playable || !Http_IsSafeFileId(g.titleId)) continue;
         std::string launch = "xcloud://" + g.titleId;
         if (VGames_Add(g.name.c_str(), g.titleId.c_str(), launch.c_str(), "E", "Cloud Gaming") < 0)
             break;   // DB full
@@ -50,7 +52,7 @@ static void Inject()
     int nConsoles = 0;
     for (size_t i = 0; i < consoles.size(); i++) {
         const XcloudConsole& c = consoles[i];
-        if (c.serverId.empty()) continue;
+        if (!Http_IsSafeFileId(c.serverId)) continue;
         std::string launch = "xhome://" + c.serverId;
         if (VGames_Add(c.name.c_str(), c.serverId.c_str(), launch.c_str(), "E", "Your Xbox") < 0)
             break;

@@ -159,7 +159,7 @@ void CFolder::Refresh(const char* szPath)
 
 	char szWildA [MAX_PATH];
 	Ansi(szWildA, szWild, MAX_PATH);
-	h = FindFirstFile(szWildA, &fd);
+	h = TheseusFindFirstFile(szWildA, &fd);
 
     if (h == INVALID_HANDLE_VALUE)
 	{
@@ -238,9 +238,9 @@ void CFolder::Refresh(const char* szPath)
 			pFile->m_length = fd.nFileSizeLow;
 		}
 	}
-	while (FindNextFile(h, &fd));
+	while (TheseusFindNextFile(h, &fd));
 
-	FindClose(h);
+	TheseusFindClose(h);
 }
 
 static int __cdecl CmpName(const void* p1, const void* p2)

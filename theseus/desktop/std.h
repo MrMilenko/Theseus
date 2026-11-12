@@ -2,6 +2,10 @@
 // includes with the SDL2 + OpenGL platform layer. Counterpart to
 // xbox/std.h.
 
+#include "platform.h"
+#ifdef _XBOX
+#error "desktop/std.h is the desktop prelude. Xbox code includes xbox/std.h."
+#endif
 #include "stdcfg.h"
 
 // Flag so toolbox/xboxinternals.h knows kernel types are already available
@@ -13,25 +17,15 @@
 // D3D8 type stubs (no-op interfaces, math types, enums)
 #include "d3d8_sdl.h"
 
-// Filesystem path translation (Q:\ -> ./Data/)
-#include "xboxfs.h"
 
 // Standard C/C++ headers (already included by platform_shim.h, but
 // some source files expect these to come from std.h)
 #include <new>
 #include <cerrno>
 
-// MSVC: DWORD is 'unsigned long', uint32_t is 'unsigned int'. Both are 32-bit
-// but MSVC treats them as incompatible pointer types. Win32 APIs (ReadFile,
-// WriteFile, CreateThread, etc.) expect DWORD*. This cast macro bridges the gap
-// at API boundaries so src/ files can use uint32_t consistently.
-// Both MSVC and mingw GCC treat DWORD/uint32_t as distinct types when
-// they target Windows headers, so the cast is needed for any _WIN32 build.
-#ifdef _WIN32
-#define LPDW(p) reinterpret_cast<DWORD*>(p)
-#else
+// DWORD is uint32_t on every desktop host, so uint32_t* passes straight
+// through to ReadFile and friends.
 #define LPDW(p) (p)
-#endif
 
 
 
@@ -96,6 +90,15 @@ EXTERN_C void Alert(const char* szMsg, ...);
 #define TRACE           Trace
 #define ALERT           Alert
 
+// CHECK survives every build, unlike ASSERT. Use it where failing means bad memory.
+#define CHECK(f)        TheseusCheck(!!(f), #f, __FILE__, __LINE__)
+inline bool TheseusCheck(bool ok, const char* expr, const char* file, int line)
+{
+	if (!ok)
+		fprintf(stderr, "[CHECK] %s:%d: %s\n", file, line, expr);
+	return ok;
+}
+
 // Profiling stubs (Xbox profiling removed)
 #define START_PROFILE()
 #define END_PROFILE()
@@ -104,7 +107,6 @@ EXTERN_C void Alert(const char* szMsg, ...);
 
 // Types not provided by platform_shim.h: GDI/RGB color helpers and
 // the device-notify stub used by Win32 device hot-plug callbacks.
-#ifndef _WIN32
 typedef void* HDEVNOTIFY;
 
 typedef struct tagRGBQUAD {
@@ -117,27 +119,8 @@ typedef RGBQUAD* LPRGBQUAD;
 
 #define MAX_COMPUTERNAME_LENGTH 15
 
-// MoveFile stub (translates Xbox paths). DeleteFile / CreateFile / WriteFile /
-// CreateDirectory and the thread / critical section / event stubs all live
-// in platform_shim.h.
-inline BOOL MoveFile(const char* src, const char* dst) {
-    const char* s = src;
-    const char* d = dst;
-    if (src && strchr(src, ':')) s = _StubTranslatePath(src);
-    char srcBuf[512];
-    strncpy(srcBuf, s, sizeof(srcBuf) - 1); srcBuf[sizeof(srcBuf) - 1] = '\0';
-    if (dst && strchr(dst, ':')) d = _StubTranslatePath(dst);
-    return rename(srcBuf, d) == 0;
-}
-
 // GetCurrentThreadId (platform_shim.h doesn't provide this one)
 inline DWORD GetCurrentThreadId() { return (DWORD)SDL_ThreadID(); }
-#else
-// Windows: RGBQUAD comes from windows.h, but LPRGBQUAD isn't always defined
-#ifndef LPRGBQUAD
-typedef RGBQUAD* LPRGBQUAD;
-#endif
-#endif // !_WIN32
 
 // D3D vertex types
 #include "vertex8.h"

@@ -12,6 +12,7 @@
 // this table; for now we hardcode the existing dispatcher knobs.
 
 #include "path_template.h"
+#include "platform_env.h"
 
 #include <cstdio>
 #include <cstring>
@@ -70,28 +71,9 @@ static bool AppendStr(char* out, size_t outSize, size_t* pos, const char* s, siz
 }
 } // namespace
 
-// Resolve the user's home directory at runtime. Cached on first call
-// so repeated expansions don't re-query the environment. Empty string
-// if the platform doesn't expose one (extremely unusual; fallback is
-// to leave `~` literal so the spawn fails with a recognizable error).
-static const char* HomeDir() {
-	static char s_home[512] = {0};
-	static bool s_init = false;
-	if (!s_init) {
-		s_init = true;
-		const char* h = getenv("HOME");
-#ifdef _WIN32
-		if (!h || !*h) h = getenv("USERPROFILE");
-#endif
-		if (h && *h) {
-			size_t n = strlen(h);
-			if (n >= sizeof(s_home)) n = sizeof(s_home) - 1;
-			memcpy(s_home, h, n);
-			s_home[n] = '\0';
-		}
-	}
-	return s_home;
-}
+// The user's home directory, or "" when there isn't one (then `~` stays
+// literal so the spawn fails with a recognizable error).
+static const char* HomeDir() { return PlatformHomeDir(); }
 
 int PathTemplate_Expand(const char* in, char* out, size_t outSize) {
 	if (!in || !out || outSize == 0) return -1;

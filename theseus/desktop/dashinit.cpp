@@ -5,7 +5,7 @@
 
 #include "std.h"
 #include "dashapp.h"
-#include "dashlocale.h"
+#include "locale_node.h"
 #include "settingsfile.h"
 #include "network.h"
 #include "discord.h"
@@ -130,9 +130,9 @@ void DashInit()
 {
 	// Desktop: drives are mounted via xboxfs path mapping; no symlinks needed.
 	// Ensure music directory exists.
-	CreateDirectory("e:\\TDATA", NULL);
-	CreateDirectory("e:\\TDATA\\fffe0000", NULL);
-	CreateDirectory("e:\\TDATA\\fffe0000\\music", NULL);
+	TheseusCreateDirectory("e:\\TDATA", NULL);
+	TheseusCreateDirectory("e:\\TDATA\\fffe0000", NULL);
+	TheseusCreateDirectory("e:\\TDATA\\fffe0000\\music", NULL);
 
 	// Set current region
 	g_nCurRegion = 1; // NA

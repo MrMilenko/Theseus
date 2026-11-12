@@ -16,7 +16,10 @@
 // over the network without reflashing.
 //
 // `reason` is shown to the user verbatim and dumped to Q:\Logs\panic-*.txt.
+// `nextStep` is the one thing we want the person in front of the TV to go do
+// about it; leave it NULL for the generic restart-then-reinstall advice.
 // `pEx` is optional; when set its EXCEPTION_RECORD + register CONTEXT are
 // also written to the log so post-mortem stack walks have something to work
 // with.
-void TheseusPanic(const TCHAR* reason, LPEXCEPTION_POINTERS pEx = NULL);
+void TheseusPanic(const TCHAR* reason, const TCHAR* nextStep = NULL,
+                  LPEXCEPTION_POINTERS pEx = NULL);

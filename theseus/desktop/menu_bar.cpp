@@ -4,6 +4,14 @@
 #include "std.h"
 #include "dashapp.h"
 #include "app_paths.h"
+
+// The version stamp belongs to the build, not the user folder: Configs there is
+// seeded once and never refreshed, so it would show the first version forever.
+static const char* ShippedVersionPath() {
+    static char path[1024];
+    snprintf(path, sizeof(path), "%s/Configs/version", Plat_ShippedDir());
+    return path;
+}
 #include "panel_shared.h"
 #include "title_maker.h"
 #include "hdd_browser.h"
@@ -234,7 +242,7 @@ void RenderControllerMenu() {
             static bool s_verRead = false;
             if (!s_verRead) {
                 s_verRead = true;
-                FILE* vf = fopen(AppPath("Configs/version"), "r");
+                FILE* vf = fopen(ShippedVersionPath(), "r");
                 if (vf) { if (fgets(s_ver, sizeof(s_ver), vf)) s_ver[strcspn(s_ver, "\r\n")] = 0; fclose(vf); }
             }
             const float tw = ImGui::CalcTextSize(s_ver[0] ? s_ver : "").x;
@@ -1244,7 +1252,7 @@ void RenderAboutWindow() {
 
     static char s_version[64] = "";
     if (!s_version[0]) {
-        FILE* vf = fopen(AppPath("Configs/version"), "r");
+        FILE* vf = fopen(ShippedVersionPath(), "r");
         if (vf) {
             char line[128];
             while (fgets(line, sizeof(line), vf)) {
@@ -1261,17 +1269,7 @@ void RenderAboutWindow() {
     }
 
     ImGui::Text("Version: %s", s_version);
-    ImGui::Text("Platform: %s",
-#ifdef __APPLE__
-        "macOS"
-#elif defined(__linux__)
-        "Linux"
-#elif defined(_WIN32)
-        "Windows"
-#else
-        "Unknown"
-#endif
-    );
+    ImGui::Text("Platform: %s", Host_Name());
 
     ImGui::Spacing();
     ImGui::Separator();

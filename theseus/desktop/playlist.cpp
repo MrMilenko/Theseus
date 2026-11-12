@@ -3,6 +3,7 @@
 #include "app_paths.h"
 #include "playlist.h"
 #include "xboxfs_drive.h"
+#include "safe_save.h"
 
 #include <cstdio>
 #include <cstring>
@@ -32,6 +33,9 @@ void Playlist_LoadAll() {
         if (line[0] == '[') {
             const char* s = strstr(line, "[Playlist:");
             if (s) {
+                // The last item belongs to the playlist that's ending, and has
+                // to land before push_back can move the vector under cur.
+                if (cur && havePending) { cur->items.push_back(pending); pending = {}; havePending = false; }
                 Playlist p;
                 const char* nameStart = s + 10;
                 const char* nameEnd   = strrchr(nameStart, ']');
@@ -56,8 +60,9 @@ void Playlist_LoadAll() {
 }
 
 void Playlist_SaveAll() {
-    Plat_MkdirP("Configs");
-    FILE* fp = fopen(kPath, "w");
+    Plat_MkdirP(AppPath_Tree("Configs"));
+    SafeSave save(kPath);
+    FILE* fp = save.f;
     if (!fp) return;
     for (size_t i = 0; i < s_playlists.size(); i++) {
         const Playlist& p = s_playlists[i];
@@ -68,7 +73,7 @@ void Playlist_SaveAll() {
         }
         fprintf(fp, "\n");
     }
-    fclose(fp);
+    save.Commit();
     s_dirty = false;
 }
 

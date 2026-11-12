@@ -6,14 +6,7 @@
 
 #include "app_paths.h"
 #include "std.h"
-#ifdef _WIN32
-#include <io.h>
-#ifndef F_OK
-#define F_OK 0
-#endif
-// Windows wingdi.h defines GetFreeSpace as a macro; conflicts with our method
-#undef GetFreeSpace
-#endif
+#include "host.h"
 #include "dashapp.h"
 #include "node.h"
 #include "runner.h"
@@ -36,8 +29,8 @@ static const char* ResolveAudioURL(const TCHAR* url)
 	// Check if it already has a drive letter (Q:\...)
 	if (url[0] && url[1] == ':') {
 		// Use XboxFS translation
-		const char* translated = XboxFS_TranslatePath(url);
-		return translated;
+		XboxPath_Translate(url, s_path, sizeof(s_path));
+		return s_path;
 	}
 
 	// Relative path; prepend Data/
@@ -1208,7 +1201,7 @@ class CDiscDrive : public CNode
 public:
 	static CDiscDrive* s_instance;
 
-	CDiscDrive() : m_discType(NULL), m_locked(false), m_pollTimer(2.0f) {
+	CDiscDrive() : m_discType(NULL), m_locked(false), m_bDeferNotification(false), m_pollTimer(2.0f) {
 		m_discType = strdup("none");
 		s_instance = this;
 	}
@@ -1218,10 +1211,22 @@ public:
 	DECLARE_NODE_FUNCTIONS()
 	TCHAR* m_discType;
 	bool   m_locked;
+	bool   m_bDeferNotification;
 	float  m_pollTimer;
+
+	// CDiscDrive::Advance, 5960 @ 0x00039f20: a change seen while locked sets
+	// bDeferNotification; once unlocked the next frame clears it and fires
+	// OnDiscInserted, or OnDiscRemoved when the drive is empty.
+	void FireDeferred() {
+		if (!m_bDeferNotification || m_locked) return;
+		m_bDeferNotification = false;
+		bool isNone = !m_discType || strcmp(m_discType, "none") == 0;
+		CallFunction(this, isNone ? "OnDiscRemoved" : "OnDiscInserted");
+	}
 
 	void Advance(float nSeconds) {
 		CNode::Advance(nSeconds);
+		FireDeferred();
 		m_pollTimer += nSeconds;
 		if (m_pollTimer < 2.0f) return;
 		m_pollTimer = 0.0f;
@@ -1247,6 +1252,8 @@ public:
 				CallFunction(this, "OnDiscInserted");
 			else if (isNone && !wasNone)
 				CallFunction(this, "OnDiscRemoved");
+		} else if (isNone != wasNone) {
+			m_bDeferNotification = true;
 		}
 	}
 
@@ -1315,13 +1322,17 @@ void DiscDrive_SetDiscType(const char* type) {
 		// Audio CD (or anything else): let the XAP script decide via OnDiscInserted
 		if (!dd->m_locked)
 			CallFunction(dd, "OnDiscInserted");
+		else
+			dd->m_bDeferNotification = true;
 		fprintf(stderr, "[DiscDrive] discType='%s', fired OnDiscInserted\n", type);
 	}
 }
 
+// 5960 PRD @ 0x00174550: discType, locked, bDeferNotification.
 START_NODE_PROPS(CDiscDrive, CNode)
 	NODE_PROP(pt_string, CDiscDrive, discType)
 	NODE_PROP(pt_boolean, CDiscDrive, locked)
+	NODE_PROP(pt_boolean, CDiscDrive, bDeferNotification)
 END_NODE_PROPS()
 
 #undef _FND_CLASS
@@ -1346,13 +1357,6 @@ END_NODE_FUN()
 #include "media_player.h"
 #include "panel_shared.h"  // for DashAudio_MuteAll/UnmuteAll
 #include <sys/stat.h>
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#else
-#include <dirent.h>
-#include <sys/statvfs.h>
-#endif
 
 #define XBOX_BLOCK_SIZE 16384
 #define SAVED_GAME_MAX_TITLES 256
@@ -1389,7 +1393,7 @@ static bool TryOpenXboxHDD();  // forward declaration
 // Defined in sdl_main.cpp, loaded from desktop.ini
 extern char g_qcowPath[512];
 
-// Called from xboxfs.h CreateFileA fallback to read files from FATX
+// Called from TheseusCreateFile (xbox_file.cpp) to read save data off FATX.
 FILE* XboxFS_FATXReadFile(const char* xboxPath) {
 	if (!s_xboxHDD.IsOpen()) {
 		if (!s_xboxHDDTried) TryOpenXboxHDD();  // forward decl below
@@ -1684,7 +1688,7 @@ static bool ParseXboxMetaValue(const char* xboxPath, const char* key, char* outB
 	outBuf[0] = 0;
 
 	// Read file through xboxfs layer
-	HANDLE hFile = CreateFile(xboxPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+	HANDLE hFile = TheseusCreateFile(xboxPath, GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) return false;
 	unsigned char data[8192];
 	DWORD bytesRead = 0;
@@ -1756,32 +1760,16 @@ static bool ParseXboxMetaValue(const char* xboxPath, const char* key, char* outB
 static uint64_t GetDirectorySize(const char* dirPath)
 {
 	uint64_t total = 0;
-#ifdef _WIN32
-	char searchBuf[1024];
-	snprintf(searchBuf, sizeof(searchBuf), "%s\\*", dirPath);
-	struct _finddata_t fd;
-	intptr_t hFind = _findfirst(searchBuf, &fd);
-	if (hFind == -1) return 0;
-	do {
-		if (fd.name[0] == '.') continue;
-		if (!(fd.attrib & _A_SUBDIR))
-			total += fd.size;
-	} while (_findnext(hFind, &fd) == 0);
-	_findclose(hFind);
-#else
-	DIR* dir = opendir(dirPath);
+	HostDir* dir = Host_OpenDir(dirPath);
 	if (!dir) return 0;
-	struct dirent* ent;
-	while ((ent = readdir(dir)) != NULL) {
-		if (ent->d_name[0] == '.') continue;
-		char fullPath[1024];
-		snprintf(fullPath, sizeof(fullPath), "%s/%s", dirPath, ent->d_name);
-		struct stat st;
-		if (stat(fullPath, &st) == 0 && S_ISREG(st.st_mode))
-			total += st.st_size;
+	char name[260];
+	HostFileInfo info;
+	while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+		if (name[0] == '.') continue;
+		if (!(info.attrs & HOST_ATTR_DIR))
+			total += info.size;
 	}
-	closedir(dir);
-#endif
+	Host_CloseDir(dir);
 	return total;
 }
 
@@ -1826,7 +1814,7 @@ static void EnumerateTitles()
 			title.hasImage = true;
 		} else {
 			// Synthetic UDATA entries fall back to Configs/icons/<TitleID>.
-			// xboxfs.h's C: routing maps "C:\icons\..." -> "Configs/icons/...".
+			// xbox_path.h maps "C:\icons\..." to "Configs/icons/...".
 			snprintf(hostProbe, sizeof(hostProbe), "%s", AppPathf("Configs/icons/%s.jpg", entName));
 			if (access(hostProbe, F_OK) == 0) {
 				snprintf(title.imagePath, sizeof(title.imagePath),
@@ -1844,100 +1832,50 @@ static void EnumerateTitles()
 		title.saveCount = 0;
 		title.totalSizeBytes = 0;
 		// Enumerate saves within this title
-#ifdef _WIN32
-		char savSearchBuf[1024];
-		snprintf(savSearchBuf, sizeof(savSearchBuf), "%s\\*", titlePath);
-		struct _finddata_t savFd;
-		intptr_t hSavFind = _findfirst(savSearchBuf, &savFd);
-		if (hSavFind != -1) {
-			do {
-				if (savFd.name[0] == '.') continue;
-				if (!(savFd.attrib & _A_SUBDIR)) continue;
-				if (title.saveCount >= SAVED_GAME_MAX_SAVES) break;
-				char savePath[1024];
-				snprintf(savePath, sizeof(savePath), "%s/%s", titlePath, savFd.name);
-				struct stat saveSt;
-				if (stat(savePath, &saveSt) != 0) continue;
-				DesktopSavedGame& save = title.saves[title.saveCount];
-				memset(&save, 0, sizeof(save));
-				strncpy(save.folderName, savFd.name, sizeof(save.folderName) - 1);
-				char xboxSaveMetaPath[256];
-				snprintf(xboxSaveMetaPath, sizeof(xboxSaveMetaPath), "E:\\UDATA\\%s\\%s\\SaveMeta.xbx", entName, savFd.name);
-				if (!ParseXboxMetaValue(xboxSaveMetaPath, "Name", save.saveName, sizeof(save.saveName)))
-					strncpy(save.saveName, savFd.name, sizeof(save.saveName) - 1);
-				save.sizeBytes = GetDirectorySize(savePath);
-				save.modTime = saveSt.st_mtime;
-				title.totalSizeBytes += save.sizeBytes;
-				title.saveCount++;
-			} while (_findnext(hSavFind, &savFd) == 0);
-			_findclose(hSavFind);
-		}
-#else
-		DIR* titleDir = opendir(titlePath);
+		HostDir* titleDir = Host_OpenDir(titlePath);
 		if (titleDir) {
-			struct dirent* saveEnt;
-			while ((saveEnt = readdir(titleDir)) != NULL && title.saveCount < SAVED_GAME_MAX_SAVES) {
-				if (saveEnt->d_name[0] == '.') continue;
+			char saveName[260];
+			HostFileInfo saveInfo;
+			while (title.saveCount < SAVED_GAME_MAX_SAVES &&
+			       Host_ReadDir(titleDir, saveName, sizeof(saveName), &saveInfo)) {
+				if (saveName[0] == '.') continue;
+				if (!(saveInfo.attrs & HOST_ATTR_DIR)) continue;
 				char savePath[1024];
-				snprintf(savePath, sizeof(savePath), "%s/%s", titlePath, saveEnt->d_name);
-				struct stat saveSt;
-				if (stat(savePath, &saveSt) != 0 || !S_ISDIR(saveSt.st_mode)) continue;
+				snprintf(savePath, sizeof(savePath), "%s/%s", titlePath, saveName);
 				DesktopSavedGame& save = title.saves[title.saveCount];
 				memset(&save, 0, sizeof(save));
-				strncpy(save.folderName, saveEnt->d_name, sizeof(save.folderName) - 1);
+				strncpy(save.folderName, saveName, sizeof(save.folderName) - 1);
 				char xboxSaveMetaPath[256];
-				snprintf(xboxSaveMetaPath, sizeof(xboxSaveMetaPath), "E:\\UDATA\\%s\\%s\\SaveMeta.xbx", entName, saveEnt->d_name);
+				snprintf(xboxSaveMetaPath, sizeof(xboxSaveMetaPath), "E:\\UDATA\\%s\\%s\\SaveMeta.xbx", entName, saveName);
 				if (!ParseXboxMetaValue(xboxSaveMetaPath, "Name", save.saveName, sizeof(save.saveName)))
-					strncpy(save.saveName, saveEnt->d_name, sizeof(save.saveName) - 1);
+					strncpy(save.saveName, saveName, sizeof(save.saveName) - 1);
 				save.sizeBytes = GetDirectorySize(savePath);
-				save.modTime = saveSt.st_mtime;
+				save.modTime = (time_t)saveInfo.mtime;
 				title.totalSizeBytes += save.sizeBytes;
 				title.saveCount++;
 			}
-			closedir(titleDir);
+			Host_CloseDir(titleDir);
 		}
-#endif
 		title.totalSizeBytes += GetDirectorySize(titlePath);
 		s_titleCount++;
 	};
 
-#ifdef _WIN32
-	char searchBuf[1024];
-	snprintf(searchBuf, sizeof(searchBuf), "%s\\*", udataPath);
-	struct _finddata_t fd;
-	intptr_t hFind = _findfirst(searchBuf, &fd);
-	if (hFind == -1) { fprintf(stderr, "[SavedGameGrid] Cannot open %s\n", udataPath); return; }
-	do { ProcessTitleEntry(fd.name); } while (_findnext(hFind, &fd) == 0);
-	_findclose(hFind);
-#else
-	DIR* dir = opendir(udataPath);
+	HostDir* dir = Host_OpenDir(udataPath);
 	if (!dir) { fprintf(stderr, "[SavedGameGrid] Cannot open %s\n", udataPath); return; }
-	struct dirent* ent;
-	while ((ent = readdir(dir)) != NULL) ProcessTitleEntry(ent->d_name);
-	closedir(dir);
-#endif
+	char entry[260];
+	while (Host_ReadDir(dir, entry, sizeof(entry), NULL)) ProcessTitleEntry(entry);
+	Host_CloseDir(dir);
 	// Sort alphabetically
 	for (int i = 0; i < s_titleCount - 1; i++)
 		for (int j = i + 1; j < s_titleCount; j++)
 			if (strcasecmp(s_titles[i].titleName, s_titles[j].titleName) > 0)
 				{ DesktopTitle tmp = s_titles[i]; s_titles[i] = s_titles[j]; s_titles[j] = tmp; }
-#ifdef _WIN32
-	{
-		ULARGE_INTEGER freeBytesAvail, totalBytes;
-		if (GetDiskFreeSpaceExA(udataPath, &freeBytesAvail, &totalBytes, NULL)) {
-			s_totalBlocks = (int)(totalBytes.QuadPart / XBOX_BLOCK_SIZE);
-			s_freeBlocks = (int)(freeBytesAvail.QuadPart / XBOX_BLOCK_SIZE);
-		} else
-			{ s_totalBlocks = 50000; s_freeBlocks = 50000; }
-	}
-#else
-	struct statvfs vfs;
-	if (statvfs(udataPath, &vfs) == 0) {
-		s_totalBlocks = (int)((uint64_t)vfs.f_blocks * vfs.f_frsize / XBOX_BLOCK_SIZE);
-		s_freeBlocks = (int)((uint64_t)vfs.f_bavail * vfs.f_frsize / XBOX_BLOCK_SIZE);
+	uint64_t freeBytes = 0, totalBytes = 0;
+	if (Host_DiskSpace(udataPath, &freeBytes, &totalBytes)) {
+		s_totalBlocks = (int)(totalBytes / XBOX_BLOCK_SIZE);
+		s_freeBlocks = (int)(freeBytes / XBOX_BLOCK_SIZE);
 	} else
 	{ s_totalBlocks = 50000; s_freeBlocks = 50000; }
-#endif
 	fprintf(stderr, "[SavedGameGrid] Enumerated %d titles from %s\n", s_titleCount, udataPath);
 }
 
@@ -2000,7 +1938,7 @@ static void LoadDesktopIcons()
 			if (stat(iconPath, &_ist) != 0) continue;
 		}
 
-		// Store Xbox-style path for VGames icon redirect in xboxfs.h
+		// Store the Xbox path so xbox_path.h can redirect it to the cached icon.
 		snprintf(s_iconEntries[s_iconCount].iconPath, MAX_PATH,
 			"%s:\\%s\\%s\\icon.jpg",
 			g_vgames.games[i].drive,
@@ -2811,7 +2749,8 @@ END_NODE_FUN()
 class CLiveAccounts : public CNode
 {
 public:
-	CLiveAccounts() : m_nCurrentIndex(0), m_bLogon(false), m_fLogOnSuccess(false), m_fLogOnInProgress(false) {}
+	CLiveAccounts() : m_nCurrentIndex(0), m_bLogon(false), m_fLogOnSuccess(false), m_fLogOnInProgress(false),
+	                  m_currentAccount(-1), m_newAccountFromMU(-1) {}
 
 	DECLARE_NODE(CLiveAccounts, CNode)
 	DECLARE_NODE_PROPS()
@@ -2819,6 +2758,11 @@ public:
 
 	int m_nCurrentIndex;
 	bool m_bLogon, m_fLogOnSuccess, m_fLogOnInProgress;
+
+	// 5960 PRD @ 0x00176234: currentAccount and newAccountFromMU, both -1
+	// until a logon or an MU account shows up. Desktop has neither.
+	int m_currentAccount;
+	int m_newAccountFromMU;
 
 	int GetNumberOfAccounts() { return 0; }
 	int GetNumAccountsOnHD() { return 0; }
@@ -2838,6 +2782,10 @@ public:
 	CStrObject* GetFriendInvites() { return new CStrObject; }
 	CStrObject* GetNumberOfFriendsOnline() { return new CStrObject(_T("0")); }
 	void LaunchEntryPoint(int, int, const TCHAR*) {}
+	// 5960 @ 0x000698b0 / 0x000698e0: an index past the account list reads
+	// as no passcode and a passcode that matches. Desktop has no accounts.
+	int IsPasswordEnabled(int) { return 0; }
+	int VerifyPassword(int, const TCHAR*) { return 1; }
 };
 
 IMPLEMENT_NODE("LiveAccounts", CLiveAccounts, CNode)
@@ -2847,6 +2795,8 @@ START_NODE_PROPS(CLiveAccounts, CNode)
 	NODE_PROP(pt_boolean, CLiveAccounts, fLogOnSuccess)
 	NODE_PROP(pt_boolean, CLiveAccounts, fLogOnInProgress)
 	NODE_PROP(pt_integer, CLiveAccounts, nCurrentIndex)
+	NODE_PROP(pt_integer, CLiveAccounts, currentAccount)
+	NODE_PROP(pt_integer, CLiveAccounts, newAccountFromMU)
 END_NODE_PROPS()
 
 #undef _FND_CLASS
@@ -2870,6 +2820,8 @@ START_NODE_FUN(CLiveAccounts, CNode)
 	NODE_FUN_SV(GetFriendInvites)
 	NODE_FUN_SV(GetNumberOfFriendsOnline)
 	NODE_FUN_VIIS(LaunchEntryPoint)
+	NODE_FUN_II(IsPasswordEnabled)
+	NODE_FUN_IIS(VerifyPassword)
 END_NODE_FUN()
 
 // ============================================================================
@@ -2887,7 +2839,9 @@ public:
 	    m_scanSlow(false), m_autoStop(false), m_bScanBackward(false),
 	    m_backScanAccum(0.0f), m_digitAccum(0), m_digitTimer(0.0f),
 	    m_zoomScale(1.0f), m_zoomX(0.0f), m_zoomY(0.0f),
-	    m_osdTimer(0.0f), m_lastOsdSeconds(-1) {}
+	    m_osdTimer(0.0f), m_lastOsdSeconds(-1),
+	    m_navDomain(0), m_navTitle(0), m_navChapter(0), m_navAngle(0), m_navAngleCount(0),
+	    m_navVideoWidth(0), m_navVideoHeight(0) {}
 
 	DECLARE_NODE(CDVDPlayer, CNode)
 	DECLARE_NODE_PROPS()
@@ -2912,6 +2866,49 @@ public:
 	float m_zoomScale, m_zoomX, m_zoomY;
 	float m_osdTimer;       // throttle OnTimeChange
 	int m_lastOsdSeconds;   // detect second change
+
+	// What the script was last told, so a change fires once.
+	int m_navDomain, m_navTitle, m_navChapter, m_navAngle, m_navAngleCount;
+	int m_navVideoWidth, m_navVideoHeight;
+
+	// CDVDPlayer::Advance, 5960 @ 0x00065f10 (the part past the navigator
+	// calls, 0x00066029..0x0006639b), polls the navigator every frame and
+	// fires an event for each value that moved, in this order:
+	//     domain -> OnDomainChange, title -> OnTitleChange,
+	//     chapter -> OnChapterChange, h:m:s -> OnTimeChange,
+	//     angle or angle count -> OnAngleChange, audio -> OnAudioChange,
+	//     subtitle -> OnSubTitleChange, source video size -> OnVideoSizeChange
+	// Desktop already fires the time, audio and subtitle ones; these cover
+	// the rest from what mpv reports.
+	void ReportNavigationChanges() {
+		if (m_domain != m_navDomain) {
+			m_navDomain = m_domain;
+			CallFunction(this, "OnDomainChange");
+		}
+		if (m_title != m_navTitle) {
+			m_navTitle = m_title;
+			CallFunction(this, "OnTitleChange");
+		}
+		if (m_chapter != m_navChapter) {
+			m_navChapter = m_chapter;
+			CallFunction(this, "OnChapterChange");
+		}
+	}
+
+	void ReportAngleAndVideoSize() {
+		if (m_angle != m_navAngle || m_angleCount != m_navAngleCount) {
+			m_navAngle = m_angle;
+			m_navAngleCount = m_angleCount;
+			CallFunction(this, "OnAngleChange");
+		}
+		int w = 0, h = 0;
+		MediaPlayer_GetVideoTexture(&w, &h);
+		if (w != m_navVideoWidth || h != m_navVideoHeight) {
+			m_navVideoWidth = w;
+			m_navVideoHeight = h;
+			CallFunction(this, "OnVideoSizeChange");
+		}
+	}
 
 	// Update time + track properties from media player
 	void UpdateFromMediaPlayer() {
@@ -2989,12 +2986,16 @@ public:
 			// Ensure we stay visible while playing
 			if (!m_visible) m_visible = true;
 
+			ReportNavigationChanges();
+
 			// Fire time change callback only when the displayed second changes
 			int curSec = m_hours * 3600 + m_minutes * 60 + m_seconds;
 			if (curSec != m_lastOsdSeconds) {
 				m_lastOsdSeconds = curSec;
 				CallFunction(this, "OnTimeChange");
 			}
+
+			ReportAngleAndVideoSize();
 		} else if (mpState == MP_STOPPED && m_playbackMode != 0) {
 			m_playbackMode = 0;
 			m_scanSpeed = 1;
@@ -3003,6 +3004,7 @@ public:
 			m_title = 0;
 			m_domain = 0;
 			CallFunction(this, "OnPlaybackModeChange");
+			ReportNavigationChanges();
 		}
 
 		// Sync A-B repeat state
@@ -3018,6 +3020,16 @@ public:
 		MediaPlayer_RenderToScreen(0, 0);
 	}
 
+	// 5960 ends each user op on the navigator's answer (helper @ 0x000669f0
+	// and its inlined copies through 0x00067f00):
+	//     hr == 0x87840001 (UOP prohibited) or 0x80034013 -> OnProhibited
+	//     anything else                                   -> OnUserOpAllowed
+	// mpv takes every transport op; the disc menu, select and angle ops have
+	// nothing to act on in a file, so they report prohibited.
+	void ReportUserOp(bool bAllowed) {
+		CallFunction(this, bAllowed ? "OnUserOpAllowed" : "OnProhibited");
+	}
+
 	// === Transport ===
 	void init() {}
 
@@ -3031,6 +3043,7 @@ public:
 		}
 		MediaPlayer_Play();
 		m_playbackMode = 3;  // DPM_PLAYING
+		ReportUserOp(true);
 	}
 
 	void stop() {
@@ -3046,7 +3059,7 @@ public:
 		MediaPlayer_Stop();
 	}
 
-	void pause() { MediaPlayer_Pause(); }
+	void pause() { MediaPlayer_Pause(); ReportUserOp(true); }
 	void playOrPause() {
 		// If scanning, stop scan and resume normal playback
 		if (m_playbackMode == 5 || m_playbackMode == 8 || m_scanSpeed > 1 || m_bScanBackward) {
@@ -3057,11 +3070,13 @@ public:
 			MediaPlayer_SetSpeed(1.0);
 			MediaPlayer_Play();
 			m_playbackMode = 3;  // DPM_PLAYING
+			ReportUserOp(true);
 			return;
 		}
 		MediaPlayer_TogglePause();
+		ReportUserOp(true);
 	}
-	void resume() { MediaPlayer_Play(); }
+	void resume() { MediaPlayer_Play(); ReportUserOp(true); }
 
 	// === Scanning (fast forward/rewind with speed ramp) ===
 	void forwardScan() {
@@ -3087,6 +3102,7 @@ public:
 			MediaPlayer_SetSpeed((double)m_scanSpeed);
 		}
 		m_playbackMode = 5;  // DPM_SCANNING
+		ReportUserOp(true);
 	}
 
 	void backwardScan() {
@@ -3114,6 +3130,7 @@ public:
 		}
 		m_backScanAccum = 0.0f;
 		m_playbackMode = 5;  // DPM_SCANNING
+		ReportUserOp(true);
 	}
 
 	void stopScan() {
@@ -3124,48 +3141,53 @@ public:
 		MediaPlayer_SetSpeed(1.0);
 		MediaPlayer_Play();
 		m_playbackMode = 3;  // DPM_PLAYING
+		ReportUserOp(true);
 	}
 
 	// === Frame stepping ===
 	void frameAdvance() {
 		MediaPlayer_FrameStep();
 		m_playbackMode = 8;  // DPM_TRICKPLAY
+		ReportUserOp(true);
 	}
 
 	void frameReverse() {
 		MediaPlayer_FrameBackStep();
 		m_playbackMode = 8;  // DPM_TRICKPLAY
+		ReportUserOp(true);
 	}
 
 	// === Chapter navigation ===
-	void startChapter() { MediaPlayer_Seek(0); }
-	void nextChapter() { MediaPlayer_NextChapter(); }
-	void prevChapter() { MediaPlayer_PrevChapter(); }
+	void startChapter() { MediaPlayer_Seek(0); ReportUserOp(true); }
+	void nextChapter() { MediaPlayer_NextChapter(); ReportUserOp(true); }
+	void prevChapter() { MediaPlayer_PrevChapter(); ReportUserOp(true); }
 
 	// === Track selection ===
 	void nextAudioStream() {
 		MediaPlayer_NextAudioTrack();
 		UpdateTrackLanguages();  // refresh language strings after track change
 		CallFunction(this, "OnAudioChange");
+		ReportUserOp(true);
 	}
 
 	void nextSubtitle() {
 		MediaPlayer_NextSubtitleTrack();
 		UpdateTrackLanguages();  // refresh language strings after track change
 		CallFunction(this, "OnSubTitleChange");
+		ReportUserOp(true);
 	}
 
-	void nextAngle() {} // N/A for file playback
+	void nextAngle() { ReportUserOp(false); } // N/A for file playback
 
-	// === DVD menu navigation (no-ops for file playback) ===
-	void selectUp() {}
-	void selectDown() {}
-	void selectRight() {}
-	void selectLeft() {}
-	void activate() {}
-	void goUp() {}
-	void menu() {}
-	void titleMenu() {}
+	// === DVD menu navigation (nothing to navigate in a file) ===
+	void selectUp() { ReportUserOp(false); }
+	void selectDown() { ReportUserOp(false); }
+	void selectRight() { ReportUserOp(false); }
+	void selectLeft() { ReportUserOp(false); }
+	void activate() { ReportUserOp(false); }
+	void goUp() { ReportUserOp(false); }
+	void menu() { ReportUserOp(false); }
+	void titleMenu() { ReportUserOp(false); }
 
 	// === Zoom ===
 	void setScale(float scale) {
@@ -3192,6 +3214,7 @@ public:
 			MediaPlayer_ClearABLoop();
 			m_abRepeatState = 0;
 		}
+		ReportUserOp(true);
 	}
 
 	// === Digit entry (chapter jump) ===
@@ -3337,10 +3360,8 @@ public:
 	{
 		if (!Plex_HasToken()) return;
 		Plex_StartSync();
-		if (m_serverUri.empty() && Plex_ServersReady()) {
-			std::vector<PlexServer> srv = Plex_GetServers();
-			if (!srv.empty()) m_serverUri = srv[0].uri;
-		}
+		// Playback goes to the server the sync settled on, which isn't always the first listed.
+		if (Plex_SyncReady()) m_serverUri = Plex_GetActiveServerUri();
 	}
 
 	int GetCount()
@@ -3575,6 +3596,7 @@ public:
 	                   const std::string& title,
 	                   const std::string& subtitle)
 	{
+		if (m_serverUri.empty()) m_serverUri = Plex_GetActiveServerUri();
 		if (m_serverUri.empty() || ratingKey.empty()) return;
 		std::string url = Plex_ResolveStreamUrl(m_serverUri, ratingKey);
 		if (url.empty()) {
@@ -4415,7 +4437,7 @@ public:
 		return new CStrObject(g_vgames.games[m_slice[t]].launch);
 	}
 
-	// Returns the Xbox-style icon path. xboxfs.h intercepts the load and
+	// Returns the Xbox-style icon path. xbox_path.h intercepts the load and
 	// redirects to Configs/icons/<titleID>.{jpg,png} via VGames_GetIconPath.
 	CStrObject* GetIcon(int i)
 	{

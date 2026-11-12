@@ -2,6 +2,7 @@
 
 #include "app_paths.h"
 #include "plex_client.h"
+#include "host.h"
 #include "http_util.h"
 #include "json_util.h"
 #include "client_util.h"
@@ -33,13 +34,7 @@ static HttpHeaders PlexHeaders(bool wantJson, bool withToken)
     h.push_back({ "X-Plex-Product",           "UIX Desktop" });
     h.push_back({ "X-Plex-Version",           "0.3" });
     h.push_back({ "X-Plex-Device-Name",       "UIX Desktop" });
-#if defined(__APPLE__)
-    h.push_back({ "X-Plex-Platform",          "macOS" });
-#elif defined(_WIN32)
-    h.push_back({ "X-Plex-Platform",          "Windows" });
-#else
-    h.push_back({ "X-Plex-Platform",          "Linux" });
-#endif
+    h.push_back({ "X-Plex-Platform",          Host_Name() });
     if (withToken && g_plexToken[0]) {
         h.push_back({ "X-Plex-Token", g_plexToken });
     }
@@ -64,11 +59,16 @@ static std::atomic<bool>       s_serversReady{false};
 static std::vector<PlexServer> s_servers;
 static std::thread             s_serversThread;
 static std::string             s_activeServerName;
+static std::string             s_activeServerUri;
 
 // TV drill. One worker thread per season/episode fetch; results land in the
 // pre-stage cache below.
 static std::thread s_seasonsThread;
 static std::thread s_episodesThread;
+// The scene polls the cache every frame, so a fetch already running means
+// "ask again next frame", never "wait for it here".
+static std::atomic<bool> s_seasonsBusy{false};
+static std::atomic<bool> s_episodesBusy{false};
 
 // Art download queue
 static std::mutex                                  s_artMtx;
@@ -80,6 +80,9 @@ static std::atomic<bool>                              s_syncRunning{false};
 static std::atomic<int>                               s_syncProgress{0};   // 0..1000
 static std::string                                    s_syncPhase;
 static std::thread                                    s_syncThread;
+// Bumped by sign out. A worker from an older generation finishes on its own
+// but publishes nothing, and owns s_syncRunning until it does.
+static std::atomic<unsigned>                          s_syncGen{0};
 static std::vector<PlexLibrary>                       s_cacheLibs;
 static std::map<std::string, std::vector<PlexItem>>   s_cacheItems;        // sectionKey -> items
 static std::map<std::string, std::vector<PlexSeason>> s_cacheSeasons;      // showRk -> seasons
@@ -123,12 +126,13 @@ void Plex_SignOut()
     std::lock_guard<std::mutex> lk(g_mtx);
     s_servers.clear();   s_serversReady   = false;
     s_activeServerName.clear();
+    s_activeServerUri.clear();
     s_cacheLibs.clear();
     s_cacheItems.clear();
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
+    s_syncGen++;
     s_syncReady    = false;
-    s_syncRunning  = false;
     s_syncProgress = 0;
     s_syncPhase.clear();
 }
@@ -243,6 +247,7 @@ static std::string PickConnection(const std::string& serverJson)
 
 static void ServersWorker()
 {
+    const unsigned gen = s_syncGen;
     HttpResponse r = Http_Get(
         "https://plex.tv/api/v2/resources?includeHttps=1&includeRelay=1",
         PlexHeaders(true, true));
@@ -266,13 +271,16 @@ static void ServersWorker()
         fprintf(stderr, "[Plex] resources fetch failed (status %ld)\n", r.status);
     }
 
+    size_t n = servers.size();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
+        if (gen != s_syncGen) return;   // signed out meanwhile
         s_servers = std::move(servers);
         s_activeServerName = s_servers.empty() ? std::string() : s_servers[0].name;
+        s_activeServerUri  = s_servers.empty() ? std::string() : s_servers[0].uri;
     }
     s_serversReady = true;
-    fprintf(stderr, "[Plex] discovered %zu server(s)\n", s_servers.size());
+    fprintf(stderr, "[Plex] discovered %zu server(s)\n", n);
 }
 
 std::string Plex_GetActiveServerName()
@@ -287,6 +295,12 @@ void Plex_FetchServers()
     JoinIf(s_serversThread);
     s_serversReady = false;
     s_serversThread = std::thread(ServersWorker);
+}
+
+std::string Plex_GetActiveServerUri()
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_activeServerUri;
 }
 
 std::vector<PlexServer> Plex_GetServers()
@@ -345,12 +359,14 @@ static void SeasonsWorker(std::string serverUri, std::string showRk)
         s_cacheSeasons[showRk] = std::move(seasons);
     }
     fprintf(stderr, "[Plex] %zu season(s) under show %s\n", n, showRk.c_str());
+    s_seasonsBusy = false;
 }
 
 void Plex_FetchSeasons(const std::string& serverUri, const std::string& showRatingKey)
 {
     Plex_Init();
-    JoinIf(s_seasonsThread);
+    if (s_seasonsBusy.exchange(true)) return;
+    JoinIf(s_seasonsThread);   // already finished, so this is instant
     s_seasonsThread = std::thread(SeasonsWorker, serverUri, showRatingKey);
 }
 
@@ -386,11 +402,13 @@ static void EpisodesWorker(std::string serverUri, std::string seasonRk)
         s_cacheEpisodes[seasonRk] = std::move(episodes);
     }
     fprintf(stderr, "[Plex] %zu episode(s) under season %s\n", n, seasonRk.c_str());
+    s_episodesBusy = false;
 }
 
 void Plex_FetchEpisodes(const std::string& serverUri, const std::string& seasonRatingKey)
 {
     Plex_Init();
+    if (s_episodesBusy.exchange(true)) return;
     JoinIf(s_episodesThread);
     s_episodesThread = std::thread(EpisodesWorker, serverUri, seasonRatingKey);
 }
@@ -440,20 +458,34 @@ std::string Plex_ResolveStreamUrl(const std::string& serverUri,
 // episodes stay lazy (the fanout is too wide to walk on every sign-in).
 // ============================================================================
 
-static void SetSyncPhase(const std::string& phase, int progressOf1000)
+static void SetSyncPhase(unsigned gen, const std::string& phase, int progressOf1000)
 {
     std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen != s_syncGen) return;
     s_syncPhase    = phase;
     s_syncProgress = progressOf1000;
 }
 
+// Marks the sync done, unless a sign out made this run stale.
+static void FinishSync(unsigned gen, const char* phase)
+{
+    SetSyncPhase(gen, phase, 1000);
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        if (gen == s_syncGen) s_syncReady = true;
+    }
+    s_syncRunning = false;
+}
+
 static void SyncWorker()
 {
+    const unsigned gen = s_syncGen;
     s_syncReady = false;
 
-    SetSyncPhase("Finding Plex server", 0);
+    SetSyncPhase(gen, "Finding Plex server", 0);
     Plex_FetchServers();
     while (!Plex_ServersReady()) {
+        if (gen != s_syncGen) { s_syncRunning = false; return; }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
@@ -462,16 +494,14 @@ static void SyncWorker()
         // Signed in but nothing came back from plex.tv. Distinct from "signed
         // in and the server has no libraries", and the UI shows both as 0.
         fprintf(stderr, "[Plex] no servers returned for this account/token\n");
-        SetSyncPhase("No Plex servers reachable", 1000);
-        s_syncReady   = true;
-        s_syncRunning = false;
+        FinishSync(gen, "No Plex servers reachable");
         return;
     }
     // Ask each server in turn rather than betting on the first. An account
     // can list a server that's simply unreachable from here (someone else's
     // share, a LAN address while you're remote, a machine that's off), and
     // taking servers[0] on faith renders as "0 libraries" with no complaint.
-    SetSyncPhase("Loading library list", 50);
+    SetSyncPhase(gen, "Loading library list", 50);
     std::string serverUri;
     HttpResponse r;
     std::vector<PlexLibrary> libs;
@@ -486,7 +516,10 @@ static void SyncWorker()
         serverUri = servers[si].uri;
         {
             std::lock_guard<std::mutex> lk(g_mtx);
-            s_activeServerName = servers[si].name;
+            if (gen == s_syncGen) {
+                s_activeServerName = servers[si].name;
+                s_activeServerUri  = servers[si].uri;
+            }
         }
         fprintf(stderr, "[Plex] using %s (%s)\n",
                 servers[si].name.c_str(), serverUri.c_str());
@@ -495,9 +528,7 @@ static void SyncWorker()
 
     if (serverUri.empty()) {
         fprintf(stderr, "[Plex] none of the %zu server(s) answered\n", servers.size());
-        SetSyncPhase("No Plex servers reachable", 1000);
-        s_syncReady   = true;
-        s_syncRunning = false;
+        FinishSync(gen, "No Plex servers reachable");
         return;
     }
 
@@ -521,7 +552,7 @@ static void SyncWorker()
         char phaseBuf[128];
         snprintf(phaseBuf, sizeof(phaseBuf),
                  "Loading %s (%d/%d)", lib.title.c_str(), i + 1, libCount);
-        SetSyncPhase(phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
+        SetSyncPhase(gen, phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
 
         std::string url = serverUri + "/library/sections/" + lib.sectionKey + "/all";
         HttpResponse ir = Http_Get(url, PlexHeaders(true, true));
@@ -550,16 +581,17 @@ static void SyncWorker()
     }
 
     // Publish atomically. Readers see old snapshot or whole new one.
+    size_t nLibs = libs.size();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheLibs  = std::move(libs);
-        s_cacheItems = std::move(itemsByKey);
+        if (gen == s_syncGen) {
+            s_cacheLibs  = std::move(libs);
+            s_cacheItems = std::move(itemsByKey);
+        }
     }
 
-    SetSyncPhase("Plex library ready", 1000);
-    s_syncReady   = true;
-    s_syncRunning = false;
-    fprintf(stderr, "[Plex] sync complete (%zu libraries)\n", s_cacheLibs.size());
+    FinishSync(gen, "Plex library ready");
+    fprintf(stderr, "[Plex] sync complete (%zu libraries)\n", nLibs);
 }
 
 void Plex_StartSync()
@@ -607,9 +639,9 @@ bool Plex_Cache_GetSeasons(const std::string& showRatingKey,
         }
     }
     // Not cached, fire a fetch; SeasonsWorker promotes the result.
-    if (!s_servers.empty()) {
-        Plex_FetchSeasons(s_servers.front().uri, showRatingKey);
-    }
+    // Same server the library came from, not just the first one listed.
+    std::string uri = Plex_GetActiveServerUri();
+    if (!uri.empty()) Plex_FetchSeasons(uri, showRatingKey);
     return false;
 }
 
@@ -624,9 +656,8 @@ bool Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
             return true;
         }
     }
-    if (!s_servers.empty()) {
-        Plex_FetchEpisodes(s_servers.front().uri, seasonRatingKey);
-    }
+    std::string uri = Plex_GetActiveServerUri();
+    if (!uri.empty()) Plex_FetchEpisodes(uri, seasonRatingKey);
     return false;
 }
 
@@ -639,7 +670,7 @@ bool Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
 // Host path: curl writes here. Lives at Library/Plex/<rk>.jpg next to binary.
 static std::string Plex_ArtCacheHostPath(const std::string& ratingKey)
 {
-    Mkdir_("Library");
+    Mkdir_(AppPath_Tree("Library"));
     Mkdir_(AppPath_Tree("Library/Plex"));
     return std::string(AppPath_Tree("Library/Plex")) + "/" + ratingKey + ".jpg";
 }
@@ -647,6 +678,7 @@ static std::string Plex_ArtCacheHostPath(const std::string& ratingKey)
 // XBox-style path for the XAP. xboxfs routes E:\ -> Library/.
 std::string Plex_ArtCachePath(const std::string& ratingKey)
 {
+    if (!Http_IsSafeFileId(ratingKey)) return "";
     return "E:\\Plex\\" + ratingKey + ".jpg";
 }
 
@@ -669,11 +701,15 @@ static void ArtWorker(std::string ratingKey, std::string url,
 
 void Plex_QueueArtDownload(const std::string& ratingKey, const std::string& url)
 {
-    if (ratingKey.empty() || url.empty()) return;
+    // The key comes off the server and ends up in a file path.
+    if (!Http_IsSafeFileId(ratingKey) || url.empty()) return;
+    // Workers erase from the map on other threads, so it is only touched under the lock.
+    std::atomic<bool>* flag;
     {
         std::lock_guard<std::mutex> lk(s_artMtx);
         if (s_artInFlight.count(ratingKey)) return;
-        s_artInFlight[ratingKey] = new std::atomic<bool>(false);
+        flag = new std::atomic<bool>(false);
+        s_artInFlight[ratingKey] = flag;
     }
-    std::thread(ArtWorker, ratingKey, url, s_artInFlight[ratingKey]).detach();
+    std::thread(ArtWorker, ratingKey, url, flag).detach();
 }

@@ -6,7 +6,7 @@
 #include "std.h"
 #include "dashapp.h"
 #include "file_util.h"
-#include "xip.h"
+#include "xip_archive.h"
 #include "node.h"
 #include "screen.h"
 #include "runner.h"
@@ -104,8 +104,6 @@ DWORD             g_dwMainThreadId = 0;
 // Desktop-only state (was in CDashApp class, now standalone globals).
 int               g_nVertPerFrame = 0;
 int               g_nTriPerFrame = 0;
-int               g_nodeVisitsThisFrame = 0;
-int               g_nodeSkipsThisFrame = 0;
 char*             g_szAppTitle = NULL;
 
 D3DXMATRIX g_matView;
@@ -495,6 +493,7 @@ struct COLORVERTEX
 
 void Draw()
 {
+	Frame_PhaseBegin(FP_SCENE_SETUP);
 	// Setup projection transform
 	if (g_bProjectionDirty)
 	{
@@ -604,8 +603,8 @@ void Draw()
 		TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
 		TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 
-		VERIFYHR(TheseusGetD3DDev()->SetStreamSource(0, m_pVB, sizeof(COLORVERTEX)));
-		VERIFYHR(TheseusGetD3DDev()->SetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE));
+		TheseusSetStreamSource(0, m_pVB, sizeof(COLORVERTEX));
+		TheseusSetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE);
 		VERIFYHR(TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
 
 		TheseusSetTransform(D3DTS_PROJECTION, &matProjectionSave);
@@ -714,6 +713,8 @@ void Draw()
 	}
 
 	// Draw the world
+	Frame_PhaseEnd(FP_SCENE_SETUP);
+	Frame_PhaseBegin(FP_SCENE_TREE);
 	{
 		// Clear active-keyboard tracker before scene render; visible CKeyboards
 		// will re-set it via their Render() override. Hidden ones never run, so
@@ -727,8 +728,11 @@ void Draw()
 		g_pObject->Render();
 		TheseusPopWorld();
 	}
+	Frame_PhaseEnd(FP_SCENE_TREE);
 
+	Frame_PhaseBegin(FP_SCENE_END);
 	TheseusEndScene();
+	Frame_PhaseEnd(FP_SCENE_END);
 	TheseusSetRenderState(D3DRS_SWATHWIDTH, D3DSWATH_OFF);
 
 	TheseusPresent();
@@ -822,7 +826,10 @@ void CleanupApp()
 
 void Advance()
 {
-	XTIME now = (float)GetTickCount() / 1000.0f;
+	// Seconds since launch, on every host. Scripts time things like the
+	// screensaver against 0, so an uptime base fires them on the first frame.
+	static const Uint64 s_clockStart = SDL_GetPerformanceCounter();
+	XTIME now = (double)(SDL_GetPerformanceCounter() - s_clockStart) / (double)SDL_GetPerformanceFrequency();
 	float nDelta = (float)(now - g_now);
 	if (nDelta == 0.0f)
 		nDelta = 0.001f;

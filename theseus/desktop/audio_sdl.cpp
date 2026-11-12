@@ -14,16 +14,7 @@
 #include <map>
 #include <algorithm>
 #include <sys/stat.h>
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#ifndef S_ISDIR
-#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
-#endif
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
+#include "host.h"
 
 #include "audio_sdl.h"
 #include "stb_image.h"
@@ -200,12 +191,14 @@ static Mix_Chunk* LoadXboxADPCM(const char* path)
     }
     free(adpcmData);
 
-    // Build a Mix_Chunk with the PCM data
-    // We need to convert to the audio device format
+    // A chunk has to be in the mixer's own format, mono files included.
+    int mixHz = 44100, mixCh = 2;
+    Uint16 mixFmt = MIX_DEFAULT_FORMAT;
+    Mix_QuerySpec(&mixHz, &mixFmt, &mixCh);
     SDL_AudioCVT cvt;
     int built = SDL_BuildAudioCVT(&cvt,
-        AUDIO_S16LSB, channels, sampleRate,  // source format
-        AUDIO_S16LSB, channels, 44100);       // target (our mixer format)
+        AUDIO_S16LSB, channels, sampleRate,
+        mixFmt, mixCh, mixHz);
 
     uint8_t* finalBuf;
     uint32_t finalLen;
@@ -418,7 +411,9 @@ int DashAudio_Init(void)
     int frames = g_audioBufferFrames;
     if (frames < 256)  frames = 256;
     if (frames > 8192) frames = 8192;
-    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, frames) < 0) {
+    // No format changes allowed: SDL converts for the device, and the ADPCM
+    // chunks and the visualizer tap can count on 44.1 kHz 16 bit stereo.
+    if (Mix_OpenAudioDevice(44100, MIX_DEFAULT_FORMAT, 2, frames, NULL, 0) < 0) {
         fprintf(stderr, "[Audio] Mix_OpenAudio failed: %s\n", Mix_GetError());
         return -1;
     }
@@ -967,13 +962,9 @@ static bool IsM3UFile(const char* name)
 
 static long long FileMTime(const char* path)
 {
-    struct stat st;
-    if (stat(path, &st) != 0) return 0;
-#ifdef __APPLE__
-    return (long long)st.st_mtimespec.tv_sec;
-#else
-    return (long long)st.st_mtime;
-#endif
+    HostFileInfo info;
+    if (!Host_Stat(path, &info)) return 0;
+    return (long long)info.mtime;
 }
 
 static void ApplyDBToSong(const DBEntry& e, Song& s)
@@ -1092,23 +1083,12 @@ int DashMusic_Scan(const char* musicRoot)
             soundtrack.songs.push_back(BuildSong(full, StripExtension(songName)));
         };
 
-#ifdef _WIN32
-        char searchBuf[512];
-        snprintf(searchBuf, sizeof(searchBuf), "%s\\*", stPath.c_str());
-        struct _finddata_t fd;
-        intptr_t hFind = _findfirst(searchBuf, &fd);
-        if (hFind != -1) {
-            do { ProcessSongFile(fd.name); } while (_findnext(hFind, &fd) == 0);
-            _findclose(hFind);
-        }
-#else
-        DIR* stDir = opendir(stPath.c_str());
+        HostDir* stDir = Host_OpenDir(stPath.c_str());
         if (stDir) {
-            struct dirent* songEntry;
-            while ((songEntry = readdir(stDir)) != NULL) ProcessSongFile(songEntry->d_name);
-            closedir(stDir);
+            char songName[260];
+            while (Host_ReadDir(stDir, songName, sizeof(songName), NULL)) ProcessSongFile(songName);
+            Host_CloseDir(stDir);
         }
-#endif
 
         if (!soundtrack.songs.empty()) {
             if (soundtrack.albumPath.empty() && !fallbackArt.empty())
@@ -1162,43 +1142,20 @@ int DashMusic_Scan(const char* musicRoot)
         looseMusic.songs.push_back(BuildSong(full, StripExtension(fileName)));
     };
 
-#ifdef _WIN32
-    char searchBuf[512];
-    snprintf(searchBuf, sizeof(searchBuf), "%s\\*", musicRoot);
-    struct _finddata_t fd;
-    intptr_t hFind = _findfirst(searchBuf, &fd);
-    if (hFind == -1) {
-        fprintf(stderr, "[Audio] Music directory '%s' not found (this is OK if no music installed)\n", musicRoot);
-        return 0;
-    }
-    do {
-        std::string entryPath = std::string(musicRoot) + "/" + fd.name;
-        struct stat est;
-        if (stat(entryPath.c_str(), &est) == 0) {
-            if (S_ISDIR(est.st_mode))      ProcessSoundtrackDir(fd.name);
-            else if (IsM3UFile(fd.name))   ProcessM3UFile(fd.name);
-            else                           ProcessLooseFile(fd.name);
-        }
-    } while (_findnext(hFind, &fd) == 0);
-    _findclose(hFind);
-#else
-    DIR* rootDir = opendir(musicRoot);
+    HostDir* rootDir = Host_OpenDir(musicRoot);
     if (!rootDir) {
         fprintf(stderr, "[Audio] Music directory '%s' not found (this is OK if no music installed)\n", musicRoot);
         return 0;
     }
-    struct dirent* entry;
-    while ((entry = readdir(rootDir)) != NULL) {
-        if (entry->d_name[0] == '.') continue;
-        std::string entryPath = std::string(musicRoot) + "/" + entry->d_name;
-        struct stat est;
-        if (stat(entryPath.c_str(), &est) != 0) continue;
-        if (S_ISDIR(est.st_mode))             ProcessSoundtrackDir(entry->d_name);
-        else if (IsM3UFile(entry->d_name))    ProcessM3UFile(entry->d_name);
-        else                                  ProcessLooseFile(entry->d_name);
+    char entryName[260];
+    bool isDir;
+    while (Host_ReadDirType(rootDir, entryName, sizeof(entryName), &isDir)) {
+        if (entryName[0] == '.') continue;
+        if (isDir)                         ProcessSoundtrackDir(entryName);
+        else if (IsM3UFile(entryName))     ProcessM3UFile(entryName);
+        else                               ProcessLooseFile(entryName);
     }
-    closedir(rootDir);
-#endif
+    Host_CloseDir(rootDir);
 
     if (!looseMusic.songs.empty()) {
         bool merged = false;

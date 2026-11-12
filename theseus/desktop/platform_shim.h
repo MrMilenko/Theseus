@@ -1,16 +1,17 @@
-// platform_shim.h: desktop platform abstraction layer. Replaces Xbox
-// XDK and D3D8 types with SDL + cross-platform equivalents (HANDLE,
-// HRESULT, FILETIME, the WINAPI calling convention, kernel stubs).
-// Pulled in early by std.h so the rest of the dashboard can keep
-// using Win32 / Xbox idioms unmodified.
+// platform_shim.h: the Xbox-shaped world the dashboard code lives in on
+// desktop. Win32 and XDK names (HANDLE, ReadFile, GetTickCount, FILETIME)
+// backed by SDL, the C runtime and host.h.
+//
+// This file is the same on every host and never includes an OS header.
+// Real Win32 lives in host_win.cpp, so dashboard code can't reach kernel32
+// by accident.
 
 #pragma once
 
-#define _WINDOWS 1       // Triggers #ifndef _WINDOWS guards on Xbox headers
-#define UIX_DESKTOP 1
-#define _THESEUS_STD_H 1 // Prevent toolbox xboxinternals.h kernel type redefs
-
+#include "platform.h"
+#include "host.h"
 #include "xboxfs_drive.h" // XboxFS_DriveToPrefix shared helper, used by stubs below
+#include "xbox_path.h"    // the one Xbox path translator, used by stubs below
 
 #include <SDL.h>
 #ifdef __cplusplus
@@ -23,39 +24,8 @@
 #include <cassert>
 #include <ctime>
 #include <cwchar>
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <io.h>
-#include <direct.h>
-#include <sys/stat.h>
-#define strcasecmp _stricmp
-#define strncasecmp _strnicmp
-#define access _access
-#ifndef F_OK
-#define F_OK 0
-#endif
-#ifndef S_ISDIR
-#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
-#endif
-#ifndef S_ISREG
-#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
-#endif
-#else
-#include <dirent.h>
-#include <fnmatch.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <ifaddrs.h>
-#include <arpa/inet.h>
-#ifdef __APPLE__
-#include <sys/sysctl.h>
-#include <mach/mach.h>
-#elif defined(__linux__)
-#include <sys/sysinfo.h>
-#endif
-#endif
 #include <cctype>
+#include <cerrno>
 #else
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,25 +37,26 @@
 #include <time.h>
 #include <wchar.h>
 #include <ctype.h>
+#include <errno.h>
+#endif
+// All three toolchains ship these. Not <dirent.h>: on mingw that's bx's
+// compat header, which pulls in <windows.h>. Folder listing is host.h's.
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & S_IFMT) == S_IFDIR)
+#endif
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#endif
+#ifndef F_OK
+#define F_OK 0
 #endif
 
 // -------------------------------------------------------
 // Windows base types
 // -------------------------------------------------------
-#ifdef _WIN32
-// On actual Windows, include <windows.h> for real Win32 API
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-// D3D types not provided by windows.h
-typedef DWORD     D3DCOLOR;
-typedef float     D3DVALUE;
-#else
-// Non-Windows: define Windows types ourselves
 typedef uint8_t   BYTE;
 typedef uint16_t  WORD;
 typedef uint32_t  DWORD;
@@ -116,7 +87,7 @@ typedef intptr_t  WPARAM;
 typedef intptr_t  LPARAM;
 typedef intptr_t  LRESULT;
 
-// Window handle stubs (not used in SDL build but needed for _WINDOWS code paths)
+// Window handle stubs (not used in SDL build but needed by Win32-style code paths)
 typedef void*     HWND;
 typedef void*     HINSTANCE;
 typedef wchar_t   WCHAR;
@@ -128,10 +99,7 @@ typedef struct _FILETIME {
     DWORD dwLowDateTime;
     DWORD dwHighDateTime;
 } FILETIME, *PFILETIME, *LPFILETIME;
-#endif // _WIN32
 
-#ifndef _WIN32
-// Non-Windows stubs for Windows API types and constants
 #define CONST const
 #define MB_OK 0
 #define CALLBACK
@@ -153,7 +121,14 @@ inline void DeleteCriticalSection(CRITICAL_SECTION*) {}
 #define lstrlen strlen
 #define lstrcpy strcpy
 #define lstrcat strcat
-#define lstrcpyn strncpy
+// Win32 semantics: copies at most n-1 chars and always terminates.
+inline char* lstrcpyn(char* dst, const char* src, int n) {
+    if (n <= 0) return dst;
+    size_t i = 0;
+    for (; i + 1 < (size_t)n && src[i]; i++) dst[i] = src[i];
+    dst[i] = '\0';
+    return dst;
+}
 
 // SYSTEMTIME stub
 typedef struct _SYSTEMTIME {
@@ -179,7 +154,7 @@ inline DWORD GetTimeZoneInformation(TIME_ZONE_INFORMATION* tz) {
     return TIME_ZONE_ID_UNKNOWN;
 }
 
-// MEMORYSTATUS - reports real host memory (was fake 64MB Xbox values)
+// MEMORYSTATUS: real host memory, not the Xbox's 64MB.
 typedef struct _MEMORYSTATUS {
     DWORD dwLength;
     DWORD dwMemoryLoad;
@@ -193,28 +168,10 @@ typedef struct _MEMORYSTATUS {
 inline void GlobalMemoryStatus(MEMORYSTATUS* p) {
     memset(p, 0, sizeof(*p));
     p->dwLength = sizeof(*p);
-#ifdef __APPLE__
-    // sysctl for total physical memory
-    int mib[2] = { CTL_HW, HW_MEMSIZE };
-    uint64_t memsize = 0;
-    size_t len = sizeof(memsize);
-    if (sysctl(mib, 2, &memsize, &len, NULL, 0) == 0)
-        p->dwTotalPhys = (SIZE_T)memsize;
-    // vm_statistics for free pages
-    mach_msg_type_number_t count = HOST_VM_INFO_COUNT;
-    vm_statistics_data_t vmstat;
-    if (host_statistics(mach_host_self(), HOST_VM_INFO, (host_info_t)&vmstat, &count) == KERN_SUCCESS)
-        p->dwAvailPhys = (SIZE_T)vmstat.free_count * vm_page_size;
-#elif defined(__linux__)
-    struct sysinfo si;
-    if (sysinfo(&si) == 0) {
-        p->dwTotalPhys = (SIZE_T)si.totalram * si.mem_unit;
-        p->dwAvailPhys = (SIZE_T)si.freeram * si.mem_unit;
-    }
-#else
-    p->dwTotalPhys = 4ULL * 1024 * 1024 * 1024; // fallback 4GB
-    p->dwAvailPhys = 2ULL * 1024 * 1024 * 1024;
-#endif
+    uint64_t total = 0, avail = 0;
+    Host_MemoryStatus(&total, &avail);
+    p->dwTotalPhys = (SIZE_T)total;
+    p->dwAvailPhys = (SIZE_T)avail;
 }
 
 // RECT stub
@@ -243,6 +200,7 @@ typedef struct _WIN32_FILE_ATTRIBUTE_DATA {
 } WIN32_FILE_ATTRIBUTE_DATA;
 
 // File attribute constants
+#define FILE_ATTRIBUTE_READONLY     0x01
 #define FILE_ATTRIBUTE_DIRECTORY    0x10
 #define FILE_ATTRIBUTE_HIDDEN       0x02
 #define FILE_ATTRIBUTE_SYSTEM       0x04
@@ -252,6 +210,7 @@ typedef struct _WIN32_FILE_ATTRIBUTE_DATA {
 #define FILE_FLAG_SEQUENTIAL_SCAN   0x08000000
 #define FILE_SHARE_DELETE           4
 #define FILE_SHARE_WRITE            2
+typedef int GET_FILEEX_INFO_LEVELS;
 #define GetFileExInfoStandard       0
 #define INVALID_FILE_ATTRIBUTES     ((DWORD)-1)
 
@@ -261,280 +220,50 @@ typedef struct _WIN32_FILE_ATTRIBUTE_DATA {
 #endif
 
 #define INVALID_HANDLE_VALUE ((HANDLE)(intptr_t)-1)
-#endif // !_WIN32
 
 // --- Inline function stubs (must come after TRUE/FALSE/INVALID_HANDLE_VALUE) ---
 
 // Virtual games database (needed by all platforms)
 #include "virtual_games.h"
 
-// FindFirstFile/FindNextFile/FindClose; POSIX implementation for non-Windows
-#ifndef _WIN32
-
-struct FindFileHandle {
-    DIR* dir;
-    char dirPath[512];
-    char pattern[256]; // filename glob pattern (e.g. "*.xtf")
-    // Virtual game injection
-    int  vgIndices[VGAMES_MAX]; // indices into g_vgames
-    int  vgCount;               // number of virtual entries for this directory
-    int  vgPos;                 // current position in virtual list
-    char vgDrive[4];            // drive letter for this search (if applicable)
-    char vgCategory[32];        // category for this search (if applicable)
-};
-inline HANDLE FindFirstFile(const char* path, WIN32_FIND_DATA* fd) {
-    if (!path || !fd) return INVALID_HANDLE_VALUE;
-
-    // Translate Xbox-style paths (e.g. "Q:\Fonts\*.xtf" -> "Data/Fonts/*.xtf").
-    char localPath[512];
-    const char* colon = strchr(path, ':');
-    if (colon && (colon[1] == '\\' || colon[1] == '/')) {
-        int driveLen = (int)(colon - path);
-        if (driveLen == 1) {
-            const char* prefix = XboxFS_DriveToPrefix(path[0]);
-            if (prefix) {
-                snprintf(localPath, sizeof(localPath), "%s/%s", prefix, colon + 2);
-            } else {
-                // Unknown drive (F:, G:, R:, ...) -- no analog on desktop.
-                // Pass through as-is so opendir below fails naturally.
-                strncpy(localPath, path, sizeof(localPath) - 1);
-                localPath[sizeof(localPath) - 1] = '\0';
-            }
-        } else {
-            strncpy(localPath, path, sizeof(localPath) - 1);
-            localPath[sizeof(localPath) - 1] = '\0';
-        }
-    } else {
-        strncpy(localPath, path, sizeof(localPath) - 1);
-        localPath[sizeof(localPath) - 1] = '\0';
-    }
-    // Convert backslashes
-    for (char* p = localPath; *p; p++) { if (*p == '\\') *p = '/'; }
-
-    // Find last / to split dir from pattern
-    char* lastSlash = strrchr(localPath, '/');
-    char dirBuf[512], patBuf[256];
-    if (lastSlash) {
-        size_t dirLen = lastSlash - localPath;
-        memcpy(dirBuf, localPath, dirLen);
-        dirBuf[dirLen] = '\0';
-        strncpy(patBuf, lastSlash + 1, sizeof(patBuf) - 1);
-        patBuf[sizeof(patBuf) - 1] = '\0';
-    } else {
-        strcpy(dirBuf, ".");
-        strncpy(patBuf, localPath, sizeof(patBuf) - 1);
-        patBuf[sizeof(patBuf) - 1] = '\0';
-    }
-
-    DIR* dir = opendir(dirBuf);
-    if (!dir) {
-        // Directory doesn't exist; but it might be a virtual game folder
-        // Check if dirBuf matches a virtual game: xboxfs/{drive}/{cat}/{name}
-        int vgIdx = VGames_MatchFolder(dirBuf);
-        if (vgIdx >= 0) {
-            // Virtual folder; check what file pattern is being requested
-            if (fnmatch("*.xbe", patBuf, FNM_CASEFOLD) == 0 ||
-                fnmatch("default.xbe", patBuf, FNM_CASEFOLD) == 0) {
-                // Return a fake default.xbe
-                memset(fd, 0, sizeof(*fd));
-                strcpy(fd->cFileName, "default.xbe");
-                fd->nFileSizeLow = 4096; // fake size
-                FindFileHandle* ffh = new FindFileHandle;
-                ffh->dir = NULL; // no real dir
-                strncpy(ffh->dirPath, dirBuf, sizeof(ffh->dirPath) - 1);
-                strncpy(ffh->pattern, patBuf, sizeof(ffh->pattern) - 1);
-                ffh->vgCount = 0; ffh->vgPos = 0;
-                ffh->vgDrive[0] = 0; ffh->vgCategory[0] = 0;
-                return (HANDLE)ffh;
-            }
-            if (fnmatch("default.uixshortcut", patBuf, FNM_CASEFOLD) == 0 ||
-                fnmatch("*.*", patBuf, FNM_CASEFOLD) == 0 ||
-                strcmp(patBuf, "*") == 0) {
-                memset(fd, 0, sizeof(*fd));
-                strcpy(fd->cFileName, "default.uixshortcut");
-                fd->nFileSizeLow = 256;
-                FindFileHandle* ffh = new FindFileHandle;
-                ffh->dir = NULL;
-                strncpy(ffh->dirPath, dirBuf, sizeof(ffh->dirPath) - 1);
-                strncpy(ffh->pattern, patBuf, sizeof(ffh->pattern) - 1);
-                ffh->vgCount = 0; ffh->vgPos = 0;
-                ffh->vgDrive[0] = 0; ffh->vgCategory[0] = 0;
-                return (HANDLE)ffh;
-            }
-        }
-        return INVALID_HANDLE_VALUE;
-    }
-
-    FindFileHandle* ffh = new FindFileHandle;
-    ffh->dir = dir;
-    strncpy(ffh->dirPath, dirBuf, sizeof(ffh->dirPath) - 1);
-    ffh->dirPath[sizeof(ffh->dirPath) - 1] = '\0';
-    // Windows compat: "*.*" matches all files including those without dots
-    if (strcmp(patBuf, "*.*") == 0)
-        strcpy(patBuf, "*");
-    strncpy(ffh->pattern, patBuf, sizeof(ffh->pattern) - 1);
-    ffh->pattern[sizeof(ffh->pattern) - 1] = '\0';
-
-    // Inject virtual games via shared VGames_ParseDir.
-    ffh->vgCount = 0;
-    ffh->vgPos = 0;
-    ffh->vgDrive[0] = 0;
-    ffh->vgCategory[0] = 0;
-    {
-        char driveBuf[4] = {0};
-        char catBuf[32] = {0};
-        if (VGames_ParseDir(dirBuf, driveBuf, catBuf, sizeof(catBuf))) {
-            strncpy(ffh->vgDrive, driveBuf, sizeof(ffh->vgDrive) - 1);
-            strncpy(ffh->vgCategory, catBuf, sizeof(ffh->vgCategory) - 1);
-            ffh->vgCount = VGames_GetForDirectory(driveBuf, catBuf, ffh->vgIndices, VGAMES_MAX);
-        }
-    }
-
-    // Find first matching entry (real filesystem)
-    struct dirent* entry;
-    while ((entry = readdir(ffh->dir)) != NULL) {
-        if (fnmatch(ffh->pattern, entry->d_name, FNM_CASEFOLD) == 0) {
-            memset(fd, 0, sizeof(*fd));
-            strncpy(fd->cFileName, entry->d_name, sizeof(fd->cFileName) - 1);
-            char fullPath[512];
-            snprintf(fullPath, sizeof(fullPath), "%s/%s", ffh->dirPath, entry->d_name);
-            struct stat st;
-            if (stat(fullPath, &st) == 0) {
-                if (S_ISDIR(st.st_mode)) fd->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-                fd->nFileSizeLow = (DWORD)st.st_size;
-            }
-            return (HANDLE)ffh;
-        }
-    }
-
-    // No real entries; try virtual game entries
-    while (ffh->vgPos < ffh->vgCount) {
-        int idx = ffh->vgIndices[ffh->vgPos++];
-        VirtualGame& vg = g_vgames.games[idx];
-        if (!vg.valid) continue;
-        if (fnmatch(ffh->pattern, vg.name, FNM_CASEFOLD) != 0) continue;
-        memset(fd, 0, sizeof(*fd));
-        strncpy(fd->cFileName, vg.name, sizeof(fd->cFileName) - 1);
-        fd->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-        return (HANDLE)ffh;
-    }
-
-    // No match found at all
-    closedir(ffh->dir);
-    delete ffh;
-    return INVALID_HANDLE_VALUE;
+// Seconds since 1970 to FILETIME's 100ns ticks since 1601, and back.
+inline FILETIME Shim_UnixToFileTime(int64_t t) {
+    unsigned long long ull = (unsigned long long)(t + 11644473600LL) * 10000000ULL;
+    FILETIME ft;
+    ft.dwLowDateTime = (DWORD)(ull & 0xFFFFFFFF);
+    ft.dwHighDateTime = (DWORD)(ull >> 32);
+    return ft;
 }
-inline BOOL FindNextFile(HANDLE h, WIN32_FIND_DATA* fd) {
-    if (!h || h == INVALID_HANDLE_VALUE || !fd) return FALSE;
-    FindFileHandle* ffh = (FindFileHandle*)h;
-
-    // First exhaust real directory entries (if we have a real dir)
-    if (!ffh->dir) goto virtual_entries;
-    struct dirent* entry;
-    while ((entry = readdir(ffh->dir)) != NULL) {
-        if (fnmatch(ffh->pattern, entry->d_name, FNM_CASEFOLD) == 0) {
-            memset(fd, 0, sizeof(*fd));
-            strncpy(fd->cFileName, entry->d_name, sizeof(fd->cFileName) - 1);
-            char fullPath[512];
-            snprintf(fullPath, sizeof(fullPath), "%s/%s", ffh->dirPath, entry->d_name);
-            struct stat st;
-            if (stat(fullPath, &st) == 0) {
-                if (S_ISDIR(st.st_mode)) fd->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-                fd->nFileSizeLow = (DWORD)st.st_size;
-            }
-            return TRUE;
-        }
-    }
-
-    // Then serve virtual game entries
-    virtual_entries:
-    while (ffh->vgPos < ffh->vgCount) {
-        int idx = ffh->vgIndices[ffh->vgPos++];
-        VirtualGame& vg = g_vgames.games[idx];
-        if (!vg.valid) continue;
-        // Skip if a real folder with this name already exists
-        char checkPath[512];
-        snprintf(checkPath, sizeof(checkPath), "%s/%s", ffh->dirPath, vg.name);
-        struct stat cst;
-        if (stat(checkPath, &cst) == 0) continue; // real folder takes priority
-        // Check against glob pattern
-        if (fnmatch(ffh->pattern, vg.name, FNM_CASEFOLD) != 0) continue;
-        memset(fd, 0, sizeof(*fd));
-        strncpy(fd->cFileName, vg.name, sizeof(fd->cFileName) - 1);
-        fd->dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY;
-        return TRUE;
-    }
-
-    return FALSE;
+inline int64_t Shim_FileTimeToUnix(const FILETIME* ft) {
+    unsigned long long ull = ((unsigned long long)ft->dwHighDateTime << 32) | ft->dwLowDateTime;
+    return (int64_t)(ull / 10000000ULL) - 11644473600LL;
 }
-inline BOOL FindClose(HANDLE h) {
-    if (h && h != INVALID_HANDLE_VALUE) {
-        FindFileHandle* ffh = (FindFileHandle*)h;
-        if (ffh->dir) closedir(ffh->dir);
-        delete ffh;
-    }
-    return TRUE;
+// Days since 1970 for a proleptic Gregorian date, no time zone involved.
+inline int64_t Shim_DaysFromCivil(int y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    const int64_t era = (y >= 0 ? y : y - 399) / 400;
+    const unsigned yoe = (unsigned)(y - era * 400);
+    const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t)doe - 719468;
 }
-#endif // !_WIN32
-
-// Simple Xbox path translation for stubs below (full version in xboxfs.h).
-// Converts "C:\..." -> "Configs/...", "Q:\..." -> "Data/...",
-// "E:\..." -> "Library/...". For unknown drives (F:, G:, R:, ...) returns
-// an empty string so callers' stat/mkdir/fopen all fail predictably; do
-// NOT pass through unchanged, since Preloader_Mkdirp would then create
-// a literal "F:" directory on disk.
-inline const char* _StubTranslatePath(const char* xboxPath) {
-    static char s_stubBuf[512];
-    if (!xboxPath) return xboxPath;
-    const char* colon = strchr(xboxPath, ':');
-    if (colon && (colon[1] == '\\' || colon[1] == '/')) {
-        int driveLen = (int)(colon - xboxPath);
-        if (driveLen == 1) {
-            const char* prefix = XboxFS_DriveToPrefix(xboxPath[0]);
-            if (prefix) {
-                snprintf(s_stubBuf, sizeof(s_stubBuf), "%s/%s", prefix, colon + 2);
-                for (char* p = s_stubBuf; *p; p++) { if (*p == '\\') *p = '/'; }
-                return s_stubBuf;
-            }
-        }
-        // Drive letter present but unrecognized -- fail safe.
-        s_stubBuf[0] = '\0';
-        return s_stubBuf;
-    }
-    return xboxPath;
+// Local time minus UTC, in seconds, at the given moment.
+inline int64_t Shim_UtcOffset(time_t t) {
+    struct tm lt = *localtime(&t);
+    struct tm gt = *gmtime(&t);
+    int64_t l = Shim_DaysFromCivil(lt.tm_year + 1900, lt.tm_mon + 1, lt.tm_mday) * 86400 +
+                lt.tm_hour * 3600 + lt.tm_min * 60 + lt.tm_sec;
+    int64_t g = Shim_DaysFromCivil(gt.tm_year + 1900, gt.tm_mon + 1, gt.tm_mday) * 86400 +
+                gt.tm_hour * 3600 + gt.tm_min * 60 + gt.tm_sec;
+    return l - g;
 }
 
-// Win32 API function stubs (only needed on non-Windows platforms)
-#ifndef _WIN32
-inline BOOL GetFileAttributesEx(const char* path, int level, void* info) {
-    (void)level; (void)info;
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-    struct stat st;
-    if (stat(p, &st) == 0) {
-        // Fill in basic WIN32_FILE_ATTRIBUTE_DATA if info is provided
-        if (info) {
-            WIN32_FILE_ATTRIBUTE_DATA* fad = (WIN32_FILE_ATTRIBUTE_DATA*)info;
-            memset(fad, 0, sizeof(*fad));
-            fad->dwFileAttributes = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-            fad->nFileSizeLow = (DWORD)(st.st_size & 0xFFFFFFFF);
-            fad->nFileSizeHigh = (DWORD)(st.st_size >> 32);
-        }
-        return TRUE;
-    }
-    return FALSE;
-}
-inline DWORD GetFileAttributes(const char* path) {
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-    struct stat st;
-    if (stat(p, &st) == 0)
-        return S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-    return INVALID_FILE_ATTRIBUTES;
-}
+// File HANDLEs are FILE*s on every host, opened by TheseusCreateFile.
 inline BOOL GetFileTime(HANDLE h, FILETIME* c, FILETIME* a, FILETIME* w) {
-    (void)h;
     FILETIME ft = {0, 0};
+    HostFileInfo info;
+    if (h && h != INVALID_HANDLE_VALUE && Host_StatOpenFile((FILE*)h, &info))
+        ft = Shim_UnixToFileTime(info.mtime);
     if (c) *c = ft;
     if (a) *a = ft;
     if (w) *w = ft;
@@ -545,73 +274,60 @@ inline BOOL CompareFileTime(const FILETIME* a, const FILETIME* b) {
     if (a->dwLowDateTime != b->dwLowDateTime) return a->dwLowDateTime > b->dwLowDateTime ? 1 : -1;
     return 0;
 }
-inline BOOL RemoveDirectory(const char* path) {
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-    return rmdir(p) == 0;
-}
 inline DWORD GetLastError() { return 0; }
+inline void Shim_TmToSystemTime(const struct tm* t, int ms, SYSTEMTIME* st) {
+    st->wYear = (WORD)(t->tm_year + 1900);
+    st->wMonth = (WORD)(t->tm_mon + 1);
+    st->wDayOfWeek = (WORD)t->tm_wday;
+    st->wDay = (WORD)t->tm_mday;
+    st->wHour = (WORD)t->tm_hour;
+    st->wMinute = (WORD)t->tm_min;
+    st->wSecond = (WORD)t->tm_sec;
+    st->wMilliseconds = (WORD)ms;
+}
 inline void GetLocalTime(SYSTEMTIME* st) {
+    if (!st) return;
     time_t now = time(NULL);
     struct tm* lt = localtime(&now);
-    if (lt && st) {
-        st->wYear = (WORD)(lt->tm_year + 1900);
-        st->wMonth = (WORD)(lt->tm_mon + 1);
-        st->wDayOfWeek = (WORD)lt->tm_wday;
-        st->wDay = (WORD)lt->tm_mday;
-        st->wHour = (WORD)lt->tm_hour;
-        st->wMinute = (WORD)lt->tm_min;
-        st->wSecond = (WORD)lt->tm_sec;
-        st->wMilliseconds = 0;
-    } else if (st) { memset(st, 0, sizeof(*st)); }
+    if (lt) Shim_TmToSystemTime(lt, 0, st);
+    else memset(st, 0, sizeof(*st));
 }
 inline void GetSystemTime(SYSTEMTIME* st) {
+    if (!st) return;
     time_t now = time(NULL);
     struct tm* gm = gmtime(&now);
-    if (gm && st) {
-        st->wYear = (WORD)(gm->tm_year + 1900);
-        st->wMonth = (WORD)(gm->tm_mon + 1);
-        st->wDayOfWeek = (WORD)gm->tm_wday;
-        st->wDay = (WORD)gm->tm_mday;
-        st->wHour = (WORD)gm->tm_hour;
-        st->wMinute = (WORD)gm->tm_min;
-        st->wSecond = (WORD)gm->tm_sec;
-        st->wMilliseconds = 0;
-    } else if (st) { memset(st, 0, sizeof(*st)); }
+    if (gm) Shim_TmToSystemTime(gm, 0, st);
+    else memset(st, 0, sizeof(*st));
 }
+// SYSTEMTIME is UTC here, same as Win32.
 inline BOOL SystemTimeToFileTime(const SYSTEMTIME* st, FILETIME* ft) {
-    // Approximate: store as Unix timestamp * 10,000,000 + Windows epoch offset
-    struct tm t = {};
-    t.tm_year = st->wYear - 1900; t.tm_mon = st->wMonth - 1; t.tm_mday = st->wDay;
-    t.tm_hour = st->wHour; t.tm_min = st->wMinute; t.tm_sec = st->wSecond;
-    time_t tt = mktime(&t);
-    unsigned long long ull = (unsigned long long)tt * 10000000ULL + 116444736000000000ULL;
+    int64_t t = Shim_DaysFromCivil(st->wYear, st->wMonth, st->wDay) * 86400 +
+                st->wHour * 3600 + st->wMinute * 60 + st->wSecond;
+    unsigned long long ull = (unsigned long long)(t + 11644473600LL) * 10000000ULL +
+                             (unsigned long long)st->wMilliseconds * 10000ULL;
     ft->dwLowDateTime = (DWORD)(ull & 0xFFFFFFFF);
     ft->dwHighDateTime = (DWORD)(ull >> 32);
     return TRUE;
 }
 inline BOOL FileTimeToSystemTime(const FILETIME* ft, SYSTEMTIME* st) {
     unsigned long long ull = ((unsigned long long)ft->dwHighDateTime << 32) | ft->dwLowDateTime;
-    time_t tt = (time_t)((ull - 116444736000000000ULL) / 10000000ULL);
+    time_t tt = (time_t)Shim_FileTimeToUnix(ft);
     struct tm* gm = gmtime(&tt);
-    if (gm && st) {
-        st->wYear = (WORD)(gm->tm_year + 1900); st->wMonth = (WORD)(gm->tm_mon + 1);
-        st->wDayOfWeek = (WORD)gm->tm_wday; st->wDay = (WORD)gm->tm_mday;
-        st->wHour = (WORD)gm->tm_hour; st->wMinute = (WORD)gm->tm_min;
-        st->wSecond = (WORD)gm->tm_sec; st->wMilliseconds = 0;
-    } else if (st) { memset(st, 0, sizeof(*st)); }
-    return TRUE;
+    if (gm && st) Shim_TmToSystemTime(gm, (int)((ull / 10000ULL) % 1000), st);
+    else if (st) memset(st, 0, sizeof(*st));
+    return gm != NULL;
 }
 inline BOOL FileTimeToLocalFileTime(const FILETIME* ftUtc, FILETIME* ftLocal) {
-    // On desktop, just copy (timezone offset not critical for preview)
-    *ftLocal = *ftUtc;
+    unsigned long long ull = ((unsigned long long)ftUtc->dwHighDateTime << 32) | ftUtc->dwLowDateTime;
+    int64_t off = Shim_UtcOffset((time_t)Shim_FileTimeToUnix(ftUtc));
+    ull += (unsigned long long)(off * 10000000LL);
+    ftLocal->dwLowDateTime = (DWORD)(ull & 0xFFFFFFFF);
+    ftLocal->dwHighDateTime = (DWORD)(ull >> 32);
     return TRUE;
 }
 
 #define MAX_PATH 260
-#endif // !_WIN32
 
-#ifndef _WIN32
 // HRESULT values
 #define S_OK          ((HRESULT)0)
 #define S_FALSE       ((HRESULT)1)
@@ -632,10 +348,19 @@ typedef LONG NTSTATUS;
 typedef struct _GUID { uint32_t Data1; uint16_t Data2, Data3; uint8_t Data4[8]; } GUID, IID, CLSID;
 typedef const GUID& REFIID;
 typedef const GUID& REFCLSID;
+// mingw already has these as macros for its own headers.
+#ifndef STDMETHODCALLTYPE
 #define STDMETHODCALLTYPE
+#endif
+#ifndef __stdcall
 #define __stdcall
+#endif
+#ifndef __cdecl
 #define __cdecl
+#endif
+#ifndef WINAPI
 #define WINAPI
+#endif
 
 class IUnknown {
 public:
@@ -647,18 +372,7 @@ public:
 
 inline long InterlockedIncrement(long* p) { return __sync_add_and_fetch(p, 1); }
 inline long InterlockedDecrement(long* p) { return __sync_sub_and_fetch(p, 1); }
-#else
-// Windows: NTSTATUS not always in windows.h
-typedef LONG NTSTATUS;
-#ifndef NT_SUCCESS
-#define NT_SUCCESS(Status) ((NTSTATUS)(Status) >= 0)
-#endif
-#ifndef STATUS_SUCCESS
-#define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
-#endif
-#endif // !_WIN32
 
-#ifndef _WIN32
 // -------------------------------------------------------
 // TCHAR - use char (ANSI), same as Xbox
 // -------------------------------------------------------
@@ -697,8 +411,6 @@ typedef TCHAR* LPTSTR;
 #define _totupper toupper
 #define _totlower tolower
 #define _tcstod strtod
-#define _itoa(val, buf, radix) snprintf(buf, 32, "%d", val)
-#define lstrcpyn(dst, src, n) strncpy(dst, src, n)
 #define _tfopen fopen
 #define _ftprintf fprintf
 
@@ -710,7 +422,9 @@ inline char* _tcsupr(char* s) { for (char* p = s; *p; p++) *p = toupper((unsigne
 inline void Unicode(char* wsz, const char* sz, int nMaxChars) { strncpy(wsz, sz, nMaxChars); }
 inline void Ansi(char* sz, const char* wsz, int nMaxChars) { strncpy(sz, wsz, nMaxChars); }
 
-// Windows string functions mapped to POSIX
+// Microsoft C runtime names. mingw links that runtime, so it has them.
+#ifndef THESEUS_CRT_MS
+#define _itoa(val, buf, radix) snprintf(buf, 32, "%d", val)
 #define _strdup strdup
 #define _stricmp strcasecmp
 #define _strnicmp strncasecmp
@@ -719,6 +433,7 @@ inline void Ansi(char* sz, const char* wsz, int nMaxChars) { strncpy(sz, wsz, nM
 #define _fileno fileno
 #define stricmp strcasecmp
 #define strnicmp strncasecmp
+#endif
 
 // Memory macros
 #define CopyMemory(dst, src, len) memcpy(dst, src, len)
@@ -726,16 +441,6 @@ inline void Ansi(char* sz, const char* wsz, int nMaxChars) { strncpy(sz, wsz, nM
 #define FillMemory(dst, len, val) memset(dst, val, len)
 #define MoveMemory(dst, src, len) memmove(dst, src, len)
 #define CopyChars(dest, src, count) memcpy(dest, src, (count) * sizeof(TCHAR))
-#else
-// Windows: TCHAR mappings come from <tchar.h>
-#include <tchar.h>
-typedef TCHAR FSCHAR;
-#define _FS(s) _T(s)
-// Unicode/Ansi conversion stubs (we use char everywhere)
-inline void Unicode(char* wsz, const char* sz, int nMaxChars) { strncpy(wsz, sz, nMaxChars); }
-inline void Ansi(char* sz, const char* wsz, int nMaxChars) { strncpy(sz, wsz, nMaxChars); }
-#define CopyChars(dest, src, count) memcpy(dest, src, (count) * sizeof(TCHAR))
-#endif // !_WIN32
 
 // -------------------------------------------------------
 // Xbox kernel string
@@ -762,34 +467,13 @@ extern bool g_desktopRestartRequested;
 
 
 
-// Network - host IP query (real implementation, not a stub)
+// Network: the host's own address.
 typedef struct { DWORD ina, inaMask, inaGateway, inaDnsPrimary, inaDnsSecondary; } XNetConfigStatus;
 inline int XNetGetConfigStatus(XNetConfigStatus* p) {
     memset(p, 0, sizeof(*p));
-#ifdef _WIN32
-    // Use Winsock to get local IP
-    char hostname[256];
-    if (gethostname(hostname, sizeof(hostname)) == 0) {
-        struct hostent* he = gethostbyname(hostname);
-        if (he && he->h_addr_list[0]) {
-            memcpy(&p->ina, he->h_addr_list[0], 4);
-        }
-    }
-#else
-    // Get real local IP via getifaddrs (POSIX)
-    struct ifaddrs* ifa = NULL;
-    if (getifaddrs(&ifa) == 0) {
-        for (struct ifaddrs* cur = ifa; cur; cur = cur->ifa_next) {
-            if (!cur->ifa_addr || cur->ifa_addr->sa_family != AF_INET) continue;
-            DWORD addr = ((struct sockaddr_in*)cur->ifa_addr)->sin_addr.s_addr;
-            if ((addr & 0xFF) == 127) continue;
-            p->ina = addr;
-            p->inaMask = cur->ifa_netmask ? ((struct sockaddr_in*)cur->ifa_netmask)->sin_addr.s_addr : 0;
-            break;
-        }
-        freeifaddrs(ifa);
-    }
-#endif
+    uint32_t mask = 0;
+    p->ina = Host_LocalIPv4(&mask);
+    p->inaMask = mask;
     if (p->ina == 0) p->ina = 0x0100007f; // fallback 127.0.0.1
     return 0;
 }
@@ -804,9 +488,8 @@ typedef struct { BYTE Signature[20]; } XCALCSIG_SIGNATURE;
 
 
 
-#ifndef _WIN32
-// File API stubs
-// NOTE: CreateFileA is defined in xboxfs.h with path translation
+// Handle-based file calls. File HANDLEs are FILE*s on every host, opened
+// by TheseusCreateFile in xbox_file.cpp.
 inline BOOL ReadFile(HANDLE h, void* buf, DWORD nBytes, DWORD* nRead, void* ovlp) {
     size_t r = fread(buf, 1, nBytes, (FILE*)h);
     if (nRead) *nRead = (DWORD)r;
@@ -816,16 +499,18 @@ inline BOOL ReadFile(HANDLE h, void* buf, DWORD nBytes, DWORD* nRead, void* ovlp
 inline BOOL CloseHandle(HANDLE h) { if (h && h != INVALID_HANDLE_VALUE) fclose((FILE*)h); return TRUE; }
 inline DWORD SetFilePointer(HANDLE h, LONG dist, LONG* distHigh, DWORD method) {
     int origin = (method == 0) ? SEEK_SET : (method == 1) ? SEEK_CUR : SEEK_END;
-    fseek((FILE*)h, dist, origin);
-    return (DWORD)ftell((FILE*)h);
+    int64_t off = distHigh ? (int64_t)(((uint64_t)(uint32_t)*distHigh << 32) | (uint32_t)dist) : (int64_t)dist;
+    int64_t pos = Host_Seek((FILE*)h, off, origin);
+    if (pos < 0) return 0xFFFFFFFF;
+    if (distHigh) *distHigh = (LONG)(pos >> 32);
+    return (DWORD)(pos & 0xFFFFFFFF);
 }
 inline DWORD GetFileSize(HANDLE h, DWORD* high) {
-    long pos = ftell((FILE*)h);
-    fseek((FILE*)h, 0, SEEK_END);
-    long size = ftell((FILE*)h);
-    fseek((FILE*)h, pos, SEEK_SET);
-    if (high) *high = 0;
-    return (DWORD)size;
+    HostFileInfo info;
+    fflush((FILE*)h);
+    if (!Host_StatOpenFile((FILE*)h, &info)) info.size = 0;
+    if (high) *high = (DWORD)(info.size >> 32);
+    return (DWORD)(info.size & 0xFFFFFFFF);
 }
 #define GENERIC_READ  0x80000000
 #define GENERIC_WRITE 0x40000000
@@ -833,6 +518,12 @@ inline DWORD GetFileSize(HANDLE h, DWORD* high) {
 #define OPEN_EXISTING 3
 #define CREATE_ALWAYS 2
 #define OPEN_ALWAYS   4
+#ifndef CREATE_NEW
+#define CREATE_NEW    1
+#endif
+#ifndef TRUNCATE_EXISTING
+#define TRUNCATE_EXISTING 5
+#endif
 #define FILE_BEGIN 0
 #define FILE_CURRENT 1
 #define FILE_END 2
@@ -845,18 +536,16 @@ inline BOOL WriteFile(HANDLE h, const void* buf, DWORD nBytes, DWORD* nWritten, 
     return !ferror((FILE*)h);
 }
 
+// Desktop handles are FILE*s; this only empties the CRT buffer, reporting a failed write.
+inline BOOL FlushFileBuffers(HANDLE h) {
+    return h && h != INVALID_HANDLE_VALUE && fflush((FILE*)h) == 0;
+}
+
 // SetFileTime stub (no-op on desktop)
 inline BOOL SetFileTime(HANDLE h, const FILETIME* c, const FILETIME* a, const FILETIME* w) {
     (void)h; (void)c; (void)a; (void)w;
     return TRUE;
 }
-
-// SetFileAttributes stub
-inline BOOL SetFileAttributes(const char* path, DWORD attr) {
-    (void)path; (void)attr;
-    return TRUE;
-}
-#define SetFileAttributesA SetFileAttributes
 
 // CharUpper/CharLower (Win32 string functions)
 inline LPTSTR CharUpper(LPTSTR p) {
@@ -870,21 +559,6 @@ inline LPTSTR CharLower(LPTSTR p) {
     return p;
 }
 
-// DeleteFile is provided by xboxfs.h with path translation
-
-// CreateDirectory
-#include <errno.h>
-inline BOOL CreateDirectory(const char* path, void* sa) {
-    (void)sa;
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-#ifdef _WIN32
-    return CreateDirectoryA(p, NULL);
-#else
-    return mkdir(p, 0755) == 0 || errno == EEXIST;
-#endif
-}
-#define CreateDirectoryA CreateDirectory
 
 // CreateThread stub (single-threaded on POSIX for now)
 typedef DWORD (*LPTHREAD_START_ROUTINE)(void*);
@@ -923,7 +597,6 @@ inline void Sleep(DWORD ms) { SDL_Delay(ms); }
 // Debug output
 inline void OutputDebugStringA(const char* s) { fprintf(stderr, "%s", s); }
 #define OutputDebugString OutputDebugStringA
-#endif // !_WIN32
 
 // -------------------------------------------------------
 // Macros
@@ -935,13 +608,10 @@ inline void OutputDebugStringA(const char* s) { fprintf(stderr, "%s", s); }
 #define ARRAYSIZE(a) (sizeof(a) / sizeof((a)[0]))
 #endif
 
-#ifndef _WIN32
-// SetRect stub (also in Image.h for non-Windows)
 #ifndef SetRect
 #define SetRect(pRect, nLeft, nTop, nRight, nBottom) \
     do { (pRect)->left = (nLeft); (pRect)->top = (nTop); (pRect)->right = (nRight); (pRect)->bottom = (nBottom); } while(0)
 #endif
-#endif // !_WIN32
 
 // XGWriteSurfaceToFile stub (used by screen.cpp screenshot)
 inline HRESULT XGWriteSurfaceToFile(void* pSurface, const char* path) { (void)pSurface; (void)path; return 0; }
@@ -967,7 +637,6 @@ typedef void* LPDIRECTSOUNDBUFFER;
 typedef void* LPDIRECTSOUND;
 #endif
 
-#ifndef _WIN32
 // OVERLAPPED stub (async I/O - not used on desktop)
 typedef struct _OVERLAPPED {
     DWORD Internal;
@@ -994,7 +663,6 @@ typedef struct tagSIZE { LONG cx, cy; } SIZE;
 
 // COLORREF
 typedef DWORD COLORREF;
-#endif // !_WIN32
 
 // D3DBACKBUFFER_TYPE_MONO
 #define D3DBACKBUFFER_TYPE_MONO 0
@@ -1034,7 +702,6 @@ typedef struct { DWORD Common; DWORD Data; void (*Register)(void*); } D3DResourc
 inline void D3D_CopyContiguousMemoryToVideo(void* p) { (void)p; }
 inline void* D3D_AllocContiguousMemory(DWORD size, DWORD align) { return malloc(size); }
 
-#ifndef _WIN32
 // LARGE_INTEGER
 typedef union _LARGE_INTEGER {
     struct { DWORD LowPart; LONG HighPart; };
@@ -1046,22 +713,7 @@ typedef union _ULARGE_INTEGER {
     unsigned long long QuadPart;
 } ULARGE_INTEGER;
 
-// GetDiskFreeSpaceEx stub
-inline BOOL GetDiskFreeSpaceEx(const char* path, ULARGE_INTEGER* lpFree,
-                                ULARGE_INTEGER* lpTotal, ULARGE_INTEGER* lpTotalFree) {
-    (void)path;
-    if (lpFree) lpFree->QuadPart = 0;
-    if (lpTotal) lpTotal->QuadPart = 0;
-    if (lpTotalFree) lpTotalFree->QuadPart = 0;
-    return TRUE;
-}
-#define GetDiskFreeSpaceExA GetDiskFreeSpaceEx
-#endif // !_WIN32
-
-
-
-#ifndef _WIN32
-// LARGE_INTEGER / LONGLONG
+// LONGLONG
 typedef long long LONGLONG;
 typedef unsigned long long ULONGLONG;
 
@@ -1082,14 +734,13 @@ inline int WideCharToMultiByte(UINT codePage, DWORD flags, const wchar_t* src, i
     return len;
 }
 
-// FindFirstFileA / FindNextFileA - same as FindFirstFile (ANSI build)
+// ANSI build, so the A struct is the struct.
 typedef WIN32_FIND_DATA WIN32_FIND_DATAA;
-#define FindFirstFileA FindFirstFile
-#define FindNextFileA FindNextFile
 
-// __debugbreak
+// __debugbreak is a compiler intrinsic under mingw.
+#ifndef THESEUS_CRT_MS
 #define __debugbreak() SDL_TriggerBreakpoint()
-#endif // !_WIN32
+#endif
 
 #ifndef ERROR_SUCCESS
 #define ERROR_SUCCESS 0
@@ -1103,36 +754,22 @@ typedef WIN32_FIND_DATA WIN32_FIND_DATAA;
 #define XC_GAME_REGION_JAPAN        2
 #define XC_GAME_REGION_RESTOFWORLD  3
 
-// (TIME_ZONE_INFORMATION moved earlier, before timezone stubs)
 
 // -------------------------------------------------------
 // Missing constants for Locale.cpp / Xbox.cpp
 // -------------------------------------------------------
-#ifndef _WIN32
 #define GENERIC_ALL 0x10000000
-#endif
 
 // -------------------------------------------------------
 // Xbox.cpp stubs
 // -------------------------------------------------------
 
-#ifndef _WIN32
-// DeleteFileA stub
-inline BOOL DeleteFileA(const char* path) {
-    const char* p = path;
-    if (path && strchr(path, ':')) p = _StubTranslatePath(path);
-    return remove(p) == 0;
-}
-#endif // !_WIN32
-
-// IN_ADDR struct (Windows already has this from winsock2.h)
-#ifndef _WIN32
+// IN_ADDR
 typedef struct in_addr_stub {
     DWORD s_addr;
     in_addr_stub() : s_addr(0) {}
     in_addr_stub(DWORD a) : s_addr(a) {}
 } IN_ADDR;
-#endif
 
 // Overload for IN_ADDR parameter
 inline void XNetInAddrToString(IN_ADDR addr, char* pStr, int len) {
@@ -1145,7 +782,7 @@ inline void XNetInAddrToString(IN_ADDR addr, char* pStr, int len) {
 
 
 
-#ifndef _WIN32
+#ifndef THESEUS_CRT_MS
 // swprintf - macOS/Linux swprintf requires a size param, but Xbox code doesn't pass one
 // Use a wrapper function instead of a recursive macro
 inline int _uix_swprintf(wchar_t* buf, const wchar_t* fmt, ...) {
@@ -1156,10 +793,6 @@ inline int _uix_swprintf(wchar_t* buf, const wchar_t* fmt, ...) {
     return r;
 }
 #define swprintf _uix_swprintf
-#endif // !_WIN32
+#endif
 
-// Xbox filesystem path translation; provides CreateFile/fopen/etc.
-// macro redirection so engine code that calls Win32 file APIs works
-// transparently on all platforms via xboxfs path mapping.
-#include "xboxfs.h"
 

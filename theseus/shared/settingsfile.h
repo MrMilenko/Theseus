@@ -62,11 +62,19 @@ public:
 	void SetValue(const TCHAR* szSection, const TCHAR* szName, const TCHAR* szValue);
 	CSettingsFileSection* FindSection(const TCHAR* szSection, bool bCreate = false);
 
+	// SetValue writes the whole file every time it changes a key, which is
+	// fine for a setting the user just toggled and ruinous for a loop. Bracket
+	// a run of writes with these and call Save yourself at the end.
+	void BeginBatch() { m_batching = true; }
+	void EndBatch()   { m_batching = false; }
+
 	TCHAR* m_filePath;
 	CSettingsFileSection* m_sections;
 	bool m_dirty;
+	bool m_batching;
 
 protected:
+	int WriteTo(const TCHAR* szPath);
 
 #ifdef _UNICODE
 	bool m_unicode;

@@ -1,8 +1,5 @@
 // stdcfg.h: desktop build configuration. Counterpart to
-// engine/stdcfg.h on Xbox; platform detection uses __APPLE__,
-// __linux__, _WIN32.
-
-#define UIX_DESKTOP 1
+// engine/stdcfg.h on Xbox. Which host OS we're on comes from platform.h.
 
 // Desktop uses UTF-8 char strings (SDL2, POSIX, OpenGL are all char*-based).
 // Xbox used UTF-16LE via _UNICODE/TCHAR. That path has been removed.

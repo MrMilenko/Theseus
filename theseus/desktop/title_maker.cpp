@@ -23,32 +23,8 @@
 #include <algorithm>
 #include <string>
 
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#include <process.h>
-#else
-#include <dirent.h>
-#endif
-
-// Platform code uses native file I/O; undo Xbox filesystem macros.
-#undef fopen
-#undef _tfopen
-#ifdef _WIN32
-#undef CreateFile
-#undef CreateFileA
-#undef FindFirstFile
-#undef FindFirstFileA
-#undef FindNextFile
-#undef FindNextFileA
-#undef FindClose
-#undef GetFileAttributes
-#undef GetFileAttributesA
-#undef GetFileAttributesEx
-#undef GetFileAttributesExA
-#undef RemoveDirectory
-#undef RemoveDirectoryA
-#endif
+#include "host.h"
+#include "safe_save.h"
 
 bool g_titleMakerOpen = false;
 
@@ -58,13 +34,8 @@ bool g_titleMakerOpen = false;
 
 static void TM_EnsureDir(const char* path) {
     struct stat st;
-    if (stat(path, &st) != 0) {
-#ifdef _WIN32
-        _mkdir(path);
-#else
-        mkdir(path, 0755);
-#endif
-    }
+    if (stat(path, &st) != 0)
+        Host_MakeDir(path);
 }
 
 static void TM_SanitizeName(char* name, int maxLen) {
@@ -301,12 +272,13 @@ static int TM_ReadIconsIni(char keys[][128], char vals[][128]) {
 }
 
 static void TM_WriteIconsIni(char keys[][128], char vals[][128], int count) {
-    FILE* fp = fopen(AppPath("Configs/Icons.ini"), "w");
+    SafeSave save(AppPath("Configs/Icons.ini"));
+    FILE* fp = save.f;
     if (!fp) return;
     fprintf(fp, "[default]\n");
     for (int i = 0; i < count; i++)
         fprintf(fp, "%s=%s\n", keys[i], vals[i]);
-    fclose(fp);
+    save.Commit();
 }
 
 // Open a URL via the platform's default handler. Falls through the
@@ -545,13 +517,13 @@ static bool TM_DownloadSteamIcon(int appid, const char* titleID) {
                  "https://cdn.akamai.steamstatic.com/steam/apps/%d/%s",
                  appid, tryUrls[u]);
         if (Http_GetToFile(url, tmpPath) && stat(tmpPath, &ist) == 0 && ist.st_size > 1000) {
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
             char cmd[1024];
             snprintf(cmd, sizeof(cmd),
                 "sips -z 128 128 -s format jpeg \"%s\" --out \"%s\" >/dev/null 2>&1",
                 tmpPath, iconPath);
             bool resizeOk = (system(cmd) == 0);
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
             bool resizeOk = TM_CopyFile(tmpPath, iconPath);
 #else
             char cmd[1024];
@@ -616,24 +588,12 @@ static void TM_ImportSteamLibrary(const char* steamPath,
     };
 
     for (int d = 0; d < libCount && gameCount < 256; d++) {
-#ifdef _WIN32
-        char searchBuf[512];
-        snprintf(searchBuf, sizeof(searchBuf), "%s\\appmanifest_*", libDirs[d]);
-        struct _finddata_t fd;
-        intptr_t hFind = _findfirst(searchBuf, &fd);
-        if (hFind != -1) {
-            do { ParseAppManifest(libDirs[d], fd.name); } while (_findnext(hFind, &fd) == 0 && gameCount < 256);
-            _findclose(hFind);
-        }
-#else
-        DIR* dir = opendir(libDirs[d]);
+        HostDir* dir = Host_OpenDir(libDirs[d]);
         if (!dir) continue;
-        struct dirent* ent;
-        while ((ent = readdir(dir)) != NULL && gameCount < 256) {
-            ParseAppManifest(libDirs[d], ent->d_name);
-        }
-        closedir(dir);
-#endif
+        char name[260];
+        while (gameCount < 256 && Host_ReadDir(dir, name, sizeof(name), NULL))
+            ParseAppManifest(libDirs[d], name);
+        Host_CloseDir(dir);
     }
 
     if (gameCount == 0) return;
@@ -789,7 +749,10 @@ void RenderTitleMaker() {
         });
     };
 
-    if (s_needsScan) { DoScan(); s_needsScan = false; }
+    // Rows moved under us (ES-DE resync, xCloud refresh), so the cached indices are stale.
+    static unsigned int s_scanLayout = 0;
+    if (s_scanLayout != g_vgames.layout) s_needsScan = true;
+    if (s_needsScan) { DoScan(); s_needsScan = false; s_scanLayout = g_vgames.layout; }
 
     // Header
     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "UIX Title Maker");
@@ -824,11 +787,11 @@ void RenderTitleMaker() {
         ImGui::SameLine();
         if (ImGui::SmallButton("Find##xemu")) {
             const char* tryPaths[] = {
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
                 "/Applications/xemu.app",
                 "/opt/homebrew/bin/xemu",
                 "/usr/local/bin/xemu",
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
                 "C:\\Program Files\\xemu\\xemu.exe",
                 "C:\\Program Files (x86)\\xemu\\xemu.exe",
 #else
@@ -1380,18 +1343,13 @@ void RenderTitleMaker() {
             }
             ImGui::SameLine();
             if (ImGui::SmallButton("Find##st")) {
-                const char* user = NULL;
-#ifdef _WIN32
-                user = getenv("USERNAME");
-#else
-                user = getenv("USER");
-#endif
-                if (!user) user = "user";
+                const char* user = PlatformUserName();
+                if (!user || !*user) user = "user";
                 char buf[512];
                 const char* tryRoots[] = {
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
                     "/Users/%s/Library/Application Support/Steam",
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
                     "C:\\Program Files (x86)\\Steam",
                     "C:\\Program Files\\Steam",
                     "D:\\Steam",
@@ -1454,6 +1412,8 @@ void RenderTitleMaker() {
             s_stIconBrowserInit = true;
         }
 
+        static unsigned int s_stLayout = 0;
+        if (s_stLayout != g_vgames.layout) { s_stSelectedVi = -1; s_stLayout = g_vgames.layout; }
         if (s_stSelectedVi >= 0 &&
             (s_stSelectedVi >= g_vgames.count || !g_vgames.games[s_stSelectedVi].valid))
             s_stSelectedVi = -1;
@@ -1803,6 +1763,8 @@ void RenderTitleMaker() {
         }
 
         // Selection may have been removed; clamp.
+        static unsigned int s_raLayout = 0;
+        if (s_raLayout != g_vgames.layout) { s_raSelectedVi = -1; s_raLayout = g_vgames.layout; }
         if (s_raSelectedVi >= 0 &&
             (s_raSelectedVi >= g_vgames.count || !g_vgames.games[s_raSelectedVi].valid))
             s_raSelectedVi = -1;
@@ -2216,8 +2178,15 @@ void RenderTitleMaker() {
             if (strcmp(s_esScannedFor, s_esdePath) != 0) EsdeRescan(s_esdePath);
 
             if (s_esSysCount <= 0) {
-                ImGui::TextDisabled("Nothing found. ES-DE keeps its roms in %s",
-                                    Esde_RomRoot(s_esdePath));
+                if (!Esde_LastScanFoundSystemsXml()) {
+                    ImGui::TextDisabled("No es_systems.xml under %s.", s_esdePath);
+                    ImGui::TextDisabled("An ES-DE AppImage keeps its copy inside the");
+                    ImGui::TextDisabled("image, so point this at an es_systems.xml or at");
+                    ImGui::TextDisabled("a folder holding custom_systems/es_systems.xml.");
+                } else {
+                    ImGui::TextDisabled("Systems loaded but no roms matched. ES-DE keeps");
+                    ImGui::TextDisabled("its roms in %s", Esde_RomRoot(s_esdePath));
+                }
             } else {
                 ImGui::Text("%d system%s, %d game%s.",
                             s_esSysCount,  s_esSysCount  == 1 ? "" : "s",

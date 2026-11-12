@@ -152,22 +152,25 @@ void WritePanicLog(const TCHAR* reason, LPEXCEPTION_POINTERS pEx)
 // and the diffuse-coloured glyphs render invisible.
 void Set2DOverlayState(IDirect3DDevice8* dev)
 {
-    dev->SetRenderState(D3DRS_ZENABLE, FALSE);
-    dev->SetRenderState(D3DRS_LIGHTING, FALSE);
-    dev->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    dev->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    dev->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    dev->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    dev->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    dev->SetRenderState(D3DRS_COLORVERTEX, TRUE);
-    dev->SetTexture(0, NULL);
-    dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-    dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-    dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+    // A crash can land between a cache update and the device call, so
+    // nothing the skip caches remember is trusted here.
+    TheseusInvalidateStateCache();
+    TheseusSetRenderState(D3DRS_ZENABLE, FALSE);
+    TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
+    TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    TheseusSetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    TheseusSetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    TheseusSetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    TheseusSetRenderState(D3DRS_COLORVERTEX, TRUE);
+    TheseusSetTexture(0, NULL);
+    TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+    TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
 }
 
 // Procedural background. Two stacked quads draw a vertical gradient from
@@ -208,9 +211,11 @@ void RebootCold()
 
 }  // namespace
 
-void TheseusPanic(const TCHAR* reason, LPEXCEPTION_POINTERS pEx)
+void TheseusPanic(const TCHAR* reason, const TCHAR* nextStep, LPEXCEPTION_POINTERS pEx)
 {
     if (!reason) reason = _T("(unknown)");
+    if (!nextStep)
+        nextStep = _T("Restart the console. If it keeps happening, reinstall Theseus.");
 
     OutputDebugString(_T("[Panic] entering panic mode: "));
     OutputDebugString(reason);
@@ -287,9 +292,9 @@ void TheseusPanic(const TCHAR* reason, LPEXCEPTION_POINTERS pEx)
             (BYTE)(220 * pulse),
             (BYTE)(60 * pulse));
 
-        DrawCenteredText(_T("THESEUS  PANIC  MODE"), screenW,
+        DrawCenteredText(_T("Something broke."), screenW,
                          screenH * 0.075f, screenH * 0.058f, titleColor);
-        DrawCenteredText(_T("Dashboard init failed -- recovery only"), screenW,
+        DrawCenteredText(_T("Theseus could not finish starting up."), screenW,
                          screenH * 0.146f, screenH * 0.029f,
                          D3DCOLOR_ARGB(255, 120, 160, 120));
 
@@ -297,13 +302,19 @@ void TheseusPanic(const TCHAR* reason, LPEXCEPTION_POINTERS pEx)
         const float bodyH  = screenH * 0.033f; // ~16 at 480
         const float lineH  = screenH * 0.029f;
 
+        // What to do about it.
+        float y = screenH * 0.222f;
+        OverlayFontDraw(_T("Next step:"), marginX, y, labelH, D3DCOLOR_ARGB(255, 255, 220, 120));
+        OverlayFontDraw(nextStep, marginX, y + lineH * 1.3f, bodyH,
+                        D3DCOLOR_ARGB(255, 255, 255, 255));
+
         // Reason panel.
-        float y = screenH * 0.229f;
+        y = screenH * 0.330f;
         OverlayFontDraw(_T("Reason:"), marginX, y, labelH, D3DCOLOR_ARGB(255, 100, 200, 100));
         OverlayFontDraw(reason, marginX, y + lineH * 1.3f, bodyH, D3DCOLOR_ARGB(255, 240, 240, 240));
 
         // Network panel.
-        y = screenH * 0.354f;
+        y = screenH * 0.438f;
         char ipStr[16] = "0.0.0.0";
         bool netUp = net::isReady();
         if (netUp) IpToString(net::getAddress(), ipStr);
@@ -328,7 +339,7 @@ void TheseusPanic(const TCHAR* reason, LPEXCEPTION_POINTERS pEx)
                         D3DCOLOR_ARGB(255, 200, 200, 200));
 
         // Expected XIPs panel.
-        y = screenH * 0.521f;
+        y = screenH * 0.605f;
         OverlayFontDraw(_T("Expected XIPs:"), marginX, y, labelH, D3DCOLOR_ARGB(255, 100, 200, 100));
         char fullPath[64];
         for (size_t i = 0; i < sizeof(kExpectedXips) / sizeof(kExpectedXips[0]); i++) {

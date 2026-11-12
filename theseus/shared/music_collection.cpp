@@ -74,7 +74,7 @@ static void StripExtension(const char* src, char* dst, int maxLen)
 
 static int ProbeMP3Duration(const char* path)
 {
-	HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ,
+	HANDLE hFile = TheseusCreateFile(path, GENERIC_READ, FILE_SHARE_READ,
 		NULL, OPEN_EXISTING, 0, NULL);
 	if (hFile == INVALID_HANDLE_VALUE) return 0;
 
@@ -127,7 +127,7 @@ static void ScanSoundtrackDir(const char* stPath, const char* dirName)
 	_snprintf(searchPath, MAX_PATH_LEN, "%s\\*", stPath);
 
 	WIN32_FIND_DATAA fd;
-	HANDLE hFind = FindFirstFileA(searchPath, &fd);
+	HANDLE hFind = TheseusFindFirstFile(searchPath, &fd);
 	if (hFind == INVALID_HANDLE_VALUE) return;
 
 	do
@@ -142,8 +142,8 @@ static void ScanSoundtrackDir(const char* stPath, const char* dirName)
 		song->duration = ProbeMP3Duration(song->path);
 		st->songCount++;
 	}
-	while (FindNextFileA(hFind, &fd));
-	FindClose(hFind);
+	while (TheseusFindNextFile(hFind, &fd));
+	TheseusFindClose(hFind);
 
 	if (st->songCount > 0)
 		g_soundtrackCount++;
@@ -158,7 +158,7 @@ static void ScanMusicRoot()
 	_snprintf(searchPath, MAX_PATH_LEN, "%s\\*", MUSIC_ROOT);
 
 	WIN32_FIND_DATAA fd;
-	HANDLE hFind = FindFirstFileA(searchPath, &fd);
+	HANDLE hFind = TheseusFindFirstFile(searchPath, &fd);
 	if (hFind == INVALID_HANDLE_VALUE)
 	{
 		OutputDebugStringA("[Music] No music directory found (this is OK)\n");
@@ -174,8 +174,8 @@ static void ScanMusicRoot()
 		_snprintf(stPath, MAX_PATH_LEN, "%s\\%s", MUSIC_ROOT, fd.cFileName);
 		ScanSoundtrackDir(stPath, fd.cFileName);
 	}
-	while (FindNextFileA(hFind, &fd));
-	FindClose(hFind);
+	while (TheseusFindNextFile(hFind, &fd));
+	TheseusFindClose(hFind);
 
 	if (g_soundtrackCount > 0)
 	{

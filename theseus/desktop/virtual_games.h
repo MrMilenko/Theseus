@@ -11,6 +11,7 @@
 #include <cctype>
 #include <sys/stat.h>
 #include "xboxfs_drive.h"
+#include "safe_save.h"
 
 // Roomy enough for a full local library plus a signed-in xCloud/Game Pass
 // account injected at boot (see xcloud_vgames.cpp), and now an imported ES-DE
@@ -42,6 +43,9 @@ struct VirtualGameDB {
     // Bumps on every mutation so consumers can cache filtered slices keyed on
     // it and auto refresh when games.ini changes.
     unsigned int generation;
+    // Bumps when a compact moves rows to new indices, so anything holding on
+    // to an index knows to drop it.
+    unsigned int layout;
 };
 
 extern VirtualGameDB g_vgames;
@@ -110,16 +114,50 @@ inline void VGames_Load() {
             g_vgames.count, g_vgames.generation);
 }
 
+inline bool VGames_IsLive(const VirtualGame& g) {
+    return g.valid && (g.transient || VGames_IsStreaming(g));
+}
+
+// Close the gaps left by invalid rows so their slots can be used again.
+// Shifts indices, same as a reload does.
+inline void VGames_Compact() {
+    int w = 0;
+    for (int r = 0; r < g_vgames.count; r++) {
+        if (!g_vgames.games[r].valid) continue;
+        if (w != r) g_vgames.games[w] = g_vgames.games[r];
+        w++;
+    }
+    g_vgames.generation++;
+    if (w == g_vgames.count) return;
+    g_vgames.count = w;
+    g_vgames.layout++;
+}
+
+// Injected rows (xCloud, ES-DE) aren't in games.ini, so carry them across.
 inline void VGames_Reload() {
+    int nLive = 0;
+    for (int i = 0; i < g_vgames.count; i++)
+        if (VGames_IsLive(g_vgames.games[i])) nLive++;
+    VirtualGame* live = nLive ? (VirtualGame*)malloc(nLive * sizeof(VirtualGame)) : NULL;
+    if (!live) nLive = 0;
+    for (int i = 0, j = 0; i < g_vgames.count && j < nLive; i++)
+        if (VGames_IsLive(g_vgames.games[i])) live[j++] = g_vgames.games[i];
+
     g_vgames.loaded = false;
     g_vgames.count = 0;
     VGames_Load();
+
+    for (int j = 0; j < nLive && g_vgames.count < VGAMES_MAX; j++)
+        g_vgames.games[g_vgames.count++] = live[j];
+    free(live);
+    g_vgames.generation++;
 }
 
 inline void VGames_Save() {
-    Plat_MkdirP("Configs");
+    Plat_MkdirP(AppPath_Tree("Configs"));
 
-    FILE* fp = fopen(VGAMES_INI, "w");
+    SafeSave save(VGAMES_INI);
+    FILE* fp = save.f;
     if (!fp) return;
 
     for (int i = 0; i < g_vgames.count; i++) {
@@ -136,7 +174,7 @@ inline void VGames_Save() {
         if (g.group[0]) fprintf(fp, "Group=%s\n", g.group);
         fprintf(fp, "\n");
     }
-    fclose(fp);
+    save.Commit();
 }
 
 inline int VGames_Add(const char* name, const char* titleID, const char* launch,
@@ -200,7 +238,8 @@ inline void VGames_DeleteByName(const char* name) {
     g_vgames.games[idx].valid = false;
     g_vgames.generation++;
 
-    FILE* fp = fopen(AppPath("Configs/games.ini"), "w");
+    SafeSave save(AppPath("Configs/games.ini"));
+    FILE* fp = save.f;
     if (fp) {
         for (int i = 0; i < g_vgames.count; i++) {
             if (!g_vgames.games[i].valid) continue;
@@ -213,22 +252,29 @@ inline void VGames_DeleteByName(const char* name) {
                 fprintf(fp, "Category=%s\n", g_vgames.games[i].category);
             fprintf(fp, "\n");
         }
-        fclose(fp);
+        save.Commit();
     }
     fprintf(stderr, "[VGames] Deleted: %s\n", name);
+}
+
+// Forward slashes, no doubled or trailing separator. The Windows user data
+// root comes back with backslashes while translated Xbox paths use '/'.
+inline void VGames_NormPath(const char* in, char* out, size_t outSize) {
+    size_t j = 0;
+    for (size_t k = 0; in[k] && j + 1 < outSize; k++) {
+        char c = (in[k] == '\\') ? '/' : in[k];
+        if (c == '/' && j > 0 && out[j-1] == '/') continue;
+        out[j++] = c;
+    }
+    if (j > 0 && out[j-1] == '/') j--;
+    out[j] = 0;
 }
 
 // Match a disk path like "Library/Games/Road Rage" to a game index, or -1.
 inline int VGames_MatchFolder(const char* localPath) {
     VGames_Load();
     char norm[512];
-    int j = 0;
-    for (int k = 0; localPath[k] && j < 510; k++) {
-        if (localPath[k] == '/' && j > 0 && norm[j-1] == '/') continue;
-        norm[j++] = localPath[k];
-    }
-    if (j > 0 && norm[j-1] == '/') j--;
-    norm[j] = 0;
+    VGames_NormPath(localPath, norm, sizeof(norm));
 
     for (int i = 0; i < g_vgames.count; i++) {
         if (!g_vgames.games[i].valid) continue;
@@ -237,9 +283,10 @@ inline int VGames_MatchFolder(const char* localPath) {
         const char* prefix = (g_vgames.games[i].drive[0])
             ? XboxFS_DriveToPrefix(g_vgames.games[i].drive[0]) : 0;
         if (!prefix) continue;
-        char expected[512];
-        snprintf(expected, sizeof(expected), "%s/%s/%s",
+        char raw[512], expected[512];
+        snprintf(raw, sizeof(raw), "%s/%s/%s",
                  prefix, g_vgames.games[i].category, g_vgames.games[i].name);
+        VGames_NormPath(raw, expected, sizeof(expected));
         if (strcasecmp(norm, expected) == 0)
             return i;
     }

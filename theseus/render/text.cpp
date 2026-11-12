@@ -1,7 +1,10 @@
-// text.cpp: XTF font loading, glyph mesh generation, and text node
-// rendering. Reads Xbox .xtf vector font files, builds triangle meshes
-// from glyph outlines, handles word wrap, scrolling, cursor blinking,
-// and the overlay text API. Decompiled from the 5960 retail XBE; see
+// text.cpp: XTF vector fonts, text meshes and the Text node.
+//
+// A font is a .xtf file of pretriangulated glyphs. CreateTextMesh lays a
+// string out into one D3DX mesh (word wrap, two columns, *heading* lines,
+// the keyboard cursor), the Text node draws and scrolls that mesh, and the
+// overlay calls at the bottom draw the same glyphs straight to the screen.
+// Rebuilt function by function from the 5960 retail XBE; the findings are in
 // docs/decomp/Text.md.
 
 #include "std.h"
@@ -11,16 +14,19 @@
 #include "xap_compile.h"
 #include "runner.h"
 
-#ifndef LF_FACESIZE
-#define LF_FACESIZE 32
-#endif
+extern void TheseusCreateMeshFVF(DWORD NumFaces, DWORD NumVertices, DWORD Options, DWORD FVF, LPD3DXMESH* ppMesh);
 
+// The keyboard hands its edit string and cursor to the next Text node that
+// renders (0x0017e748, 0x00175220, 0x00175224 in the binary).
 TCHAR* g_szText = NULL;
-
-// Oh what a nasty hack...
-int g_nTextChar = -1; // index of char where we want a cursor
+int g_nTextChar = -1;
 int g_nTextCharLast = -1;
 
+// *heading* formatting, off until a script turns it on through the keyboard's
+// SetAsteriskFormattingState (0x0017e74c, a BSS byte in 5960).
+bool g_bAsteriskFormatting = false;
+
+// D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE (0x52), 28 bytes a vertex.
 struct TEXTVERTEX
 {
 	float x, y, z;
@@ -28,49 +34,73 @@ struct TEXTVERTEX
 	DWORD color;
 };
 
-struct CGlyphVertex
+#define TEXT_FVF (D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE)
+
+static inline void SetVertexAlpha(TEXTVERTEX& v, float a)
+{
+	v.color = (v.color & 0x00ffffff) | ((DWORD)a << 24);
+}
+
+
+// ===== XTF files ===========================================================
+// "XTF0", a 32 byte face name block, the glyph set (code point ranges), one
+// 28 byte record per glyph, then the glyph shapes at the offsets the records
+// give. The layout is fixed by the file, so these structs match it exactly.
+
+struct XtfRange
+{
+	WORD first;
+	WORD count;
+};
+
+struct XtfGlyphSet
+{
+	DWORD cbThis;
+	DWORD flAccel;
+	DWORD cGlyphs;
+	DWORD cRanges;
+	XtfRange ranges[1];
+};
+
+struct XtfGlyph
+{
+	float blackBoxX, blackBoxY;
+	float originX, originY;
+	float advanceX, advanceY;
+	DWORD shapeOffset;
+};
+
+struct XtfPoint
 {
 	float x, y;
 };
 
 struct CGlyphShape
 {
-	WORD m_nIndexCount;
-	WORD m_nVertexCount;
-	WORD* m_indices;
-	CGlyphVertex* m_vertices;
-	int m_nGlyphIndex;    // added to hold the index of the character
+	WORD nIndices;
+	WORD nPoints;
+	WORD* indices;
+	XtfPoint* points;
 };
 
-struct CGlyphMetrics
-{
-    float gmfBlackBoxX;
-    float gmfBlackBoxY;
-    CGlyphVertex gmfptGlyphOrigin;
-    float gmfCellIncX;
-    float gmfCellIncY;
-};
+#define XTF0_MAGIC 0x30465458
+#define XTF_FACE_LEN 32
 
-struct CGlyphObject
+// The binary refuses any single font read over 20 MB (0x00053840).
+static bool ReadExact(HANDLE hFile, void* pv, DWORD cb)
 {
-	CGlyphMetrics m_metrics;
-	CGlyphShape* m_glyphShape; // or DWORD m_dwFileOffsetOfGlyphShape
-};
+	if (cb > 0x1400000)
+		return false;
+	DWORD cbRead = 0;
+	return ReadFile(hFile, pv, cb, &cbRead, NULL) && cbRead == cb;
+}
 
-struct CWCRange
+static void FreeShape(CGlyphShape* pShape)
 {
-	WCHAR wcLow;
-	USHORT cGlyphs;
-};
-
-struct CGlyphSet
-{
-	DWORD cbThis;
-	DWORD flAccel;
-	DWORD cGlyphsSupported;
-	DWORD cRanges;
-	CWCRange ranges [1];
-};
+	delete [] pShape->indices;
+	delete [] pShape->points;
+	delete pShape;
+}
 
 class CFont
 {
@@ -80,24 +110,30 @@ public:
 
 	bool Open(const TCHAR* szFile);
 	void Close();
-	bool LoadGlyph(int nGlyphIndex);
+	bool IsOpen() const { return m_pSet != NULL; }
+
 	int FindGlyphIndex(WCHAR wch);
-	void CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale);
-	void CreateCursorMesh(WORD*& indices, int& nCurIndex, TEXTVERTEX*& verts, int& nCurVertex, float x, float y, bool visible);
-    bool IsBreakChar(TCHAR ch);
+	bool LoadGlyph(int nGlyph);
+	float Advance(int nGlyph) const { return m_pGlyphs[nGlyph].advanceX; }
+	CGlyphShape* Shape(int nGlyph) const { return m_ppShapes[nGlyph]; }
+
+	void CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale,
+		float indentWidth = 0.0f, float indentHeight = 0.0f);
 
 	HANDLE m_hFile;
-	CGlyphSet* m_glyphSet;
-	CGlyphObject* m_rgGlyphObjects;
-	bool* m_rgGlyphLoaded;
+
+private:
+	XtfGlyphSet* m_pSet;
+	XtfGlyph* m_pGlyphs;
+	CGlyphShape** m_ppShapes;
 };
 
-CFont::CFont()
+CFont::CFont() :
+	m_hFile(INVALID_HANDLE_VALUE),
+	m_pSet(NULL),
+	m_pGlyphs(NULL),
+	m_ppShapes(NULL)
 {
-	m_hFile = INVALID_HANDLE_VALUE;
-	m_glyphSet = NULL;
-	m_rgGlyphObjects = NULL;
-	m_rgGlyphLoaded = NULL;
 }
 
 CFont::~CFont()
@@ -105,178 +141,202 @@ CFont::~CFont()
 	Close();
 }
 
+// CFont::Close()
+// Reconstructed from 5960 retail XBE @ 0x00053870:
+//     if (hFile != -1) { CloseHandle(hFile); hFile = -1; }
+//     for (i < glyphSet->cGlyphs) if (loaded[i] && shape[i]) free indices, points, shape;
+//     free glyphSet, glyph records, loaded flags (plus the XTF1 buffers);
 void CFont::Close()
 {
 	if (m_hFile != INVALID_HANDLE_VALUE)
-		VERIFY(CloseHandle(m_hFile));
-
-	if (m_glyphSet != NULL)
 	{
-		for (UINT i = 0; i < m_glyphSet->cGlyphsSupported; i += 1)
+		CloseHandle(m_hFile);
+		m_hFile = INVALID_HANDLE_VALUE;
+	}
+
+	if (m_ppShapes != NULL)
+	{
+		for (DWORD i = 0; i < m_pSet->cGlyphs; i++)
 		{
-			if (m_rgGlyphLoaded[i])
-			{
-				CGlyphShape* pGlyphShape = m_rgGlyphObjects[i].m_glyphShape;
-				delete [] pGlyphShape->m_indices;
-				delete [] pGlyphShape->m_vertices;
-				delete pGlyphShape;
-			}
+			if (m_ppShapes[i] != NULL)
+				FreeShape(m_ppShapes[i]);
 		}
 	}
 
-	delete [] (BYTE*)m_glyphSet;
-	delete [] m_rgGlyphObjects;
-	delete [] m_rgGlyphLoaded;
-
-	m_hFile = INVALID_HANDLE_VALUE;
-	m_glyphSet = NULL;
-	m_rgGlyphObjects = NULL;
-	m_rgGlyphLoaded = NULL;
+	delete [] (BYTE*)m_pSet;
+	delete [] m_pGlyphs;
+	delete [] m_ppShapes;
+	m_pSet = NULL;
+	m_pGlyphs = NULL;
+	m_ppShapes = NULL;
 }
 
+// CFont::Open(szFile)
+// Reconstructed from 5960 retail XBE @ 0x00053ce0 (open + magic) and
+// 0x00053970 (the XTF0 body). Ghidra decompile, trimmed:
+//     hFile = CreateFile(path, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING);
+//     read magic; XTF0 -> 0x53970, XTF1 -> LZX setup + 0x53b00, else close and fail;
+//     0x53970: read header length (4), face (0x20), cbSet (4); need cbSet > 0x13;
+//         set = alloc(cbSet); set->cbThis = cbSet; read cbSet - 4 more;
+//         need cRanges * 4 + 0x10 == cbSet;
+//         glyphs = alloc(cGlyphs * 0x1c); read them all; loaded = zeroed(cGlyphs);
+// Every read must return its full size. The 5960 load also checks the file
+// against the dash's signed hash table (0x0003eae0) and reads the compressed
+// XTF1 format; Theseus ships XTF0 fonts only and skips both. A failed open
+// closes the file here, where the binary leaves it for Close.
 bool CFont::Open(const TCHAR* szFile)
 {
-	ASSERT(m_hFile == INVALID_HANDLE_VALUE);
+	Close();
 
 	m_hFile = TheseusCreateFile(szFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
 	if (m_hFile == INVALID_HANDLE_VALUE)
 		return false;
 
-	DWORD dwRead;
+	DWORD dwMagic = 0, cbHeader = 0, cbSet = 0;
+	char face[XTF_FACE_LEN];
+	bool ok = ReadExact(m_hFile, &dwMagic, 4) && dwMagic == XTF0_MAGIC &&
+		ReadExact(m_hFile, &cbHeader, 4) &&
+		ReadExact(m_hFile, face, XTF_FACE_LEN) &&
+		ReadExact(m_hFile, &cbSet, 4) && cbSet >= 20;
 
-	DWORD dwMagic;
-	ReadFile(m_hFile, &dwMagic, 4, &dwRead, NULL);
-
-	if (dwMagic != 0x30465458) // "XTF0"
+	if (ok)
 	{
-		TRACE(_T("\001Invalid font file: %s\n"), szFile);
+		m_pSet = (XtfGlyphSet*)new BYTE[cbSet];
+		m_pSet->cbThis = cbSet;
+		ok = ReadExact(m_hFile, &m_pSet->flAccel, cbSet - 4) &&
+			16 + m_pSet->cRanges * sizeof (XtfRange) == cbSet;
+	}
 
-		VERIFY(CloseHandle(m_hFile));
-		m_hFile = INVALID_HANDLE_VALUE;
+	if (ok)
+	{
+		DWORD nGlyphs = m_pSet->cGlyphs;
+		m_pGlyphs = new XtfGlyph[nGlyphs];
+		ok = ReadExact(m_hFile, m_pGlyphs, nGlyphs * sizeof (XtfGlyph));
 
+		m_ppShapes = new CGlyphShape*[nGlyphs];
+		for (DWORD i = 0; i < nGlyphs; i++)
+			m_ppShapes[i] = NULL;
+	}
+
+	if (!ok)
+		Close();
+	return ok;
+}
+
+// CFont::LoadGlyph(nGlyph)
+// Reconstructed from 5960 retail XBE @ 0x00053ed0 (XTF0). Ghidra decompile:
+//     if (loaded[n]) return 1;
+//     off = glyphs[n].shape; if (off == 0) return 0;
+//     if (SetFilePointer(hFile, off, 0, FILE_BEGIN) == -1) return 0;
+//     s = new(0xc); read s->nIndices (2); s->indices = new(nIndices * 2);
+//     read s->nPoints (2); s->points = new(nPoints * 8);
+//     read indices, read points, each checked against its byte count;
+//     glyphs[n].shape = s; loaded[n] = 1; return 1;
+// The record's offset and the loaded shape live apart here so the record can
+// stay the file's 28 bytes on 64 bit hosts. A failed load frees what it made.
+bool CFont::LoadGlyph(int nGlyph)
+{
+	if (m_ppShapes[nGlyph] != NULL)
+		return true;
+
+	DWORD offset = m_pGlyphs[nGlyph].shapeOffset;
+	if (offset == 0 || SetFilePointer(m_hFile, offset, NULL, FILE_BEGIN) == (DWORD)-1)
+		return false;
+
+	CGlyphShape* pShape = new CGlyphShape;
+	pShape->indices = NULL;
+	pShape->points = NULL;
+
+	bool ok = ReadExact(m_hFile, &pShape->nIndices, 2);
+	if (ok)
+	{
+		pShape->indices = new WORD[pShape->nIndices];
+		ok = ReadExact(m_hFile, &pShape->nPoints, 2);
+	}
+	if (ok)
+	{
+		pShape->points = new XtfPoint[pShape->nPoints];
+		ok = ReadExact(m_hFile, pShape->indices, pShape->nIndices * sizeof (WORD)) &&
+			ReadExact(m_hFile, pShape->points, pShape->nPoints * sizeof (XtfPoint));
+	}
+
+	if (!ok)
+	{
+		FreeShape(pShape);
 		return false;
 	}
 
-	// Skip the face-name header. It's a fixed-length LF_FACESIZE (32-byte)
-	// ASCII block, the actual face string is read out separately by the
-	// font registry; the loader here just consumes the bytes to advance.
-	DWORD dwHeaderLen;
-	VERIFY(ReadFile(m_hFile, &dwHeaderLen, 4, &dwRead, NULL));
-	ASSERT(dwHeaderLen == LF_FACESIZE);
-
-	char szFace [LF_FACESIZE];
-	VERIFY(ReadFile(m_hFile, szFace, LF_FACESIZE, &dwRead, NULL));
-
-	DWORD cbGlyphSet;
-	VERIFY(ReadFile(m_hFile, &cbGlyphSet, 4, &dwRead, NULL));
-
-	m_glyphSet = (CGlyphSet*)new BYTE [cbGlyphSet];
-	m_glyphSet->cbThis = cbGlyphSet;
-	VERIFY(ReadFile(m_hFile, ((BYTE*)m_glyphSet) + 4, cbGlyphSet - 4, &dwRead, NULL));
-
-	m_rgGlyphObjects = new CGlyphObject [m_glyphSet->cGlyphsSupported];
-	VERIFY(ReadFile(m_hFile, m_rgGlyphObjects, sizeof (CGlyphObject) * m_glyphSet->cGlyphsSupported, &dwRead, NULL));
-
-	m_rgGlyphLoaded = new bool [m_glyphSet->cGlyphsSupported];
-	ZeroMemory(m_rgGlyphLoaded, sizeof (bool) * m_glyphSet->cGlyphsSupported);
-
+	m_ppShapes[nGlyph] = pShape;
 	return true;
 }
 
-bool CFont::LoadGlyph(int nGlyphIndex)
-{
-	ASSERT(m_glyphSet != NULL);
-	ASSERT(nGlyphIndex >= 0 && (UINT)nGlyphIndex < m_glyphSet->cGlyphsSupported);
-
-	if (m_rgGlyphLoaded[nGlyphIndex])
-		return true;
-
-	VERIFY(SetFilePointer(m_hFile, (DWORD)m_rgGlyphObjects[nGlyphIndex].m_glyphShape, 0, FILE_BEGIN) != ~0);
-	CGlyphShape* pGlyphShape = new CGlyphShape;
-    ASSERT(pGlyphShape);
-
-	DWORD dwRead;
-	
-	VERIFY(ReadFile(m_hFile, &pGlyphShape->m_nIndexCount, 2, &dwRead, NULL));
-	pGlyphShape->m_indices = new WORD [pGlyphShape->m_nIndexCount];
-
-	VERIFY(ReadFile(m_hFile, &pGlyphShape->m_nVertexCount, 2, &dwRead, NULL));
-	pGlyphShape->m_vertices = new CGlyphVertex [pGlyphShape->m_nVertexCount];
-
-	VERIFY(ReadFile(m_hFile, pGlyphShape->m_indices, sizeof (WORD) * pGlyphShape->m_nIndexCount, &dwRead, NULL));
-	VERIFY(ReadFile(m_hFile, pGlyphShape->m_vertices, sizeof (CGlyphVertex) * pGlyphShape->m_nVertexCount, &dwRead, NULL));
-
-	m_rgGlyphObjects[nGlyphIndex].m_glyphShape = pGlyphShape;
-	m_rgGlyphLoaded[nGlyphIndex] = true;
-
-	return true;
-}
-
+// CFont::FindGlyphIndex(wch)
+// Reconstructed from 5960 retail XBE @ 0x000541c0. Ghidra decompile:
+//     for (;;) {
+//         base = 0;
+//         for (i < set->cRanges) {
+//             if (r[i].first <= ch && ch < r[i].first + r[i].count) return ch - r[i].first + base;
+//             base += r[i].count;
+//         }
+//         if (ch == 0x7f) return 0;
+//         ch = 0x7f;                      // unknown characters draw as the DEL box
+//     }
+// The NULL set check is Theseus's, for a font that failed to open.
 int CFont::FindGlyphIndex(WCHAR wch)
 {
-	int nIndex = 0;
+	if (m_pSet == NULL)
+		return -1;
 
-	UINT i;
-	for (i = 0; i < m_glyphSet->cRanges; i += 1)
+	for (;;)
 	{
-		if (wch >= m_glyphSet->ranges[i].wcLow && wch < m_glyphSet->ranges[i].wcLow + m_glyphSet->ranges[i].cGlyphs)
-			return nIndex + wch - m_glyphSet->ranges[i].wcLow;
+		int base = 0;
+		for (DWORD i = 0; i < m_pSet->cRanges; i++)
+		{
+			const XtfRange& range = m_pSet->ranges[i];
+			if (wch >= range.first && wch < range.first + range.count)
+				return base + (wch - range.first);
+			base += range.count;
+		}
 
-		nIndex += m_glyphSet->ranges[i].cGlyphs;
+		if (wch == 0x7f)
+			return 0;
+		wch = 0x7f;
 	}
-
-	if (wch != 127)
-		return FindGlyphIndex(127); // the invalid char box
-
-	return 0; // "invalid char" glyph (it's a space)
 }
 
-inline float smoothstep(float a, float b, float x)
+
+// ===== Fades ===============================================================
+
+// Hermite ease on [0, 1], clamped; the binary inlines it as (3 - 2a) * a * a.
+static inline float Ease(float a)
 {
-	if (x < a)
+	if (a <= 0.0f)
 		return 0.0f;
-
-	if (x >= b)
+	if (a >= 1.0f)
 		return 1.0f;
-
-	x = (x - a) / (b - a);
-
-	return (x * x * (3 - 2 * x));
+	return a * a * (3.0f - 2.0f * a);
 }
 
-// Adjust the alpha value for verts whose x is between nStart and nEnd such that they fade
-// from opaque to transparent (bRight==true) or transparent to opaque (bRight==false).
-static void HorizontalFade(TEXTVERTEX* verts, int nVertexCount, float nStart, float nEnd, bool bRight)
+// FadeEdge(verts, n, nStart, nEnd)
+// Reconstructed from 5960 retail XBE @ 0x00054290 (HorizontalFade). Ghidra
+// decompile, trimmed (verts in EAX, nEnd in XMM1, fade out flag in BL):
+//     inv = 1.0 / (nEnd - nStart);
+//     for (i < n) { a = ease((v[i].x - nStart) * inv); if (out) a = 1.0 - a;
+//                   v[i].alpha = (int)(v[i].alpha * a); }
+// Text only ever fades out toward the right edge of a column, so this takes
+// no direction. Divides where the binary multiplies by the reciprocal.
+static void FadeEdge(TEXTVERTEX* verts, int nVerts, float nStart, float nEnd)
 {
-	float nWidth = nEnd - nStart;
-
-	int i;
-	for (i = 0; i < nVertexCount; i += 1)
+	float width = nEnd - nStart;
+	for (int i = 0; i < nVerts; i++)
 	{
-		float a = (verts[i].x - nStart) / nWidth;
-		a = smoothstep(0.0f, 1.0f, a);
-
-		if (bRight)
-			a = 1.0f - a;
-
-		float a0 = (float)(verts[i].color >> 24);
-		verts[i].color = (verts[i].color & 0x00ffffff) | (((DWORD)(a0 * a)) << 24);
+		float keep = 1.0f - Ease((verts[i].x - nStart) / width);
+		SetVertexAlpha(verts[i], (float)(verts[i].color >> 24) * keep);
 	}
 }
 
-inline void FadeLeftEdge(TEXTVERTEX* verts, int nVertexCount, float nStart, float nEnd)
-{
-	HorizontalFade(verts, nVertexCount, nStart, nEnd, false);
-}
-
-inline void FadeRightEdge(TEXTVERTEX* verts, int nVertexCount, float nStart, float nEnd)
-{
-	HorizontalFade(verts, nVertexCount, nStart, nEnd, true);
-}
-
-// Window-clip overload. Used by the marquee scroll path: clips per-vertex
-// alpha outside [nLeft, nRight] (offset by nScroll for the trailing copy)
-// and fades the 1-unit margins on each edge.
+// Window clip for the horizontal marquee (Theseus, no 5960 counterpart):
+// alpha 0 outside [nLeft, nRight], eased over the last unit on each side.
 static void HorizontalFade(TEXTVERTEX* verts, int nVertexCount, float nLeft, float nRight, float nScroll)
 {
 	for (int i = 0; i < nVertexCount; i += 1)
@@ -299,166 +359,235 @@ static void HorizontalFade(TEXTVERTEX* verts, int nVertexCount, float nLeft, flo
 
 		if (a < 0.0f) a = 0.0f;
 		if (a > 1.0f) a = 1.0f;
-		a = smoothstep(0.0f, 1.0f, a);
-		verts[i].color = (verts[i].color & 0x00ffffff) | (((DWORD)(255.0f * a)) << 24);
+		a = Ease(a);
+		SetVertexAlpha(verts[i], 255.0f * a);
 	}
 }
 
-static void VerticalFade(TEXTVERTEX* verts, int nVertexCount, float nTop, float nBottom, float nScroll)
+// VerticalFade(verts, n, nTop, nBottom, nScroll)
+// Reconstructed from 5960 retail XBE @ 0x00054380. Ghidra decompile, trimmed
+// (nTop in XMM4, nBottom in XMM5):
+//     y = v.y + scroll;
+//     if (y > top || y < bottom)  a = 0;
+//     else if (y > top - 1)       a = 1 - (y - (top - 1));
+//     else if (y < bottom + 1)    a = 1 - ((bottom + 1) - y);
+//     else                        a = 1;
+//     byte at v + 0x1b = (int)(ease(a) * 255.0);
+static void VerticalFade(TEXTVERTEX* verts, int nVerts, float nTop, float nBottom, float nScroll)
 {
-	for (int i = 0; i < nVertexCount; i += 1)
+	float innerTop = nTop - 1.0f;
+	float innerBottom = nBottom + 1.0f;
+
+	for (int i = 0; i < nVerts; i++)
 	{
-		float a = 1.0f;
 		float y = verts[i].y + nScroll;
-
+		float a = 1.0f;
 		if (y > nTop || y < nBottom)
-		{
 			a = 0.0f;
-		}
-		else if (y > nTop - 1.0f)
-		{
-			a = 1.0f - (y - (nTop - 1.0f));
-		}
-		else if (y < nBottom + 1.0f)
-		{
-			a = 1.0f - ((nBottom + 1.0f) - y);
-		}
-		else //if (y >= nTop + 1.0f && y <= nBottom - 1.0f)
-		{
-			a = 1.0f;
-		}
+		else if (y > innerTop)
+			a = 1.0f - (y - innerTop);
+		else if (y < innerBottom)
+			a = 1.0f - (innerBottom - y);
 
-		ASSERT(a >= 0.0f && a <= 1.0f);
-
-		a = smoothstep(0.0f, 1.0f, a);
-		verts[i].color = (verts[i].color & 0x00ffffff) | (((DWORD)(255.0f * a)) << 24);
+		SetVertexAlpha(verts[i], 255.0f * Ease(a));
 	}
 }
 
-bool CFont::IsBreakChar(TCHAR ch)
-{
-    // Basically, we will break after double byte or single byte Kana
-    if (ch == ' ' || (ch >= 0x3040 && ch < 0xF000) || ch >= 0xFF66)
-    {
-        return true;
-    }
 
-    return false;
+// ===== Text meshes =========================================================
+
+// Characters come in as UTF-16 units on the Xbox and UTF-8 on desktop.
+#ifndef _UNICODE
+// Decode one UTF-8 codepoint from s starting at i (n is the byte count).
+// Returns the codepoint and sets outLen to the bytes consumed. A stray or
+// truncated byte decodes as itself (outLen 1) so ASCII and Latin-1 fallbacks
+// still render something. BMP only; astral planes truncate, which the vector
+// fonts don't cover anyway.
+static WCHAR DecodeUTF8(const char* s, int i, int n, int& outLen)
+{
+	unsigned char c = (unsigned char)s[i];
+	if (c < 0x80) { outLen = 1; return c; }
+	unsigned int cp; int len;
+	if      ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+	else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+	else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+	else { outLen = 1; return c; }
+	if (i + len > n) { outLen = 1; return c; }
+	for (int k = 1; k < len; k++) {
+		unsigned char cc = (unsigned char)s[i + k];
+		if ((cc & 0xC0) != 0x80) { outLen = 1; return c; }
+		cp = (cp << 6) | (cc & 0x3F);
+	}
+	outLen = len;
+	return (WCHAR)cp;
+}
+#endif
+
+static inline WCHAR NextChar(const TCHAR* s, int& i, int n)
+{
+#ifdef _UNICODE
+	(void)n;
+	return s[i++];
+#else
+	int len;
+	WCHAR ch = DecodeUTF8(s, i, n, len);
+	i += len;
+	return ch;
+#endif
 }
 
-extern void TheseusCreateMeshFVF(DWORD NumFaces, DWORD NumVertices, DWORD Options, DWORD FVF, LPD3DXMESH* ppMesh);
-
-void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale)
+static inline bool IsLineEnd(TCHAR ch)
 {
-	bool bFade = bDoNotBreak;
+	return ch == '\t' || ch == '\n' || ch == '\r';
+}
+
+// True when text[i] is the last character of its column.
+static inline bool AtColumnEnd(const TCHAR* text, int i, int n)
+{
+	return i == n || IsLineEnd(text[i]);
+}
+
+// A column that starts and ends with '*' is a heading: the stars are hidden
+// and the text is tinted. True when text[i] opens one and headings are on.
+static bool OpensHeading(const TCHAR* text, int i, int n)
+{
+	if (!g_bAsteriskFormatting || i >= n || text[i] != '*')
+		return false;
+	int end = i + 1;
+	while (end < n && !IsLineEnd(text[end]))
+		end++;
+	return end > i + 1 && text[end - 1] == '*';
+}
+
+// Line breaks may follow a space, kana or CJK (0x3040..0xefff), or half
+// width kana and up (0xff66).
+static inline bool CanBreakAfter(WCHAR ch)
+{
+	return ch == ' ' || (ch >= 0x3040 && ch < 0xf000) || ch >= 0xff66;
+}
+
+// Appends the blinking cursor quad, 0.1 wide from y - 0.1 to y + 0.75.
+// Reconstructed from 5960 retail XBE @ 0x00055030 (CFont::CreateCursorMesh):
+//     a = |sin((now + now) * PI)|; if (!visible) a = 0; color = (int)(a * 255) << 24 | 0xffffff;
+//     indices += { v, v+1, v+2, v, v+2, v+3 };
+//     verts: (x, y-0.1) (x+0.1, y-0.1) (x+0.1, y+0.75) (x, y+0.75), normal (0, 0, 1);
+static void AddCursor(WORD* indices, int& nIndex, TEXTVERTEX* verts, int& nVertex, float x, float y, bool visible)
+{
+	float a = visible ? fabsf(sinf((float)(TheseusGetNow() + TheseusGetNow()) * D3DX_PI)) : 0.0f;
+	DWORD color = ((DWORD)(a * 255.0f) << 24) | 0x00ffffff;
+
+	static const int quad[6] = { 0, 1, 2, 0, 2, 3 };
+	for (int i = 0; i < 6; i++)
+		indices[nIndex++] = (WORD)(nVertex + quad[i]);
+
+	const float left = x, right = x + 0.1f;
+	const float bottom = y - 0.1f, top = y + 0.75f;
+	const float corners[4][2] = { { left, bottom }, { right, bottom }, { right, top }, { left, top } };
+	for (int i = 0; i < 4; i++)
+	{
+		TEXTVERTEX& v = verts[nVertex++];
+		v.x = corners[i][0];
+		v.y = corners[i][1];
+		v.z = 0.0f;
+		v.nx = 0.0f;
+		v.ny = 0.0f;
+		v.nz = 1.0f;
+		v.color = color;
+	}
+}
+
+// CFont::CreateTextMesh(text, nChars, ppMesh, pMin, pMax, width, bDoNotBreak, scale)
+// Reconstructed from 5960 retail XBE @ 0x00054440 (3017 bytes). Two passes.
+// The first walks each line to size the mesh: it skips *heading* stars, splits
+// columns at a tab (unless bDoNotBreak), loads every glyph it meets (a glyph
+// that won't load gets its record cleared and is skipped), stops short of
+// 0x10000 vertices, and keeps the widest first and second column. A cursor
+// inside or at the end of the string adds one quad. With a format width a
+// single column takes the whole width; two columns that don't fit squeeze the
+// first and fade it. The second pass writes the mesh: headings tint blue to
+// 0.5, a glyph that would cross the width wraps back to the last break point
+// (or fades if the word has none), the second column is right justified, and
+// lines step down 1.5 after a paragraph or 1.0 inside one. Then every vertex
+// is scaled and the bounding box taken. See docs/decomp/Text.md.
+// Lines start indentWidth in until they drop below indentHeight. Headings only
+// count while the asterisk formatting flag is on. The bounds stop in the second
+// pass and the glyph scale are Theseus's.
+void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale,
+	float indentWidth, float indentHeight)
+{
+	if (m_pSet == NULL)
+		return;
 
 	if (nChars == -1)
-		nChars = _tcslen(pchText);
+		nChars = (int)_tcslen(pchText);
 
-	LPD3DXMESH pMesh = NULL;
+	// Pass 1: size it.
 	int nFaces = 0, nVerts = 0;
+	float col1Max = 0.0f, col2Max = 0.0f;
+	bool bSingleColumn = true;
+	bool bSkipStar = false;
 
 	int ich = 0;
-	float nMaxCol1Width = 0.0f;
-	float nMaxCol2Width = 0.0f;
-	bool bSingleLine = true;
-	bool bSingleColumn = true;
-	bool bAsterisk = false;
-	int nLine;
-	int ich2;
-	for (nLine = 0; ich < nChars; nLine += 1)
+	while (ich < nChars)
 	{
-		int nColumn = 1;
-		float nCol1Width = 0.0f;
-		float nCol2Width = 0.0f;
+		int column = 1;
+		float colWidth[2] = { 0.0f, 0.0f };
 
-		if (pchText[ich] == '*')
+		if (OpensHeading(pchText, ich, nChars))
 		{
-			// See if there's a '*' at the end of the line...
-			for (ich2 = ich + 1; ich2 < nChars && pchText[ich2] != '\n' && pchText[ich2] != '\r' && pchText[ich2] != '\t'; ich2 += 1)
-				;
-			if (ich2 > ich + 1 && pchText[ich2 - 1] == '*')
-			{
-				// Line starts and ends with a *; don't show the *'s and format as a heading
-				bAsterisk = true;
-				ich += 1;
-			}
+			bSkipStar = true;
+			ich++;
 		}
 
 		while (ich < nChars)
 		{
-			TCHAR ch = pchText[ich];
-			ich += 1;
+			WCHAR ch = NextChar(pchText, ich, nChars);
 
-			if (ch == '*')
+			if (ch == '*' && bSkipStar && AtColumnEnd(pchText, ich, nChars))
+				continue;
+
+			if (!bDoNotBreak)
 			{
-				// Ignore this if it's the last visible char in the column...
-				if (bAsterisk && (ich == nChars || pchText[ich] == '\t' || pchText[ich] == '\n' || pchText[ich] == '\r'))
-					continue;
-			}
-
-			if (bDoNotBreak == false && ch == '\r' && ich < nChars && pchText[ich] == '\n')
-            {
-				ich += 1;
-            }
-
-			if (bDoNotBreak == false && (ch == '\n' || ch == '\r'))
-			{
-				bSingleLine = false;
-				break;
-			}
-
-			if (ch == '\t' && bDoNotBreak == false)
-			{
-				nColumn = 2;
-				bSingleColumn = false;
-				bAsterisk = false;
-
-				if (ich < nChars && pchText[ich] == '*')
+				if (ch == '\r' && ich < nChars && pchText[ich] == '\n')
+					ich++;
+				if (ch == '\n' || ch == '\r')
+					break;
+				if (ch == '\t')
 				{
-					// See if there's a '*' at the end of the line...
-					for (ich2 = ich + 1; ich2 < nChars && pchText[ich2] != '\n' && pchText[ich2] != '\r' && pchText[ich2] != '\t'; ich2 += 1)
-						;
-					if (ich2 > ich + 1 && pchText[ich2 - 1] == '*')
-					{
-						// Column starts and ends with a *; don't show the *'s and format as a heading
-						ich += 1;
-						bAsterisk = true;
-					}
+					column = 2;
+					bSingleColumn = false;
+					bSkipStar = OpensHeading(pchText, ich, nChars);
+					if (bSkipStar)
+						ich++;
+					continue;
 				}
+			}
+
+			int nGlyph = FindGlyphIndex(ch);
+			if (nGlyph == -1)
+				continue;
+			if (!LoadGlyph(nGlyph))
+			{
+				m_pGlyphs[nGlyph].shapeOffset = 0;
 				continue;
 			}
 
-			int nGlyphIndex = FindGlyphIndex(ch);
-			if (nGlyphIndex == -1)
-				continue;
-
-			VERIFY(LoadGlyph(nGlyphIndex));
-
-			CGlyphShape* pGlyphShape = m_rgGlyphObjects[nGlyphIndex].m_glyphShape;
-			pGlyphShape->m_nGlyphIndex = nGlyphIndex;
-
-			if (nVerts + pGlyphShape->m_nVertexCount > 65535)
+			CGlyphShape* pShape = m_ppShapes[nGlyph];
+			if (nVerts + pShape->nPoints > 0xffff)
 			{
-				TRACE(_T("CreateTextMesh: too much text!\n"));
-				nChars = ich - 1; // truncate string
+				nChars = ich - 1;
 				break;
 			}
 
-			if (nColumn == 1)
-				nCol1Width += m_rgGlyphObjects[nGlyphIndex].m_metrics.gmfCellIncX;
-			else
-				nCol2Width += m_rgGlyphObjects[nGlyphIndex].m_metrics.gmfCellIncX;
-
-			nFaces += pGlyphShape->m_nIndexCount / 3;
-			nVerts += pGlyphShape->m_nVertexCount;
+			colWidth[column - 1] += Advance(nGlyph);
+			nFaces += pShape->nIndices / 3;
+			nVerts += pShape->nPoints;
 		}
 
-		if (nCol1Width > nMaxCol1Width)
-			nMaxCol1Width = nCol1Width;
-
-		if (nCol2Width > nMaxCol2Width)
-			nMaxCol2Width = nCol2Width;
+		if (colWidth[0] > col1Max)
+			col1Max = colWidth[0];
+		if (colWidth[1] > col2Max)
+			col2Max = colWidth[1];
 	}
 
 	if (g_nTextChar >= 0 && g_nTextChar <= nChars)
@@ -470,264 +599,208 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 	if (nFaces == 0)
 		return;
 
-	if (nFormatWidth > 0.0f)
-	{
-		if (bSingleColumn)
-		{
-			nMaxCol1Width = nFormatWidth;
-		}
-		else if (nMaxCol1Width + nMaxCol2Width > nFormatWidth)
-		{
-			nMaxCol1Width = nFormatWidth - nMaxCol2Width;
-			bFade = true;
-		}
-	}
-	else
+	bool bFade = bDoNotBreak;
+	if (nFormatWidth <= 0.0f)
 	{
 		bFade = false;
 	}
+	else if (bSingleColumn)
+	{
+		col1Max = nFormatWidth;
+	}
+	else if (col1Max + col2Max > nFormatWidth)
+	{
+		col1Max = nFormatWidth - col2Max;
+		bFade = true;
+	}
 
-	TheseusCreateMeshFVF(nFaces, nVerts, D3DXMESH_MANAGED, D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE, &pMesh);
+	LPD3DXMESH pMesh = NULL;
+	TheseusCreateMeshFVF(nFaces, nVerts, D3DXMESH_MANAGED, TEXT_FVF, &pMesh);
+	if (pMesh == NULL)
+		return;
+
+	// No mesh at all beats one written through a failed lock; the node
+	// tries again next frame.
+	WORD* indices = NULL;
+	TEXTVERTEX* verts = NULL;
+	if (FAILED(pMesh->LockIndexBuffer(D3DLOCK_DISCARD, (BYTE**)&indices)))
+	{
+		pMesh->Release();
+		return;
+	}
+	if (FAILED(pMesh->LockVertexBuffer(D3DLOCK_DISCARD, (BYTE**)&verts)))
+	{
+		pMesh->UnlockIndexBuffer();
+		pMesh->Release();
+		return;
+	}
 	*ppMesh = pMesh;
 
-	WORD* indices;
-	pMesh->LockIndexBuffer(D3DLOCK_DISCARD, (BYTE**)&indices);
+	// Pass 2: fill it.
+	int nIndex = 0, nVertex = 0;
+	float x = indentWidth, y = 0.0f;
+	float blue = 1.0f;
+	bool bHeading = false;
+	bool bParaStart = true;
 
-	TEXTVERTEX* verts;
-	pMesh->LockVertexBuffer(D3DLOCK_DISCARD, (BYTE**)&verts);
-
-	float r = 1.0f;
-	float g = 1.0f;
-	float b = 1.0f;
-	bool bTitle = false;
-	bool bStartPara = true;
-	int nCurIndex = 0;
-	int nCurVertex = 0;
-	float x = 0.0f;
-	float y = 0.0f;
 	ich = 0;
-	for (nLine = 0; ich < nChars; nLine += 1)
+	while (ich < nChars)
 	{
-		int nColumn = 1;
-		int nFirstColVertex = nCurVertex;
-		float nCol2Width = 0.0f;
-		float nMaxColWidth = nMaxCol1Width;
+		int column = 1;
+		int colFirst = nVertex;
+		float colLimit = col1Max;
+		float col2Width = 0.0f;
 
-		int nBreakChar = -1;
-		int nBreakVertex = nCurVertex;
-		int nBreakIndex = nCurIndex;
+		int wrapChar = -1;
+		int wrapVertex = nVertex;
+		int wrapIndex = nIndex;
 
-		if (bStartPara && ich < nChars && pchText[ich] == '*')
+		if (bParaStart && OpensHeading(pchText, ich, nChars))
 		{
-			// See if there's a '*' at the end of the line...
-			for (ich2 = ich + 1; ich2 < nChars && pchText[ich2] != '\n' && pchText[ich2] != '\r' && pchText[ich2] != '\t'; ich2 += 1)
-				;
-			if (ich2 > ich + 1 && pchText[ich2 - 1] == '*')
-			{
-				// Line starts and ends with a *; don't show the *'s and format as a heading
-				r = 1.0f;
-				g = 1.0f;
-				b = 0.5f;
-				bTitle = true;
-
-				ich += 1;
-			}
+			blue = 0.5f;
+			bHeading = true;
+			ich++;
 		}
 
 		for (;;)
 		{
-			TCHAR ch = '\r';
+			WCHAR ch = '\r';
 			if (ich < nChars)
 			{
-				ch = pchText[ich];
-				ich += 1;
-
+				ch = NextChar(pchText, ich, nChars);
 				if (ch == '\r' && ich < nChars && pchText[ich] == '\n')
-					ich += 1;
+					ich++;
 			}
 
 			if (ch == '\n' || ch == '\r')
 			{
-                if (bDoNotBreak && bFade)
-                {
-                    FadeRightEdge(verts + nFirstColVertex, nCurVertex - nFirstColVertex, nMaxColWidth - 1, nMaxColWidth);
-                    break;
-                }
-
-				if (nColumn == 2)
+				if (bDoNotBreak && bFade)
 				{
-					// Right justify the second column...
-					for (int i = nFirstColVertex; i < nCurVertex; i += 1)
-						verts[i].x += nMaxCol2Width - nCol2Width;
+					FadeEdge(verts + colFirst, nVertex - colFirst, colLimit - 1.0f, colLimit);
+					break;
 				}
-				else
+
+				if (column == 2)
 				{
-					if (bFade)
-						FadeRightEdge(verts + nFirstColVertex, nCurVertex - nFirstColVertex, nMaxColWidth - 1, nMaxColWidth);
+					float shift = col2Max - col2Width;
+					for (int i = colFirst; i < nVertex; i++)
+						verts[i].x += shift;
+				}
+				else if (bFade)
+				{
+					FadeEdge(verts + colFirst, nVertex - colFirst, colLimit - 1.0f, colLimit);
 				}
 
 				if (ich != nChars)
 				{
-					x = 0.0f;
-					if (bTitle || ch == '\r' || !bSingleColumn)
-						y -= 1.0f;
-					else
-						y -= 1.5f;
+					bool bTight = bHeading || ch == '\r' || !bSingleColumn;
+					y -= bTight ? 1.0f : 1.5f;
+					x = y < -indentHeight ? 0.0f : indentWidth;
 				}
-				bTitle = false;
-				bStartPara = true;
+				bHeading = false;
+				bParaStart = true;
 				break;
 			}
 
-			if (ch == '\t' && bDoNotBreak == false)
+			if (ch == '\t' && !bDoNotBreak)
 			{
 				if (bFade)
-					FadeRightEdge(verts + nFirstColVertex, nCurVertex - nFirstColVertex, nMaxColWidth - 2, nMaxColWidth);
+					FadeEdge(verts + colFirst, nVertex - colFirst, colLimit - 2.0f, colLimit);
 
-				nColumn = 2;
-				x = nFormatWidth - nMaxCol2Width;
-				nFirstColVertex = nCurVertex;
-				nMaxColWidth = nMaxCol2Width;
-				bTitle = false;
-				bStartPara = true;
+				column = 2;
+				x = nFormatWidth - col2Max;
+				colFirst = nVertex;
+				colLimit = col2Max;
+				bHeading = false;
+				bParaStart = true;
 
-				if (ich < nChars && pchText[ich] == '*')
+				if (OpensHeading(pchText, ich, nChars))
 				{
-					// See if there's a '*' at the end of the line...
-					for (ich2 = ich + 1; ich2 < nChars && pchText[ich2] != '\n' && pchText[ich2] != '\r' && pchText[ich2] != '\t'; ich2 += 1)
-						;
-					if (ich2 > ich + 1 && pchText[ich2 - 1] == '*')
-					{
-						// Line starts and ends with a *; don't show the *'s and format as a heading
-						r = 1.0f;
-						g = 1.0f;
-						b = 0.5f;
-						bTitle = true;
-
-						ich += 1;
-					}
+					blue = 0.5f;
+					bHeading = true;
+					ich++;
 				}
-
 				continue;
 			}
 
-			if (bTitle && ch == '*')
+			if (bHeading && ch == '*' && AtColumnEnd(pchText, ich, nChars))
 			{
-				// Ignore this if it's the last visible char in the column...
-				if (ich == nChars || pchText[ich] == '\t' || pchText[ich] == '\n' || pchText[ich] == '\r')
-				{
+				blue = 1.0f;
+				continue;
+			}
 
-					r = 1.0f;
-					g = 1.0f;
-					b = 1.0f;
+			bParaStart = false;
+
+			int nGlyph = FindGlyphIndex(ch);
+			if (nGlyph == -1)
+				continue;
+
+			if (nFormatWidth > 0.0f && !bDoNotBreak && ch != ' ' && column == 1 &&
+				x + Advance(nGlyph) > nFormatWidth)
+			{
+				if (wrapChar > -1)
+				{
+					y -= 1.0f;
+					x = y < -indentHeight ? 0.0f : indentWidth;
+					ich = wrapChar;
+					nVertex = wrapVertex;
+					nIndex = wrapIndex;
+					wrapChar = -1;
 					continue;
 				}
+				bFade = true;
 			}
 
-			bStartPara = false;
-
-			int nGlyphIndex = FindGlyphIndex(ch);
-			if (nGlyphIndex == -1)
+			CGlyphShape* pShape = m_ppShapes[nGlyph];
+			if (pShape == NULL)
 				continue;
 
-			ASSERT(m_rgGlyphLoaded[nGlyphIndex]);
-
-			if (nFormatWidth > 0.0f)
+			// Theseus: pass 1 sized the buffers. If this pass ever walks the
+			// string differently, drop the rest rather than write past them.
+			if (nVertex + pShape->nPoints > nVerts || nIndex + pShape->nIndices > nFaces * 3)
 			{
-				// bDoNotBreak path historically had an unused width
-				// clamp here that never made it past the prototype.
-				// All formatting work happens in the wrapping branch.
-				if (!bDoNotBreak)
-				{
-					if (ch != ' ' && nColumn == 1 && x + m_rgGlyphObjects[nGlyphIndex].m_metrics.gmfCellIncX > nFormatWidth)
-					{
-
-						// break line
-
-						if (nBreakChar > -1)
-						{
-							x = 0.0f;
-							y -= 1.0f;
-
-							ich = nBreakChar /*- 1*/;
-							nCurVertex = nBreakVertex;
-							nCurIndex = nBreakIndex;
-
-							nBreakChar = -1;
-							nBreakVertex = nCurVertex;
-							nBreakIndex = nCurIndex;
-
-							continue;
-						}
-						else
-						{
-							// one word was too long to fit, fade it!
-							bFade = true;
-						}
-					}
-				}
+				nChars = ich - 1;
+				break;
 			}
 
-			CGlyphShape* pGlyphShape = m_rgGlyphObjects[nGlyphIndex].m_glyphShape;
+			for (int i = 0; i < pShape->nIndices; i++)
+				indices[nIndex++] = (WORD)(nVertex + pShape->indices[i]);
 
-			int j;
-			for (j = 0; j < pGlyphShape->m_nIndexCount; j += 1)
-				indices[nCurIndex++] = nCurVertex + pGlyphShape->m_indices[j];
-
-			float fontAdjust = 1.0f;
-
-			if(pGlyphShape->m_nGlyphIndex > 190)   //character is in the japanese font set
+			DWORD color = 0xffffff00 | (DWORD)(blue * 255.0f);
+			for (int i = 0; i < pShape->nPoints; i++)
 			{
-				fontAdjust = 0.9f;
-			}
-
-			for (j = 0; j < pGlyphShape->m_nVertexCount; j += 1)
-			{
-				verts[nCurVertex].x = x + (pGlyphShape->m_vertices[j].x * fontAdjust);
-				verts[nCurVertex].y = y + (pGlyphShape->m_vertices[j].y * fontAdjust);
-				verts[nCurVertex].z = 0.0f;
-
-				verts[nCurVertex].nx = 0.0f;
-				verts[nCurVertex].ny = 0.0f;
-				verts[nCurVertex].nz = 1.0f;
-
-				verts[nCurVertex].color = D3DCOLOR_COLORVALUE(r, g, b, 1.0f);
-
-				nCurVertex += 1;
+				TEXTVERTEX& v = verts[nVertex++];
+				v.x = x + pShape->points[i].x;
+				v.y = y + pShape->points[i].y;
+				v.z = 0.0f;
+				v.nx = 0.0f;
+				v.ny = 0.0f;
+				v.nz = 1.0f;
+				v.color = color;
 			}
 
 			if (ich - 1 == g_nTextChar)
+				AddCursor(indices, nIndex, verts, nVertex, x, y, true);
+
+			x += Advance(nGlyph);
+			if (column == 2)
+				col2Width += Advance(nGlyph);
+
+			if (CanBreakAfter(ch))
 			{
-				CreateCursorMesh(indices, nCurIndex, verts, nCurVertex, x, y, true);
-			}
-
-			x += (m_rgGlyphObjects[nGlyphIndex].m_metrics.gmfCellIncX * fontAdjust);
-
-			if (nColumn == 2)
-				nCol2Width += m_rgGlyphObjects[nGlyphIndex].m_metrics.gmfCellIncX;
-
-			if (IsBreakChar(ch))
-			{
-				nBreakChar = ich;
-				nBreakVertex = nCurVertex;
-				nBreakIndex = nCurIndex;
+				wrapChar = ich;
+				wrapVertex = nVertex;
+				wrapIndex = nIndex;
 			}
 		}
 	}
 
+	// The cursor past the last character hides once it would leave the
+	// keyboard's edit box (16.556152 units, 0x0002c1b4).
 	if (g_nTextChar == nChars)
-	{
-		bool visible = false;
-		if(x < 16.556152f)  //value to keep the cursor from extending past the keyboard blank
-			visible = true;
+		AddCursor(indices, nIndex, verts, nVertex, x, y, x < 16.556152f);
 
-		CreateCursorMesh(indices, nCurIndex, verts, nCurVertex, x, y, visible);
-	}
-
-	ASSERT(nCurVertex == nVerts);
-	ASSERT(nCurIndex == nFaces * 3);
-
-	for (int i = 0; i < nVerts; i += 1)
+	for (int i = 0; i < nVerts; i++)
 	{
 		verts[i].x *= scale;
 		verts[i].y *= scale;
@@ -735,263 +808,193 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 	}
 
 	if (pMin != NULL && pMax != NULL)
-		VERIFYHR(D3DXComputeBoundingBox(verts, nCurVertex, D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE, pMin, pMax));
-	
+		D3DXComputeBoundingBox(verts, nVertex, TEXT_FVF, pMin, pMax);
+
 	pMesh->UnlockIndexBuffer();
 	pMesh->UnlockVertexBuffer();
 }
 
-void CFont::CreateCursorMesh(WORD*& indices, int& nCurIndex, TEXTVERTEX*& verts, int& nCurVertex, float x, float y, bool visible)
-{
-	float t = (float) (TheseusGetNow()) * 2.0f;
-	float a = fabsf(sinf(t * D3DX_PI));
-	if(!visible)
-		a = 0.0f;
 
-	indices[nCurIndex++] = (WORD)nCurVertex;
-	indices[nCurIndex++] = (WORD)nCurVertex + 1;
-	indices[nCurIndex++] = (WORD)nCurVertex + 2;
-
-	indices[nCurIndex++] = (WORD)nCurVertex;
-	indices[nCurIndex++] = (WORD)nCurVertex + 2;
-	indices[nCurIndex++] = (WORD)nCurVertex + 3;
-
-	verts[nCurVertex].x = x;
-	verts[nCurVertex].y = y - 0.1f;
-	verts[nCurVertex].z = 0.0f;
-
-	verts[nCurVertex].nx = 0.0f;
-	verts[nCurVertex].ny = 0.0f;
-	verts[nCurVertex].nz = 1.0f;
-
-	verts[nCurVertex].color = D3DCOLOR_COLORVALUE(1.0f, 1.0f, 1.0f, a);
-
-	nCurVertex += 1;
-
-	verts[nCurVertex].x = x + 0.1f;
-	verts[nCurVertex].y = y - 0.1f;
-	verts[nCurVertex].z = 0.0f;
-
-	verts[nCurVertex].nx = 0.0f;
-	verts[nCurVertex].ny = 0.0f;
-	verts[nCurVertex].nz = 1.0f;
-
-	verts[nCurVertex].color = D3DCOLOR_COLORVALUE(1.0f, 1.0f, 1.0f, a);
-
-	nCurVertex += 1;
-
-	verts[nCurVertex].x = x + 0.1f;
-	verts[nCurVertex].y = y + 0.75f;
-	verts[nCurVertex].z = 0.0f;
-
-	verts[nCurVertex].nx = 0.0f;
-	verts[nCurVertex].ny = 0.0f;
-	verts[nCurVertex].nz = 1.0f;
-
-	verts[nCurVertex].color = D3DCOLOR_COLORVALUE(1.0f, 1.0f, 1.0f, a);
-
-	nCurVertex += 1;
-
-	verts[nCurVertex].x = x;
-	verts[nCurVertex].y = y + 0.75f;
-	verts[nCurVertex].z = 0.0f;
-
-	verts[nCurVertex].nx = 0.0f;
-	verts[nCurVertex].ny = 0.0f;
-	verts[nCurVertex].nz = 1.0f;
-
-	verts[nCurVertex].color = D3DCOLOR_COLORVALUE(1.0f, 1.0f, 1.0f, a);
-
-	nCurVertex += 1;
-}
-
-
+// ===== Font table ==========================================================
+// Ten slots, filled from the *.xtf files in the font directory. Slot 0 is the
+// fallback for a face nobody has.
 
 struct CFontTableEntry
 {
-	CFontTableEntry()
-	{
-		m_faceName = NULL;
-		m_fileName = NULL;
-	}
-
-	CFontTableEntry(const TCHAR* szFaceName, const TCHAR* szFileName)
-	{
-		m_faceName = szFaceName;
-		m_fileName = szFileName;
-	}
-
-	const TCHAR* m_faceName;
-	const TCHAR* m_fileName;
+	const TCHAR* m_szFace;
+	const TCHAR* m_szFile;
 	CFont m_font;
 };
 
 #define MAX_FONT_COUNT 10
 
-CFontTableEntry g_fonts [MAX_FONT_COUNT] =
+// 5960 seeds slot 0 with HGGothicM, which Theseus doesn't ship; desktop falls
+// back to the Xbox face instead.
+static CFontTableEntry g_fonts[MAX_FONT_COUNT] =
 {
-	// NOTE: The first font is used as the default when a specified font is not found!
-	CFontTableEntry(_T("HGGothicM"), _T("HGGothicM.xtf")),
+#ifdef _XBOX
+	{ _T("HGGothicM"), _T("HGGothicM.xtf") },
+#else
+	{ _T("Xbox"), _T("xbox.xtf") },
+#endif
 };
 
-int g_nFontCount = 1;
+static int g_nFontCount = 1;
 
-void InitFontTable()
+static TCHAR* CopyString(const TCHAR* sz)
 {
-	TCHAR szWild [MAX_PATH];
-	WIN32_FIND_DATA fd;
-	HANDLE h;
+	TCHAR* copy = new TCHAR[_tcslen(sz) + 1];
+	_tcscpy(copy, sz);
+	return copy;
+}
 
-	int cchAppDir = _tcslen(TheseusGetFontDir());
-
-	_tcscpy(szWild, TheseusGetFontDir());
-	_tcscpy(szWild + cchAppDir, _T("*.xtf"));
-
-#if defined(_XBOX)
-	char szWildA [MAX_PATH];
-	Ansi(szWildA, szWild, MAX_PATH);
-	h = FindFirstFile(szWildA, &fd);
+// InitFontTable()
+// Reconstructed from 5960 retail XBE @ 0x000552b0. Ghidra decompile, trimmed:
+//     FindFirstFileA("<app>fonts\*.xtf"), falling back to "<app>*.xtf";
+//     for each file, while count < 10:
+//         open; read magic (XTF0 or XTF1), header length (must be 0x20), face (0x20);
+//         face = widen(face); if (wcscmp(face, fonts[0].face) == 0) free(face);
+//         else { fonts[count].face = face; fonts[count].file = copy(path); count++; }
+//         CloseHandle;
+// Theseus's font directory stands in for <app>fonts\ and its app directory
+// for the fallback. It takes XTF0 only, since that's all CFont reads. A bad
+// header still closes the file (5960 leaves it open).
+static HANDLE FindFontFiles(const TCHAR* szDir, TCHAR* szPath, WIN32_FIND_DATA* pfd)
+{
+	_tcscpy(szPath, szDir);
+	_tcscat(szPath, _T("*.xtf"));
+#ifdef _UNICODE
+	char szPathA[MAX_PATH];
+	Ansi(szPathA, szPath, MAX_PATH);
+	return TheseusFindFirstFile(szPathA, pfd);
 #else
-	h = FindFirstFile(szWild, &fd);
+	return TheseusFindFirstFile(szPath, pfd);
 #endif
+}
 
-	if (h == INVALID_HANDLE_VALUE)
+static void InitFontTable()
+{
+	TCHAR szPath[MAX_PATH];
+	WIN32_FIND_DATA fd;
+
+	const TCHAR* szDir = TheseusGetFontDir();
+	HANDLE hFind = FindFontFiles(szDir, szPath, &fd);
+	if (hFind == INVALID_HANDLE_VALUE)
 	{
-		TRACE(_T("\001InitFontTable: No fonts!\n"));
-		return;
+		szDir = TheseusGetAppDir();
+		hFind = FindFontFiles(szDir, szPath, &fd);
+		if (hFind == INVALID_HANDLE_VALUE)
+			return;
 	}
+	int cchDir = (int)_tcslen(szDir);
 
 	do
 	{
-		TCHAR szFileName [MAX_PATH];
-
-		_tcscpy(szFileName, TheseusGetFontDir());
-
-#if defined(_XBOX)
-		Unicode(szFileName + cchAppDir, fd.cFileName, countof(szFileName));
-#else
-		_tcscpy(szFileName + cchAppDir, fd.cFileName);
-#endif
-
 		if (g_nFontCount >= MAX_FONT_COUNT)
-		{
-			TRACE(_T("\001InitFontTable: too many fonts!\n"));
 			continue;
-		}
 
-		HANDLE hFont = TheseusCreateFile(szFileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-		if (hFont != INVALID_HANDLE_VALUE)
-		{
-			DWORD dwRead;
-			DWORD cbGlyphSet;
-			ReadFile(hFont, &cbGlyphSet, 4, &dwRead, NULL);
-
-			if (cbGlyphSet == 0x30465458)
-			{
-				DWORD dwHeaderLen;
-				ReadFile(hFont, &dwHeaderLen, 4, &dwRead, NULL);
-
-				ASSERT(dwHeaderLen == LF_FACESIZE);
-
-				char szFaceA [LF_FACESIZE];
-				ReadFile(hFont, szFaceA, LF_FACESIZE, &dwRead, NULL);
-
-				TCHAR* szFace = new TCHAR [strlen(szFaceA) + 1];
 #ifdef _UNICODE
-				Unicode(szFace, szFaceA, LF_FACESIZE);
+		Unicode(szPath + cchDir, fd.cFileName, MAX_PATH - cchDir);
 #else
-				_tcscpy(szFace, szFaceA);
+		_tcscpy(szPath + cchDir, fd.cFileName);
 #endif
 
-				// Don't add the default font twice!
-				if (_tcscmp(szFace, g_fonts[0].m_faceName) == 0)
-				{
-					delete [] szFace;
-				}
-				else
-				{
-					TCHAR* szFile = new TCHAR [_tcslen(szFileName) + 1];
-					_tcscpy(szFile, szFileName);
+		HANDLE hFile = TheseusCreateFile(szPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+		if (hFile == INVALID_HANDLE_VALUE)
+			continue;
 
-					g_fonts[g_nFontCount].m_faceName = szFace;
-					g_fonts[g_nFontCount].m_fileName = szFile;
-					g_nFontCount += 1;
+		DWORD dwMagic = 0, cbHeader = 0;
+		char faceA[XTF_FACE_LEN + 1];
+		if (ReadExact(hFile, &dwMagic, 4) && dwMagic == XTF0_MAGIC &&
+			ReadExact(hFile, &cbHeader, 4) && cbHeader == XTF_FACE_LEN &&
+			ReadExact(hFile, faceA, XTF_FACE_LEN))
+		{
+			faceA[XTF_FACE_LEN] = 0;
 
-					TRACE(_T("Adding font: %s (%s)\n"), szFace, szFile);
-				}
+			TCHAR szFace[XTF_FACE_LEN + 1];
+#ifdef _UNICODE
+			Unicode(szFace, faceA, XTF_FACE_LEN + 1);
+#else
+			_tcscpy(szFace, faceA);
+#endif
+			if (_tcscmp(szFace, g_fonts[0].m_szFace) != 0)
+			{
+				g_fonts[g_nFontCount].m_szFace = CopyString(szFace);
+				g_fonts[g_nFontCount].m_szFile = CopyString(szPath);
+				g_nFontCount++;
 			}
-
-			CloseHandle(hFont);
 		}
-	}
-	while (FindNextFile(h, &fd));
 
-	FindClose(h);
+		CloseHandle(hFile);
+	}
+	while (TheseusFindNextFile(hFind, &fd));
+
+	TheseusFindClose(hFind);
 }
 
+// GetFont(szFaceName)
+// Reconstructed from 5960 retail XBE @ 0x00055640. Ghidra decompile, trimmed:
+//     if (count == 1) InitFontTable();
+//     for (i < count) if (!_wcsicmp(face, fonts[i].face)) break;
+//     if (i == count) i = 0;
+//     if (fonts[i].font.hFile == -1) {
+//         path = wcschr(file, ':') ? file : swprintf("%s%s", appdir, file);
+//         if (!Open(path) && fonts[0].hFile == -1 && !Open(fonts[0].file)) return NULL;
+//     }
+//     return &fonts[i].font;
+// Theseus builds the path from its font directory instead of the app dir.
 CFont* GetFont(const TCHAR* szFaceName)
 {
 	if (g_nFontCount == 1)
 		InitFontTable();
 
-	int i;
-	for (i = 0; i < g_nFontCount; i += 1)
-	{
-		if (_tcsicmp(szFaceName, g_fonts[i].m_faceName) == 0)
-			break;
-	}
-
+	int i = 0;
+	while (i < g_nFontCount && _tcsicmp(szFaceName, g_fonts[i].m_szFace) != 0)
+		i++;
 	if (i == g_nFontCount)
-	{
-		TRACE(_T("Substituting font '%s' for '%s'\n"), g_fonts[0].m_faceName, szFaceName);
 		i = 0;
-	}
 
-	if (g_fonts[i].m_font.m_hFile == INVALID_HANDLE_VALUE)
+	CFontTableEntry& entry = g_fonts[i];
+	if (entry.m_font.m_hFile == INVALID_HANDLE_VALUE)
 	{
-		TCHAR szFontPath [MAX_PATH];
-
-		if (_tcschr(g_fonts[i].m_fileName, ':') == NULL)
-				_stprintf(szFontPath, _T("%s%s"), TheseusGetFontDir(), g_fonts[i].m_fileName);
+		TCHAR szPath[MAX_PATH];
+		if (_tcschr(entry.m_szFile, ':') != NULL)
+			_tcscpy(szPath, entry.m_szFile);
 		else
-			_tcscpy(szFontPath, g_fonts[i].m_fileName);
+			_stprintf(szPath, _T("%s%s"), TheseusGetFontDir(), entry.m_szFile);
 
-		if (!g_fonts[i].m_font.Open(szFontPath))
-		{
-			TRACE(_T("\001Cannot load font: %s\n"), szFaceName);
-
-			if (g_fonts[0].m_font.m_hFile == INVALID_HANDLE_VALUE)
-			{
-				if (!g_fonts[0].m_font.Open(g_fonts[0].m_fileName))
-				{
-					ASSERT(FALSE);
-					return NULL;
-				}
-			}
-		}
+		if (!entry.m_font.Open(szPath) &&
+			g_fonts[0].m_font.m_hFile == INVALID_HANDLE_VALUE &&
+			!g_fonts[0].m_font.Open(g_fonts[0].m_szFile))
+			return NULL;
 	}
 
-	return &g_fonts[i].m_font;
+	return &entry.m_font;
 }
 
+// Text_Exit()
+// Reconstructed from 5960 retail XBE @ 0x00055750: every slot past the first
+// frees its face and file strings, then each font closes.
 void Text_Exit()
 {
-	for (int i = 0; i < g_nFontCount; i += 1)
+	for (int i = 0; i < g_nFontCount; i++)
 	{
 		if (i > 0)
 		{
-			delete [] (TCHAR*)g_fonts[i].m_faceName;
-			delete [] (TCHAR*)g_fonts[i].m_fileName;
-			g_fonts[i].m_faceName = NULL;
-			g_fonts[i].m_fileName = NULL;
+			delete [] (TCHAR*)g_fonts[i].m_szFace;
+			delete [] (TCHAR*)g_fonts[i].m_szFile;
+			g_fonts[i].m_szFace = NULL;
+			g_fonts[i].m_szFile = NULL;
 		}
 		g_fonts[i].m_font.Close();
 	}
 }
 
 
-// Overlay text API - renders .xtf font glyphs as screen-space triangles
-
+#ifdef _XBOX
+// ===== Overlay text (Theseus) ==============================================
+// Draws "Xbox" face glyphs as screen space triangles for the panic screen,
+// the widgets and the overlay menus. No 5960 counterpart.
 
 struct OverlayTextVert
 {
@@ -1019,7 +1022,7 @@ float OverlayFontMeasure(const TCHAR* text, float pixelHeight)
 	{
 		int idx = pFont->FindGlyphIndex(*text);
 		if (idx >= 0)
-			width += pFont->m_rgGlyphObjects[idx].m_metrics.gmfCellIncX;
+			width += pFont->Advance(idx);
 		text++;
 	}
 
@@ -1047,61 +1050,67 @@ float OverlayFontDraw(const TCHAR* text, float screenX, float screenY, float pix
 		if (glyphIdx < 0)
 			continue;
 
-		if (!pFont->m_rgGlyphLoaded[glyphIdx])
-			pFont->LoadGlyph(glyphIdx);
+		pFont->LoadGlyph(glyphIdx);
 
-		CGlyphShape* shape = pFont->m_rgGlyphObjects[glyphIdx].m_glyphShape;
+		CGlyphShape* shape = pFont->Shape(glyphIdx);
 		if (!shape)
 		{
-			curX += pFont->m_rgGlyphObjects[glyphIdx].m_metrics.gmfCellIncX;
+			curX += pFont->Advance(glyphIdx);
 			continue;
 		}
 
 		// Flush if we'd exceed buffer limits
-		if (nVerts + shape->m_nVertexCount > MAX_OVL_VERTS ||
-			nIndices + shape->m_nIndexCount > MAX_OVL_INDICES)
+		if (nVerts + shape->nPoints > MAX_OVL_VERTS ||
+			nIndices + shape->nIndices > MAX_OVL_INDICES)
 		{
-			dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
-			{ extern int g_drawCallsThisFrame, g_drawCallsTextFrame;
-		  g_drawCallsThisFrame++; g_drawCallsTextFrame++; }
-		dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, nVerts, nIndices / 3,
+			TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+			Frame_Count(FC_DRAW_TEXT);
+			Frame_PhaseBegin(FP_UP_DRAW);
+			dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, nVerts, nIndices / 3,
 				s_ovlIndices, D3DFMT_INDEX16, s_ovlVerts, sizeof(OverlayTextVert));
+			Frame_PhaseEnd(FP_UP_DRAW);
 			nVerts = 0;
 			nIndices = 0;
 		}
 
-		// Add indices (offset by current vertex count)
-		for (int i = 0; i < shape->m_nIndexCount; i++)
-			s_ovlIndices[nIndices++] = (WORD)(nVerts + shape->m_indices[i]);
+		for (int i = 0; i < shape->nIndices; i++)
+			s_ovlIndices[nIndices++] = (WORD)(nVerts + shape->indices[i]);
 
-		// Transform glyph vertices to screen space
-		for (int j = 0; j < shape->m_nVertexCount; j++)
+		for (int j = 0; j < shape->nPoints; j++)
 		{
-			s_ovlVerts[nVerts].x = screenX + (curX + shape->m_vertices[j].x) * scale;
-			s_ovlVerts[nVerts].y = screenY + scale - shape->m_vertices[j].y * scale;
+			s_ovlVerts[nVerts].x = screenX + (curX + shape->points[j].x) * scale;
+			s_ovlVerts[nVerts].y = screenY + scale - shape->points[j].y * scale;
 			s_ovlVerts[nVerts].z = 0.0f;
 			s_ovlVerts[nVerts].rhw = 1.0f;
 			s_ovlVerts[nVerts].color = color;
 			nVerts++;
 		}
 
-		curX += pFont->m_rgGlyphObjects[glyphIdx].m_metrics.gmfCellIncX;
+		curX += pFont->Advance(glyphIdx);
 	}
 
 	// Final flush
 	if (nIndices > 0)
 	{
-		{ extern int g_drawCallsThisFrame, g_drawCallsTextFrame;
-		  g_drawCallsThisFrame++; g_drawCallsTextFrame++; }
-		dev->SetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+		Frame_Count(FC_DRAW_TEXT);
+		TheseusSetVertexShader(D3DFVF_XYZRHW | D3DFVF_DIFFUSE);
+		Frame_PhaseBegin(FP_UP_DRAW);
 		dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, nVerts, nIndices / 3,
 			s_ovlIndices, D3DFMT_INDEX16, s_ovlVerts, sizeof(OverlayTextVert));
+		Frame_PhaseEnd(FP_UP_DRAW);
 	}
 
 	return curX * scale;
 }
+#endif // _XBOX
 
 
+// ===== CTextNode ===========================================================
+// 0x78 bytes in 5960: text 0x1c, font 0x20, justify 0x24, deviation 0x28,
+// extrusion 0x2c, width 0x30, translate 0x34, height 0x38, scroll 0x3c,
+// scrollRate 0x40, scrollDelay 0x44, indentWidth 0x48, indentHeight 0x4c,
+// mesh 0x50, bbox 0x54..0x6b, language 0x6c, scroll start time 0x70.
+// scrollHorizontal is Theseus's.
 
 class CTextNode : public CNode
 {
@@ -1125,17 +1134,25 @@ public:
 	float m_scroll;
 	float m_scrollRate;
 	float m_scrollDelay;
-	bool  m_scrollHorizontal;
+	float m_indentWidth;
+	float m_indentHeight;
+	bool m_scrollHorizontal;
 
 	DECLARE_NODE_PROPS()
 
-	LPD3DXMESH m_mesh;
+	LPD3DXMESH m_pMesh;
 	D3DXVECTOR3 m_bboxMin, m_bboxMax;
 	int m_nLanguage;
 	XTIME m_timeToScroll;
+
+private:
+	typedef bool (*StampFormatter)(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale);
+	int ExpandStamp(const TCHAR* szPrefix, StampFormatter pfnFormat, bool& bRebuild);
+	void DropMesh();
 };
 
-static const float nScrollSpace = 1.5f;
+// Gap between the end of a scrolling text and its repeat.
+static const float SCROLL_GAP = 1.5f;
 
 IMPLEMENT_NODE("Text", CTextNode, CNode)
 
@@ -1151,26 +1168,34 @@ START_NODE_PROPS(CTextNode, CNode)
 	NODE_PROP(pt_number, CTextNode, scroll)
 	NODE_PROP(pt_number, CTextNode, scrollRate)
 	NODE_PROP(pt_number, CTextNode, scrollDelay)
+	NODE_PROP(pt_number, CTextNode, indentWidth)
+	NODE_PROP(pt_number, CTextNode, indentHeight)
 	NODE_PROP(pt_boolean, CTextNode, scrollHorizontal)
 END_NODE_PROPS()
 
+// CTextNode::CTextNode() / ~CTextNode()
+// Reconstructed from 5960 retail XBE @ 0x000557e0 and 0x00055880:
+//     deviation = 0.01; extrusion = 1.0; translate = 1; everything else 0;
+//     ~: free text, font, justify; if (mesh) mesh->Release();
 CTextNode::CTextNode() :
 	m_text(NULL),
 	m_font(NULL),
 	m_justify(NULL),
 	m_deviation(0.01f),
 	m_extrusion(1.0f),
-	m_translate(true),
 	m_width(0.0f),
+	m_translate(true),
 	m_height(0.0f),
 	m_scroll(0.0f),
 	m_scrollRate(0.0f),
 	m_scrollDelay(0.0f),
-	m_scrollHorizontal(false)
+	m_indentWidth(0.0f),
+	m_indentHeight(0.0f),
+	m_scrollHorizontal(false),
+	m_pMesh(NULL),
+	m_nLanguage(0),
+	m_timeToScroll(0.0)
 {
-	m_mesh = NULL;
-	m_nLanguage = 0;
-	m_timeToScroll = 0.0f;
 }
 
 CTextNode::~CTextNode()
@@ -1178,294 +1203,335 @@ CTextNode::~CTextNode()
 	delete [] m_text;
 	delete [] m_font;
 	delete [] m_justify;
-
-	if (m_mesh != NULL)
-		m_mesh->Release();
+	DropMesh();
 }
 
+void CTextNode::DropMesh()
+{
+	if (m_pMesh != NULL)
+	{
+		m_pMesh->Release();
+		m_pMesh = NULL;
+	}
+}
+
+// CTextNode::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x00055900. Ghidra decompile:
+//     CNode::Advance(t);
+//     if (scrollRate > 0 && mesh) {
+//         if (timeToScroll == 0) timeToScroll = scrollDelay + now;
+//         h = bbox.max.y - bbox.min.y;
+//         if (timeToScroll <= now && h > height) {
+//             scroll = height * t * scrollRate + scroll;
+//             if (scroll >= h + 1.5) scroll -= h + 1.5;
+//         }
+//     }
+// The horizontal marquee is Theseus's; it steps by the window width instead.
 void CTextNode::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
 
-	if (m_scrollRate > 0.0f && m_mesh != NULL)
+	if (m_scrollRate <= 0.0f || m_pMesh == NULL)
+		return;
+
+	XTIME now = TheseusGetNow();
+	if (m_timeToScroll == 0.0)
+		m_timeToScroll = now + m_scrollDelay;
+	if (now < m_timeToScroll)
+		return;
+
+	float window, content;
+	if (m_scrollHorizontal)
 	{
-		XTIME now = TheseusGetNow();
-
-		if (m_timeToScroll == 0.0f)
-			m_timeToScroll = now + m_scrollDelay;
-
-		if (now >= m_timeToScroll)
-		{
-			if (m_scrollHorizontal)
-			{
-				float nContentWidth = m_bboxMax.x - m_bboxMin.x;
-				float windowW = fabsf(m_width);
-				if (windowW > 0.0f && nContentWidth > windowW)
-				{
-					m_scroll += windowW * nSeconds * m_scrollRate;
-					if (m_scroll >= nContentWidth + nScrollSpace)
-						m_scroll -= nContentWidth + nScrollSpace;
-				}
-			}
-			else
-			{
-				float nContentHeight = m_bboxMax.y - m_bboxMin.y;
-				if (nContentHeight > m_height)
-				{
-					m_scroll += m_height * nSeconds * m_scrollRate;
-					if (m_scroll >= nContentHeight + nScrollSpace)
-						m_scroll -= nContentHeight + nScrollSpace;
-				}
-			}
-		}
-	}
-}
-
-const TCHAR* FaceFromFont(const TCHAR* szFont)
-{
-	const TCHAR* szFace = szFont;
-/*
-	if (nLanguage == LANGUAGE_JAPANESE)
-	{
-		if (szFont == NULL || _tcsicmp(szFont, _T("body")) == 0)
-			szFace = _T("HGSSoEikakuGothicB");
-		else if (_tcsicmp(szFont, _T("heading")) == 0)
-			szFace = _T("HGMaroGothicMPRO");
+		window = fabsf(m_width);
+		content = m_bboxMax.x - m_bboxMin.x;
+		if (window <= 0.0f)
+			return;
 	}
 	else
-*/
 	{
-		if (szFont == NULL || _tcsicmp(szFont, _T("body")) == 0)
-			szFace = _T("XBox Book");
-		else if (_tcsicmp(szFont, _T("heading")) == 0)
-			szFace = _T("Xbox");
+		window = m_height;
+		content = m_bboxMax.y - m_bboxMin.y;
 	}
 
-	return szFace;
+	if (content > window)
+	{
+		m_scroll += window * nSeconds * m_scrollRate;
+		if (m_scroll >= content + SCROLL_GAP)
+			m_scroll -= content + SCROLL_GAP;
+	}
 }
 
+// FaceFromFont(szFont)
+// Reconstructed from 5960 retail XBE @ 0x000559a0:
+//     if (!font || !_wcsicmp(font, "body")) return "XBox Book";
+//     if (!_wcsicmp(font, "heading")) return "Xbox";
+//     return font;
+const TCHAR* FaceFromFont(const TCHAR* szFont)
+{
+	if (szFont == NULL || _tcsicmp(szFont, _T("body")) == 0)
+		return _T("XBox Book");
+	if (_tcsicmp(szFont, _T("heading")) == 0)
+		return _T("Xbox");
+	return szFont;
+}
+
+// "<clock>" and "<date>" texts draw the local time or date after the prefix.
+// Refreshes the stored text when the value changes; returns the prefix length,
+// or 0 when the text doesn't start with this prefix.
+int CTextNode::ExpandStamp(const TCHAR* szPrefix, StampFormatter pfnFormat, bool& bRebuild)
+{
+	int cchPrefix = (int)_tcslen(szPrefix);
+	if (_tcsncmp(m_text, szPrefix, cchPrefix) != 0)
+		return 0;
+
+	SYSTEMTIME st;
+	GetLocalTime(&st);
+	TCHAR szValue[32];
+	szValue[0] = 0;
+	pfnFormat(szValue, countof(szValue), &st, LOCALE_CURRENT);
+
+	if (_tcscmp(m_text + cchPrefix, szValue) != 0)
+	{
+		delete [] m_text;
+		m_text = new TCHAR[cchPrefix + _tcslen(szValue) + 1];
+		_tcscpy(m_text, szPrefix);
+		_tcscpy(m_text + cchPrefix, szValue);
+		bRebuild = true;
+	}
+	return cchPrefix;
+}
+
+// CTextNode::Render()
+// Reconstructed from 5960 retail XBE @ 0x000559e0 (1331 bytes). Takes the
+// keyboard's string if one is waiting (a changed string or cursor rebuilds),
+// expands <clock> and <date>, rebuilds on a language change, then builds the mesh with
+// the translated text, |width| as the format width and a negative width as
+// "don't wrap". Justify middle or end shifts left by half or all of the drawn
+// width (capped at |width|). With a height smaller than the text the mesh
+// fades top and bottom and draws twice, the second copy one gap below so the
+// scroll wraps around. Each draw pushes the world matrix, translates, turns
+// culling off for the flat glyphs and back to CCW. See docs/decomp/Text.md.
+// 5960 also rebuilds every frame a cursorless keyboard string arrives, which
+// draws the same mesh; Theseus skips that. The horizontal marquee, the draw counter and the desktop vertex alpha toggle
+// are Theseus's.
 void CTextNode::Render()
 {
-	bool bInvalidMesh = false;
+	bool bRebuild = false;
 
 	if (g_szText != NULL)
 	{
 		if (m_text == NULL || _tcscmp(m_text, g_szText) != 0 || g_nTextChar != g_nTextCharLast)
 		{
 			delete [] m_text;
-			m_text = new TCHAR [_tcslen(g_szText) + 1];
-			_tcscpy(m_text, g_szText);
+			m_text = CopyString(g_szText);
 			g_nTextCharLast = g_nTextChar;
-			bInvalidMesh = true;
+			bRebuild = true;
 		}
-
 		g_szText = NULL;
 	}
 
-	const TCHAR* szText = m_text;
-	if (szText == NULL || szText[0] == 0)
+	if (m_text == NULL || m_text[0] == 0)
 		return;
 
-	if (_tcsncmp(m_text, _T("<clock>"), 7) == 0)
+	const TCHAR* szText = m_text;
+	int cchStamp = ExpandStamp(_T("<clock>"), FormatTime, bRebuild);
+	if (cchStamp == 0)
+		cchStamp = ExpandStamp(_T("<date>"), FormatDate, bRebuild);
+	if (cchStamp != 0)
 	{
-		SYSTEMTIME st;
-		GetLocalTime(&st);
-
-		TCHAR szBuf [32];
-		FormatTime(szBuf, countof(szBuf), &st);
-
-		if (_tcscmp(m_text + 7, szBuf) != 0)
-		{
-			delete [] m_text;
-			m_text = new TCHAR [7 + _tcslen(szBuf) + 1];
-			_stprintf(m_text, _T("<clock>%s"), szBuf);
-
-			bInvalidMesh = true;
-		}
-
 		m_translate = false;
-		szText = m_text + 7; // look past the <clock>
+		szText = m_text + cchStamp;
 	}
 
 	if (m_translate && m_nLanguage != g_nCurLanguage)
-		bInvalidMesh = true;
+		bRebuild = true;
 
-	if (m_mesh != NULL && bInvalidMesh)
+	if (bRebuild)
+		DropMesh();
+
+	if (m_pMesh == NULL)
 	{
-		m_mesh->Release();
-		m_mesh = NULL;
-	}
-
-	if (m_mesh == NULL)
-	{
-        TCHAR sz[MAX_TRANSLATE_LEN];
-
+		TCHAR szTranslated[MAX_TRANSLATE_LEN];
 		if (m_translate)
-			szText = Translate(szText, sz);
-
+			szText = Translate(szText, szTranslated);
 		m_nLanguage = g_nCurLanguage;
 
 		CFont* pFont = GetFont(FaceFromFont(m_font));
-		pFont->CreateTextMesh(szText, -1, &m_mesh, &m_bboxMin, &m_bboxMax, fabsf(m_width), m_width < 0.0f, g_nCurLanguage == LANGUAGE_JAPANESE ? 1.0f : 1.0f);
-		if (m_mesh == NULL)
+		if (pFont == NULL || !pFont->IsOpen())
+			return;
+		pFont->CreateTextMesh(szText, -1, &m_pMesh, &m_bboxMin, &m_bboxMax, fabsf(m_width), m_width < 0.0f, 1.0f,
+			m_indentWidth, m_indentHeight);
+		if (m_pMesh == NULL)
 			return;
 	}
 
-	float nContentHeight = m_bboxMax.y - m_bboxMin.y;
+	float contentW = m_bboxMax.x - m_bboxMin.x;
+	float contentH = m_bboxMax.y - m_bboxMin.y;
+	float window = fabsf(m_width);
 
 	float xOffset = 0.0f;
 	if (m_justify != NULL)
 	{
-		float nWidth = m_bboxMax.x - m_bboxMin.x;
-		if (m_width != 0.0f)
-		{
-			float widthLimit = fabsf(m_width);
-			if (nWidth > widthLimit)
-				nWidth = widthLimit;
-		}
+		float drawn = contentW;
+		if (m_width != 0.0f && drawn > window)
+			drawn = window;
 
 		if (_tcsicmp(m_justify, _T("middle")) == 0)
-		{
-			// Center justify. The original prototype was going to fade
-			// both edges when the text overflowed a negative-signed
-			// width clamp; never made it past the wishlist stage.
-			xOffset = -nWidth / 2.0f;
-		}
+			xOffset = -drawn / 2.0f;
 		else if (_tcsicmp(m_justify, _T("end")) == 0)
-		{
-			// End / right justify. Same fade-left-side wish never
-			// landed.
-			xOffset = -nWidth;
-		}
+			xOffset = -drawn;
 	}
 
-	float nContentWidth = m_bboxMax.x - m_bboxMin.x;
-	float windowW = fabsf(m_width);
-	bool bHScroll = m_scrollHorizontal && windowW > 0.0f && nContentWidth > windowW;
+	bool bMarquee = m_scrollHorizontal && window > 0.0f && contentW > window;
+	bool bVScroll = !bMarquee && m_height != 0.0f && contentH > m_height;
 
-	for (int i = 0; i < 2; i += 1)
+	for (int copy = 0; copy < 2; copy++)
 	{
-		if (bHScroll)
+		if (bMarquee)
 		{
+			float wrap = copy == 0 ? 0.0f : contentW + SCROLL_GAP;
 			TEXTVERTEX* verts;
-			m_mesh->LockVertexBuffer(0, (BYTE**)&verts);
-			float xLeft  = m_scroll - 1.0f;
-			float xRight = xLeft + windowW + 2.0f;
-			HorizontalFade(verts, m_mesh->GetNumVertices(), xLeft, xRight, i == 0 ? 0 : (nContentWidth + nScrollSpace));
-			m_mesh->UnlockVertexBuffer();
-		}
-		else if (m_height != 0.0f && nContentHeight > m_height)
-		{
-			TEXTVERTEX* verts;
-			m_mesh->LockVertexBuffer(0, (BYTE**)&verts);
-			float yTop = -m_scroll + 1.0f;
-			float yBottom = yTop - m_height - 2.0f;
-			if (m_scroll == 0.0f)
-				yTop += 1.0f; // don't fade at top when not scrolled...
-			VerticalFade(verts, m_mesh->GetNumVertices(), yTop/* + 0.5f*/, yBottom, i == 0 ? 0 : -(nContentHeight + nScrollSpace));
-			m_mesh->UnlockVertexBuffer();
-		}
-		else if (i == 1)
-		{
-			// Don't need second pass if not scrolling...
-			break;
-		}
+			if (SUCCEEDED(m_pMesh->LockVertexBuffer(0, (BYTE**)&verts)))
+			{
+				float left = m_scroll - 1.0f;
+				HorizontalFade(verts, m_pMesh->GetNumVertices(), left, left + window + 2.0f, wrap);
+				m_pMesh->UnlockVertexBuffer();
+			}
 
-		// Don't need second pass unless part of it is visible...
-		if (!bHScroll && i == 1 && m_scroll + m_height < nContentHeight)
+			if (copy == 1 && m_scroll + window < contentW)
+				break;
+		}
+		else if (bVScroll)
+		{
+			float wrap = copy == 0 ? 0.0f : -(contentH + SCROLL_GAP);
+			float top = 1.0f - m_scroll;
+			float bottom = top - m_height - 2.0f;
+			if (m_scroll == 0.0f)
+				top += 1.0f;   // no top fade until it starts moving
+			TEXTVERTEX* verts;
+			if (SUCCEEDED(m_pMesh->LockVertexBuffer(0, (BYTE**)&verts)))
+			{
+				VerticalFade(verts, m_pMesh->GetNumVertices(), top, bottom, wrap);
+				m_pMesh->UnlockVertexBuffer();
+			}
+
+			if (copy == 1 && m_scroll + m_height < contentH)
+				break;
+		}
+		else if (copy == 1)
+		{
 			break;
-		if (bHScroll && i == 1 && m_scroll + windowW < nContentWidth)
-			break;
+		}
 
 		TheseusPushWorld();
-		if (bHScroll)
-			TheseusTranslateWorld(xOffset + (i == 0 ? 0 : (nContentWidth + nScrollSpace)) - m_scroll, 0.0f, 0.0f);
+		if (bMarquee)
+			TheseusTranslateWorld(xOffset + (copy == 0 ? 0.0f : contentW + SCROLL_GAP) - m_scroll, 0.0f, 0.0f);
 		else
-			TheseusTranslateWorld(xOffset, (i == 0 ? 0 : -(nContentHeight + nScrollSpace)) + m_scroll, 0.0f);
+			TheseusTranslateWorld(xOffset, (copy == 0 ? 0.0f : -(contentH + SCROLL_GAP)) + m_scroll, 0.0f);
 		TheseusUpdateWorld();
 
+#ifndef _XBOX
+		// Desktop falloff lighting writes color.a, so the fade's vertex alpha
+		// only clips if the shader multiplies it back in for this draw.
+		TheseusSetVertexAlphaMul(TRUE);
+#endif
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-		m_mesh->DrawSubset(0);
+		Frame_Count(FC_DRAW_SUBSET);
+		m_pMesh->DrawSubset(0);
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
+#ifndef _XBOX
+		TheseusSetVertexAlphaMul(FALSE);
+#endif
 
 		TheseusPopWorld();
 	}
 }
 
-
+// CTextNode::OnSetProperty(pprd, pvValue)
+// Reconstructed from 5960 retail XBE @ 0x00055f20:
+//     if (prd->offset != 0x3c /* scroll */) { if (mesh) { mesh->Release(); mesh = 0; }
+//                                           timeToScroll = 0; scroll = 0; }
+//     return 1;
 bool CTextNode::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
-	if (PTR2INT(pprd->pbOffset) == offsetof(m_scroll))
-		return true; // don't need to invalidate
-
-	if (m_mesh != NULL)
+	if (PTR2INT(pprd->pbOffset) != offsetof(m_scroll))
 	{
-		m_mesh->Release();
-		m_mesh = NULL;
+		DropMesh();
+		m_scroll = 0.0f;
+		m_timeToScroll = 0.0;
 	}
-
-	m_scroll = 0;
-	m_timeToScroll = 0.0f;
-
 	return true;
 }
 
 
+// ===== Text node cache =====================================================
+// Ten throwaway Text nodes for code that draws a string directly (the save
+// grid and title lists), keyed by string and width.
 
-#define MAX_TEXT_CACHE	10
+#define MAX_TEXT_CACHE 10
 
 struct CTextCacheEntry
 {
-	CTextNode* m_textNode;
-	XTIME m_usage;
+	CTextNode* m_pNode;
+	XTIME m_lastUsed;
 };
 
-static CTextCacheEntry textCache [MAX_TEXT_CACHE];
+static CTextCacheEntry s_textCache[MAX_TEXT_CACHE];
 
-
+// FindText(szText, nWidth)
+// Reconstructed from 5960 retail XBE @ 0x00055f60. Ghidra decompile, trimmed:
+//     for (i < 10) {
+//         if (node && node->text && !wcscmp(node->text, s) && node->width == w)
+//             { used = now; return entry; }
+//         if (!free) { if (!node) free = entry; else if (!oldest || used < oldest->used) oldest = entry; }
+//     }
+//     if (!free && oldest) { delete oldest->node; zero it; free = oldest; }
+//     free->node = new CTextNode; node->text = copy(s); node->width = w; used = now;
 static CTextCacheEntry* FindText(const TCHAR* szText, float nWidth)
 {
-	CTextCacheEntry* pFreeOne = NULL;
-	CTextCacheEntry* pOldOne = NULL;
-	for (int i = 0; i < countof(textCache); i += 1)
+	CTextCacheEntry* pEmpty = NULL;
+	CTextCacheEntry* pOldest = NULL;
+
+	for (int i = 0; i < MAX_TEXT_CACHE; i++)
 	{
-		if (textCache[i].m_textNode != NULL && textCache[i].m_textNode->m_text != NULL && _tcscmp(textCache[i].m_textNode->m_text, szText) == 0 && textCache[i].m_textNode->m_width == nWidth)
+		CTextCacheEntry& entry = s_textCache[i];
+		CTextNode* pNode = entry.m_pNode;
+		if (pNode != NULL && pNode->m_text != NULL && pNode->m_width == nWidth &&
+			_tcscmp(pNode->m_text, szText) == 0)
 		{
-			textCache[i].m_usage = TheseusGetNow();
-			return &textCache[i];
+			entry.m_lastUsed = TheseusGetNow();
+			return &entry;
 		}
 
-		if (pFreeOne != NULL)
+		if (pEmpty != NULL)
 			continue;
-
-		if (textCache[i].m_textNode == NULL)
-			pFreeOne = &textCache[i];
-		else if (pOldOne == NULL || pOldOne->m_usage > textCache[i].m_usage)
-			pOldOne = &textCache[i];
+		if (pNode == NULL)
+			pEmpty = &entry;
+		else if (pOldest == NULL || entry.m_lastUsed < pOldest->m_lastUsed)
+			pOldest = &entry;
 	}
 
-	if (pFreeOne == NULL && pOldOne != NULL)
+	if (pEmpty == NULL)
 	{
-		delete pOldOne->m_textNode;
-		ZeroMemory(pOldOne, sizeof (CTextCacheEntry));
-		pFreeOne = pOldOne;
+		delete pOldest->m_pNode;
+		pOldest->m_pNode = NULL;
+		pOldest->m_lastUsed = 0.0;
+		pEmpty = pOldest;
 	}
 
-	ASSERT(pFreeOne != NULL);
-
-	pFreeOne->m_textNode = new CTextNode;
-	pFreeOne->m_textNode->m_text = new TCHAR [_tcslen(szText) + 1];
-	pFreeOne->m_textNode->m_width = nWidth;
-	_tcscpy(pFreeOne->m_textNode->m_text, szText);
-
-	pFreeOne->m_usage = TheseusGetNow();
-
-	return pFreeOne;
+	CTextNode* pNode = new CTextNode;
+	pNode->m_text = CopyString(szText);
+	pNode->m_width = nWidth;
+	pEmpty->m_pNode = pNode;
+	pEmpty->m_lastUsed = TheseusGetNow();
+	return pEmpty;
 }
 
+// The callers inline this in 5960; the node never translates its string.
 CNode* GetTextNode(const TCHAR* szText, float nWidth)
 {
-	CTextCacheEntry* pTextCache = FindText(szText, nWidth);
-	pTextCache->m_textNode->m_translate = false;
-	return pTextCache->m_textNode;
+	CTextNode* pNode = FindText(szText, nWidth)->m_pNode;
+	pNode->m_translate = false;
+	return pNode;
 }

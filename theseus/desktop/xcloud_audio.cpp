@@ -11,7 +11,7 @@
 #include "xcloud_audio.h"
 
 #include <SDL.h>
-#include <opus/opus.h>
+#include <opus.h>
 
 #include <mutex>
 #include <cstdio>

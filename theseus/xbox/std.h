@@ -1,12 +1,12 @@
-// std.h: universal prelude header. Every .cpp file includes this
-// first; sets up the type system, CRT headers, D3D types, and
-// debug infrastructure for whichever platform we're building on.
-//
-//   _XBOX            : XDK kernel + XTL + D3D8 (original Xbox hardware)
-//   !_XBOX + _WIN32  : Win32 API + SDL + OpenGL (Windows desktop)
-//   !_XBOX + !_WIN32 : POSIX shims + SDL + OpenGL (macOS / Linux)
+// std.h: the Xbox build's prelude. Every Xbox .cpp includes this first;
+// it sets up the XDK kernel + XTL, CRT headers, D3D8 types and debug
+// infrastructure. The desktop has its own in desktop/std.h.
 
 // Check Configuration Options
+#include "platform.h"
+#ifdef THESEUS_DESKTOP
+#error "xbox/std.h is the Xbox prelude. Desktop code includes desktop/std.h."
+#endif
 #include "stdcfg.h"
 
 // Flag so toolbox/xboxinternals.h knows kernel types are already available
@@ -61,12 +61,6 @@ typedef char FSCHAR;
 #include "vertex8.h"
 #endif
 
-#else // !_XBOX
-// --- Desktop: SDL platform shim + D3D8-to-OpenGL ---
-
-#include "platform_shim.h"
-#include "d3d8_sdl.h"
-
 #endif // _XBOX
 
 // =========================================================================
@@ -79,8 +73,7 @@ typedef char FSCHAR;
 
 #define EXTERN_C extern "C"
 
-// Xbox debug CRT overrides operator new for leak tracking.
-// Desktop doesn't use this, it has its own tooling.
+// Debug CRT overrides operator new for leak tracking.
 #if defined(_XBOX) && defined(_DEBUG)
 #define new new(_NORMAL_BLOCK, __FILE__, __LINE__)
 #endif
@@ -90,13 +83,9 @@ typedef char FSCHAR;
 #else // !__cplusplus
 
 #define EXTERN_C extern
-#ifndef _XBOX
-// C mode on desktop: bool/true/false come from <stdbool.h> via sdl_platform.h
-#else
 #define bool BOOL
 #define true TRUE
 #define false FALSE
-#endif
 #define inline _inline
 
 #endif // __cplusplus
@@ -110,18 +99,13 @@ typedef char FSCHAR;
 #endif
 
 // Node property offset: uses 'this' so it only works inside member functions.
-// Both platforms need this for the XAP property system.
+// The XAP property system needs it.
 // Conflicts with the standard offsetof(type, member) from <cstddef>.
 #undef offsetof
 #define offsetof(member) (((int)(intptr_t)&member) - (int)(intptr_t)this)
 
-// Safe pointer-to-int cast. Xbox is 32-bit so (int)ptr works. On 64-bit
-// desktop we need to go through intptr_t to avoid the clang error.
-#ifdef _XBOX
+// Pointer-to-int cast. Xbox is 32-bit so (int)ptr works.
 #define PTR2INT(p) ((int)(p))
-#else
-#define PTR2INT(p) ((int)(intptr_t)(p))
-#endif
 
 #ifdef _UNICODE
 extern void Unicode(TCHAR* wsz, const char* sz, int nMaxChars);
@@ -151,8 +135,17 @@ extern void Ansi(char* sz, const TCHAR* wsz, int nMaxChars);
 EXTERN_C bool AssertFailed(const TCHAR* szFile, int nLine, HRESULT hr);
 EXTERN_C void Trace(const TCHAR* szMsg, ...);
 
+// CHECK survives retail, unlike ASSERT. Use it where failing means bad memory.
+#define CHECK(f)        TheseusCheck(!!(f), #f, __FILE__, __LINE__)
+inline bool TheseusCheck(bool ok, const char* expr, const char* file, int line)
+{
+	if (!ok)
+		Trace(_T("\001CHECK failed %hs:%d: %hs\n"), file, line, expr);
+	return ok;
+}
+
 #else
-// Release (Xbox) and all desktop builds: no-op asserts, silent trace
+// Release: no-op asserts, silent trace
 #define ASSERT(f)       ((void)0)
 #define VERIFY(f)       ((void)(f))
 #define ASSERTHR(f)     ((void)0)
@@ -161,6 +154,8 @@ EXTERN_C void Trace(const TCHAR* szMsg, ...);
 #define ALERT           1 ? (void)0 : Alert
 
 inline void Trace(const TCHAR* szMsg, ...) { }
+
+#define CHECK(f)        (!!(f))
 
 #endif
 
@@ -191,15 +186,5 @@ typedef struct tagRGBQUAD {
 typedef RGBQUAD FAR* LPRGBQUAD;
 
 #define MAX_COMPUTERNAME_LENGTH 15
-
-#else // !_XBOX
-
-#define START_PROFILE()
-#define END_PROFILE()
-
-// Desktop: DbgPrint goes to stderr
-#ifndef DbgPrint
-#define DbgPrint(...) fprintf(stderr, __VA_ARGS__)
-#endif
 
 #endif // _XBOX

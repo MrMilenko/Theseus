@@ -35,37 +35,6 @@ const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int n
 int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int cchToken);
 
 
-// Lightweight tokenizer state for the script source-text walkers.
-// Each parser instance pins the start of the file, the file path
-// (used in syntax error messages), the current cursor, and the
-// current line number.
-class CParser
-{
-public:
-	CParser(const TCHAR* szFilePath, const TCHAR* pchFile, int cchFile = -1);
-	~CParser();
-
-	void SkipWhite();
-	bool Token(const TCHAR*& pchToken, int& cchToken, bool bAllowPaths = false);
-	void SyntaxError(const TCHAR* szMsg, ...);
-	bool AtEnd() const;
-
-	const TCHAR* m_pchFile;
-	int m_cchFile;
-
-	const TCHAR* m_filePath;
-
-	const TCHAR* m_pch;
-	int m_nLine;
-};
-
-inline bool CParser::AtEnd() const
-{
-	return (m_pch >= m_pchFile + m_cchFile);
-}
-
-
-
 class CCompiler
 {
 public:
@@ -87,10 +56,11 @@ public:
 
 	inline UINT GetAddress() { return m_nop; }
 
+	// Patches a jump or frame size written earlier. 5960 stores straight in.
 	inline void Fixup(UINT nAddress, UINT nValue)
 	{
-		ASSERT(nAddress < m_nop);
-		CopyMemory(&m_ops[nAddress], &nValue, sizeof (UINT));
+		if (CHECK(nAddress + sizeof (UINT) <= m_nop))
+			CopyMemory(&m_ops[nAddress], &nValue, sizeof (UINT));
 	}
 
 	CFunction* CreateFunction();

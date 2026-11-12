@@ -27,25 +27,42 @@
 # Requirements (per target)
 # ------------------------------------------------------------------------
 # Xbox (debug/retail):
-#   - clang + lld-link (`brew install llvm` on macOS, `apt install clang lld`
-#     on Linux). Apple clang from the Xcode CLT works on macOS too, as long
-#     as lld is available via Homebrew llvm.
+#   - clang + lld-link. Debian `apt install clang lld`, Fedora `dnf install
+#     clang lld`, Arch `pacman -S clang lld`, macOS `brew install llvm` or
+#     `port install clang-17 lld-17`. Apple clang from the Xcode CLT works
+#     on macOS too, as long as an lld-link is on PATH.
 #   - OXDK cloned and built: https://github.com/MrMilenko/OXDK
 #   - An Xbox SDK source tree (headers + libs the dashboard ABI needs at
 #     link time). Path passed via XDK_BASE.
 #
 # Native desktop:
 #   - C++17 compiler (clang or gcc).
-#   - SDL2, SDL2_mixer, OpenGL headers.
-#     macOS:           brew install sdl2 sdl2_mixer
-#     Debian/Ubuntu:   sudo apt install build-essential libsdl2-dev \
-#                                       libsdl2-mixer-dev libgl-dev
-#     Arch:            sudo pacman -S sdl2 sdl2_mixer
-#     MSYS2 (Windows): pacman -S mingw-w64-x86_64-{gcc,SDL2,SDL2_mixer}
+#   - pkg-config. every library below is located through it, so no specific
+#     package manager is assumed. Install the deps however you like and, if
+#     they sit off the default search path, export PKG_CONFIG_PATH.
+#   - SDL2, SDL2_mixer, libmpv, libcurl, ffmpeg, opus, OpenGL headers.
+#     Debian/Ubuntu:   sudo apt install build-essential pkg-config \
+#                                       libsdl2-dev libsdl2-mixer-dev \
+#                                       libmpv-dev libcurl4-openssl-dev \
+#                                       libavcodec-dev libavutil-dev \
+#                                       libswscale-dev libopus-dev libgl-dev
+#     Fedora:          sudo dnf install gcc-c++ pkgconf-pkg-config \
+#                                       SDL2-devel SDL2_mixer-devel \
+#                                       mpv-libs-devel libcurl-devel \
+#                                       ffmpeg-devel opus-devel
+#     Arch:            sudo pacman -S base-devel pkgconf sdl2 sdl2_mixer \
+#                                     mpv curl ffmpeg opus
+#     macOS:           brew install sdl2 sdl2_mixer mpv curl ffmpeg opus \
+#                                   pkg-config
+#                      (or: sudo port install libsdl2 libsdl2_mixer mpv \
+#                                             curl ffmpeg libopus pkgconfig)
+#     MSYS2 (Windows): pacman -S pkg-config mingw-w64-x86_64-{gcc,SDL2,SDL2_mixer,mpv,curl}
 #
 # Windows cross (mingw-w64):
-#   - macOS:    brew install mingw-w64
-#     Linux:    sudo apt install mingw-w64
+#   - Debian/Ubuntu: sudo apt install mingw-w64
+#     Fedora:        sudo dnf install mingw64-gcc-c++
+#     Arch:          sudo pacman -S mingw-w64-gcc
+#     macOS:         brew install mingw-w64
 #   - Plus the SDL2 + SDL2_mixer mingw devel tarballs and a locally built
 #     mingw GLEW. See the desktop-win64 section header below for the
 #     one-time setup script.
@@ -71,6 +88,9 @@
 # ------------------------------------------------------------------------
 #   XDK_BASE=/path/to/xbox          MS XDK source tree (Xbox builds)
 #   OXDK_DIR=/path/to/OXDK          OXDK toolkit (Xbox builds)
+#   PKG_CONFIG=pkg-config           Override to use a wrapper or cross variant
+#   PKG_CONFIG_PATH=/path/pkgconfig Where to find .pc files off the default path
+#   BGFX_BUILD_TAG=osx-arm64        bgfx .build/ subdir, if not the host default
 #   BUILDS_ROOT=/path/to/output     Where build dirs live (default: ~/builds/theseus)
 #   SDL2_MINGW_DIR=/path/to/dir     SDL2 mingw devel root (Windows cross)
 #   GLEW_MINGW_DIR=/path/to/dir     GLEW source root (Windows cross)
@@ -97,7 +117,15 @@ NTOS_INC     = $(XDK_BASE)/private/ntos/inc
 NTOS_XAPI    = $(XDK_BASE)/private/ntos/xapi/inc
 SDK_INC      = $(XDK_BASE)/public/sdk/inc
 DDK_INC      = $(XDK_BASE)/public/ddk/inc
-CXBE         = $(OXDK_DIR)/tools/cxbe/cxbe
+# OXDK moved its Xbox bits under xbox/. Take the new path, fall back to the old.
+# Never leave this empty: the next token in the XBE recipe starts with '-', which
+# make would eat as the ignore-errors prefix and report a successful build that
+# produced nothing. An unbuilt cxbe has to fail loudly, naming the path it wanted.
+CXBE         := $(firstword $(wildcard $(OXDK_DIR)/xbox/tools/cxbe/cxbe \
+                                       $(OXDK_DIR)/tools/cxbe/cxbe))
+ifeq ($(strip $(CXBE)),)
+CXBE         := $(OXDK_DIR)/xbox/tools/cxbe/cxbe
+endif
 
 # ============================================================
 # Build configuration (debug vs retail)
@@ -284,6 +312,7 @@ SRCS_SHARED = \
 	shared/timezone.cpp \
 	shared/title_collection.cpp \
 	shared/util.cpp \
+	shared/frame_profiler.cpp \
 	shared/xap_vm.cpp \
 	shared/xbe.cpp
 
@@ -296,7 +325,6 @@ SRCS_SHARED_XBOX_ONLY = \
 SRCS_RENDER = \
 	render/animation_nodes.cpp \
 	render/asset_loader.cpp \
-	render/autosmooth.cpp \
 	render/camera.cpp \
 	render/hud_node.cpp \
 	render/materials.cpp \
@@ -307,7 +335,8 @@ SRCS_RENDER = \
 	render/text.cpp \
 	render/tmap_system.cpp \
 	render/widget_draw.cpp \
-	render/widget_layer.cpp
+	render/widget_layer.cpp \
+	render/xip_archive.cpp
 
 SRCS_XBOX = \
 	xbox/config.cpp \
@@ -329,8 +358,7 @@ SRCS_XBOX = \
 	xbox/theseus_launcher.cpp \
 	xbox/title_scanner.cpp \
 	xbox/widget_config.cpp \
-	xbox/xbox_live.cpp \
-	xbox/xip_archive.cpp
+	xbox/xbox_live.cpp
 
 SRCS_TOOLBOX = \
 	toolbox/drive.cpp \
@@ -423,6 +451,50 @@ clean:
 	@# Sweep up the in-tree leftovers from the old layout if present.
 	rm -rf bin bin-retail bin-desktop
 
+# Platform flags live in shared/platform.h. The old desktop spellings stay
+# retired, and code the Xbox build compiles never reads _WIN32, which is
+# true on the Xbox too. On desktop only the host layer (desktop/host_*)
+# talks to the OS by name: <windows.h> is host_win* only, the compiler's OS
+# macros are platform.h and host_* only, and THESEUS_HOST_* is too, apart
+# from LINT_HOST_DATA. Those files keep per-OS data, not OS calls: default
+# install paths for Steam, RetroArch and xemu, and the Linux CD ioctls.
+# Vendored headers (stb, minimp3, imfilebrowser, imgui) are left alone.
+LINT_DIRS    = $(THESEUS_SRC)/desktop $(THESEUS_SRC)/shared $(THESEUS_SRC)/engine \
+               $(THESEUS_SRC)/render $(THESEUS_SRC)/toolbox
+LINT_VENDOR  = --exclude-dir=third-party --exclude-dir=xdk --exclude-dir=imgui \
+               --exclude='stb_*.h' --exclude='minimp3.h' --exclude='imfilebrowser.h'
+LINT_HOST_DATA = title_maker.cpp retroarch.cpp steam.cpp hdd_browser.cpp cdaudio.cpp
+LINT_HOSTTEST = THESEUS_HOST_(WIN|MAC|LINUX)
+.PHONY: lint-platform
+lint-platform:
+	@bad=0; \
+	if grep -rnwE '_DESKTOP|UIX_DESKTOP|_WINDOWS' $(THESEUS_SRC) \
+	     --include='*.h' --include='*.cpp' --include='*.c' \
+	     --exclude-dir=third-party --exclude-dir=xdk --exclude-dir=imgui; then \
+	  echo "lint-platform: retired flag above. Use _XBOX or THESEUS_DESKTOP."; bad=1; \
+	fi; \
+	if grep -rnE '^[[:space:]]*#[[:space:]]*include[[:space:]]*<(windows|winsock2|ws2tcpip|shellapi|commdlg|shlobj|dbghelp)[.]h>' \
+	     $(LINT_DIRS) --include='*.h' --include='*.cpp' --include='*.c' $(LINT_VENDOR) \
+	     | grep -v '/desktop/host_win[^/]*[.]cpp:'; then \
+	  echo "lint-platform: Windows header above. Only desktop/host_win*.cpp may include it."; bad=1; \
+	fi; \
+	if grep -rnwE '_WIN32|__APPLE__|__linux__' $(LINT_DIRS) --include='*.h' --include='*.cpp' --include='*.c' \
+	     $(LINT_VENDOR) --exclude='platform.h' --exclude='host_*'; then \
+	  echo "lint-platform: OS macro above. _WIN32 is true on the Xbox too; go through host.h."; bad=1; \
+	fi; \
+	if grep -rnE '$(LINT_HOSTTEST)' $(LINT_DIRS) \
+	     --include='*.h' --include='*.cpp' --include='*.c' $(LINT_VENDOR) --exclude='platform.h' \
+	     --exclude='host_*' $(foreach f,$(LINT_HOST_DATA),--exclude='$(f)'); then \
+	  echo "lint-platform: host test above. Go through host.h."; bad=1; \
+	fi; \
+	for f in $$(grep -rlE '$(LINT_HOSTTEST)' $(THESEUS_SRC)/desktop \
+	     --include='*.h' --include='*.cpp' $(LINT_VENDOR) --exclude='host_*'); do \
+	  awk '/^[ \t]*#[ \t]*include[ \t]*"(platform|std)[.]h"/ { ok = 1 } \
+	       /$(LINT_HOSTTEST)/ { if (!ok) { print FILENAME ":" FNR ": host test before platform.h"; exit 1 } exit 0 }' $$f \
+	    || { echo "lint-platform: include platform.h before testing THESEUS_HOST_*."; bad=1; }; \
+	done; \
+	[ $$bad -eq 0 ] && echo "lint-platform: clean"; exit $$bad
+
 # ============================================================
 # Desktop build (macOS / Linux / Windows)
 # ============================================================
@@ -443,11 +515,69 @@ DESKTOP_TARGET = $(DESKTOP_DIR)/theseus
 # Detect platform
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
+
+# ------------------------------------------------------------------
+# Dependency discovery
+# ------------------------------------------------------------------
+# pkg-config is the portable path and is what every platform uses. No
+# package manager is required or assumed: Homebrew, MacPorts, apt, pacman,
+# nix, MSYS2 and a hand-built prefix all work the same way, because all of
+# them install .pc files. If yours are somewhere unusual, point
+# PKG_CONFIG_PATH at them and nothing else needs to change.
+#
+# Override PKG_CONFIG to use a wrapper or a cross-prefixed pkg-config.
+PKG_CONFIG ?= pkg-config
+
+# macOS convenience only: Homebrew keeps some formulae keg-only, so their
+# .pc files sit off the default search path. If brew happens to be
+# installed, fold those directories in. Skipped entirely when it is not,
+# and a PKG_CONFIG_PATH you set yourself always wins.
+ifeq ($(UNAME_S),Darwin)
+  BREW ?= $(shell command -v brew 2>/dev/null)
+  ifneq ($(BREW),)
+    BREW_KEG_PC := $(shell sep=""; for f in openssl@3 curl ffmpeg opus; do \
+                     d=$$($(BREW) --prefix $$f 2>/dev/null)/lib/pkgconfig ; \
+                     [ -d "$$d" ] || continue ; \
+                     printf '%s%s' "$$sep" "$$d" ; sep=":" ; \
+                   done)
+  endif
+endif
+
+# Every probe below is a parse-time $(shell), and make 3.81 (the Xcode CLT make)
+# exports variables to recipe subshells ONLY -- an `export PKG_CONFIG_PATH` here
+# would never reach them. So put the path on the command line instead.
+ifeq ($(strip $(BREW_KEG_PC)),)
+  PKGC := $(PKG_CONFIG)
+else
+  # Append to an existing PKG_CONFIG_PATH, but never introduce an empty element.
+  ifeq ($(strip $(PKG_CONFIG_PATH)),)
+    PKGC_PATH := $(BREW_KEG_PC)
+  else
+    PKGC_PATH := $(PKG_CONFIG_PATH):$(BREW_KEG_PC)
+  endif
+  PKGC := PKG_CONFIG_PATH="$(PKGC_PATH)" $(PKG_CONFIG)
+  export PKG_CONFIG_PATH := $(PKGC_PATH)
+endif
+
+# yes/empty. use with ifeq to gate on a package being present.
+pkg_have = $(shell $(PKGC) --exists $(1) 2>/dev/null && echo yes)
+
+# SDL2. sdl2-config ships with every SDL2 install and is the most reliable
+# probe; pkg-config is the fallback for distros that drop the script.
+ifneq ($(shell command -v sdl2-config 2>/dev/null),)
+  SDL2_CFLAGS  := $(shell sdl2-config --cflags)
+  SDL2_LDFLAGS := $(shell sdl2-config --libs)
+else ifeq ($(call pkg_have,sdl2),yes)
+  SDL2_CFLAGS  := $(shell $(PKGC) --cflags sdl2)
+  SDL2_LDFLAGS := $(shell $(PKGC) --libs sdl2)
+else
+  SDL2_CFLAGS  :=
+  SDL2_LDFLAGS := -lSDL2
+endif
+
 ifeq ($(UNAME_S),Darwin)
   DESKTOP_CXX  ?= clang++
   DESKTOP_CC   ?= clang
-  SDL2_CFLAGS  := $(shell sdl2-config --cflags 2>/dev/null || echo -I/opt/homebrew/include/SDL2 -I/usr/local/include/SDL2)
-  SDL2_LDFLAGS := $(shell sdl2-config --libs 2>/dev/null || echo -L/opt/homebrew/lib -lSDL2)
   # OpenGL is for projectM (the milkdrop visualizer), not a dashboard
   # render backend; the dashboard renders through bgfx (Metal here).
   DESKTOP_PLATFORM_LDFLAGS = -framework OpenGL -lSDL2_mixer
@@ -456,8 +586,6 @@ else ifeq ($(UNAME_S),Linux)
   # clang installed can still override with `make desktop DESKTOP_CXX=clang++`.
   DESKTOP_CXX  ?= g++
   DESKTOP_CC   ?= gcc
-  SDL2_CFLAGS  := $(shell sdl2-config --cflags)
-  SDL2_LDFLAGS := $(shell sdl2-config --libs)
   # OpenGL is for projectM, not a dashboard render backend.
   DESKTOP_PLATFORM_LDFLAGS = -lGL -lSDL2_mixer
 else
@@ -469,8 +597,6 @@ else
   # dbghelp: sdl_main.cpp's StackWalk64-based panic crash handler.
   DESKTOP_CXX  ?= g++
   DESKTOP_CC   ?= gcc
-  SDL2_CFLAGS  := $(shell sdl2-config --cflags)
-  SDL2_LDFLAGS := $(shell sdl2-config --libs)
   DESKTOP_PLATFORM_LDFLAGS = -lopengl32 -lglew32 -lSDL2_mixer -lws2_32 -ldbghelp
 endif
 
@@ -491,21 +617,25 @@ endif
 # target. (Detected via MAKECMDGOALS.)
 DESKTOP_NATIVE_GOALS := desktop desktop-clean
 ifneq ($(filter $(DESKTOP_NATIVE_GOALS),$(or $(MAKECMDGOALS),desktop)),)
-  ifeq ($(shell pkg-config --exists mpv 2>/dev/null && echo yes),yes)
-    MPV_CFLAGS  := $(shell pkg-config --cflags mpv)
-    MPV_LDFLAGS := $(shell pkg-config --libs mpv)
+  ifeq ($(call pkg_have,mpv),yes)
+    MPV_CFLAGS  := $(shell $(PKGC) --cflags mpv)
+    MPV_LDFLAGS := $(shell $(PKGC) --libs mpv)
   else
-    $(error libmpv (mpv.pc) not found via pkg-config. Install: macOS \
-`brew install mpv`; Debian/Ubuntu `sudo apt install libmpv-dev`; \
-MSYS2 `pacman -S mingw-w64-x86_64-mpv`)
+    $(error libmpv (mpv.pc) not found by $(PKG_CONFIG). Debian/Ubuntu \
+`apt install libmpv-dev`; Fedora `dnf install mpv-libs-devel`; Arch \
+`pacman -S mpv`; MSYS2 `pacman -S mingw-w64-x86_64-mpv`; macOS \
+`brew install mpv` or `port install mpv`. Built it yourself? Add its \
+pkgconfig dir to PKG_CONFIG_PATH)
   endif
-  ifeq ($(shell pkg-config --exists libcurl 2>/dev/null && echo yes),yes)
-    CURL_CFLAGS  := $(shell pkg-config --cflags libcurl)
-    CURL_LDFLAGS := $(shell pkg-config --libs libcurl)
+  ifeq ($(call pkg_have,libcurl),yes)
+    CURL_CFLAGS  := $(shell $(PKGC) --cflags libcurl)
+    CURL_LDFLAGS := $(shell $(PKGC) --libs libcurl)
   else
-    $(error libcurl (libcurl.pc) not found via pkg-config. Install: macOS \
-`brew install curl`; Debian/Ubuntu `sudo apt install libcurl4-openssl-dev`; \
-MSYS2 `pacman -S mingw-w64-x86_64-curl`)
+    $(error libcurl (libcurl.pc) not found by $(PKG_CONFIG). Debian/Ubuntu \
+`apt install libcurl4-openssl-dev`; Fedora `dnf install libcurl-devel`; Arch \
+`pacman -S curl`; MSYS2 `pacman -S mingw-w64-x86_64-curl`; macOS \
+`brew install curl` or `port install curl`. Built it yourself? Add its \
+pkgconfig dir to PKG_CONFIG_PATH)
   endif
   # libprojectM is vendored as a git submodule under
   # theseus/third-party/projectm and built into a local prefix by the
@@ -536,11 +666,6 @@ DESKTOP_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_DESKTOP \
-	-DTHESEUS_DESKTOP \
-	-DUIX_DESKTOP=1 \
-	-D_WINDOWS=1 \
-	-D_THESEUS_STD_H=1 \
 	-fpermissive \
 	-fms-extensions \
 	$(SDL2_CFLAGS) \
@@ -563,7 +688,6 @@ DESKTOP_CFLAGS = \
 	-Wno-dangling-else \
 	-Wno-format \
 	-Wno-microsoft-exception-spec \
-	-Wno-macro-redefined \
 	-Wno-microsoft \
 	-Wno-null-conversion \
 	-Wno-c++11-narrowing \
@@ -578,20 +702,28 @@ DESKTOP_LDFLAGS = $(SDL2_LDFLAGS) $(DESKTOP_PLATFORM_LDFLAGS) $(MPV_LDFLAGS) $(C
 # xCloud video/audio decode uses libavcodec/libswscale + opus directly
 # (headers already come in via mpv's pkg-config cflags). ffmpeg is a hard
 # dep of the desktop anyway.
-ifeq ($(UNAME_S),Darwin)
-  DESKTOP_LDFLAGS += -L$(shell brew --prefix ffmpeg)/lib -lavcodec -lavutil -lswscale
-  DESKTOP_CFLAGS  += -I$(shell brew --prefix opus)/include
-  DESKTOP_LDFLAGS += -L$(shell brew --prefix opus)/lib -lopus
-else
-  DESKTOP_CFLAGS  += $(shell pkg-config --cflags opus)
-  DESKTOP_LDFLAGS += $(shell pkg-config --libs libavcodec libavutil libswscale opus)
+# Gated on the native desktop goals: the Xbox and cross targets never consume
+# these flags (the cross builds carry their own ffmpeg/opus), and a top-level
+# $(error) here would abort them -- and `clean` -- at parse time.
+XCLOUD_PKGS := libavcodec libavutil libswscale opus
+ifneq ($(filter $(DESKTOP_NATIVE_GOALS),$(or $(MAKECMDGOALS),desktop)),)
+  ifeq ($(call pkg_have,$(XCLOUD_PKGS)),yes)
+    DESKTOP_CFLAGS  += $(shell $(PKGC) --cflags $(XCLOUD_PKGS))
+    DESKTOP_LDFLAGS += $(shell $(PKGC) --libs $(XCLOUD_PKGS))
+  else
+    $(error ffmpeg/opus ($(XCLOUD_PKGS)) not found by $(PKG_CONFIG). \
+Debian/Ubuntu `apt install libavcodec-dev libavutil-dev libswscale-dev libopus-dev`; \
+Fedora `dnf install ffmpeg-devel opus-devel`; Arch `pacman -S ffmpeg opus`; \
+macOS `brew install ffmpeg opus` or `port install ffmpeg opus`)
+  endif
 endif
 
 # Xbox remote play / xCloud streaming uses libdatachannel for the WebRTC
 # transport (ICE + DTLS + SCTP datachannels + RTP media). Static libs come
 # from a one time build under third-party/libdatachannel:
 #   cmake -S . -B build-mac -DBUILD_SHARED_LIBS=OFF -DNO_WEBSOCKET=1 \
-#     -DNO_EXAMPLES=1 -DNO_TESTS=1 -DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
+#     -DNO_EXAMPLES=1 -DNO_TESTS=1
+#   (add -DOPENSSL_ROOT_DIR=... if cmake cannot find OpenSSL on its own)
 #   cmake --build build-mac -j
 # The block is skipped (no THESEUS_HAVE_WEBRTC) if the lib is not built yet.
 LDC_ROOT := $(THESEUS_SRC)/third-party/libdatachannel
@@ -608,8 +740,8 @@ ifneq ($(wildcard $(LDC_BUILD)/libdatachannel.a),)
                      $(LDC_BUILD)/deps/libjuice/libjuice.a \
                      $(LDC_BUILD)/deps/libsrtp/libsrtp2.a \
                      $(LDC_BUILD)/deps/usrsctp/usrsctplib/libusrsctp.a
-  ifeq ($(UNAME_S),Darwin)
-    DESKTOP_LDFLAGS += -L$(shell brew --prefix openssl@3)/lib -lssl -lcrypto
+  ifeq ($(call pkg_have,libssl libcrypto),yes)
+    DESKTOP_LDFLAGS += $(shell $(PKGC) --libs libssl libcrypto)
   else
     DESKTOP_LDFLAGS += -lssl -lcrypto
   endif
@@ -629,10 +761,28 @@ endif
 BGFX_ROOT       := $(THESEUS_SRC)/third-party/bgfx
 BX_ROOT         := $(THESEUS_SRC)/third-party/bx
 BIMG_ROOT       := $(THESEUS_SRC)/third-party/bimg
+
+# bgfx names its output dir after the config you built with, so the host
+# arch has to pick the same name genie did. Intel Macs land in osx-x64,
+# Apple Silicon in osx-arm64. Override BGFX_BUILD_TAG if you built with a
+# different genie target.
+ifeq ($(UNAME_S),Darwin)
+  ifeq ($(UNAME_M),arm64)
+    BGFX_BUILD_TAG ?= osx-arm64
+  else
+    BGFX_BUILD_TAG ?= osx-x64
+  endif
+else ifeq ($(UNAME_S),Linux)
+  # bx has no arm64 target dir: genie --gcc=linux-gcc + config=release64 writes
+  # linux64_gcc on aarch64 as well. See bx/scripts/toolchain.lua.
+  BGFX_BUILD_TAG ?= linux64_gcc
+else
+  BGFX_BUILD_TAG ?= win64_mingw-gcc
+endif
 DESKTOP_CFLAGS  += -DTHESEUS_USE_BGFX=1 \
                    -I$(BGFX_ROOT)/include -I$(BX_ROOT)/include -I$(BIMG_ROOT)/include
 ifeq ($(UNAME_S),Darwin)
-  BGFX_BUILD_DIR  := $(BGFX_ROOT)/.build/osx-arm64/bin
+  BGFX_BUILD_DIR  := $(BGFX_ROOT)/.build/$(BGFX_BUILD_TAG)/bin
   DESKTOP_CFLAGS  += -I$(BX_ROOT)/include/compat/osx
   DESKTOP_LDFLAGS += $(BGFX_BUILD_DIR)/libbgfxRelease.a \
                      $(BGFX_BUILD_DIR)/libbxRelease.a \
@@ -644,7 +794,7 @@ else ifeq ($(UNAME_S),Linux)
   #   make -C theseus/third-party/bgfx linux-gcc-release64
   # bgfx on Linux uses Vulkan by default. Runtime needs vulkan-loader
   # + X11 system libs; -ldl/-lpthread are for bgfx's RTLD use.
-  BGFX_BUILD_DIR  := $(BGFX_ROOT)/.build/linux64_gcc/bin
+  BGFX_BUILD_DIR  := $(BGFX_ROOT)/.build/$(BGFX_BUILD_TAG)/bin
   DESKTOP_CFLAGS  += -I$(BX_ROOT)/include/compat/linux
   DESKTOP_LDFLAGS += $(BGFX_BUILD_DIR)/libbgfxRelease.a \
                      $(BGFX_BUILD_DIR)/libbxRelease.a \
@@ -660,13 +810,26 @@ DESKTOP_SRCS_ENGINE = \
 	$(THESEUS_SRC)/engine/xap_compile.cpp \
 	$(THESEUS_SRC)/render/node_system.cpp \
 	$(THESEUS_SRC)/shared/util.cpp \
+	$(THESEUS_SRC)/shared/frame_profiler.cpp \
 	$(THESEUS_SRC)/engine/array.cpp \
 	$(THESEUS_SRC)/shared/string_util.cpp \
 	$(THESEUS_SRC)/engine/math_node.cpp \
 	$(THESEUS_SRC)/shared/date_node.cpp
 
+# The host layer: one per OS, picked by host. host_win.cpp is the only
+# desktop file that sees <windows.h>.
+HOST_WIN_SRCS = $(THESEUS_SRC)/desktop/host_win.cpp $(THESEUS_SRC)/desktop/host_win_app.cpp
+HOST_POSIX_SRCS = $(THESEUS_SRC)/desktop/host_posix.cpp $(THESEUS_SRC)/desktop/host_posix_app.cpp
+ifeq ($(filter Darwin Linux,$(UNAME_S)),)
+  DESKTOP_SRCS_HOST = $(HOST_WIN_SRCS)
+else
+  DESKTOP_SRCS_HOST = $(HOST_POSIX_SRCS)
+endif
+
 DESKTOP_SRCS_FILE = \
-	$(THESEUS_SRC)/desktop/xip.cpp \
+	$(DESKTOP_SRCS_HOST) \
+	$(THESEUS_SRC)/desktop/xbox_file.cpp \
+	$(THESEUS_SRC)/render/xip_archive.cpp \
 	$(THESEUS_SRC)/shared/file_util.cpp \
 	$(THESEUS_SRC)/desktop/files.cpp \
 	$(THESEUS_SRC)/shared/activefile.cpp \
@@ -674,13 +837,11 @@ DESKTOP_SRCS_FILE = \
 
 DESKTOP_SRCS_RENDER = \
 	$(THESEUS_SRC)/shared/screen.cpp \
-	$(THESEUS_SRC)/desktop/image.cpp \
-	$(THESEUS_SRC)/desktop/texture.cpp \
+	$(THESEUS_SRC)/render/asset_loader.cpp \
 	$(THESEUS_SRC)/render/tmap_system.cpp \
-	$(THESEUS_SRC)/desktop/materials_desktop.cpp \
-	$(THESEUS_SRC)/desktop/mesh.cpp \
+	$(THESEUS_SRC)/render/materials.cpp \
 	$(THESEUS_SRC)/render/shape_render.cpp \
-	$(THESEUS_SRC)/desktop/text.cpp \
+	$(THESEUS_SRC)/render/text.cpp \
 	$(THESEUS_SRC)/render/starfield.cpp \
 	$(THESEUS_SRC)/engine/dotfield_node.cpp
 
@@ -698,12 +859,11 @@ DESKTOP_SRCS_SYSTEM = \
 	$(THESEUS_SRC)/desktop/dashinit.cpp \
 	$(THESEUS_SRC)/desktop/config.cpp \
 	$(THESEUS_SRC)/desktop/joystick.cpp \
-	$(THESEUS_SRC)/desktop/keyboard.cpp \
-	$(THESEUS_SRC)/desktop/locale.cpp \
+	$(THESEUS_SRC)/shared/keyboard_node.cpp \
+	$(THESEUS_SRC)/engine/locale_node.cpp \
 	$(THESEUS_SRC)/shared/timezone.cpp \
 	$(THESEUS_SRC)/desktop/debug.cpp \
-	$(THESEUS_SRC)/desktop/memutil.cpp \
-	$(THESEUS_SRC)/render/autosmooth.cpp
+	$(THESEUS_SRC)/desktop/memutil.cpp
 
 # Desktop-only platform sources (SDL window, ImGui, audio, tools)
 DESKTOP_SRCS_PLATFORM = \
@@ -717,8 +877,6 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/launchers/retroarch.cpp \
 	$(THESEUS_SRC)/desktop/title_sanitize.cpp \
 	$(THESEUS_SRC)/desktop/udata_synth.cpp \
-	$(THESEUS_SRC)/xbox/modchip.cpp \
-	$(THESEUS_SRC)/xbox/network.cpp \
 	$(THESEUS_SRC)/desktop/desktop_stubs.cpp \
 	$(THESEUS_SRC)/desktop/desktop_nodes.cpp \
 	$(THESEUS_SRC)/desktop/media_db.cpp \
@@ -786,18 +944,7 @@ DESKTOP_DEPS = $(DESKTOP_OBJS:.o=.d)
 # Run manually with `make -C build shaders-bgfx[-dx11]`; not yet
 # wired into the desktop rebuild flow since shader edits are
 # infrequent and require a separate run anyway.
-ifeq ($(UNAME_S),Darwin)
-  ifeq ($(UNAME_M),arm64)
-    SHADERC_BUILD_DIR := osx-arm64
-  else
-    SHADERC_BUILD_DIR := osx-x64
-  endif
-else ifeq ($(UNAME_S),Linux)
-  SHADERC_BUILD_DIR := linux64_gcc
-else
-  SHADERC_BUILD_DIR := win64_mingw-gcc
-endif
-SHADERC ?= $(THESEUS_SRC)/third-party/bgfx/.build/$(SHADERC_BUILD_DIR)/bin/shadercRelease
+SHADERC ?= $(BGFX_ROOT)/.build/$(BGFX_BUILD_TAG)/bin/shadercRelease
 SHADERS_SRC_DIR := $(THESEUS_SRC)/desktop/shaders
 SHADERS_OUT_DIR := $(THESEUS_SRC)/../Data/shaders
 BGFX_SHADER_INC := $(THESEUS_SRC)/third-party/bgfx/src
@@ -1077,11 +1224,6 @@ WIN64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_DESKTOP \
-	-DTHESEUS_DESKTOP \
-	-DUIX_DESKTOP=1 \
-	-D_WINDOWS=1 \
-	-D_THESEUS_STD_H=1 \
 	-DSDL_MAIN_HANDLED \
 	-DUIX_CDAUDIO=1 \
 	-fpermissive \
@@ -1170,7 +1312,8 @@ ifneq ($(wildcard $(LDC_WIN64)/libdatachannel.a),)
   # and the link fails on __imp_ prefixed names against the static archive.
   WIN64_CFLAGS  += -DTHESEUS_HAVE_WEBRTC=1 -DRTC_STATIC \
                    -I$(LDC_ROOT)/include \
-                   -I$(MINGW_DEPS)/include
+                   -I$(MINGW_DEPS)/include \
+                   -I$(MINGW_DEPS)/include/opus
   # avcodec before swscale before avutil: static archives resolve left to right.
   WIN64_LDFLAGS += $(LDC_WIN64)/libdatachannel.a \
                    $(LDC_WIN64)/deps/libjuice/libjuice.a \
@@ -1190,8 +1333,9 @@ endif
 
 WIN64_SRCS = $(filter-out \
   $(THESEUS_SRC)/desktop/imgui/imgui_impl_opengl3.cpp \
-  $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp, $(DESKTOP_ALL_SRCS))
-WIN64_SRCS += $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp
+  $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp \
+  $(DESKTOP_SRCS_HOST), $(DESKTOP_ALL_SRCS))
+WIN64_SRCS += $(THESEUS_SRC)/desktop/imgui_impl_bgfx.cpp $(HOST_WIN_SRCS)
 
 # Same source list as desktop. the compiler reads the same files.
 WIN64_OBJS = $(patsubst $(THESEUS_SRC)/%.cpp,$(WIN64_DIR)/%.o,$(WIN64_SRCS))
@@ -1281,6 +1425,27 @@ $(WIN64_DIR)/%.o: $(THESEUS_SRC)/%.cpp
 	@mkdir -p $(dir $@)
 	$(WIN64_CXX) $(WIN64_CFLAGS) -c -o $@ $<
 
+# Import guard: only the host_win objects may call kernel32's file, clock
+# and sleep calls. Anything else that does got a real Win32 call where the
+# shim was meant to answer. Compiles the objects, doesn't link, so it runs
+# without the mingw libs.
+WIN64_NM ?= x86_64-w64-mingw32-nm
+WIN64_GUARD_SYMS = CreateFileA CreateFileW DeleteFileA DeleteFileW \
+                   CreateDirectoryA CreateDirectoryW GetDiskFreeSpaceExA GetDiskFreeSpaceExW \
+                   FindFirstFileA FindFirstFileW GetTickCount Sleep
+WIN64_GUARD_OBJS = $(filter-out $(WIN64_DIR)/desktop/host_win%.o,$(WIN64_OBJS))
+
+.PHONY: win64-import-guard
+win64-import-guard: $(WIN64_GUARD_OBJS)
+	@bad=0; \
+	for o in $(WIN64_GUARD_OBJS); do \
+	  hits=$$($(WIN64_NM) -u $$o | awk '{ print $$NF }' | sed 's/^__imp_//' | \
+	         grep -xF $(foreach s,$(WIN64_GUARD_SYMS),-e $(s)) | sort -u | tr '\n' ' '); \
+	  if [ -n "$$hits" ]; then echo "$$o: $$hits"; bad=1; fi; \
+	done; \
+	if [ $$bad -ne 0 ]; then echo "win64-import-guard: Win32 calls above belong in desktop/host_win*.cpp."; exit 1; fi; \
+	echo "win64-import-guard: clean ($(words $(WIN64_GUARD_OBJS)) objects)"
+
 desktop-win64-clean: projectm-win64-clean
 	rm -rf $(WIN64_DIR)
 
@@ -1343,11 +1508,6 @@ LINUX_ARM64_CFLAGS = \
 	-std=c++17 \
 	$(if $(DEBUG),-g -O0,-O2 -DNDEBUG) \
 	-MMD -MP \
-	-D_DESKTOP \
-	-DTHESEUS_DESKTOP \
-	-DUIX_DESKTOP=1 \
-	-D_WINDOWS=1 \
-	-D_THESEUS_STD_H=1 \
 	-DUIX_CDAUDIO=1 \
 	-fpermissive \
 	-I$(LINUX_ARM64_SDL2_INC) \

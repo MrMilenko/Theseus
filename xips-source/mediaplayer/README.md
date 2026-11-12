@@ -1,37 +1,35 @@
 # mediaplayer
 
-Theseus media player. libmpv-backed movie/TV browser + standalone fullscreen video playback. Replaces the dashboard's DVD player on the desktop build and ships in place of the XONLINE button on the main menu.
+The media library: a movie and TV browser backed by libmpv, styled like the dashboard's own memory and music screens. On the desktop build it takes the place of the Xbox Live button on the main menu.
 
-## What's in this directory
+## What's here
 
-- `mediaplayer.xap` — wrapper script. Defines `GoToMedia()`, the three-scene state machine (browser, action menu, episode picker), and binds to the C++ `theMediaCollection` node. Gets injected into `default.xip` as a loose XAP alongside the other top-level dashboard scenes.
-- `mediaplayer/` — extracted source for `mediaplayer.xip` (browser scene assets: meshes, textures, default.xap layer).
-- `mediaplayer_action/` — extracted source for `mediaplayer_action.xip` (action-menu scene assets: cloned from `music_playedit2`).
+- `mediaplayer.xap`: the wrapper script. Defines `GoToMedia()`, runs the three scene flow (browser, action menu, seasons and episodes), and talks to the `theMediaCollection` node. The desktop `default.xip` carries its own copy (`default-desktop/MediaPlayer.xap`).
+- `mediaplayer/`: source for `mediaplayer.xip`, the browser scene (meshes, textures, its `default.xap`).
+- `mediaplayer_action/`: source for `mediaplayer_action.xip`, the action menu scene, built from the music screen's `music_playedit2`.
 
-The packed `.xip` archives live in `../../xboxfs/Q/Xips/` so runtime builds pick them up directly. Repacking is only needed if you edit the scene assets here.
+The packed archives are in [`Data/Xips/`](../../Data/Xips/).
 
-## Backing C++ node
+## The node behind it
 
-`CMediaCollection` in [`theseus/desktop/desktop_nodes.cpp`](../../theseus/desktop/desktop_nodes.cpp) owns the media database, scanning, TMDB enrichment, and playback handoff. The XAP wrapper queries it via FND-bound methods (`GetMovieCount`, `PlayMovie`, `SetSelectedShow`, etc.) and never reaches into libmpv directly.
+`CMediaCollection` in [`theseus/desktop/media_db.cpp`](../../theseus/desktop/media_db.cpp) owns the library: scanning, the `Library/MediaDB.cache` cache, TMDB lookups and the handoff to fullscreen playback. The scripts query it through node functions (`GetMovieCount`, `GetShowTitle`, `SetSelectedShow`, `PlayMovie`, `PlayEpisode` and so on) and never touch libmpv themselves. The whole path is described in [`docs/desktop/media-player-design.md`](../../docs/desktop/media-player-design.md).
 
-`CDVDPlayer` is preserved as a no-op contract surface so XAPs that still DEF a DVDPlayer node compile clean.
+## Wiring and settings
 
-## Configuration
+The main menu button runs whatever `Button3Action` says in `Configs/config.ini`; the desktop ships it as `GoToMedia()`.
 
-Library roots and the optional TMDB API key live in [`xboxfs/C/UIX Configs/desktop.ini`](../../xboxfs/C/UIX%20Configs/desktop.ini):
+Library folders and the optional TMDB key are set in Settings > Media > Local Library and saved in `Configs/desktop.ini` in the user data folder:
 
 ```ini
 [Library]
-MusicRoot=/path/to/your/music
-MoviesRoot=/path/to/your/movies
-TvRoot=/path/to/your/tv
+MusicRoot=/path/to/music
+MoviesRoot=/path/to/movies
+TvRoot=/path/to/tv
 TMDBKey=
 ```
 
-Empty `TMDBKey` disables online metadata enrichment; the catalog still works, posters/synopses just won't populate. Settings can also be edited in-app via the Settings window's Media Library tab.
+With no TMDB key the library still works; posters and synopses just stay empty.
 
-## Repackaging
+## Editing
 
-If you edit anything inside `mediaplayer/` or `mediaplayer_action/`, repack with `xiptool` (currently lives in the UIX Desktop tooling repo) and drop the resulting `.xip` files into `../../xboxfs/Q/Xips/`. A Python port of `xiptool` is on the roadmap.
-
-`mediaplayer.xap` is loose-loaded at runtime in dev mode, so you can iterate on the wrapper script without repacking. Final ship form bakes it into `default.xip`.
+In Development Mode the scenes run from loose files, so script changes show up without repacking. See [`xips-source/README.md`](../README.md) for the workflow.

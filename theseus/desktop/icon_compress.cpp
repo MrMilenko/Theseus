@@ -10,11 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#ifdef _WIN32
-#include <io.h>
-#else
-#include <dirent.h>
-#endif
+#include "host.h"
 
 static size_t FileSize(const char* path)
 {
@@ -127,29 +123,15 @@ IconCompressResult Icons_Compress(int maxDim, int quality)
     static char names[8192][256];
     int count = 0;
 
-#ifdef _WIN32
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s/*", dir);
-    struct _finddata_t fd;
-    intptr_t hnd = _findfirst(pattern, &fd);
-    if (hnd != -1) {
-        do {
-            if (fd.name[0] == '.') continue;
-            if (count < 8192) snprintf(names[count++], 256, "%s", fd.name);
-        } while (_findnext(hnd, &fd) == 0);
-        _findclose(hnd);
-    }
-#else
-    DIR* d = opendir(dir);
+    HostDir* d = Host_OpenDir(dir);
     if (d) {
-        struct dirent* e;
-        while ((e = readdir(d)) != NULL) {
-            if (e->d_name[0] == '.') continue;
-            if (count < 8192) snprintf(names[count++], 256, "%s", e->d_name);
+        char name[256];
+        while (Host_ReadDir(d, name, sizeof(name), NULL)) {
+            if (name[0] == '.') continue;
+            if (count < 8192) snprintf(names[count++], 256, "%s", name);
         }
-        closedir(d);
+        Host_CloseDir(d);
     }
-#endif
 
     for (int i = 0; i < count; i++) {
         r.scanned++;

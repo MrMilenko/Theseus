@@ -65,7 +65,8 @@ static void ClearEsdeEntries()
         if (g.valid && g.transient && strcasecmp(g.category, ESDE_CATEGORY) == 0)
             g.valid = false;
     }
-    g_vgames.generation++;
+    // Every resync re-adds the whole library, so hand the old slots back.
+    VGames_Compact();
 }
 
 void EsdeVGames_Clear()

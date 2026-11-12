@@ -1,262 +1,228 @@
-// file_util.cpp: small Win32 file-API helpers used across the dashboard
-// (file existence checks, path normalization, slash conversion). Decompiled
-// from the 5960 retail XBE.
+// file_util.cpp: the dashboard's path and file helpers. Joining a folder
+// and a name, resolving a script URL against the current folder, cleaning
+// a URL into a file path, and counting the blocks a file or folder takes.
+// Rebuilt function by function from the 5960 retail XBE (0x2df60..0x2e520);
+// see docs/decomp/FileUtil.md.
 
 #include "std.h"
 #include "theseus.h"
 #include "file_util.h"
 
+#ifndef ERROR_FILE_NOT_FOUND
+#define ERROR_FILE_NOT_FOUND 2
+#endif
+
+// 0x0017a480: the folder relative URLs resolve against.
+TCHAR g_szCurDir[1024];
+
+// DoesFileExist(path)
+// Reconstructed from 5960 retail XBE @ 0x0002df60: narrows the path into
+// 260 chars and asks GetFileAttributesExA.
 bool DoesFileExist(const TCHAR* szFileName)
 {
-    CHAR szFile[MAX_PATH];
-    WIN32_FILE_ATTRIBUTE_DATA fad;
-
-    Ansi(szFile, szFileName, MAX_PATH);
-    return GetFileAttributesEx(szFile, GetFileExInfoStandard, &fad) != 0;
+	CHAR narrow[MAX_PATH];
+	WIN32_FILE_ATTRIBUTE_DATA info;
+	Ansi(narrow, szFileName, MAX_PATH);
+	return TheseusGetFileAttributesEx(narrow, GetFileExInfoStandard, &info) != 0;
 }
 
+// MakePath(out, dir, file)
+// Reconstructed from 5960 retail XBE @ 0x0002dfc0:
+//     n = wcslen(dir); if (out != dir) copy dir;
+//     if (out[n-1] != '\\') out[n++] = '\\'; wcscpy(out + n, file);
+// Theseus skips the separator check on an empty dir instead of reading
+// before the buffer.
 void MakePath(TCHAR* szBuf, const TCHAR* szDir, const TCHAR* szFile)
 {
-	int cch = _tcslen(szDir);
-
+	int len = (int)_tcslen(szDir);
 	if (szBuf != szDir)
-		CopyChars(szBuf, szDir, cch);
-
-	if (cch > 0 && szBuf[cch - 1] != '\\')
-	{
-		szBuf[cch] = '\\';
-		cch += 1;
-	}
-
-	_tcscpy(szBuf + cch, szFile);
+		CopyChars(szBuf, szDir, len);
+	if (len > 0 && szBuf[len - 1] != '\\')
+		szBuf[len++] = '\\';
+	_tcscpy(szBuf + len, szFile);
 }
 
-// Strips "file:" prefix, normalizes forward slashes to backslashes,
-// and truncates at any '?' query string.
+// CleanFilePath(out, url)
+// Reconstructed from 5960 retail XBE @ 0x0002e010. Drops a leading "file:"
+// (any case), turns '/' into '\\', stops at '?', narrows the rest.
+template <typename OUTCHAR>
+static void CleanPathInto(OUTCHAR* out, const TCHAR* src)
+{
+	if (_tcsnicmp(src, _T("file:"), 5) == 0)
+		src += 5;
+	for (; *src != 0 && *src != '?'; src++)
+		*out++ = (*src == '/') ? (OUTCHAR)'\\' : (OUTCHAR)*src;
+	*out = 0;
+}
+
 void CleanFilePath(char* szPath, const TCHAR* szSrcPath)
 {
-	char* pchPath = szPath;
-	const TCHAR* pch = szSrcPath;
-	if (_tcsnicmp(pch, _T("file:"), 5) == 0)
-		pch += 5;
-	for (; *pch != '\0'; pch += 1)
-	{
-		if (*pch == '/')
-			*pchPath++ = '\\';
-		else if (*pch == '?')
-			break;
-		else
-			*pchPath++ = (char)*pch;
-	}
-	*pchPath = '\0';
+	CleanPathInto(szPath, szSrcPath);
 }
 
 #if defined(_UNICODE)
+// Theseus also keeps a wide copy for wide callers.
 void CleanFilePath(TCHAR* szPath, const TCHAR* szSrcPath)
 {
-	TCHAR* pchPath = szPath;
-	const TCHAR* pch = szSrcPath;
-	if (_tcsnicmp(pch, _T("file:"), 5) == 0)
-		pch += 5;
-	for (; *pch != '\0'; pch += 1)
-	{
-		if (*pch == '/')
-			*pchPath++ = '\\';
-		else if (*pch == '?')
-			break;
-		else
-			*pchPath++ = (TCHAR)*pch;
-	}
-	*pchPath = '\0';
+	CleanPathInto(szPath, szSrcPath);
 }
 #endif
 
+// The last '/' in path, else the last '\\', else NULL.
+static TCHAR* LastSeparator(TCHAR* path)
+{
+	TCHAR* sep = _tcsrchr(path, '/');
+	return sep != NULL ? sep : _tcsrchr(path, '\\');
+}
+
+// MakeAbsoluteURL2(out, base, url)
+// Reconstructed from 5960 retail XBE @ 0x0002e060. url is copied as is when
+// it already has a drive (':'), is a UNC path, there's no base, or base has
+// neither ':' nor '/'. Otherwise out = base with its last part replaced by
+// url, each leading "../" (or "..\") taking one more part off. When no
+// separator is left the url lands over the last character. Theseus also
+// copies the url when base has no separator at all, where the binary reads
+// through a null pointer.
 void MakeAbsoluteURL2(TCHAR* szBuf, const TCHAR* szBase, const TCHAR* szURL)
 {
-	if (_tcschr(szURL, ':') != NULL || (szURL[0] == '\\' && szURL[1] == '\\') || szBase == NULL || (_tcschr(szBase, ':') == NULL && _tcschr(szBase, '/') == NULL))
+	bool absolute = _tcschr(szURL, ':') != NULL || (szURL[0] == '\\' && szURL[1] == '\\');
+	if (absolute || szBase == NULL || (_tcschr(szBase, ':') == NULL && _tcschr(szBase, '/') == NULL))
 	{
 		_tcscpy(szBuf, szURL);
 		return;
 	}
 
-	const TCHAR* pchURL = szURL;
-
-	// make relative url absolute...
 	_tcscpy(szBuf, szBase);
-	TCHAR* pch = _tcsrchr(szBuf, '/');
-	if (pch == NULL)
-		pch = _tcsrchr(szBuf, '\\');
-	if (pch == NULL || *pch == '\0')
+	TCHAR* cut = LastSeparator(szBuf);
+	if (cut == NULL)
 	{
-		pch = szBuf + _tcslen(szBuf) - 1;
+		cut = szBuf + _tcslen(szBuf) - 1;
 	}
 	else
 	{
-		while (pchURL[0] == '.' && pchURL[1] == '.' && (pchURL[2] == '/' || pchURL[2] == '\\'))
+		while (szURL[0] == '.' && szURL[1] == '.' && (szURL[2] == '/' || szURL[2] == '\\'))
 		{
-			pchURL += 3;
-
-			*pch = '\0';
-			pch = _tcsrchr(szBuf, '/');
-			if (pch == NULL)
-				pch = _tcsrchr(szBuf, '\\');
-			if (pch == NULL)
+			szURL += 3;
+			*cut = 0;
+			cut = LastSeparator(szBuf);
+			if (cut == NULL)
 			{
-				pch = szBuf + _tcslen(szBuf) - 1;
+				cut = szBuf + _tcslen(szBuf) - 1;
 				break;
 			}
 		}
 	}
-
-	*pch = '/';
-	_tcscpy(pch + 1, pchURL);
+	*cut = '/';
+	_tcscpy(cut + 1, szURL);
 }
 
-void MakeAbsoluteURL(TCHAR* szBuf, const TCHAR* szBase, const TCHAR* szURL)
-{
-	if (szBase == NULL)
-	{
-		MakeAbsoluteURL2(szBuf, TheseusGetAppDir(), szURL);
-	}
-	else
-	{
-		TCHAR szBuf2 [1024];
-		MakeAbsoluteURL2(szBuf2, TheseusGetAppDir(), szBase);
-		MakeAbsoluteURL2(szBuf, szBuf2, szURL);
-	}
-}
-
-TCHAR g_szCurDir [1024];
-
-void UpdateCurDirFromFile(const TCHAR* szURL)
-{
-	TCHAR szBuf [1024];
-	MakeAbsoluteURL(szBuf, szURL);
-
-	if (_tcschr(szBuf, ':') != NULL || (szBuf[0] == '\\' && szBuf[1] == '\\'))
-	{
-		_tcscpy(g_szCurDir, szBuf);
-	}
-}
-
+// MakeAbsoluteURL(out, url)
+// Reconstructed from 5960 retail XBE @ 0x0002e200: the current folder
+// resolved against the app folder, then url resolved against that.
 void MakeAbsoluteURL(TCHAR* szBuf, const TCHAR* szURL)
 {
-	TCHAR szCurDir [1024];
-	MakeAbsoluteURL2(szCurDir, TheseusGetAppDir(), g_szCurDir);
-	MakeAbsoluteURL2(szBuf, szCurDir, szURL);
+	TCHAR folder[1024];
+	MakeAbsoluteURL2(folder, TheseusGetAppDir(), g_szCurDir);
+	MakeAbsoluteURL2(szBuf, folder, szURL);
 }
 
-void FindFilePath(TCHAR* szFullPath/*[MAX_PATH]*/, const TCHAR* szFile)
+// UpdateCurDirFromFile(url)
+// Reconstructed from 5960 retail XBE @ 0x0002e170: resolves url the same
+// way and keeps it as the current folder if it came out absolute.
+void UpdateCurDirFromFile(const TCHAR* szURL)
 {
-	// Make it absolute...
+	TCHAR resolved[1024];
+	MakeAbsoluteURL(resolved, szURL);
+	if (_tcschr(resolved, ':') != NULL || (resolved[0] == '\\' && resolved[1] == '\\'))
+		_tcscpy(g_szCurDir, resolved);
+}
+
+// FindFilePath(out, file)
+// Reconstructed from 5960 retail XBE @ 0x0002e260: the resolved path if a
+// file is there, otherwise the app folder with file appended.
+void FindFilePath(TCHAR* szFullPath, const TCHAR* szFile)
+{
 	MakeAbsoluteURL(szFullPath, szFile);
-
-	if (!DoesFileExist(szFullPath))
-	{
-		_tcscpy(szFullPath, TheseusGetAppDir());
-		_tcscat(szFullPath, szFile);
-	}
+	if (DoesFileExist(szFullPath))
+		return;
+	_tcscpy(szFullPath, TheseusGetAppDir());
+	_tcscat(szFullPath, szFile);
 }
 
-
-DWORD GetUniqueFile(const TCHAR* szBase, TCHAR* szPath/*=NULL*/)
+static bool Cancelled(HANDLE cancel)
 {
-	TCHAR szDirBuf [MAX_PATH];
-	if (szPath == NULL)
-		szPath = szDirBuf;
-
-	DWORD dw;
-	for (dw = 0; ; dw += 1)
-	{
-		_stprintf(szPath, _T("%s\\%08x"), szBase, dw);
-		if (!DoesFileExist(szPath))
-			return dw;
-	}
+	return cancel != NULL && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0;
 }
 
-DWORD CreateUniqueDir(const TCHAR* szBase)
-{
-	TCHAR szDirBuf [MAX_PATH];
-	DWORD dw = GetUniqueFile(szBase, szDirBuf);
-	VERIFY(TheseusCreateDirectory(szDirBuf));
-
-	return dw;
-}
-
-int GetFileBlocks(const TCHAR* szFilePath, int nBlockSize)
-{
-	HANDLE hFile = TheseusCreateFile(szFilePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
-	if (hFile == INVALID_HANDLE_VALUE)
-		return 0;
-
-	int nBytes = GetFileSize(hFile, NULL);
-
-	CloseHandle(hFile);
-
-	return (nBytes + nBlockSize - 1) / nBlockSize;
-}
-
+// GetDirectoryBlocks(dir, blockSize, recursive, cancel)
+// Reconstructed from 5960 retail XBE @ 0x0002e2d0. One block for the folder
+// itself, each file rounded up to whole blocks, and with recursive set each
+// subfolder not starting with '.' counted the same way. -1 when cancel is
+// signaled before or during the walk. When the folder can't be listed it's
+// 1 if it is just empty (ERROR_FILE_NOT_FOUND), else 0.
 int GetDirectoryBlocks(const TCHAR* szDirPath, int nBlockSize, bool bRecursive, HANDLE hCancelEvent)
 {
-    if (hCancelEvent && WaitForSingleObject(hCancelEvent, 0) == WAIT_OBJECT_0)
-    {
-        return -1;
-    }
+	if (Cancelled(hCancelEvent))
+		return -1;
 
-	TCHAR szBuf [MAX_PATH];
-	MakePath(szBuf, szDirPath, _T("*.*"));
-	
-    WIN32_FIND_DATA fd;
+	TCHAR path[MAX_PATH];
+	MakePath(path, szDirPath, _T("*.*"));
+	char pattern[MAX_PATH];
+	Ansi(pattern, path, MAX_PATH);
 
-	//
-	// nTotalBlocks starts out with 1 to take into account the size taken up from the directory entry itself.
-	//
-	int nTotalBlocks = 1;
-    bool bCancel = false;
+	WIN32_FIND_DATA found;
+	HANDLE find = TheseusFindFirstFile(pattern, &found);
+	if (find == INVALID_HANDLE_VALUE)
+		return GetLastError() == ERROR_FILE_NOT_FOUND ? 1 : 0;
 
-	char sszBuf [MAX_PATH];
-	Ansi(sszBuf, szBuf, MAX_PATH);
-	HANDLE hFind = FindFirstFile(sszBuf, &fd);
-
-	if (hFind == INVALID_HANDLE_VALUE)
-		return 0;
-
+	int blocks = 1;
+	bool stopped = false;
 	do
 	{
-        if (hCancelEvent && WaitForSingleObject(hCancelEvent, 0) == WAIT_OBJECT_0)
-        {
-            bCancel = true;
-            break;
-        }
-
-		if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+		if (Cancelled(hCancelEvent))
 		{
-			nTotalBlocks += (fd.nFileSizeLow + nBlockSize - 1) / nBlockSize;
+			stopped = true;
+			break;
 		}
-		else if (bRecursive && fd.cFileName[0] != '.')
+
+		if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
 		{
-			TCHAR szFileName [MAX_PATH];
-			Unicode(szFileName, fd.cFileName, countof(szFileName));
-			MakePath(szBuf, szDirPath, szFileName);
-			nTotalBlocks += GetDirectoryBlocks(szBuf, nBlockSize, true, hCancelEvent);
+			blocks += (found.nFileSizeLow + nBlockSize - 1) / nBlockSize;
+		}
+		else if (bRecursive && found.cFileName[0] != '.')
+		{
+			TCHAR name[MAX_PATH];
+			Unicode(name, found.cFileName, countof(name));
+			MakePath(path, szDirPath, name);
+			blocks += GetDirectoryBlocks(path, nBlockSize, true, hCancelEvent);
 		}
 	}
-	while (FindNextFile(hFind, &fd));
-	FindClose(hFind);
+	while (TheseusFindNextFile(find, &found));
+	TheseusFindClose(find);
 
-	return bCancel ? -1 : nTotalBlocks;
+	return stopped ? -1 : blocks;
 }
 
+// Not in 5960; the save grid sizes one file with it.
+int GetFileBlocks(const TCHAR* szFilePath, int nBlockSize)
+{
+	HANDLE file = TheseusCreateFile(szFilePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+		return 0;
+	int bytes = GetFileSize(file, NULL);
+	CloseHandle(file);
+	return (bytes + nBlockSize - 1) / nBlockSize;
+}
+
+// GetFileSize(path)
+// Reconstructed from 5960 retail XBE @ 0x0002e520: opens for reading with
+// every share flag and backup semantics, 0 when it can't.
 int GetFileSize(const TCHAR* szFilePath)
 {
-	HANDLE hFile = TheseusCreateFile(szFilePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-	if (hFile == INVALID_HANDLE_VALUE)
+	HANDLE file = TheseusCreateFile(szFilePath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (file == INVALID_HANDLE_VALUE)
 		return 0;
-
-	int nFileSize = GetFileSize(hFile, NULL);
-
-	CloseHandle(hFile);
-
-	return nFileSize;
+	int size = GetFileSize(file, NULL);
+	CloseHandle(file);
+	return size;
 }
-

@@ -4,6 +4,7 @@
 
 #include "app_paths.h"
 #include "tmdb.h"
+#include "host.h"
 
 #include <cstdio>
 #include <cstring>
@@ -56,21 +57,16 @@ static std::string ShowKey(const char* title)
     return Slugify(title);
 }
 
-// Portable mkdir wrapper. POSIX mkdir takes (path, mode); MinGW's
-// <sys/stat.h> redeclares it as the MS-CRT one-arg variant.
+// Make one folder. 0 when it exists afterwards.
 static inline int Mkdir(const char* path)
 {
-#ifdef _WIN32
-    return mkdir(path);
-#else
-    return mkdir(path, 0755);
-#endif
+    return Host_MakeDir(path) ? 0 : -1;
 }
 
 static std::string CachePath(const char* prefix, const std::string& slug)
 {
     std::string p = std::string(AppPath_Tree("Library/TMDB")) + "/";
-    Mkdir("Library");
+    Mkdir(AppPath_Tree("Library"));
     Mkdir(p.c_str());
     p += prefix;
     p += '_';
@@ -151,6 +147,13 @@ static std::string GetFirstResult(const std::string& json)
     return items.empty() ? "" : items[0];
 }
 
+// A real search answer always carries "results", even when it's empty.
+// Anything else is an error page and must not be cached.
+static bool IsSearchResponse(const std::string& body)
+{
+    return !body.empty() && Json_FindArray(body, "results") != std::string::npos;
+}
+
 // First 4 chars after a YYYY-MM-DD field as int.
 static int YearFromDate(const std::string& dateStr)
 {
@@ -199,7 +202,7 @@ static TmdbMovie DoMovieLookup(const std::string& title, int year, const std::st
 
     // Try cache first.
     std::string body = ReadFile(cachePath);
-    if (!body.empty())
+    if (IsSearchResponse(body))
         return ParseMovieJson(body);
 
     if (g_tmdbKey[0] == 0) {
@@ -216,8 +219,11 @@ static TmdbMovie DoMovieLookup(const std::string& title, int year, const std::st
     }
     url += "&include_adult=false";
     body = HttpGet(url);
-    if (!body.empty()) WriteFile(cachePath, body);
     (void)key;
+    if (!IsSearchResponse(body)) {
+        TmdbMovie m{}; m.ready = true; m.failed = true; return m;
+    }
+    WriteFile(cachePath, body);
     return ParseMovieJson(body);
 }
 
@@ -226,7 +232,7 @@ static TmdbShow DoShowLookup(const std::string& title, const std::string& key)
     std::string cachePath = CachePath("show", ShowKey(title.c_str()));
 
     std::string body = ReadFile(cachePath);
-    if (!body.empty())
+    if (IsSearchResponse(body))
         return ParseShowJson(body);
 
     if (g_tmdbKey[0] == 0) {
@@ -238,8 +244,11 @@ static TmdbShow DoShowLookup(const std::string& title, const std::string& key)
     url += UrlEncode(title.c_str());
     url += "&include_adult=false";
     body = HttpGet(url);
-    if (!body.empty()) WriteFile(cachePath, body);
     (void)key;
+    if (!IsSearchResponse(body)) {
+        TmdbShow s{}; s.ready = true; s.failed = true; return s;
+    }
+    WriteFile(cachePath, body);
     return ParseShowJson(body);
 }
 
@@ -268,7 +277,7 @@ TmdbMovie TMDB_LookupMovie(const char* title, int year)
         if (it != s_movieResults.end()) return it->second;
     }
     TmdbMovie m = DoMovieLookup(title, year, key);
-    {
+    if (!m.failed) {
         std::lock_guard<std::mutex> lock(g_resultMutex);
         s_movieResults[key] = m;
     }
@@ -286,7 +295,7 @@ TmdbShow TMDB_LookupShow(const char* title)
         if (it != s_showResults.end()) return it->second;
     }
     TmdbShow s = DoShowLookup(title, key);
-    {
+    if (!s.failed) {
         std::lock_guard<std::mutex> lock(g_resultMutex);
         s_showResults[key] = s;
     }
@@ -326,7 +335,7 @@ void TMDB_QueueMovieLookup(const char* title, int year)
         fprintf(stderr, "[TMDB] worker done for %s: ready=%d found=%d overview=%zu\n",
             key.c_str(), (int)m.ready, (int)m.found, m.overview.size());
         std::lock_guard<std::mutex> lock(g_resultMutex);
-        s_movieResults[key] = m;
+        if (!m.failed) s_movieResults[key] = m;
         auto it = s_inFlight.find(key);
         if (it != s_inFlight.end()) { delete it->second; s_inFlight.erase(it); }
     }).detach();
@@ -363,7 +372,7 @@ void TMDB_QueueShowLookup(const char* title)
         fprintf(stderr, "[TMDB] worker done for %s: ready=%d found=%d overview=%zu\n",
             key.c_str(), (int)s.ready, (int)s.found, s.overview.size());
         std::lock_guard<std::mutex> lock(g_resultMutex);
-        s_showResults[key] = s;
+        if (!s.failed) s_showResults[key] = s;
         auto it = s_inFlight.find(key);
         if (it != s_inFlight.end()) { delete it->second; s_inFlight.erase(it); }
     }).detach();

@@ -6,6 +6,9 @@
 #ifndef THESEUS_H
 #define THESEUS_H
 
+#include "platform.h"
+#include "frame_profiler.h"
+
 #ifndef _XBOX
 #include <errno.h>
 #include <sys/stat.h>
@@ -27,7 +30,7 @@ extern void UpdateCurDirFromFile(const char* szURL);
 // files use _FND_CLASS. Alias them so files that set _FND_CLASS compile
 // under desktop's node.h. Temporary until desktop/node.h adopts the same
 // convention or the files drop into engine/shared/render wholesale.
-#ifdef _DESKTOP
+#ifdef THESEUS_DESKTOP
 #define _NFC _FND_CLASS
 #endif
 // Time values are stored as double for fractional precision over long uptimes.
@@ -199,7 +202,7 @@ inline void TheseusSetScreen(CScreen* p) { g_pScreen = p; }
 // Desktop always provides real implementations in desktop/debug.cpp.
 // Xbox debug build has them in engine/debug.cpp; Xbox retail gets the
 // inline no-op stubs so unused error logging links cleanly.
-#if defined(_DESKTOP) || defined(_DEBUG)
+#if defined(THESEUS_DESKTOP) || defined(_DEBUG)
 void TheseusGetErrorString(HRESULT hr, TCHAR* szBuf, int cchBuf);
 const TCHAR* TheseusGetErrorString(HRESULT hr);
 void LogComError(HRESULT hr, const char* szFunc = NULL);
@@ -224,6 +227,14 @@ void* TheseusD3D_AllocNoncontiguousMemory(DWORD Size);
 #ifdef _XBOX // cache eliminates GetRenderState round-trips on Xbox
 extern DWORD theseus_rgdwRenderStateCache [256];
 extern bool theseus_rgbRenderStateCache [256];
+// What the device was last sent. Render state and texture stage state skip
+// repeats; textures are only counted, since a freed texture's address can
+// come back as a different texture.
+extern bool theseus_xbox_rs_sent [256];
+extern DWORD theseus_xbox_tss_shadow [8 * 32];
+extern bool theseus_xbox_tss_seen [8 * 32];
+extern LPDIRECT3DTEXTURE8 theseus_xbox_tex_shadow [8];
+extern bool theseus_xbox_tex_seen [8];
 #endif
 
 inline LPDIRECT3DDEVICE8 TheseusGetD3DDev()
@@ -293,16 +304,30 @@ inline void TheseusInvalidateWrapperCaches()
 
 inline void TheseusSetRenderState(D3DRENDERSTATETYPE dwRenderStateType, DWORD dwRenderState)
 {
+	Frame_Count(FC_STATE_CALLS);
+#ifdef THESEUS_EXPERIMENT_NO_EDGEAA
+	// Measurement only: what does edge antialiasing cost the GPU?
+	if (dwRenderStateType == D3DRS_EDGEANTIALIAS)
+		dwRenderState = FALSE;
+#endif
 #ifdef _XBOX // cache eliminates GetRenderState round-trips on Xbox
 	ASSERT((UINT)dwRenderStateType < countof (theseus_rgdwRenderStateCache));
+	if (theseus_xbox_rs_sent[(UINT)dwRenderStateType] &&
+	    theseus_rgdwRenderStateCache[(UINT)dwRenderStateType] == dwRenderState) {
+		Frame_Count(FC_STATE_REPEATS);
+		return;
+	}
 	theseus_rgdwRenderStateCache[(UINT)dwRenderStateType] = dwRenderState;
 	theseus_rgbRenderStateCache[(UINT)dwRenderStateType] = true;
+	theseus_xbox_rs_sent[(UINT)dwRenderStateType] = true;
 #else
 	// Wrapper-level dedup. Skip the virtual call if value unchanged.
 	if ((UINT)dwRenderStateType < 256) {
 		if (theseus_desktop_rs_valid[dwRenderStateType] &&
-		    theseus_desktop_rs_cache[dwRenderStateType] == dwRenderState)
+		    theseus_desktop_rs_cache[dwRenderStateType] == dwRenderState) {
+			Frame_Count(FC_STATE_REPEATS);
 			return;
+		}
 		theseus_desktop_rs_cache[dwRenderStateType] = dwRenderState;
 		theseus_desktop_rs_valid[dwRenderStateType] = true;
 	}
@@ -330,15 +355,28 @@ inline void TheseusGetRenderState(D3DRENDERSTATETYPE dwRenderStateType, LPDWORD 
 
 inline void TheseusSetTextureStageState(DWORD dwStage, D3DTEXTURESTAGESTATETYPE dwState, DWORD dwValue)
 {
-#ifndef _XBOX
+	Frame_Count(FC_STATE_CALLS);
+#ifdef _XBOX
+	if (dwStage < 8 && (DWORD)dwState < 32) {
+		int idx = (int)dwStage * 32 + (int)dwState;
+		if (theseus_xbox_tss_seen[idx] && theseus_xbox_tss_shadow[idx] == dwValue) {
+			Frame_Count(FC_STATE_REPEATS);
+			return;
+		}
+		theseus_xbox_tss_shadow[idx] = dwValue;
+		theseus_xbox_tss_seen[idx] = true;
+	}
+#else
 	// Wrapper-level dedup for the per-stage texture state cluster.
 	// Sweep 2 trace showed this is where most of the redundancy lives
 	// (>388K wasted calls per session on COLOROP / ALPHAOP alone).
 	if (dwStage < 8 && (DWORD)dwState < 32) {
 		int idx = (int)dwStage * 32 + (int)dwState;
 		if (theseus_desktop_tss_valid[idx] &&
-		    theseus_desktop_tss_cache[idx] == dwValue)
+		    theseus_desktop_tss_cache[idx] == dwValue) {
+			Frame_Count(FC_STATE_REPEATS);
 			return;
+		}
 		theseus_desktop_tss_cache[idx] = dwValue;
 		theseus_desktop_tss_valid[idx] = true;
 	}
@@ -362,16 +400,36 @@ inline void TheseusGetTextureStageState(DWORD dwStage, D3DTEXTURESTAGESTATETYPE 
 
 inline void TheseusSetTexture(DWORD dwStage, LPDIRECT3DTEXTURE8 lpTexture)
 {
-#ifndef _XBOX
+	Frame_Count(FC_STATE_CALLS);
+#ifdef _XBOX
+	if (dwStage < 8) {
+		if (theseus_xbox_tex_seen[dwStage] && theseus_xbox_tex_shadow[dwStage] == lpTexture)
+			Frame_Count(FC_STATE_REPEATS);
+		theseus_xbox_tex_shadow[dwStage] = lpTexture;
+		theseus_xbox_tex_seen[dwStage] = true;
+	}
+#else
 	if (dwStage < 8) {
 		if (theseus_desktop_tex_valid[dwStage] &&
-		    theseus_desktop_tex_cache[dwStage] == lpTexture)
+		    theseus_desktop_tex_cache[dwStage] == lpTexture) {
+			Frame_Count(FC_STATE_REPEATS);
 			return;
+		}
 		theseus_desktop_tex_cache[dwStage] = lpTexture;
 		theseus_desktop_tex_valid[dwStage] = true;
 	}
 #endif
 	VERIFYHR(TheseusGetD3DDev()->SetTexture(dwStage, lpTexture));
+}
+
+// The device forgets everything on Reset; the skip caches have to forget too.
+inline void TheseusInvalidateStateCache()
+{
+#ifdef _XBOX
+	memset(theseus_xbox_rs_sent, 0, sizeof(theseus_xbox_rs_sent));
+	memset(theseus_xbox_tss_seen, 0, sizeof(theseus_xbox_tss_seen));
+	memset(theseus_xbox_tex_seen, 0, sizeof(theseus_xbox_tex_seen));
+#endif
 }
 
 inline void TheseusSetMaterial(D3DMATERIAL8* lpMaterial)
@@ -523,7 +581,13 @@ inline void TheseusSetIndices(IDirect3DIndexBuffer8* pIndexData, UINT BaseVertex
 
 inline void TheseusDrawIndexedPrimitive(D3DPRIMITIVETYPE Type, UINT MinIndex, UINT NumVertices, UINT StartIndex, UINT PrimitiveCount)
 {
+	// On Xbox the runtime copies every index into the push buffer, so
+	// cost follows indices, not draws.
+	Frame_Count(FC_TRIANGLES, (int)PrimitiveCount);
+	Frame_Count(FC_INDICES, (int)(Type == D3DPT_TRIANGLELIST ? PrimitiveCount * 3 : PrimitiveCount + 2));
+	Frame_PhaseBegin(FP_DIP);
 	VERIFYHR(TheseusGetD3DDev()->DrawIndexedPrimitive(Type, MinIndex, NumVertices, StartIndex, PrimitiveCount));
+	Frame_PhaseEnd(FP_DIP);
 }
 
 extern int __cdecl NewFailed(size_t nBytes);
@@ -577,6 +641,7 @@ extern void SetFalloffShaderFrameValues();
 inline void TheseusUpdateWorld()
 {
 	ASSERT(g_worldStack != NULL);
+	Frame_Count(FC_UPDATE_WORLD);
 	TheseusSetTransform(D3DTS_WORLD, TheseusGetWorld());
 	SetFalloffShaderFrameValues();
 }
@@ -633,9 +698,11 @@ inline float pos(float n)
 	return 0.0f;
 }
 
+// 0..n. RAND_MAX is 32767 on Xbox, as the binary assumes, but about 2^31 on
+// mac and Linux, so dividing by a fixed 32767 threw desktop values far past n.
 inline float rnd(float n)
 {
-	return (float)rand() * n / 32767.0f;
+	return (float)rand() * n / (float)RAND_MAX;
 }
 
 inline float wrap(float n)
@@ -693,6 +760,10 @@ public:
 
 
 
+// Every file call that takes an Xbox path comes through here. The Xbox build
+// hands it straight to XTL; the desktop build translates it to a host path
+// first (desktop/xbox_file.cpp). Host paths never come through here.
+#ifdef _XBOX
 inline HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes = 0, HANDLE hTemplateFile = NULL)
 {
 	// null path would crash inside CleanFilePath. Bail before we get there.
@@ -700,38 +771,82 @@ inline HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD dwDesiredAccess, 
 		return INVALID_HANDLE_VALUE;
 	FSCHAR sszFileName [MAX_PATH];
 	CleanFilePath(sszFileName, szFileName);
-#ifdef _XBOX
 	return CreateFile(sszFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
-#elif defined(_WIN32)
-	// Native Windows: use real Win32 CreateFileA so subsequent ReadFile/CloseHandle
-	// calls hit real kernel handles. The fopen path below would return a FILE*
-	// that the real Win32 APIs can't interpret.
-	return CreateFileA(sszFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile);
-#else
-	const char* mode = "rb";
-	if (dwDesiredAccess & GENERIC_WRITE) mode = (dwCreationDisposition == CREATE_ALWAYS) ? "wb" : "r+b";
-	FILE* f = fopen(sszFileName, mode);
-	if (!f && (dwCreationDisposition == CREATE_ALWAYS || dwCreationDisposition == OPEN_ALWAYS))
-		f = fopen(sszFileName, "wb");
-	return f ? (HANDLE)f : INVALID_HANDLE_VALUE;
-#endif
 }
 
 inline bool TheseusCreateDirectory(LPCTSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes = NULL)
 {
 	FSCHAR sszFileName [MAX_PATH];
 	CleanFilePath(sszFileName, lpPathName);
-#ifdef _XBOX
 	return CreateDirectory(sszFileName, lpSecurityAttributes) != FALSE;
-#else
-	(void)lpSecurityAttributes;
-#ifdef _WIN32
-	return CreateDirectoryA(sszFileName, NULL) != FALSE;
-#else
-	return mkdir(sszFileName, 0755) == 0 || errno == EEXIST;
-#endif
-#endif
 }
+
+#ifdef _UNICODE
+// Same two calls for code that already holds a narrow path.
+inline HANDLE TheseusCreateFile(const char* path, DWORD access, DWORD share, LPSECURITY_ATTRIBUTES sa, DWORD disp, DWORD flags = 0, HANDLE templ = NULL) { return CreateFile(path, access, share, sa, disp, flags, templ); }
+inline bool TheseusCreateDirectory(const char* path, LPSECURITY_ATTRIBUTES sa = NULL) { return CreateDirectory(path, sa) != FALSE; }
+#endif
+
+inline BOOL TheseusDeleteFile(LPCSTR path) { return DeleteFile(path); }
+inline BOOL TheseusRemoveDirectory(LPCSTR path) { return RemoveDirectory(path); }
+inline BOOL TheseusSetFileAttributes(LPCSTR path, DWORD attr) { return SetFileAttributes(path, attr); }
+inline DWORD TheseusGetFileAttributes(LPCSTR path) { return GetFileAttributes(path); }
+inline BOOL TheseusGetFileAttributesEx(LPCSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID info) { return GetFileAttributesEx(path, level, info); }
+inline BOOL TheseusGetDiskFreeSpaceEx(LPCSTR path, ULARGE_INTEGER* pFree, ULARGE_INTEGER* pTotal, ULARGE_INTEGER* pTotalFree) { Frame_Count(FC_DISK_QUERIES); return GetDiskFreeSpaceEx(path, pFree, pTotal, pTotalFree); }
+inline HANDLE TheseusFindFirstFile(LPCSTR path, WIN32_FIND_DATAA* fd) { return FindFirstFile(path, fd); }
+inline BOOL TheseusFindNextFile(HANDLE h, WIN32_FIND_DATAA* fd) { return FindNextFile(h, fd); }
+inline BOOL TheseusFindClose(HANDLE h) { return FindClose(h); }
+inline BOOL TheseusMoveFile(LPCSTR src, LPCSTR dst, DWORD flags = 0) { return MoveFileEx(src, dst, flags); }
+inline BOOL TheseusCopyFile(LPCSTR src, LPCSTR dst, BOOL bFailIfExists) { return CopyFile(src, dst, bFailIfExists); }
+inline FILE* TheseusFOpen(const TCHAR* path, const TCHAR* mode) { return _tfopen(path, mode); }
+
+// Swaps a finished szNew in for szFile, keeping what it replaces as <file>.old.
+// FATX can't promise a crash-proof rename, so the new file is flushed and the
+// old one copied aside before the swap.
+inline bool TheseusReplaceFile(const TCHAR* szNew, const TCHAR* szFile)
+{
+	FSCHAR sszNew [MAX_PATH];
+	FSCHAR sszFile [MAX_PATH];
+	FSCHAR sszOld [MAX_PATH + 4];
+	CleanFilePath(sszNew, szNew);
+	CleanFilePath(sszFile, szFile);
+
+	HANDLE hFile = CreateFile(sszNew, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+		return false;
+	BOOL bFlushed = FlushFileBuffers(hFile);
+	CloseHandle(hFile);
+	if (!bFlushed)
+		return false;
+
+	sprintf(sszOld, "%s.old", sszFile);
+	bool bKept = GetFileAttributes(sszFile) == (DWORD)-1 || CopyFile(sszFile, sszOld, FALSE);
+	if (MoveFileEx(sszNew, sszFile, MOVEFILE_REPLACE_EXISTING))
+		return true;
+
+	// No replacing rename: for a moment .old is the only whole copy, so only
+	// when there is one.
+	if (!bKept || !DeleteFile(sszFile))
+		return false;
+	return MoveFileEx(sszNew, sszFile, 0) != FALSE;
+}
+#else
+HANDLE TheseusCreateFile(const TCHAR* szFileName, DWORD dwDesiredAccess, DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwCreationDisposition, DWORD dwFlagsAndAttributes = 0, HANDLE hTemplateFile = NULL);
+bool TheseusCreateDirectory(LPCTSTR lpPathName, LPSECURITY_ATTRIBUTES lpSecurityAttributes = NULL);
+BOOL TheseusDeleteFile(LPCSTR path);
+BOOL TheseusRemoveDirectory(LPCSTR path);
+BOOL TheseusSetFileAttributes(LPCSTR path, DWORD attr);
+DWORD TheseusGetFileAttributes(LPCSTR path);
+BOOL TheseusGetFileAttributesEx(LPCSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID info);
+BOOL TheseusGetDiskFreeSpaceEx(LPCSTR path, ULARGE_INTEGER* pFree, ULARGE_INTEGER* pTotal, ULARGE_INTEGER* pTotalFree);
+HANDLE TheseusFindFirstFile(LPCSTR path, WIN32_FIND_DATAA* fd);
+BOOL TheseusFindNextFile(HANDLE h, WIN32_FIND_DATAA* fd);
+BOOL TheseusFindClose(HANDLE h);
+BOOL TheseusMoveFile(LPCSTR src, LPCSTR dst, DWORD flags = 0);
+BOOL TheseusCopyFile(LPCSTR src, LPCSTR dst, BOOL bFailIfExists);
+FILE* TheseusFOpen(const TCHAR* path, const TCHAR* mode);
+bool TheseusReplaceFile(const TCHAR* szNew, const TCHAR* szFile);
+#endif
 
 
 

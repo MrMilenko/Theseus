@@ -10,20 +10,12 @@
 extern "C" unsigned char* stbi_load_from_memory(const unsigned char*, int, int*, int*, int*, int);
 extern "C" void stbi_image_free(void*);
 
-// GL headers, pulled only for base typedefs (GLuint / GLint) that a few
-// inert leftover state structs below still reference. No GL is called under
-// bgfx; on Windows <GL/gl.h> supplies the typedefs (GLEW is not needed).
-#ifdef __APPLE__
-    #define GL_SILENCE_DEPRECATION
-    #include <OpenGL/gl3.h>
-#elif defined(_WIN32)
-        #include <windows.h>
-        #include <GL/gl.h>
-#else
-    #define GL_GLEXT_PROTOTYPES
-    #include <GL/gl.h>
-    #include <GL/glext.h>
-#endif
+// A few inert leftover state structs below still hold GL-typed fields.
+// No GL is called under bgfx, so the base typedefs are all they need.
+typedef unsigned int   GLuint;
+typedef int            GLint;
+typedef unsigned int   GLenum;
+typedef unsigned short GLushort;
 
 // Ensure D3D vertex constructors are available (vertex8.h, hud.cpp)
 #ifndef DIRECT3D_VERSION
@@ -388,8 +380,10 @@ struct D3DXCOLOR {
 #define TEXT(x) _T(x)
 #endif
 
-// _stscanf
+// _stscanf. mingw's tchar.h already maps it to sscanf in an ANSI build.
+#ifndef _stscanf
 #define _stscanf sscanf
+#endif
 
 // D3DX mesh stubs
 #define D3DXMESH_MANAGED D3DPOOL_MANAGED
@@ -1651,13 +1645,6 @@ public:
         if (m_tss0MagFilter == D3DTEXF_POINT)     f |= BGFX_SAMPLER_MAG_POINT;
         return f;
     }
-    static GLenum D3DFilterToGL(DWORD d3dFilter, bool isMag) {
-        switch (d3dFilter) {
-            case 1: return GL_NEAREST;  // D3DTEXF_POINT
-            case 2: return GL_LINEAR;   // D3DTEXF_LINEAR
-            default: return isMag ? GL_LINEAR : GL_LINEAR; // ANISOTROPIC/QUINCUNX/GAUSSIAN → linear
-        }
-    }
     HRESULT SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD value) {
         // Sweep 2 trace counter.
         if (stage < 8 && (DWORD)type < 32) {
@@ -2382,26 +2369,14 @@ inline HRESULT D3DXCreateMatrixStack(DWORD flags, ID3DXMatrixStack** pp) { *pp =
 #define D3DX_DEFAULT_NONPOW2 ((UINT)-2)
 #define D3DX_FILTER_NONE 1
 
-// Forward-declare XBX parser (defined in xbx_texture.h, included by Image.cpp/xip.cpp)
+// Forward-declare XBX parser (defined in xbx_texture.h, included by asset_loader.cpp/xip_archive.cpp)
 IDirect3DTexture8* XBX_ParseTexture(const BYTE* pbContent, int cbContent);
 
 inline HRESULT D3DXCreateTextureFromFileA(IDirect3DDevice8* dev, const char* path, IDirect3DTexture8** ppTex) {
     (void)dev;
     *ppTex = NULL;
-    // Try to load the file from the xboxfs-mapped path
+    // Host path only. Xbox paths go through TheseusFOpen first.
     FILE* f = fopen(path, "rb");
-    if (!f) {
-        // Try drive remap (Q:\path -> Data/path, etc.).
-        char mapped[1024];
-        if (path[0] && path[1] == ':' && (path[2] == '\\' || path[2] == '/')) {
-            const char* prefix = XboxFS_DriveToPrefix(path[0]);
-            if (prefix) {
-                snprintf(mapped, sizeof(mapped), "%s/%s", prefix, path + 3);
-                for (char* p = mapped; *p; p++) if (*p == '\\') *p = '/';
-                f = fopen(mapped, "rb");
-            }
-        }
-    }
     if (!f) return E_FAIL;
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
@@ -2481,11 +2456,14 @@ inline HRESULT D3DXCreateMeshFVF(DWORD numFaces, DWORD numVerts, DWORD opts, DWO
 }
 
 // ID3DXMesh::DrawSubset - renders mesh through the device
+extern bool theseus_desktop_vs_valid;
 inline HRESULT ID3DXMesh::DrawSubset(DWORD attr) {
     (void)attr;
     if (!m_dev || !m_vbData || !m_ibData || m_numFaces == 0 || m_numVerts == 0)
         return S_OK;
+    // Sets the FVF behind TheseusSetVertexShader's back, so its cache can't be trusted after.
     m_dev->SetVertexShader(m_fvf);
+    theseus_desktop_vs_valid = false;
     m_dev->DrawIndexedPrimitiveUP(D3DPT_TRIANGLELIST, 0, m_numVerts, m_numFaces,
         m_ibData, D3DFMT_INDEX16, m_vbData, m_vertStride);
     return S_OK;

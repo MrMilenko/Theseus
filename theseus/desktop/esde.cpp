@@ -6,13 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#ifdef _WIN32
-#include <io.h>
-#define strcasecmp _stricmp
-#else
-#include <dirent.h>
 #include <strings.h>
-#endif
+#include "host.h"
 
 // Lives here so the ES-DE scanner stays linkable on its own. sdl_main points
 // it at the saved value.
@@ -131,67 +126,80 @@ const char* Esde_RomRoot(const char* esdeRoot)
     return s_root;
 }
 
+static bool g_esdeFoundSystemsXml = false;
+
 // Custom systems win, same order ES-DE uses, then the copy inside the install.
+// An AppImage keeps its copy inside the mount, so nothing is on disk for us to
+// read; those users point us straight at an es_systems.xml instead.
 static bool FindSystemsXml(const char* esdeRoot, char* out, size_t outSz)
 {
     struct stat st;
+
+    // Pointed straight at the file.
+    size_t rl = strlen(esdeRoot);
+    const size_t kName = sizeof("es_systems.xml") - 1;
+    if (rl >= kName && strcasecmp(esdeRoot + rl - kName, "es_systems.xml") == 0 &&
+        stat(esdeRoot, &st) == 0) {
+        snprintf(out, outSz, "%s", esdeRoot);
+        return true;
+    }
+
     snprintf(out, outSz, "%s/custom_systems/es_systems.xml", esdeRoot);
+    fprintf(stderr, "[ES-DE] probe %s\n", out);
     if (stat(out, &st) == 0) return true;
 
-    static const char* kBundled[] = {
+    char home[1024];
+    snprintf(home, sizeof(home), "%s", PlatformHomeDir());
+
+    char userLocal[1024], homeEsde[1024];
+    snprintf(userLocal, sizeof(userLocal),
+             "%s/.local/share/es-de/resources/systems/linux/es_systems.xml", home);
+    snprintf(homeEsde, sizeof(homeEsde),
+             "%s/ES-DE/resources/systems/linux/es_systems.xml", home);
+
+    const char* kBundled[] = {
         "/Applications/ES-DE.app/Contents/Resources/resources/systems/macos/es_systems.xml",
         "/usr/share/es-de/resources/systems/linux/es_systems.xml",
+        "/usr/local/share/es-de/resources/systems/linux/es_systems.xml",
+        "/usr/share/emulationstation/resources/systems/linux/es_systems.xml",
         "/app/share/es-de/resources/systems/linux/es_systems.xml",
         "/var/lib/flatpak/app/org.es_de.frontend/current/active/files/share/es-de/resources/systems/linux/es_systems.xml",
+        "/var/lib/snapd/snap/es-de/current/usr/share/es-de/resources/systems/linux/es_systems.xml",
+        userLocal,
+        homeEsde,
         "C:/Program Files/ES-DE/resources/systems/windows/es_systems.xml",
     };
     for (size_t i = 0; i < sizeof(kBundled) / sizeof(kBundled[0]); i++) {
+        fprintf(stderr, "[ES-DE] probe %s\n", kBundled[i]);
         if (stat(kBundled[i], &st) == 0) {
             snprintf(out, outSz, "%s", kBundled[i]);
             return true;
         }
     }
+    out[0] = '\0';
     return false;
+}
+
+// True when we could not find a systems definition at all, which is a
+// different failure from finding one and matching no roms.
+bool Esde_LastScanFoundSystemsXml(void)
+{
+    return g_esdeFoundSystemsXml;
 }
 
 // One directory level. cb gets (name, isDir) and stops the walk on false.
 template <typename F>
 static void ForEachEntry(const char* dir, F cb)
 {
-#ifdef _WIN32
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s/*", dir);
-    struct _finddata_t fd;
-    intptr_t h = _findfirst(pattern, &fd);
-    if (h == -1) return;
-    do {
-        if (fd.name[0] == '.') continue;
-        if (!cb(fd.name, (fd.attrib & _A_SUBDIR) != 0)) break;
-    } while (_findnext(h, &fd) == 0);
-    _findclose(h);
-#else
-    DIR* d = opendir(dir);
+    HostDir* d = Host_OpenDir(dir);
     if (!d) return;
-    struct dirent* e;
-    while ((e = readdir(d)) != NULL) {
-        if (e->d_name[0] == '.') continue;
-        // readdir already knows the type. stat() per entry costs a network
-        // round trip, which on an SMB rom library is the whole scan.
-        bool isDir;
-        if (e->d_type == DT_DIR)       isDir = true;
-        else if (e->d_type == DT_REG) isDir = false;
-        else {
-            // Symlinks and anything readdir won't commit to still need a look.
-            char full[1024];
-            snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
-            struct stat st;
-            if (stat(full, &st) != 0) continue;
-            isDir = S_ISDIR(st.st_mode) != 0;
-        }
-        if (!cb(e->d_name, isDir)) break;
+    char name[256];
+    bool isDir;
+    while (Host_ReadDirType(d, name, sizeof(name), &isDir)) {
+        if (name[0] == '.') continue;
+        if (!cb(name, isDir)) break;
     }
-    closedir(d);
-#endif
+    Host_CloseDir(d);
 }
 
 // A .app is a directory on macOS, so extension wins over file type. Anything
@@ -244,7 +252,12 @@ int Esde_ScanSystems(const char* esdeRoot, EsdeSystem* out, int maxOut)
     if (!esdeRoot || !*esdeRoot || !out || maxOut <= 0) return 0;
 
     char sysXml[700];
-    if (!FindSystemsXml(esdeRoot, sysXml, sizeof(sysXml))) return 0;
+    g_esdeFoundSystemsXml = FindSystemsXml(esdeRoot, sysXml, sizeof(sysXml));
+    if (!g_esdeFoundSystemsXml) {
+        fprintf(stderr, "[ES-DE] no es_systems.xml found for root %s\n", esdeRoot);
+        return 0;
+    }
+    fprintf(stderr, "[ES-DE] systems from %s\n", sysXml);
 
     FILE* fp = fopen(sysXml, "rb");
     if (!fp) return 0;

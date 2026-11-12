@@ -1,14 +1,11 @@
 // fps_widget.cpp: FPS / frame-time HUD widget. Renders into the
-// always-on widget layer; reads g_fps and g_frameTimeMs from the
-// dashboard's main loop. Theseus-original.
+// always-on widget layer; reads fps and frame time from
+// frame_profiler. Theseus-original.
 
 #include "std.h"
 #include "theseus.h"
 #include "widget_layer.h"
 #include "widget_draw.h"
-
-extern float g_fps;
-extern float g_frameTimeMs;
 
 namespace {
 
@@ -28,12 +25,15 @@ void fpsWidgetDraw(int x, int y, DWORD argb)
     DrawSolidRect(x, y, 1, FPS_WIDGET_H, borderRGB);
     DrawSolidRect(x + FPS_WIDGET_W - 1, y, 1, FPS_WIDGET_H, borderRGB);
 
+    FrameSnapshot f;
+    Frame_Read(&f);
+
     TCHAR line[32];
-    _sntprintf(line, 32, _T("%.1f fps"), g_fps);
+    _sntprintf(line, 32, _T("%.1f fps"), f.fps);
     line[31] = 0;
     OverlayFontDraw(line, (float)(x + 8), (float)(y + 6), 16.0f, argb);
 
-    _sntprintf(line, 32, _T("%.2f ms"), g_frameTimeMs);
+    _sntprintf(line, 32, _T("%.2f ms"), f.frameMs);
     line[31] = 0;
     OverlayFontDraw(line, (float)(x + 8), (float)(y + 28), 14.0f, argb);
 }

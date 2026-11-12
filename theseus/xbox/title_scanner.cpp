@@ -421,6 +421,11 @@ void CTitleScanner::Rebuild()
 
     CSettingsFile icons;
     bool iconsOk = icons.Open(kIconsFilePath);
+
+    // One write per key would rewrite both files once per title. Hold them
+    // in memory and let the explicit Save calls at the end do the work.
+    cache.BeginBatch();
+    icons.BeginBatch();
     if (!iconsOk)
         OutputDebugStringA("[TitleScanner] open Icons.ini failed; will create new\n");
 
@@ -456,6 +461,9 @@ void CTitleScanner::Rebuild()
         totalUdata += ir.udataCreated;
         totalTitles += nTitles;
     }
+
+    cache.EndBatch();
+    icons.EndBatch();
 
     if (!cache.Save())
         OutputDebugStringA("[TitleScanner] save cache.ini FAILED\n");

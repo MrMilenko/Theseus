@@ -89,7 +89,7 @@ int CHardDrive::GetFreeSpace(const TCHAR *szDrive)
 	char FreeSpace[MAX_PATH];
 	Ansi(FreeSpace, szDrive, countof(FreeSpace));
 
-	if (GetDiskFreeSpaceEx(FreeSpace,
+	if (TheseusGetDiskFreeSpaceEx(FreeSpace,
 						   &lFreeBytesAvailable,
 						   &lTotalNumberOfBytes,
 						   &lTotalNumberOfFreeBytes) == 0)
@@ -110,7 +110,7 @@ int CHardDrive::GetTotalSpace(const TCHAR *szDrive)
 	char FreeSpace[MAX_PATH];
 	Ansi(FreeSpace, szDrive, countof(FreeSpace));
 
-	if (GetDiskFreeSpaceEx(FreeSpace,
+	if (TheseusGetDiskFreeSpaceEx(FreeSpace,
 						   &lFreeBytesAvailable,
 						   &lTotalNumberOfBytes,
 						   &lTotalNumberOfFreeBytes) == 0)
@@ -135,7 +135,7 @@ int CHardDrive::FileExists(const TCHAR *FileName)
 	WIN32_FILE_ATTRIBUTE_DATA fad;
 
 	Ansi(szFile, FileName, MAX_PATH);
-	int hr = GetFileAttributesEx(szFile, GetFileExInfoStandard, &fad);
+	int hr = TheseusGetFileAttributesEx(szFile, GetFileExInfoStandard, &fad);
 
 	if (hr > 0)
 	{
@@ -150,7 +150,7 @@ void CHardDrive::MoveThisFile(const TCHAR *szSrcPath, const TCHAR *szDestPath)
 	char NewFile[MAX_PATH];
 	Ansi(OriginalFile, szSrcPath, countof(OriginalFile));
 	Ansi(NewFile, szDestPath, countof(NewFile));
-	MoveFileEx(OriginalFile, NewFile, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING);
+	TheseusMoveFile(OriginalFile, NewFile, MOVEFILE_COPY_ALLOWED | MOVEFILE_REPLACE_EXISTING);
 }
 
 void CHardDrive::MoveThisDirectory(const TCHAR *szSrcPath, const TCHAR *szDestPath)
@@ -164,7 +164,7 @@ int CHardDrive::DeleteThisFile(const TCHAR *FileName)
 	bool tempBool = false;
 	char theFile[MAX_PATH];
 	Ansi(theFile, FileName, countof(theFile));
-	int hr = DeleteFile(theFile);
+	int hr = TheseusDeleteFile(theFile);
 
 	if (hr > 0)
 	{
@@ -182,7 +182,7 @@ int CHardDrive::DeleteThisDirectory(const TCHAR *szPath)
 	sprintf(szBuf, "%s\\*.*", conversionString);
 
 	WIN32_FIND_DATA fd;
-	HANDLE h = FindFirstFile(szBuf, &fd);
+	HANDLE h = TheseusFindFirstFile(szBuf, &fd);
 	if (h != INVALID_HANDLE_VALUE)
 	{
 		do
@@ -202,13 +202,13 @@ int CHardDrive::DeleteThisDirectory(const TCHAR *szPath)
 			}
 			else
 			{
-				if (!DeleteFile(szBuf))
+				if (!TheseusDeleteFile(szBuf))
 					return false;
 			}
-		} while (FindNextFile(h, &fd));
-		FindClose(h);
+		} while (TheseusFindNextFile(h, &fd));
+		TheseusFindClose(h);
 	}
-	int hr = RemoveDirectory(conversionString);
+	int hr = TheseusRemoveDirectory(conversionString);
 
 	if (hr > 0)
 	{
@@ -223,7 +223,7 @@ void CHardDrive::CopyThisFile(const TCHAR *szSrcPath, const TCHAR *szDestPath)
 	char destination[MAX_PATH];
 	Ansi(source, szSrcPath, countof(source));
 	Ansi(destination, szDestPath, countof(destination));
-	CopyFile(source, destination, false);
+	TheseusCopyFile(source, destination, false);
 }
 
 void CHardDrive::CopyThisDirectory(const TCHAR *szSrcPath, const TCHAR *szDestPath)
@@ -234,13 +234,13 @@ void CHardDrive::CopyThisDirectory(const TCHAR *szSrcPath, const TCHAR *szDestPa
 	char theDestination[MAX_PATH];
 	Ansi(theDestination, szDestPath, countof(theDestination));
 
-	CreateDirectory(theDestination, NULL);
+	TheseusCreateDirectory(theDestination, NULL);
 
 	char szBuf[MAX_PATH];
 	sprintf(szBuf, "%s\\*.*", theSource);
 
 	WIN32_FIND_DATA fd;
-	HANDLE h = FindFirstFile(szBuf, &fd);
+	HANDLE h = TheseusFindFirstFile(szBuf, &fd);
 	if (h != INVALID_HANDLE_VALUE)
 	{
 		do
@@ -265,10 +265,10 @@ void CHardDrive::CopyThisDirectory(const TCHAR *szSrcPath, const TCHAR *szDestPa
 			}
 			else
 			{
-				CopyFile(szBuf, szBuf2, FALSE);
+				TheseusCopyFile(szBuf, szBuf2, FALSE);
 			}
-		} while (FindNextFile(h, &fd));
-		FindClose(h);
+		} while (TheseusFindNextFile(h, &fd));
+		TheseusFindClose(h);
 	}
 }
 
@@ -277,7 +277,7 @@ int CHardDrive::CreateThisDirectory(const TCHAR *szDir)
 	bool tempBool = false;
 	char theFile[MAX_PATH];
 	Ansi(theFile, szDir, countof(theFile));
-	int hr = CreateDirectory(theFile, NULL);
+	int hr = TheseusCreateDirectory(theFile, NULL);
 
 	if (hr > 0)
 	{
@@ -291,7 +291,7 @@ int CHardDrive::RemoveThisDirectory(const TCHAR *szDir)
 	bool tempBool = false;
 	char theFile[MAX_PATH];
 	Ansi(theFile, szDir, countof(theFile));
-	int hr = RemoveDirectory(theFile);
+	int hr = TheseusRemoveDirectory(theFile);
 
 	if (hr > 0)
 	{
@@ -347,11 +347,11 @@ int CHardDrive::CopyGame(const TCHAR *szDestPath)
 	char theDestination[MAX_PATH];
 	Ansi(theDestination, szDestPath, countof(theDestination));
 
-	CreateDirectory(theDestination, NULL);
+	TheseusCreateDirectory(theDestination, NULL);
 	char szBuf[MAX_PATH];
 
 	WIN32_FIND_DATA fd;
-	HANDLE h = FindFirstFile("D:\\*.*", &fd);
+	HANDLE h = TheseusFindFirstFile("D:\\*.*", &fd);
 	if (h != INVALID_HANDLE_VALUE)
 	{
 		do
@@ -376,10 +376,10 @@ int CHardDrive::CopyGame(const TCHAR *szDestPath)
 			}
 			else
 			{
-				CopyFile(szBuf, szBuf2, FALSE);
+				TheseusCopyFile(szBuf, szBuf2, FALSE);
 			}
-		} while (FindNextFile(h, &fd));
-		FindClose(h);
+		} while (TheseusFindNextFile(h, &fd));
+		TheseusFindClose(h);
 		success = 1;
 	}
 
