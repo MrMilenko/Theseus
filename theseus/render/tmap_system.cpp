@@ -182,175 +182,182 @@ void CSurfx::Fade(char* inPix, long inBytesPerRow, long inX, long inY, DeltaFiel
 
 
 // ===== HSV Palette ==========================================================
-// 10 palette presets used by the TMAP visualizer system.
+// The 10 palette recipes behind every TMAP texture, plus the shared default
+// palette used when a DynamicTexture has none of its own.
 
+// Last recipe GetHSV ran; out of range requests come back here as 0.
 int g_nPalette = -1;
 
-inline void SetRGB(int R, int G, int B, DWORD& rgb)
+static inline int Clamp255(int c)
 {
-	if (R < 0) R = 0; else if (R > 255) R = 255;
-	if (G < 0) G = 0; else if (G > 255) G = 255;
-	if (B < 0) B = 0; else if (B > 255) B = 255;
-
-	rgb = (R << 16) | (G << 8) | (B);
+	return c < 0 ? 0 : (c > 255 ? 255 : c);
 }
 
-#define __SET_RGB(R, G, B) \
-	SetRGB(R, G, B, outRGB); break;
-
+// HSV2RGB(H, S, V, outRGB)
+// Written from first principles: the standard six sector hue wheel, H wrapped
+// to [0, 1), S and V clamped to [0, 1], packed as 0x00RRGGBB. Matches the 5960
+// routine @ 0x0005f7e0, which truncates every channel of V * 255 with
+// cvttss2si and clamps through its packer @ 0x0005f770.
 void HSV2RGB(float H, float S, float V, DWORD& outRGB)
 {
-	long hexQuadrant, m, n, v;
-	H = (H - floorf(H)) * 6.0f;
+	float h6 = (H - floorf(H)) * 6.0f;
+	int sector = (int)h6;
+	float f = h6 - sector;
 
-	hexQuadrant = (long)H;
-	float f = H - hexQuadrant;
+	S = S < 0.0f ? 0.0f : (S > 1.0f ? 1.0f : S);
+	V = V < 0.0f ? 0.0f : (V > 1.0f ? 1.0f : V);
 
-	if (S < 0.0f) S = 0.0f;
-	if (S > 1.0f) S = 1.0f;
-	if (V < 0.0f) V = 0.0f;
-	if (V > 1.0f) V = 1.0f;
+	float v255 = V * 255.0f;
+	int v = (int)v255;
+	int p = (int)(v255 * (1.0f - S));
+	int q = (int)(v255 * (1.0f - S * f));
+	int t = (int)(v255 * (1.0f - S * (1.0f - f)));
 
-	if (!(hexQuadrant & 1))
-		f = 1.0f - f;
-
-	V *= 255.0f;
-	v = (long)V;
-	m = (long)(V * (1.0f - S));
-	n = (long)(V * (1.0f - S * f));
-
-	switch (hexQuadrant) {
-	case 1: __SET_RGB(n, v, m);
-	case 2: __SET_RGB(m, v, n);
-	case 3: __SET_RGB(m, n, v);
-	case 4: __SET_RGB(n, m, v);
-	case 5: __SET_RGB(v, m, n);
-	default: __SET_RGB(v, n, m);
+	int r, g, b;
+	switch (sector)
+	{
+	case 1: r = q; g = v; b = p; break;
+	case 2: r = p; g = v; b = t; break;
+	case 3: r = p; g = q; b = v; break;
+	case 4: r = t; g = p; b = v; break;
+	case 5: r = v; g = p; b = q; break;
+	default: r = v; g = t; b = p; break;
 	}
+
+	outRGB = (Clamp255(r) << 16) | (Clamp255(g) << 8) | Clamp255(b);
 }
 
+// GetHSV(nPalette, i, t, H, S, V)
+// Reconstructed from 5960 retail XBE @ 0x0005f920. Maps intensity i (0..1) at
+// time t (seconds) to a color for one of 10 recipes; writes the recipe it used
+// to g_nPalette (0x00175e70) first, and anything past 9 snaps to 0. The pow
+// exponents are the doubles at 0x0002c068..0x0002c0f8; wrap() is the
+// x - floor(x) helper @ 0x0005f3d0. See docs/decomp/TmapSystem.md for the table.
 void GetHSV(int nPalette, float i, float t, float& H, float& S, float& V)
 {
 	g_nPalette = nPalette;
 
 	switch (nPalette)
 	{
-	default:
-		g_nPalette = 0;
-		// FALL THROUGH
-
-	case 0: // Firestorm
-		H = 0.166f * powf(i, 1.9f);
-		S = 1;
-		V = powf(i, 0.9f);
-		break;
-
-	case 1: // Aqua
+	case 1:
 		H = 0.45f;
-		S = powf((1.0f - i), 0.3f);
+		S = powf(1.0f - i, 0.3f);
 		V = powf(i, 0.7f);
-		break;
+		return;
 
-	case 2: // Purple & Blues
-		H = 0.666f + 0.166f * powf(i, 1.4f);
-		S = 0.5f + 0.5f * powf((1.8f * i - 1.0f), 2);
+	case 2:
+		H = powf(i, 1.4f) * 0.166f + 0.666f;
+		S = (powf(i * 1.8f - 1.0f, 2.0f) + 1.0f) * 0.5f;
 		V = powf(i, 0.4f);
-		break;
+		return;
 
-	case 3: // Color Wheel
-		H = wrap(0.03f * t);
-		S = 1.0f - 0.6f * powf(i, 2.5f);
+	case 3:
+		H = wrap(t * 0.03f);
+		S = 1.0f - powf(i, 2.5f) * 0.6f;
 		V = i;
-		break;
+		return;
 
-	case 4: // Bizarro Mystery Unveiled
-		H = wrap(0.3f - 0.003f * t);
+	case 4:
+		H = wrap(0.3f - t * 0.003f);
 		S = powf(i, 2.9f);
 		V = powf(i, 0.9f);
-		break;
+		return;
 
-	case 5: // Bizarro Color Wheel
-		H = wrap(0.02f * t);
+	case 5:
+		H = wrap(t * 0.02f);
 		S = 1.0f;
 		V = 1.0f - powf(i, 1.4f);
-		break;
+		return;
 
-	case 6: // Dark Rainbow
+	case 6:
 		H = powf(i, 1.6f);
 		S = 1.0f;
 		V = i;
-		break;
+		return;
 
-	case 7: // Ice Nightshade
-		H = wrap(powf((0.7f - 0.4f * i), 0.6f));
+	case 7:
+		H = wrap(powf(0.7f - i * 0.4f, 0.6f));
 		S = 0.9f;
 		V = powf(i, 0.9f);
-		break;
+		return;
 
-	case 8: // Mystery Unveiled
-		H = wrap(0.002f * t);
-		S = powf((1.0f - i), 1.5f);
+	case 8:
+		H = wrap(t * 0.002f);
+		S = powf(1.0f - i, 1.5f);
 		V = powf(i, 0.4f);
-		break;
+		return;
 
-	case 9: // Roundabout
-		H = wrap(0.2f * (powf(i, 2.0f) + powf(cosf(4.0f * i), 2.0f)) + (0.05f * t));
-		S = 0.85f + 0.5f * i;
+	case 9:
+		H = wrap((powf(cosf(i * 4.0f), 2.0f) + powf(i, 2.0f)) * 0.2f + t * 0.05f);
+		S = i * 0.5f + 0.85f;
 		V = powf(i, 0.55f);
-		break;
+		return;
+
+	default:
+		g_nPalette = 0;
+		// fall through
+	case 0:
+		H = powf(i, 1.9f) * 0.166f;
+		S = 1.0f;
+		V = powf(i, 0.9f);
+		return;
 	}
+}
+
+// Crossfade from the previous recipe, shared by MakePalette and CPalette.
+static inline void BlendHSV(float amount, float H2, float S2, float V2, float& H, float& S, float& V)
+{
+	H = amount * H + (1.0f - amount) * H2;
+	S = amount * S + (1.0f - amount) * S2;
+	V = amount * V + (1.0f - amount) * V2;
 }
 
 int g_nBlendPalette;
 float g_nBlendPaletteAmount;
 
-#define timeToBlend (2.0f)
-
+// MakePalette(outPalette)
+// Reconstructed from 5960 retail XBE @ 0x0005fc30. The default palette: every
+// 10 + rnd(5) seconds (0x0002c148, 0x0002c140) it moves on to the next recipe
+// and crossfades from the old one. The blend amount grows by half the time
+// since the switch on every call (0x0002bed4), so it accumulates rather than
+// tracking elapsed time. During a fade the second lookup leaves g_nPalette on
+// the old recipe, so from entry 1 on both lookups read it; the binary does the same.
 void MakePalette(DWORD outPalette [256])
 {
-	static XTIME nextPaletteChangeTime = 0.0f;
-	static XTIME startBlendTime;
+	static XTIME nextChange = 0.0f;
+	static XTIME blendStart;
 
-	int i;
-	float H, S, V, inc = 1.0f / 255.0f;
-	float mIntensity = 0.0f;
 	XTIME now = TheseusGetNow();
-
-	if (now > nextPaletteChangeTime)
+	if (now > nextChange)
 	{
-		nextPaletteChangeTime = now + 10.0f + rnd(5.0f);
+		nextChange = now + 10.0f + rnd(5.0f);
 		g_nBlendPalette = g_nPalette;
-		g_nPalette += 1;
+		g_nPalette++;
 		g_nBlendPaletteAmount = 0.0f;
-		startBlendTime = now;
+		blendStart = now;
 	}
 
-	for (i = 0; i < 256; i++, mIntensity += inc)
+	float intensity = 0.0f;
+	for (int n = 0; n < 256; n++, intensity += 1.0f / 255.0f)
 	{
-		GetHSV(g_nPalette, mIntensity, (float) now, H, S, V);
-
+		float H, S, V;
+		GetHSV(g_nPalette, intensity, (float)now, H, S, V);
 		if (g_nBlendPalette != -1)
 		{
 			float H2, S2, V2;
-
-			GetHSV(g_nBlendPalette, mIntensity, (float) now, H2, S2, V2);
-
-			H = g_nBlendPaletteAmount * H + (1.0f - g_nBlendPaletteAmount) * H2;
-			S = g_nBlendPaletteAmount * S + (1.0f - g_nBlendPaletteAmount) * S2;
-			V = g_nBlendPaletteAmount * V + (1.0f - g_nBlendPaletteAmount) * V2;
+			GetHSV(g_nBlendPalette, intensity, (float)now, H2, S2, V2);
+			BlendHSV(g_nBlendPaletteAmount, H2, S2, V2, H, S, V);
 		}
-
-		HSV2RGB(H, S, V, outPalette[i]);
+		HSV2RGB(H, S, V, outPalette[n]);
 	}
 
 	if (g_nBlendPalette != -1)
 	{
-		g_nBlendPaletteAmount += (float) (now - startBlendTime) / timeToBlend;
+		g_nBlendPaletteAmount += (float)(now - blendStart) / 2.0f;
 		if (g_nBlendPaletteAmount >= 1.0f)
 			g_nBlendPalette = -1;
 	}
 }
-
 
 // ===== Line Drawing =========================================================
 // Bresenham stepping with an optional round pen. Nothing in the dash ever
@@ -900,8 +907,7 @@ void DeltaField::GetXY(float r, float theta, float x, float y, float& X, float& 
 
 
 // ===== CPalette =============================================================
-// XAP node that generates a 256-entry DWORD palette from HSV presets.
-// On Xbox, also uploads to a hardware D3DPalette object.
+// Palette node: one of the 10 recipes, optionally cycling on a timer.
 
 class CPalette : public CNode
 {
@@ -944,19 +950,26 @@ START_NODE_PROPS(CPalette, CNode)
 	NODE_PROP(pt_number, CPalette, changePeriodRandomness)
 END_NODE_PROPS()
 
+// CPalette::CPalette()
+// Reconstructed from CPalette_CreateNode @ 0x0005d6a0 (0x448 bytes):
+//     type = changePeriod = randomness = 0; timeToBlend = 2.0; d3dPalette = NULL;
+//     blendPalette = -1; nextChange = 0.0
 CPalette::CPalette() :
+	m_type(0),
 	m_changePeriod(0.0f),
 	m_changePeriodRandomness(0.0f),
-	m_timeToBlend(2.0f),
-	m_type(0)
+	m_timeToBlend(2.0f)
 {
-	m_nextPaletteChangeTime = 0.0f;
 	m_nBlendPalette = -1;
+	m_nextPaletteChangeTime = 0.0f;
 #ifdef _XBOX
 	m_pPalette = NULL;
 #endif
 }
 
+// CPalette::~CPalette()
+// Reconstructed from 5960 retail XBE @ 0x0005d740: releases the D3D palette
+// (the binary inlines D3DResource_Release) before the CNode teardown.
 CPalette::~CPalette()
 {
 #ifdef _XBOX
@@ -965,17 +978,24 @@ CPalette::~CPalette()
 #endif
 }
 
+// CPalette::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0005d7d0. Ghidra decompile:
+//     CNode_Advance(); now = DAT_0017e808;
+//     if (0.0 < changePeriod && nextChange < now) {
+//         nextChange = rnd(randomness) + changePeriod + now;
+//         blendPalette = type; type++; blendAmount = 0; blendStart = now; }
+//     Update();
+//     if (blendPalette != -1 && (blendAmount = (now - blendStart) / timeToBlend) >= 1.0) blendPalette = -1;
 void CPalette::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
 
 	XTIME now = TheseusGetNow();
-
 	if (m_changePeriod > 0.0f && now > m_nextPaletteChangeTime)
 	{
 		m_nextPaletteChangeTime = now + m_changePeriod + rnd(m_changePeriodRandomness);
 		m_nBlendPalette = m_type;
-		m_type += 1;
+		m_type++;
 		m_nBlendPaletteAmount = 0.0f;
 		m_startBlendTime = now;
 	}
@@ -984,61 +1004,60 @@ void CPalette::Advance(float nSeconds)
 
 	if (m_nBlendPalette != -1)
 	{
-		m_nBlendPaletteAmount = (float) (now - m_startBlendTime) / m_timeToBlend;
+		m_nBlendPaletteAmount = (float)(now - m_startBlendTime) / m_timeToBlend;
 		if (m_nBlendPaletteAmount >= 1.0f)
 			m_nBlendPalette = -1;
 	}
 }
 
+// CPalette::Update()
+// Reconstructed from 5960 retail XBE @ 0x0005d8b0. Fills the 256 entries from
+// GetHSV (crossfading from the old recipe while a blend runs) and copies
+// g_nPalette back into type after each lookup, so an out of range type wraps
+// to 0. Then copies the table into a D3D palette with alpha forced to 0xff,
+// creating it on first use (the binary inlines CreatePalette and Lock).
+// The palette upload is Xbox only; on desktop the texture upload in
+// CDynamicTexture::Update applies the table in software instead.
 void CPalette::Update()
 {
-	XTIME now = TheseusGetNow();
-	float H, S, V, inc = 1.0f / 255.0f;
-	float mIntensity = 0.0f;
+	float now = (float)TheseusGetNow();
+	float intensity = 0.0f;
 
-	int i;
-	for (i = 0; i < 256; i++, mIntensity += inc)
+	for (int n = 0; n < 256; n++, intensity += 1.0f / 255.0f)
 	{
-		GetHSV(m_type, mIntensity, (float) now, H, S, V);
+		float H, S, V;
+		GetHSV(m_type, intensity, now, H, S, V);
 		m_type = g_nPalette;
 
 		if (m_nBlendPalette != -1)
 		{
 			float H2, S2, V2;
-			GetHSV(m_nBlendPalette, mIntensity, (float) now, H2, S2, V2);
-
-			H = m_nBlendPaletteAmount * H + (1.0f - m_nBlendPaletteAmount) * H2;
-			S = m_nBlendPaletteAmount * S + (1.0f - m_nBlendPaletteAmount) * S2;
-			V = m_nBlendPaletteAmount * V + (1.0f - m_nBlendPaletteAmount) * V2;
+			GetHSV(m_nBlendPalette, intensity, now, H2, S2, V2);
+			BlendHSV(m_nBlendPaletteAmount, H2, S2, V2, H, S, V);
 		}
 
-		HSV2RGB(H, S, V, m_palette[i]);
+		HSV2RGB(H, S, V, m_palette[n]);
 	}
 
 #ifdef _XBOX
-	// Xbox: also upload the DWORD palette into a hardware D3DPalette
-	// object so SetPalette can bind it. Desktop applies the palette in
-	// software when rendering each CDynamicTexture instead.
 	if (m_pPalette == NULL)
 		VERIFYHR(TheseusGetD3DDev()->CreatePalette(D3DPALETTE_256, &m_pPalette));
 
-	D3DCOLOR* rgColor;
-	VERIFYHR(m_pPalette->Lock(&rgColor, D3DLOCK_NOOVERWRITE));
-	for (i = 0; i < 256; i += 1)
-	{
-		BYTE r = (BYTE)(m_palette[i] >> 16);
-		BYTE g = (BYTE)(m_palette[i] >> 8);
-		BYTE b = (BYTE)m_palette[i];
-		rgColor[i] = D3DCOLOR_RGBA(r, g, b, 255);
-	}
+	D3DCOLOR* entries;
+	VERIFYHR(m_pPalette->Lock(&entries, D3DLOCK_NOOVERWRITE));
+	for (int n = 0; n < 256; n++)
+		entries[n] = 0xFF000000 | (m_palette[n] & 0x00FFFFFF);
 	VERIFYHR(m_pPalette->Unlock());
 #endif
 }
 
+// CPalette::RenderDynamicTexture(pSurfx)
+// Reconstructed from 5960 retail XBE @ 0x0005da80: fills row y with
+// y * 256 / height, a top to bottom ramp through the whole palette.
 void CPalette::RenderDynamicTexture(CSurfx* pSurfx)
 {
-	for (int y = 0; y < pSurfx->m_nHeight; y += 1)
-		FillMemory(pSurfx->m_pels + y * pSurfx->m_nWidth, pSurfx->m_nWidth, (BYTE)(y * 256 / pSurfx->m_nHeight));
+	for (int y = 0; y < pSurfx->m_nHeight; y++)
+		memset(pSurfx->m_pels + y * pSurfx->m_nWidth, (y * 256) / pSurfx->m_nHeight, pSurfx->m_nWidth);
 }
 
 

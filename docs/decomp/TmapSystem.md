@@ -223,11 +223,82 @@ only on the init cell. `rnd(n)` below is `rand() * (n / 32767)`; the binary stor
 Styles 9, 10, 13, 16, 17 and 19 call `rand()` per cell, so their fields differ every time
 they're built.
 
-## Palette Presets (10 styles)
+## Palettes
 
-0: Firestorm, 1: Aqua, 2: Purple & Blues, 3: Color Wheel,
-4: Bizarro Mystery Unveiled, 5: Bizarro Color Wheel, 6: Dark Rainbow,
-7: Ice Nightshade, 8: Mystery Unveiled, 9: Roundabout
+### HSV2RGB (`0x0005f7e0`)
+
+Takes H, S, V on the stack and the output pointer in EBX. `h6 = (H - floor(H)) * 6`, sector
+`= ftol(h6)`, `f = h6 - sector`. S and V are clamped to 0..1, then with `v = V * 255`
+(`0x0002bf38`), `f` is replaced by `1 - f` on even sectors so one value serves as both
+"falling" and "rising" channel:
+
+```c
+m = (int)(v * (1 - S));   n = (int)(v * (1 - S * f));   v = (int)v;
+switch (sector) { 1: (n,v,m)  2: (m,v,n)  3: (m,n,v)  4: (n,m,v)  5: (v,m,n)  default: (v,n,m) }
+```
+
+The packer at `0x0005f770` clamps each channel to 0..255 and returns `0x00RRGGBB`.
+
+### GetHSV (`0x0005f920`)
+
+Recipe in EAX, outputs through EBX/EDI/ESI (H/S/V), intensity `i` and time `t` on the stack.
+Stores the recipe in a global (`0x00175e70`) first; above 9 it stores 0 and runs recipe 0.
+`wrap(x)` is `x - floor(x)` (`0x0005f3d0`). Exponents are doubles fed to `CIpow`.
+
+| Recipe | H | S | V |
+|--------|---|---|---|
+| 0 | `pow(i, 1.9) * 0.166` | `1` | `pow(i, 0.9)` |
+| 1 | `0.45` | `pow(1 - i, 0.3)` | `pow(i, 0.7)` |
+| 2 | `pow(i, 1.4) * 0.166 + 0.666` | `(pow(i * 1.8 - 1, 2) + 1) * 0.5` | `pow(i, 0.4)` |
+| 3 | `wrap(t * 0.03)` | `1 - pow(i, 2.5) * 0.6` | `i` |
+| 4 | `wrap(0.3 - t * 0.003)` | `pow(i, 2.9)` | `pow(i, 0.9)` |
+| 5 | `wrap(t * 0.02)` | `1` | `1 - pow(i, 1.4)` |
+| 6 | `pow(i, 1.6)` | `1` | `i` |
+| 7 | `wrap(pow(0.7 - i * 0.4, 0.6))` | `0.9` | `pow(i, 0.9)` |
+| 8 | `wrap(t * 0.002)` | `pow(1 - i, 1.5)` | `pow(i, 0.4)` |
+| 9 | `wrap(t * 0.05 + (pow(cos(i * 4), 2) + pow(i, 2)) * 0.2)` | `i * 0.5 + 0.85` | `pow(i, 0.55)` |
+
+### Default palette (`0x0005fc30`)
+
+Used when a DynamicTexture has no palette node. State is global: next switch time
+(`0x00188f38`), blend start (`0x00188f88`), blend recipe (`0x0017d0fc`) and blend amount
+(`0x0017d0f8`); the current recipe is GetHSV's global.
+
+- When `now > next`: `next = rand() * (5 / 32767) + now + 10.0`, blend recipe = current,
+  current += 1, amount = 0, start = now.
+- 256 entries, `i` stepping by `1/255` (`0x0002becc`). While blending, a second GetHSV for the
+  blend recipe mixes in as `(1 - amount) * old + amount * new`. That second call also rewrites
+  the current-recipe global, so from entry 1 on both lookups return the old recipe.
+- After the loop `amount += (now - start) * 0.5`, and the blend ends at 1.0. The amount
+  accumulates on every call instead of tracking elapsed time.
+
+### Palette node
+
+| Offset | Field |
+|--------|-------|
+| 0x1c | type (recipe) |
+| 0x20 | changePeriod |
+| 0x24 | changePeriodRandomness |
+| 0x28 | blend time, 2.0 |
+| 0x2c | D3D palette |
+| 0x30 | 256 `0x00RRGGBB` entries |
+| 0x430 | blend recipe, -1 = none |
+| 0x434 | blend amount |
+| 0x438 | next change (double) |
+| 0x440 | blend start (double) |
+
+**Advance (`0x0005d7d0`).** When `changePeriod > 0` and the time has passed:
+`next = rand() * randomness / 32767 + changePeriod + now`, blend = type, type += 1,
+amount = 0, start = now. Then Update, then `amount = (now - start) / blendTime`, ending the
+blend at 1.0.
+
+**Update (`0x0005d8b0`).** Same per-entry loop as the default palette, but copies the
+recipe global back into `type` after each lookup (so an out-of-range type becomes 0). Then
+creates the D3D palette on first use (inlined `XMemAlloc` of the resource header plus a 0x400
+byte table) and writes every entry with alpha forced to `0xff`.
+
+**RenderDynamicTexture (`0x0005da80`).** Fills each row `y` with `y * 256 / height`: a ramp
+through the whole palette, top to bottom.
 
 ## Notes
 
