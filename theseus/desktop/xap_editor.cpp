@@ -20,6 +20,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "host.h"
+#include "safe_save.h"
 
 // Implemented in group.cpp
 extern "C" int CollectInlineNodes(CNode* pRoot, CInstance* pRootInst, void* outBuf, int maxEntries);
@@ -136,15 +137,18 @@ void XapEditor_LoadFile(const char* path) {
 static void XapEditor_SaveFile() {
     if (!g_xapEditorPath[0]) return;
     std::string text = s_editor.GetText();
-    FILE* f = fopen(g_xapEditorPath, "wb");
+    SafeSave save(g_xapEditorPath, "wb");
+    FILE* f = save.f;
     if (!f) {
         snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Failed to save!");
         g_xapEditorStatusTime = (float)SDL_GetTicks() / 1000.0f;
         return;
     }
     fwrite(text.c_str(), 1, text.size(), f);
-    fclose(f);
-    snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Saved %zu bytes", text.size());
+    if (save.Commit())
+        snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Saved %zu bytes", text.size());
+    else
+        snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Failed to save!");
     g_xapEditorStatusTime = (float)SDL_GetTicks() / 1000.0f;
 }
 

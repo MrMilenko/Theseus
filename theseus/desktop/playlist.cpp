@@ -3,6 +3,7 @@
 #include "app_paths.h"
 #include "playlist.h"
 #include "xboxfs_drive.h"
+#include "safe_save.h"
 
 #include <cstdio>
 #include <cstring>
@@ -57,7 +58,8 @@ void Playlist_LoadAll() {
 
 void Playlist_SaveAll() {
     Plat_MkdirP(AppPath_Tree("Configs"));
-    FILE* fp = fopen(kPath, "w");
+    SafeSave save(kPath);
+    FILE* fp = save.f;
     if (!fp) return;
     for (size_t i = 0; i < s_playlists.size(); i++) {
         const Playlist& p = s_playlists[i];
@@ -68,7 +70,7 @@ void Playlist_SaveAll() {
         }
         fprintf(fp, "\n");
     }
-    fclose(fp);
+    save.Commit();
     s_dirty = false;
 }
 

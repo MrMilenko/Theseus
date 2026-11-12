@@ -218,12 +218,28 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0004e4d0 | `CInline::Init` | `CInline::Init` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Inline-node init: opens the referenced XIP / XAP and inserts its root into the local scene graph. |
 | 0x0004e740 | `CInline::Advance` | `CInline::Advance` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Per-frame tick. If the load thread completed, swaps the placeholder for the loaded sub-tree. |
 | 0x00053ed0 | `CFont::LoadGlyph` | `CFont::LoadGlyph` (text.cpp) | [Text](Text.md) | Decompresses a single glyph bitmap from the XTF cache table. |
-| 0x0005acb0 | `CKeyboard_CursorRight` | `CKeyboard::CursorRight` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Right-arrow handler on the on-screen keyboard. Wraps to row start when at row end. |
-| 0x0005b340 | `CKeyboard_activate` | `CKeyboard::activate` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Commits the highlighted key. Handles regular keys, layout switches (shift/sym), and the OK / cancel softkeys. |
-| 0x0005b630 | `CKeyboard::Backspace` | `CKeyboard::Backspace` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Handles backspace on the on-screen keyboard. Removes the last character (with surrogate pair awareness). |
-| 0x0005b700 | `CKeyboard_CursorLeft` | `CKeyboard::CursorLeft` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Left-arrow handler. Wraps to row end when at row start. |
-| 0x0005b740 | `CKeyboard_CursorRight` | `CKeyboard::CursorRight` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Right-arrow handler (alternate FND-bound entry). |
-| 0x0005b780 | `CKeyboard_Shift` | `CKeyboard::Shift` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Toggles the shift / caps layer of the on-screen keyboard. |
+| 0x0005ab80 | `CKeyboard_CKeyboard` | `CKeyboard::CKeyboard` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Constructor. Zeroes every field except the cursor, which starts at -1 (whole string selected). |
+| 0x0005ac20 | `CKeyboard_dtor` | `CKeyboard::~CKeyboard` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Releases the text, frame and control nodes, frees `string`, releases the key nodearray. |
+| 0x0005acb0 | `CKeyboard_GetAsteriskFormattingState` | `CKeyboard::GetAsteriskFormattingState` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Returns the global *heading* text flag at 0x0017e74c. |
+| 0x0005acc0 | `CKeyboard_SetAsteriskFormattingState` | `CKeyboard::SetAsteriskFormattingState` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Sets the global *heading* text flag at 0x0017e74c. |
+| 0x0005ace0 | `CKeyboard_selectKey` | `CKeyboard::selectKey` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Moves the highlight to (row, column), falling back to 0 for either one out of range. |
+| 0x0005ad40 | `CKeyboard_selectUp` | `CKeyboard::selectUp` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Highlight up one row, wrapping to the bottom and skipping blank cells. |
+| 0x0005adb0 | `CKeyboard_selectDown` | `CKeyboard::selectDown` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Highlight down one row, wrapping to the top and skipping blank cells. |
+| 0x0005ae60 | `CKeyboard_selectLeft` | `CKeyboard::selectLeft` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Highlight left, wrapping, skipping blanks; on western grids hops across the wide bottom keys. |
+| 0x0005af50 | `CKeyboard_selectRight` | `CKeyboard::selectRight` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Highlight right, the mirror of selectLeft. |
+| 0x0005b040 | `CKeyboard_TIDactivate` | `CKeyboard::TIDactivate` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Turns the last USB keyboard keystroke into a key press and reports it through TIDKeyUsed / PlaySound / CloseKeyboard. |
+| 0x0005b340 | `CKeyboard_activate` | `CKeyboard::activate` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Presses the highlighted key: page and case keys, cursor keys, BACKSPACE, SPACE, DONE (trim, copy to `string`, OnDone) or a character insert. |
+| 0x0005b630 | `CKeyboard_Backspace` | `CKeyboard::Backspace` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Removes the character left of the cursor, OnError at the start. |
+| 0x0005b6a0 | `CKeyboard_Delete` | `CKeyboard::Delete` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Removes the character under the cursor, OnError at the end. |
+| 0x0005b700 | `CKeyboard_CursorLeft` | `CKeyboard::CursorLeft` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Cursor left one, OnError at the start. From a full selection it lands at 0. |
+| 0x0005b740 | `CKeyboard_CursorRight` | `CKeyboard::CursorRight` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Cursor right one, OnError at the end. From a full selection it lands at the end. |
+| 0x0005b780 | `CKeyboard_Shift` | `CKeyboard::Shift` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Toggles shift on the letter and accent pages, OnError on symbols. |
+| 0x0005b7b0 | `CKeyboard_CycleMode` | `CKeyboard::CycleMode` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Steps mode and jmode together through 0, 1, 2. |
+| 0x0005b7e0 | `CKeyboard_Insert` | `CKeyboard::Insert` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Script fn. Inserts a string at the cursor, OnError if it would pass 31 characters. |
+| 0x0005b890 | `FUN_0005b890` | `IsGridChar` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Whether a typed character appears (as is or uppercased) on any page of the current grid. Used by TIDactivate. |
+| 0x0005b970 | `CKeyboard_OnSetProperty` | `CKeyboard::OnSetProperty` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Setting `string` loads the edit buffer (up to 31 characters) with the whole thing selected. |
+| 0x0005b9d0 | `CKeyboard_Render` | `CKeyboard::Render` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Draws the frame, the text node with the edit string and cursor, then one node per key with its label. |
+| 0x0005bca0 | `CKeyboard_Advance` | `CKeyboard::Advance` (keyboard_node.cpp) | [Keyboard](Keyboard.md) | Advances the node, then the control node. |
 | 0x0005c250 | `CLevel_load` |  | [Scene Groups](SceneGroups.md) | FND-bound script method on Level: triggers asynchronous load of the Level's referenced sub-scene. |
 | 0x0005d200 | `CLevel::Deactivate` | `CLevel::Deactivate` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Marks a Level node inactive. Pauses its time-dep children and skips it during render traversal. |
 | 0x0005d300 | `CPositionInterpolator::Interpolate` | `CPositionInterpolator::Interpolate` (animation_nodes.cpp) | [Animation](AnimationNodes.md) | Linear interpolation between key positions based on the bound TimeSensor's fraction. |
@@ -282,7 +298,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | File Operations | [FileOps.md](FileOps.md) | 7 functions |
 | Disc | (no doc yet, narrative TODO) | 1 function |
 | HUD & Picture | [HudNode.md](HudNode.md) | 9 functions |
-| Keyboard | [Keyboard.md](Keyboard.md) | 6 functions |
+| Keyboard | [Keyboard.md](Keyboard.md) | 22 functions |
 | Locale | (no doc yet, narrative TODO) | 1 function |
 | NtIoSvc | [NtIoSvc.md](NtIoSvc.md) | 1 function |
 | Scene Groups | [SceneGroups.md](SceneGroups.md) | 6 functions |

@@ -24,6 +24,7 @@
 #include <string>
 
 #include "host.h"
+#include "safe_save.h"
 
 bool g_titleMakerOpen = false;
 
@@ -271,12 +272,13 @@ static int TM_ReadIconsIni(char keys[][128], char vals[][128]) {
 }
 
 static void TM_WriteIconsIni(char keys[][128], char vals[][128], int count) {
-    FILE* fp = fopen(AppPath("Configs/Icons.ini"), "w");
+    SafeSave save(AppPath("Configs/Icons.ini"));
+    FILE* fp = save.f;
     if (!fp) return;
     fprintf(fp, "[default]\n");
     for (int i = 0; i < count; i++)
         fprintf(fp, "%s=%s\n", keys[i], vals[i]);
-    fclose(fp);
+    save.Commit();
 }
 
 // Open a URL via the platform's default handler. Falls through the
