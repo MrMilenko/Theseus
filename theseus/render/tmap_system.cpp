@@ -1062,9 +1062,7 @@ void CPalette::RenderDynamicTexture(CSurfx* pSurfx)
 
 
 // ===== CDynamicTexture ======================================================
-// Renders children into a palettized 8-bit texture (D3DFMT_P8) each frame.
-// Children contribute via RenderDynamicTexture(CSurfx*). The pixel buffer
-// is swizzled into an Xbox texture on each update.
+// A texture node whose children draw into an 8-bit surface each frame.
 
 class CDynamicTexture : public CTexture
 {
@@ -1103,46 +1101,56 @@ START_NODE_PROPS(CDynamicTexture, CTexture)
 	NODE_PROP(pt_node, CDynamicTexture, palette)
 END_NODE_PROPS()
 
+// CDynamicTexture::CDynamicTexture()
+// Reconstructed from 5960 retail XBE @ 0x0005db30:
+//     format = 0xb (P8); size = 0x100; erase = 1; fps = 15.0 (0x0002bf68);
+//     palette = NULL; surfx = NULL; lastUpdate = 0.0
 CDynamicTexture::CDynamicTexture() :
 	m_size(256),
 	m_erase(true),
 	m_fps(15.0f),
 	m_palette(NULL)
 {
-	m_lastUpdateTime = 0.0f;
-	m_pSurfx = NULL;
 	m_format = D3DFMT_P8;
+	m_pSurfx = NULL;
+	m_lastUpdateTime = 0.0f;
 }
 
+// CDynamicTexture::~CDynamicTexture()
+// Reconstructed from 5960 retail XBE @ 0x0005dbc0: palette->Release(), then
+// the surface (CSurfx teardown inlined), then the children and CTexture.
 CDynamicTexture::~CDynamicTexture()
 {
 	if (m_palette != NULL)
 		m_palette->Release();
-
 	delete m_pSurfx;
 }
 
+// CDynamicTexture::Create(nWidth, nHeight)
+// Reconstructed from 5960 retail XBE @ 0x0005dc70. Ghidra decompile:
+//     imageW = imageH = 0x200;
+//     if (D3DXCreateTexture(dev, 0x200, 0x200, 1, 0, format, 1, &surface) < 0) return 0;
+//     LockRect; memset(bits, 0, imageW * imageH); Unlock; imageW, imageH = surface desc; return 1;
+// Always 512x512 whatever size asks for; the effect only fills the top left corner.
 bool CDynamicTexture::Create(int nWidth, int nHeight)
 {
-	D3DLOCKED_RECT d3dlr;
-
 	m_nImageWidth = 512;
 	m_nImageHeight = 512;
-
 	if (FAILED(D3DXCreateTexture(TheseusGetD3DDev(), m_nImageWidth, m_nImageHeight, 1, 0, m_format, D3DPOOL_MANAGED, &m_surface)))
-	{
 		return false;
-	}
 
-	m_surface->LockRect(0, &d3dlr, NULL, 0);
-	memset(d3dlr.pBits, 0, m_nImageWidth * m_nImageHeight);
+	D3DLOCKED_RECT lr;
+	m_surface->LockRect(0, &lr, NULL, 0);
+	memset(lr.pBits, 0, m_nImageWidth * m_nImageHeight);
 	m_surface->UnlockRect(0);
 
 	TheseusGetTextureSize(m_surface, m_nImageWidth, m_nImageHeight);
-
 	return true;
 }
 
+// CDynamicTexture::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x0005dd20: CNode::Advance, then the
+// palette node, then every child.
 void CDynamicTexture::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
@@ -1150,91 +1158,77 @@ void CDynamicTexture::Advance(float nSeconds)
 	if (m_palette != NULL)
 		m_palette->Advance(nSeconds);
 
-	int nChildCount = m_children.GetLength();
-	for (int i = 0; i < nChildCount; i += 1)
-	{
-		CNode* pChildNode = m_children.GetNode(i);
-		pChildNode->Advance(nSeconds);
-	}
+	for (int n = 0; n < m_children.GetLength(); n++)
+		m_children.GetNode(n)->Advance(nSeconds);
 }
 
+// CDynamicTexture::GetTextureSurface()
+// Reconstructed from 5960 retail XBE @ 0x0005dd70. Redraws at most fps times a
+// second, then, if the palette node is a Palette (the binary walks the class
+// chain), binds its D3D palette to stage 0. Binding is Xbox only; desktop
+// applies the palette while uploading in Update.
 LPDIRECT3DTEXTURE8 CDynamicTexture::GetTextureSurface()
 {
-	if (TheseusGetNow() > m_lastUpdateTime + (1.0f / m_fps))
+	if (TheseusGetNow() > m_lastUpdateTime + 1.0f / m_fps)
 	{
 		m_lastUpdateTime = TheseusGetNow();
 		Update();
 	}
 
 #ifdef _XBOX
-	// Xbox: bind the hardware palette so the GPU expands paletted texels.
-	// Desktop expands them in software during the LockRect upload below.
 	if (m_palette != NULL && m_palette->IsKindOf(NODE_CLASS(CPalette)))
-	{
-		CPalette* pPalette = (CPalette*)m_palette;
-		VERIFYHR(TheseusGetD3DDev()->SetPalette(0, pPalette->m_pPalette));
-	}
+		VERIFYHR(TheseusGetD3DDev()->SetPalette(0, ((CPalette*)m_palette)->m_pPalette));
 #endif
 
 	return m_surface;
 }
 
+// CDynamicTexture::Update()
+// Reconstructed from 5960 retail XBE @ 0x0005dde0. Creates the texture and the
+// size x size CSurfx on first use, clears the surface when erase is set, lets
+// each child draw into it, picks the palette (the node's, else the default from
+// MakePalette), and uploads: on Xbox the 8-bit pixels go straight into the P8
+// texture through the Swizzler (inlined in the binary), so the GPU applies the
+// palette. The desktop upload below is Theseus's own: palette expansion to
+// RGBA in software, plus the projectM and album cover modes.
 void CDynamicTexture::Update()
 {
-	if (m_surface == NULL && m_size > 0)
-	{
-		if (!Create(m_size, m_size))
-			return;
-	}
+	if (m_surface == NULL && m_size > 0 && !Create(m_size, m_size))
+		return;
 
 	if (m_pSurfx == NULL && m_size > 0)
-	{
 		m_pSurfx = new CSurfx(m_size, m_size);
-	}
 
 	if (m_surface == NULL || m_pSurfx == NULL || TheseusGetNow() < m_lastUpdateTime)
 		return;
 
 	if (m_erase)
-		ZeroMemory(m_pSurfx->m_pels, m_pSurfx->m_nWidth * m_pSurfx->m_nHeight);
+		memset(m_pSurfx->m_pels, 0, m_pSurfx->m_nWidth * m_pSurfx->m_nHeight);
 
-	int nChildCount = m_children.GetLength();
-	int i;
-	for (i = 0; i < nChildCount; i += 1)
+	for (int n = 0; n < m_children.GetLength(); n++)
+		m_children.GetNode(n)->RenderDynamicTexture(m_pSurfx);
+
+	const DWORD* rgpe = m_palette != NULL ? m_palette->GetPalette() : NULL;
+	DWORD rgpeDefault [256];
+	if (rgpe == NULL)
 	{
-		CNode* pChildNode = m_children.GetNode(i);
-		pChildNode->RenderDynamicTexture(m_pSurfx);
+		MakePalette(rgpeDefault);
+		rgpe = rgpeDefault;
 	}
 
-	// Upload the 8-bit pixmap into the texture surface.
-	// Xbox: swizzle to NV2A tiled layout and let the GPU expand the palette.
-	// Desktop: expand the palette in software (one ARGB pixel per byte) since
-	// the GL emulator doesn't have palette-indexed texture support.
 	{
-		const DWORD* rgpe = NULL;
-
-		if (m_palette != NULL)
-			rgpe = m_palette->GetPalette();
-
-		DWORD rgpeDefault [256];
-		if (rgpe == NULL)
-		{
-			rgpe = rgpeDefault;
-			MakePalette(rgpeDefault);
-		}
-
 #ifdef _XBOX
+		(void)rgpe;
 		Swizzler swz(m_nImageWidth, m_nImageHeight, 1);
-		BYTE* pSrc = (BYTE*)m_pSurfx->m_pels;
-		BYTE* pDst;
 		D3DLOCKED_RECT lr;
 		VERIFYHR(m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD));
-		pDst = (BYTE*)lr.pBits;
-		for (i = 0; i < m_size; i++, swz.IncV()) {
-			for (int j = 0; j < m_size; j++, swz.IncU()) {
-				pDst[swz.Get2D()] = pSrc[j];
-			}
-			pSrc += m_size;
+		BYTE* dst = (BYTE*)lr.pBits;
+		const BYTE* src = m_pSurfx->m_pels;
+		for (int y = 0; y < m_size; y++, src += m_size)
+		{
+			for (int x = 0; x < m_size; x++, swz.IncU())
+				dst[swz.Get2D()] = src[x];
+			swz.IncV();
 			swz.AddU(swz.SwizzleU(m_nImageWidth - m_size));
 		}
 		VERIFYHR(m_surface->UnlockRect(0));

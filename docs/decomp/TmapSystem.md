@@ -300,6 +300,41 @@ byte table) and writes every entry with alpha forced to `0xff`.
 **RenderDynamicTexture (`0x0005da80`).** Fills each row `y` with `y * 256 / height`: a ramp
 through the whole palette, top to bottom.
 
+## DynamicTexture
+
+| Offset | Field |
+|--------|-------|
+| 0x20 | format, `0xb` (P8) |
+| 0x24 | texture |
+| 0x28, 0x2c | image width, height |
+| 0x30..0x38 | children (count, capacity, array) |
+| 0x3c | size, default 256 |
+| 0x40 | erase, default 1 |
+| 0x44 | fps, default 15.0 |
+| 0x48 | palette node |
+| 0x4c | CSurfx |
+| 0x50 | last update (double) |
+
+**Create (`0x0005dc70`).** Always makes a 512x512, one-level texture in the node's format,
+locks it, zeroes `w * h` bytes and reads the real size back. The requested size is ignored.
+
+**Advance (`0x0005dd20`).** CNode advance, then the palette node, then each child.
+
+**GetTextureSurface (`0x0005dd70`).** When `1 / fps + lastUpdate < now` (compared as floats) it
+stores `now` and runs the update. Then, if the palette node's class chain reaches Palette, it
+binds that node's D3D palette to stage 0.
+
+**Update (`0x0005dde0`).**
+
+1. If there's no texture and `size > 0`, Create; give up if that fails.
+2. Allocate the `size x size` CSurfx on first use.
+3. Only with both in place and `lastUpdate <= now`: zero the pixels when erase is set, call
+   every child's RenderDynamicTexture with the surface.
+4. If there's no palette node, or its GetPalette returns NULL, build the default palette into a
+   stack buffer. The result is never read on this path.
+5. Lock the texture and copy the surface in with an inlined Swizzler: per row, `IncU` per
+   pixel, then `IncV` and `AddU(SwizzleU(imageWidth - size))` to skip the unused columns.
+
 ## Notes
 
 - CSurfx operates on a raw BYTE array with manual pitch calculation.
