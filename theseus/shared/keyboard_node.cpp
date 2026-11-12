@@ -153,27 +153,70 @@ static inline const WORD* GridFor(int mode, int jmode)
 	return JapaneseGrid() ? s_layouts[1][jmode] : s_layouts[0][mode];
 }
 
-// 5960 runs shifted keys through CharUpperW. The only lowercase the grids
-// hold is a to z and the Latin-1 accents, so this covers every key it can
-// see: those move up 0x20 (except the division sign) and y diaeresis becomes
-// U+0178. Kana, symbols and sharp s stay put. Desktop keys are single bytes,
-// so there y diaeresis stays lowercase.
+static WORD UpperKey(WORD c);
+
+// Which of the current language's three pages holds ch, as is or as the
+// capital of a cell; -1 if none.
+static int GridPageOf(WORD ch)
+{
+	bool japanese = JapaneseGrid();
+	int cells = japanese ? JAPANESE_KEYS : WESTERN_KEYS;
+	for (int page = 0; page < 3; page++)
+	{
+		const WORD* grid = s_layouts[japanese ? 1 : 0][page];
+		for (int i = 0; i < cells; i++)
+		{
+			if (grid[i] == ch || UpperKey(grid[i]) == ch)
+				return page;
+		}
+	}
+	return -1;
+}
+
+// 5960 runs keys through CharUpperW. The only lowercase the grids hold is
+// a to z and the Latin-1 accents, so this covers every key it can see: those
+// move up 0x20 (except the division sign) and y diaeresis becomes U+0178.
+// Kana, symbols and sharp s stay put.
+static WORD UpperKey(WORD c)
+{
+	if ((c >= 'a' && c <= 'z') || (c >= 0xe0 && c <= 0xfe && c != 0xf7))
+		return (WORD)(c - 0x20);
+	if (c == 0xff)
+		return 0x178;
+	return c;
+}
+
+// Desktop keys are single bytes, so there y diaeresis stays lowercase.
 static TCHAR KeyUpper(TCHAR ch)
 {
-	unsigned c = (sizeof(TCHAR) == 1) ? (unsigned)(unsigned char)ch : (unsigned)ch;
-	if ((c >= 'a' && c <= 'z') || (c >= 0xe0 && c <= 0xfe && c != 0xf7))
-		return (TCHAR)(c - 0x20);
-	if (c == 0xff && sizeof(TCHAR) > 1)
-		return (TCHAR)0x178;
-	return ch;
+	if (sizeof(TCHAR) > 1)
+		return (TCHAR)UpperKey((WORD)ch);
+	WORD up = UpperKey((unsigned char)ch);
+	return (up > 0xff) ? ch : (TCHAR)up;
+}
+
+// The last USB keyboard keystroke: a HID key code and the character it typed
+// (0x0017f460 / 0x0017f462 in 5960, filled by the input poll). Theseus's input
+// code doesn't fill them, so TIDactivate sees no key unless something does.
+WORD g_wTIDKeyCode = 0;
+WORD g_wTIDKeyChar = 0;
+
+// FUN_0005b890: true when ch, or its capital, sits on any page of the current
+// language's grid. Function key codes never count.
+static bool IsGridChar(WORD ch)
+{
+	if (ch >= kcShift && ch <= kcBlank)
+		return false;
+	return GridPageOf(ch) >= 0;
 }
 
 
 // ===== CKeyboard ===========================================================
 // 0x9c bytes in 5960: the nodearray at +0x1c, frame/text/control +0x28..+0x30,
-// string +0x34, shift +0x38, caps +0x39, mode +0x40, jmode +0x44, the edit
-// buffer +0x48 (32 WCHARs), its length +0x88, cursor +0x8c, row +0x90 and
-// column +0x94.
+// string +0x34, shift +0x38, caps +0x39, TIDKeyUsed +0x3a, PlaySound +0x3b,
+// CloseKeyboard +0x3c, mode +0x40, jmode +0x44, the edit buffer +0x48
+// (32 WCHARs), its length +0x88, cursor +0x8c, row +0x90, column +0x94 and
+// the TIDactivate key +0x98.
 
 class CKeyboard : public CNode
 {
@@ -189,6 +232,9 @@ public:
 	TCHAR* m_string;
 	bool m_shift;
 	bool m_caps;
+	bool m_TIDKeyUsed;
+	bool m_PlaySound;
+	bool m_CloseKeyboard;
 	int m_mode;
 	int m_jmode;
 
@@ -198,6 +244,7 @@ public:
 	void selectLeft();
 	void selectRight();
 	void activate();
+	void TIDactivate();
 	void Backspace();
 	void Delete();
 	void CursorLeft();
@@ -218,6 +265,7 @@ protected:
 	int m_cursor;       // -1 means the whole string is selected
 	int m_row;
 	int m_col;
+	WORD m_typedKey;    // stands in for the highlighted key during TIDactivate
 
 	const WORD* Grid() const { return GridFor(m_mode, m_jmode); }
 	WORD KeyAt(int row, int col) const { return Grid()[row * GRID_COLUMNS + col]; }
@@ -240,6 +288,9 @@ START_NODE_PROPS(CKeyboard, CNode)
 	NODE_PROP(pt_integer, CKeyboard, jmode)
 	NODE_PROP(pt_boolean, CKeyboard, shift)
 	NODE_PROP(pt_boolean, CKeyboard, caps)
+	NODE_PROP(pt_boolean, CKeyboard, TIDKeyUsed)
+	NODE_PROP(pt_boolean, CKeyboard, PlaySound)
+	NODE_PROP(pt_boolean, CKeyboard, CloseKeyboard)
 	NODE_PROP(pt_string, CKeyboard, string)
 END_NODE_PROPS()
 
@@ -252,6 +303,7 @@ START_NODE_FUN(CKeyboard, CNode)
 	NODE_FUN_VV(selectLeft)
 	NODE_FUN_VV(selectRight)
 	NODE_FUN_VV(activate)
+	NODE_FUN_VV(TIDactivate)
 	NODE_FUN_VV(Backspace)
 	NODE_FUN_VV(Delete)
 	NODE_FUN_VV(CursorLeft)
@@ -275,12 +327,16 @@ CKeyboard::CKeyboard()
 	m_string = NULL;
 	m_shift = false;
 	m_caps = false;
+	m_TIDKeyUsed = false;
+	m_PlaySound = false;
+	m_CloseKeyboard = false;
 	m_mode = 0;
 	m_jmode = 0;
 	m_editLen = 0;
 	m_cursor = -1;
 	m_row = 0;
 	m_col = 0;
+	m_typedKey = 0;
 }
 
 // CKeyboard::~CKeyboard()
@@ -439,8 +495,8 @@ void CKeyboard::selectRight()
 // ===== Pressing a key ======================================================
 
 // CKeyboard::activate()   [script fn 'activate', FND 0x001882c8, sig 1]
-// Reconstructed from 5960 retail XBE @ 0x0005b340. Looks up the highlighted
-// key and acts on it: function keys switch case or page, move the cursor or
+// Reconstructed from 5960 retail XBE @ 0x0005b340. Takes the key TIDactivate
+// typed, or else the highlighted one, and acts on it: function keys switch case or page, move the cursor or
 // erase; DONE trims the string, copies it to `string` and calls OnDone (an
 // empty or all blank string calls OnError instead); SPACE inserts quietly
 // unless full; anything else inserts the character (uppercased when shift
@@ -448,7 +504,7 @@ void CKeyboard::selectRight()
 // See docs/decomp/Keyboard.md.
 void CKeyboard::activate()
 {
-	WORD key = KeyAt(m_row, m_col);
+	WORD key = m_typedKey != 0 ? m_typedKey : KeyAt(m_row, m_col);
 
 	switch (key)
 	{
@@ -517,6 +573,74 @@ void CKeyboard::activate()
 	}
 
 	CallFunction(this, _T("OnError"));
+}
+
+// CKeyboard::TIDactivate()   [script fn 'TIDactivate', FND 0x001882e0, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0005b040. Presses the key matching
+// the last USB keystroke: the arrows move the cursor, backspace, enter (DONE)
+// and space press their keys, escape sets CloseKeyboard, and a character on
+// the grid is typed and flips jmode to its page (on western grids too). The
+// Japanese input mode keys only clear PlaySound. TIDKeyUsed says whether a
+// key was pressed. See docs/decomp/Keyboard.md.
+void CKeyboard::TIDactivate()
+{
+	m_CloseKeyboard = false;
+	m_PlaySound = true;
+	m_TIDKeyUsed = true;
+	m_typedKey = 0;
+
+	switch (g_wTIDKeyCode)
+	{
+	case 0x35:      // grave / hankaku-zenkaku
+	case 0x88:      // katakana-hiragana
+	case 0x90:      // LANG1
+		m_PlaySound = false;
+		break;
+	case 0x4f:      // right arrow
+		m_typedKey = kcRight;
+		break;
+	case 0x50:      // left arrow
+		m_typedKey = kcLeft;
+		break;
+	}
+
+	if (m_typedKey == 0)
+	{
+		WORD ch = g_wTIDKeyChar;
+		switch (ch)
+		{
+		case 0:
+			break;
+		case 8:
+			m_typedKey = kcBackspace;
+			break;
+		case '\n':
+			m_typedKey = kcDone;
+			break;
+		case 0x1b:
+			m_CloseKeyboard = true;
+			break;
+		case ' ':
+			m_typedKey = kcSpace;
+			break;
+		default:
+			if (IsGridChar(ch))
+			{
+				m_typedKey = ch;
+				int page = GridPageOf(ch);
+				if (page >= 0)
+					m_jmode = page;
+			}
+			break;
+		}
+	}
+
+	m_TIDKeyUsed = (m_typedKey != 0);
+	if (m_typedKey != 0)
+	{
+		activate();
+		m_typedKey = 0;
+	}
 }
 
 
