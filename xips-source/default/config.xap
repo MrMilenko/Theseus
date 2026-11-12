@@ -927,10 +927,14 @@ DEF theConfigPanel Level
 	function OnActivate()
 	{
 		CurrentViewpoint = theConfigMenuViewpoint;
-		buildconfigList();
 		LV1Item = 0;
 		LV1Hold = 0;
-		tabSlot(LV1Hold);
+		// The first time in, the panel is still loading and its onLoad builds the list.
+		if (theConfigPanel.children[0].children.length() > 0)
+		{
+			buildconfigList();
+			tabSlot(LV1Hold);
+		}
 	}
 }
 
