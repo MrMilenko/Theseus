@@ -1753,6 +1753,13 @@ int main(int argc, char* argv[]) {
                         Keyboard_InsertText(g_pActiveKeyboard, event.text.text);
                     break;
                 case SDL_KEYDOWN:
+                    // Ctrl+Q quits from anywhere, same as File > Quit.
+                    if (event.key.keysym.sym == SDLK_q && (event.key.keysym.mod & (KMOD_CTRL | KMOD_GUI))) {
+                        SDL_Event quit;
+                        quit.type = SDL_QUIT;
+                        SDL_PushEvent(&quit);
+                        break;
+                    }
                     // Esc / Q / Backspace quits the xCloud stream and drops
                     // back to the dashboard.
                     if (g_xcloudFullscreen) {
