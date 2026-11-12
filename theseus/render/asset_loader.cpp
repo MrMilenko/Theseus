@@ -264,7 +264,7 @@ bool CBackgroundLoader::Fetch(const TCHAR* szURL)
 }
 
 // BackgroundLoader_Frame()
-// Inlined in the 5960 frame loop (XApp main loop @ 0x0002da00, after the
+// Inlined in the 5960 frame loop (main frame loop @ 0x0002da00, after the
 // lerpers advance and before Draw):
 //     for (p = first; p; p = next) { next = p->next;
 //         if (p->overlapped.Internal != STATUS_PENDING) { p->OnComplete(); delete p; } }
