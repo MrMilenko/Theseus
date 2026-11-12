@@ -391,11 +391,44 @@ static void VerticalFade(TEXTVERTEX* verts, int nVerts, float nTop, float nBotto
 
 // ===== Text meshes =========================================================
 
-// Characters come in as UTF-16 units.
+// Characters come in as UTF-16 units on the Xbox and UTF-8 on desktop.
+#ifndef _UNICODE
+// Decode one UTF-8 codepoint from s starting at i (n is the byte count).
+// Returns the codepoint and sets outLen to the bytes consumed. A stray or
+// truncated byte decodes as itself (outLen 1) so ASCII and Latin-1 fallbacks
+// still render something. BMP only; astral planes truncate, which the vector
+// fonts don't cover anyway.
+static WCHAR DecodeUTF8(const char* s, int i, int n, int& outLen)
+{
+	unsigned char c = (unsigned char)s[i];
+	if (c < 0x80) { outLen = 1; return c; }
+	unsigned int cp; int len;
+	if      ((c & 0xE0) == 0xC0) { cp = c & 0x1F; len = 2; }
+	else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 3; }
+	else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 4; }
+	else { outLen = 1; return c; }
+	if (i + len > n) { outLen = 1; return c; }
+	for (int k = 1; k < len; k++) {
+		unsigned char cc = (unsigned char)s[i + k];
+		if ((cc & 0xC0) != 0x80) { outLen = 1; return c; }
+		cp = (cp << 6) | (cc & 0x3F);
+	}
+	outLen = len;
+	return (WCHAR)cp;
+}
+#endif
+
 static inline WCHAR NextChar(const TCHAR* s, int& i, int n)
 {
+#ifdef _UNICODE
 	(void)n;
 	return s[i++];
+#else
+	int len;
+	WCHAR ch = DecodeUTF8(s, i, n, len);
+	i += len;
+	return ch;
+#endif
 }
 
 static inline bool IsLineEnd(TCHAR ch)
@@ -785,9 +818,15 @@ struct CFontTableEntry
 
 #define MAX_FONT_COUNT 10
 
+// 5960 seeds slot 0 with HGGothicM, which Theseus doesn't ship; desktop falls
+// back to the Xbox face instead.
 static CFontTableEntry g_fonts[MAX_FONT_COUNT] =
 {
+#ifdef _XBOX
 	{ _T("HGGothicM"), _T("HGGothicM.xtf") },
+#else
+	{ _T("Xbox"), _T("xbox.xtf") },
+#endif
 };
 
 static int g_nFontCount = 1;
@@ -932,6 +971,7 @@ void Text_Exit()
 }
 
 
+#ifdef _XBOX
 // ===== Overlay text (Theseus) ==============================================
 // Draws "Xbox" face glyphs as screen space triangles for the panic screen,
 // the widgets and the overlay menus. No 5960 counterpart.
@@ -1042,6 +1082,7 @@ float OverlayFontDraw(const TCHAR* text, float screenX, float screenY, float pix
 
 	return curX * scale;
 }
+#endif // _XBOX
 
 
 // ===== CTextNode ===========================================================
@@ -1219,7 +1260,8 @@ const TCHAR* FaceFromFont(const TCHAR* szFont)
 // culling off for the flat glyphs and back to CCW. See docs/decomp/Text.md.
 // 5960 also expands <date>, passes the indent props and rebuilds every frame
 // a cursorless keyboard string arrives; Theseus does none of those. The
-// horizontal marquee and the draw counter are Theseus's.
+// horizontal marquee, the draw counter and the desktop vertex alpha toggle
+// are Theseus's.
 void CTextNode::Render()
 {
 	bool bRebuild = false;
@@ -1344,10 +1386,18 @@ void CTextNode::Render()
 			TheseusTranslateWorld(xOffset, (copy == 0 ? 0.0f : -(contentH + SCROLL_GAP)) + m_scroll, 0.0f);
 		TheseusUpdateWorld();
 
+#ifndef _XBOX
+		// Desktop falloff lighting writes color.a, so the fade's vertex alpha
+		// only clips if the shader multiplies it back in for this draw.
+		TheseusSetVertexAlphaMul(TRUE);
+#endif
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 		Frame_Count(FC_DRAW_SUBSET);
 		m_pMesh->DrawSubset(0);
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
+#ifndef _XBOX
+		TheseusSetVertexAlphaMul(FALSE);
+#endif
 
 		TheseusPopWorld();
 	}

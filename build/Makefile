@@ -844,7 +844,7 @@ DESKTOP_SRCS_RENDER = \
 	$(THESEUS_SRC)/desktop/materials_desktop.cpp \
 	$(THESEUS_SRC)/desktop/mesh.cpp \
 	$(THESEUS_SRC)/render/shape_render.cpp \
-	$(THESEUS_SRC)/desktop/text.cpp \
+	$(THESEUS_SRC)/render/text.cpp \
 	$(THESEUS_SRC)/render/starfield.cpp \
 	$(THESEUS_SRC)/engine/dotfield_node.cpp
 
