@@ -320,7 +320,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Disc | (no doc yet, narrative TODO) | 1 function |
 | HUD & Picture | [HudNode.md](HudNode.md) | 9 functions |
 | Keyboard | [Keyboard.md](Keyboard.md) | 22 functions |
-| Locale | (no doc yet, narrative TODO) | 1 function |
+| Locale | [Locale.md](Locale.md) | 20 functions: translation table, Translator node, date/time/number formats, time zones |
 | NtIoSvc | [NtIoSvc.md](NtIoSvc.md) | 1 function |
 | Scene Groups | [SceneGroups.md](SceneGroups.md) | 6 functions |
 | Settings | [Settings.md](Settings.md) | 14 functions |
