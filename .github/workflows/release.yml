@@ -244,6 +244,22 @@ jobs:
           tar czf "${DROP}.tar.gz" "${DROP}"
           echo "ARCHIVE=${DROP}.tar.gz" >> "$GITHUB_ENV"
 
+      - name: Package AppImage
+        # The bare binary needs the runner's exact FFmpeg sonames, which
+        # newer distros like Debian trixie don't have. The AppImage carries them.
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          sudo apt-get install -y -qq patchelf wget file
+          chmod +x build/mk-appimage.sh
+          ./build/mk-appimage.sh ~/builds/theseus/desktop "UIX-Desktop-${TAG}-aarch64.AppImage"
+          echo "APPIMAGE=UIX-Desktop-${TAG}-aarch64.AppImage" >> "$GITHUB_ENV"
+
+      - name: Upload AppImage to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: ${{ env.APPIMAGE }}
+
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
