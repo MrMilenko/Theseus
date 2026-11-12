@@ -3372,7 +3372,7 @@ function ScanPartitions()
 		var sDrive = Drives[i];
 		var Flag = 1 << i;
 		
-		Test.path = sDrive.indexOf("\\");
+		Test.path = sDrive.substring(0, sDrive.indexOf("\\"));
 		nFolders = Test.subFolders.length();
 		nFiles = Test.files.length();
 		nTotal = nFolders + nFiles;
