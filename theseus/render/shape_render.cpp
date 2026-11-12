@@ -1,7 +1,9 @@
-// shape_render.cpp: shape nodes, appearance / material rendering, vertex
-// shader setup. CShape, CAppearance, CMaterial, CBox, CSphere geometry
-// primitives plus falloff / reflection shader configuration and effect
-// shader lookup. Decompiled from the 5960 retail XBE; see
+// shape_render.cpp: the nodes that put geometry on screen.
+//
+// Shape pairs a geometry node with an Appearance (a Material plus a texture),
+// Box and Sphere are the two built in geometries, and the rest sets up the
+// effect vertex shaders the falloff and reflection materials draw with.
+// Rebuilt function by function from the 5960 retail XBE; the findings are in
 // docs/decomp/ShapeRender.md.
 
 #include "std.h"
@@ -18,7 +20,9 @@ extern D3DXMATRIX g_matPosition;
 extern D3DXMATRIX g_matView;
 extern D3DXMATRIX g_matProjection;
 
-// ===== CShape =====
+
+// ===== CShape ===============================================================
+// 0x30 bytes: appearance at 0x1c, geometry at 0x20, last world position at 0x24.
 
 IMPLEMENT_NODE("Shape", CShape, CNode)
 
@@ -27,44 +31,59 @@ START_NODE_PROPS(CShape, CNode)
 	NODE_PROP(pt_node, CShape, geometry)
 END_NODE_PROPS()
 
-CShape::CShape()
+// CShape::CShape() / ~CShape()
+// Reconstructed from 5960 retail XBE, CShape_CreateNode @ 0x00050cf0 and
+// CShape_dtor @ 0x00050d60:
+//     this[7] = 0; this[8] = 0;                       // appearance, geometry
+//     ~: if (this[7]) this[7]->Release(); if (this[8]) this[8]->Release();
+CShape::CShape() :
+	m_appearance(NULL),
+	m_geometry(NULL)
 {
-	m_appearance = NULL;
-	m_geometry = NULL;
 }
 
 CShape::~CShape()
 {
-	if (m_appearance != NULL)
+	if (m_appearance)
 		m_appearance->Release();
-
-	if (m_geometry != NULL)
+	if (m_geometry)
 		m_geometry->Release();
 }
 
+// CShape::Render()
+// Reconstructed from 5960 retail XBE @ 0x00050dd0. Ghidra decompile, trimmed:
+//     if (!geometry) return;
+//     if (class chain of geometry reaches MeshNode) {
+//         if (mesh->dirty) { if (url && *url) load(url); mesh->Init(); if (!mesh->core) return; }
+//         if (!mesh->core || !mesh->core->GetFVF()) return;
+//         g_pRenderMeshNode = mesh; SetVertexShader(GetFixedFunctionShader(fvf));
+//     }
+//     if (appearance) appearance->Render();
+//     geometry->Render();
+//     position = world matrix row 3 (copied from the device); g_pRenderMeshNode = NULL;
+// Initialize() is the binary's inlined load/Init/core test. The profiler
+// phases and the per mesh triangle tally are Theseus additions.
 void CShape::Render()
 {
 	if (m_geometry == NULL)
 		return;
 
-	CMeshNode* pMeshNode = NULL;
+	CMeshNode* pMesh = NULL;
 	if (m_geometry->IsKindOf(NODE_CLASS(CMeshNode)))
 	{
-		pMeshNode = (CMeshNode*)m_geometry;
-
-		if (pMeshNode->m_dirty && !pMeshNode->Initialize())
+		pMesh = (CMeshNode*)m_geometry;
+		if (pMesh->m_dirty && !pMesh->Initialize())
 			return;
 
-		DWORD fvf = pMeshNode->GetFVF();
-		if (fvf == 0)
+		DWORD meshFVF = pMesh->GetFVF();
+		if (meshFVF == 0)
 			return;
 
-		g_pRenderMeshNode = pMeshNode;
-
-		TheseusSetVertexShader(GetFixedFunctionShader(fvf));
+		g_pRenderMeshNode = pMesh;
+		TheseusSetVertexShader(GetFixedFunctionShader(meshFVF));
 	}
 
-	if (m_appearance != NULL)
+	if (m_appearance)
 	{
 		FramePhaseScope material(FP_TREE_MATERIAL);
 		m_appearance->Render();
@@ -74,25 +93,25 @@ void CShape::Render()
 		FramePhaseScope draw(FP_TREE_DRAW);
 		int trisBefore = g_frameCount[FC_TRIANGLES];
 		m_geometry->Render();
-		if (pMeshNode)
-			Frame_TallyMesh(this, pMeshNode->m_url, g_frameCount[FC_TRIANGLES] - trisBefore);
+		if (pMesh)
+			Frame_TallyMesh(this, pMesh->m_url, g_frameCount[FC_TRIANGLES] - trisBefore);
 	}
 
+	D3DXMATRIX world;
+	TheseusGetTransform(D3DTS_WORLD, &world);
+	m_position = D3DXVECTOR3(world._41, world._42, world._43);
 	g_pRenderMeshNode = NULL;
-
-	{
-		D3DXMATRIX mat;
-		TheseusGetTransform(D3DTS_WORLD, &mat);
-
-		m_position.x = mat.m[3][0];
-		m_position.y = mat.m[3][1];
-		m_position.z = mat.m[3][2];
-	}
 }
 
+// CShape::GetBBox(pBBox) / GetRadius() / Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x00050eb0, 0x00050ef0, 0x00050f10:
+//     GetBBox:   if (geometry) tail call geometry->GetBBox(p); else zero all six floats;
+//     GetRadius: return geometry ? geometry->GetRadius() : 0.0f;
+//     Advance:   CNode::Advance(t); geometry->Advance(t); appearance->Advance(t);  (each if set)
+// The zero fill is the CNode default, so it goes through CNode::GetBBox.
 void CShape::GetBBox(BBox* pBBox)
 {
-	if (m_geometry != NULL)
+	if (m_geometry)
 		m_geometry->GetBBox(pBBox);
 	else
 		CNode::GetBBox(pBBox);
@@ -100,24 +119,21 @@ void CShape::GetBBox(BBox* pBBox)
 
 float CShape::GetRadius()
 {
-	if (m_geometry == NULL)
-		return 0.0f;
-
-	return m_geometry->GetRadius();
+	return m_geometry ? m_geometry->GetRadius() : 0.0f;
 }
 
 void CShape::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
-
-	if (m_geometry != NULL)
+	if (m_geometry)
 		m_geometry->Advance(nSeconds);
-
-	if (m_appearance != NULL)
+	if (m_appearance)
 		m_appearance->Advance(nSeconds);
 }
 
-// ===== CAppearance =====
+
+// ===== CAppearance ==========================================================
+// 0x24 bytes: material at 0x1c, texture at 0x20.
 
 IMPLEMENT_NODE("Appearance", CAppearance, CNode)
 
@@ -126,25 +142,42 @@ START_NODE_PROPS(CAppearance, CNode)
 	NODE_PROP(pt_node, CAppearance, texture)
 END_NODE_PROPS()
 
-CAppearance::CAppearance()
+// CAppearance::CAppearance() / ~CAppearance()
+// Reconstructed from 5960 retail XBE, CAppearance_CreateNode @ 0x00050f50 and
+// CAppearance_dtor @ 0x00050fc0: both pointers start NULL and are released
+// material first, then texture.
+CAppearance::CAppearance() :
+	m_material(NULL),
+	m_texture(NULL)
 {
-	m_material = NULL;
-	m_texture = NULL;
 }
 
 CAppearance::~CAppearance()
 {
-	if (m_material != NULL)
+	if (m_material)
 		m_material->Release();
-
-	if (m_texture != NULL)
+	if (m_texture)
 		m_texture->Release();
 }
 
+// CAppearance::Render()
+// Reconstructed from 5960 retail XBE @ 0x00051030. The device calls are
+// inlined into push buffer writes; decoded they are:
+//     CULLMODE = CCW; ZWRITEENABLE = 0; ALPHABLENDENABLE = 1;
+//     SRCBLEND = SRCALPHA (0x302); DESTBLEND = INVSRCALPHA (0x303);
+//     stage 0: COLOROP = ALPHAOP = DISABLE, TEXCOORDINDEX = 0, TEXTURETRANSFORMFLAGS = 0;
+//     stage 1: COLOROP = ALPHAOP = DISABLE; SetTexture(0, NULL); SetTexture(1, NULL);
+//     if (texture) {
+//         texture->Render(); surf = texture->GetTextureSurface();
+//         if (surf) { SetTexture(0, surf); COLOROP/ALPHAOP = SELECTARG1 of TEXTURE; }
+//         else { ALPHAOP/COLOROP = SELECTARG1 of TFACTOR; TEXTUREFACTOR = 0; }
+//     }
+//     if (material) material->Render();
+// Every shape starts from this blend and stage state, so the order here is the
+// order the binary writes it.
 void CAppearance::Render()
 {
 	TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
-
 	TheseusSetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 	TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
 	TheseusSetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
@@ -157,49 +190,53 @@ void CAppearance::Render()
 	TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
 	TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 
-	TheseusSetTexture(0, NULL);
-	TheseusSetTexture(1, NULL);
+	for (DWORD stage = 0; stage < 2; stage++)
+		TheseusSetTexture(stage, NULL);
 
-	if (m_texture != NULL)
+	if (m_texture)
 	{
 		m_texture->Render();
 
-		LPDIRECT3DTEXTURE8 pSurface = m_texture->GetTextureSurface();
-		if (pSurface != NULL)
+		LPDIRECT3DTEXTURE8 pTex = m_texture->GetTextureSurface();
+		if (pTex == NULL)
 		{
-			TheseusSetTexture(0, pSurface);
-
+			// No image yet: draw with a clear texture factor instead.
+			TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+			TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
+			TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+			TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
+			TheseusSetRenderState(D3DRS_TEXTUREFACTOR, 0);
+		}
+		else
+		{
+			TheseusSetTexture(0, pTex);
 			TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
 			TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
 			TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
 			TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
 		}
-		else
-		{
-			TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-			TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
-			TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-			TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
-			TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, 0.0f));
-		}
 	}
 
-	if (m_material != NULL)
+	if (m_material)
 		m_material->Render();
 }
 
+// CAppearance::Advance(nSeconds)
+// Reconstructed from 5960 retail XBE @ 0x000512c0:
+//     CNode::Advance(t); if (material) material->Advance(t); if (texture) texture->Advance(t);
 void CAppearance::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
-
-	if (m_material != NULL)
+	if (m_material)
 		m_material->Advance(nSeconds);
-
-	if (m_texture != NULL)
+	if (m_texture)
 		m_texture->Advance(nSeconds);
 }
 
-// ===== CMaterial =====
+
+// ===== CMaterial ============================================================
+// 0x90 bytes: ambientIntensity 0x1c, diffuseColor 0x20, emissiveColor 0x2c,
+// shininess 0x38, specularColor 0x3c, transparency 0x48, D3DMATERIAL8 at 0x4c.
 
 IMPLEMENT_NODE("Material", CMaterial, CNode)
 
@@ -212,6 +249,11 @@ START_NODE_PROPS(CMaterial, CNode)
 	NODE_PROP(pt_number, CMaterial, transparency)
 END_NODE_PROPS()
 
+// CMaterial::CMaterial()
+// Reconstructed from 5960 retail XBE, CMaterial_CreateNode @ 0x00051300:
+//     this[7] = 0.2 (0x0002c01c); this[8..10] = 0.8 (0x0002bfd8); this[11..13] = 0;
+//     this[14] = 0.2; this[15..17] = 0; this[18] = 0;
+// The VRML material defaults, which is all these numbers could ever be.
 CMaterial::CMaterial() :
 	m_ambientIntensity(0.2f),
 	m_diffuseColor(0.8f, 0.8f, 0.8f),
@@ -222,124 +264,94 @@ CMaterial::CMaterial() :
 {
 }
 
+static D3DCOLORVALUE MaterialColor(float r, float g, float b, float a)
+{
+	D3DCOLORVALUE c;
+	c.r = r;
+	c.g = g;
+	c.b = b;
+	c.a = a;
+	return c;
+}
+
+// CMaterial::Render()
+// Reconstructed from 5960 retail XBE @ 0x000513a0. Ghidra decompile, trimmed:
+//     a = 1.0 - transparency;
+//     mat.Diffuse = (diffuse, a); mat.Ambient = (ambientIntensity x3, a);
+//     mat.Specular = (specular, a); mat.Emissive = (emissive, a); mat.Power = shininess;
+//     copy 0x11 dwords into the device material, mark it dirty   // SetMaterial, inlined
 void CMaterial::Render()
 {
-	m_material.Diffuse.r = m_diffuseColor.x;
-	m_material.Diffuse.g = m_diffuseColor.y;
-	m_material.Diffuse.b = m_diffuseColor.z;
-	m_material.Diffuse.a = 1.0f - m_transparency;
+	float alpha = 1.0f - m_transparency;
 
-	m_material.Ambient.r = m_ambientIntensity;
-	m_material.Ambient.g = m_ambientIntensity;
-	m_material.Ambient.b = m_ambientIntensity;
-	m_material.Ambient.a = 1.0f - m_transparency;
-
-	m_material.Specular.r = m_specularColor.x;
-	m_material.Specular.g = m_specularColor.y;
-	m_material.Specular.b = m_specularColor.z;
-	m_material.Specular.a = 1.0f - m_transparency;
-
-	m_material.Emissive.r = m_emissiveColor.x;
-	m_material.Emissive.g = m_emissiveColor.y;
-	m_material.Emissive.b = m_emissiveColor.z;
-	m_material.Emissive.a = 1.0f - m_transparency;
-
+	m_material.Diffuse = MaterialColor(m_diffuseColor.x, m_diffuseColor.y, m_diffuseColor.z, alpha);
+	m_material.Ambient = MaterialColor(m_ambientIntensity, m_ambientIntensity, m_ambientIntensity, alpha);
+	m_material.Specular = MaterialColor(m_specularColor.x, m_specularColor.y, m_specularColor.z, alpha);
+	m_material.Emissive = MaterialColor(m_emissiveColor.x, m_emissiveColor.y, m_emissiveColor.z, alpha);
 	m_material.Power = m_shininess;
 
 	TheseusSetMaterial(&m_material);
 }
 
-// ===== CreateCube =====
 
+// ===== CreateCube ===========================================================
+
+// Corner of a unit cube: which way each axis goes, and which end of the
+// texture it gets (0 maps to 0.01, 1 to 0.99).
+struct CubeCorner
+{
+	signed char x, y, z;
+	BYTE u, v;
+};
+
+// The binary's six faces in order -z, +z, +y, -y, +x, -x, four corners each.
+static const CubeCorner c_cubeCorners[24] =
+{
+	{ -1, -1, -1, 0, 0 }, {  1, -1, -1, 1, 0 }, {  1,  1, -1, 1, 1 }, { -1,  1, -1, 0, 1 },
+	{  1,  1,  1, 0, 1 }, {  1, -1,  1, 0, 0 }, { -1, -1,  1, 1, 0 }, { -1,  1,  1, 1, 1 },
+	{ -1,  1, -1, 0, 0 }, {  1,  1, -1, 1, 0 }, {  1,  1,  1, 1, 1 }, { -1,  1,  1, 0, 1 },
+	{  1, -1,  1, 1, 1 }, {  1, -1, -1, 1, 0 }, { -1, -1, -1, 0, 0 }, { -1, -1,  1, 0, 1 },
+	{  1, -1, -1, 0, 0 }, {  1, -1,  1, 1, 0 }, {  1,  1,  1, 1, 1 }, {  1,  1, -1, 0, 1 },
+	{ -1,  1,  1, 0, 1 }, { -1, -1,  1, 0, 0 }, { -1, -1, -1, 1, 0 }, { -1,  1, -1, 1, 1 },
+};
+
+static const float c_cubeNormals[6][3] =
+{
+	{ 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f, 1.0f },
+	{ 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f },
+	{ 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f },
+};
+
+// CreateCube(pVertices, pIndices, size, bInside)
+// Reconstructed from 5960 retail XBE @ 0x00051450 (bInside in CL, indices in
+// EAX). Unrolled in the binary: 24 vertex stores of +-0.5 * size, a face normal
+// and texture coordinates inset to 0.01..0.99, then the indices 0,1,2, 2,3,0
+// for each face. The inside variant writes each face's four corners in reverse
+// order with the same normals. Written here as a corner table walked in a loop.
 void CreateCube(D3DVERTEX* pVertices, WORD* pIndices, D3DXVECTOR3 size, bool bInside = false)
 {
-    D3DXVECTOR3 n0( 0.0f, 0.0f,-1.0f );
-    D3DXVECTOR3 n1( 0.0f, 0.0f, 1.0f );
-    D3DXVECTOR3 n2( 0.0f, 1.0f, 0.0f );
-    D3DXVECTOR3 n3( 0.0f,-1.0f, 0.0f );
-    D3DXVECTOR3 n4( 1.0f, 0.0f, 0.0f );
-    D3DXVECTOR3 n5(-1.0f, 0.0f, 0.0f );
-
-	if (bInside)
+	for (int face = 0; face < 6; face++)
 	{
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n0, 0.01f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n0, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n0, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n0, 0.01f, 0.01f);
+		D3DXVECTOR3 normal(c_cubeNormals[face][0], c_cubeNormals[face][1], c_cubeNormals[face][2]);
 
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n1, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n1, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n1, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n1, 0.01f, 0.99f);
+		for (int n = 0; n < 4; n++)
+		{
+			const CubeCorner& c = c_cubeCorners[face * 4 + (bInside ? 3 - n : n)];
+			D3DXVECTOR3 pos(c.x * 0.5f * size.x, c.y * 0.5f * size.y, c.z * 0.5f * size.z);
+			*pVertices++ = D3DVERTEX(pos, normal, c.u ? 0.99f : 0.01f, c.v ? 0.99f : 0.01f);
+		}
 
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n2, 0.01f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n2, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n2, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n2, 0.01f, 0.01f);
-
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n3, 0.01f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n3, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n3, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n3, 0.99f, 0.99f);
-
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n4, 0.01f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n4, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n4, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n4, 0.01f, 0.01f);
-
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n5, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n5, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n5, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n5, 0.01f, 0.99f);
+		WORD first = (WORD)(face * 4);
+		static const WORD quad[6] = { 0, 1, 2, 2, 3, 0 };
+		for (int n = 0; n < 6; n++)
+			*pIndices++ = first + quad[n];
 	}
-	else
-	{
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n0, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n0, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n0, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n0, 0.01f, 0.99f);
-
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n1, 0.01f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n1, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n1, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n1, 0.99f, 0.99f);
-
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n2, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n2, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n2, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n2, 0.01f, 0.99f);
-
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n3, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n3, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n3, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n3, 0.01f, 0.99f);
-
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n4, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n4, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n4, 0.99f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3( 0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n4, 0.01f, 0.99f);
-
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y, 0.5f * size.z), n5, 0.01f, 0.99f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y, 0.5f * size.z), n5, 0.01f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x,-0.5f * size.y,-0.5f * size.z), n5, 0.99f, 0.01f);
-		*pVertices++ = D3DVERTEX(D3DXVECTOR3(-0.5f * size.x, 0.5f * size.y,-0.5f * size.z), n5, 0.99f, 0.99f);
-	}
-
-    *pIndices++ =  0+0;   *pIndices++ =  0+1;   *pIndices++ =  0+2;
-    *pIndices++ =  0+2;   *pIndices++ =  0+3;   *pIndices++ =  0+0;
-    *pIndices++ =  4+0;   *pIndices++ =  4+1;   *pIndices++ =  4+2;
-    *pIndices++ =  4+2;   *pIndices++ =  4+3;   *pIndices++ =  4+0;
-    *pIndices++ =  8+0;   *pIndices++ =  8+1;   *pIndices++ =  8+2;
-    *pIndices++ =  8+2;   *pIndices++ =  8+3;   *pIndices++ =  8+0;
-    *pIndices++ = 12+0;   *pIndices++ = 12+1;   *pIndices++ = 12+2;
-    *pIndices++ = 12+2;   *pIndices++ = 12+3;   *pIndices++ = 12+0;
-    *pIndices++ = 16+0;   *pIndices++ = 16+1;   *pIndices++ = 16+2;
-    *pIndices++ = 16+2;   *pIndices++ = 16+3;   *pIndices++ = 16+0;
-    *pIndices++ = 20+0;   *pIndices++ = 20+1;   *pIndices++ = 20+2;
-    *pIndices++ = 20+2;   *pIndices++ = 20+3;   *pIndices++ = 20+0;
 }
 
-// ===== CBox =====
+
+// ===== CBox =================================================================
+// 0x37c bytes: size 0x1c, vertex buffer 0x28, index buffer 0x2c, 24 vertices
+// at 0x30, 36 indices at 0x330, dirty flag 0x378.
 
 class CBox : public CNode
 {
@@ -357,11 +369,8 @@ public:
 	IDirect3DVertexBuffer8* m_pVB;
 	IDirect3DIndexBuffer8* m_pIB;
 
-#define NUM_CUBE_VERTICES (4*6)
-#define NUM_CUBE_INDICES  (6*6)
-
-	D3DVERTEX m_pCubeVertices [NUM_CUBE_VERTICES];
-	WORD m_pCubeIndices [NUM_CUBE_INDICES];
+	D3DVERTEX m_vertices [24];
+	WORD m_indices [36];
 
 	bool m_dirty;
 
@@ -374,75 +383,89 @@ START_NODE_PROPS(CBox, CNode)
 	NODE_PROP(pt_vec3, CBox, size)
 END_NODE_PROPS()
 
+// CBox::CBox() / ~CBox()
+// Reconstructed from 5960 retail XBE, factory @ 0x000526c0 and dtor @ 0x00052750:
+//     size = (1.0, 1.0, 1.0); dirty = 1; vb = ib = NULL;
+//     ~: release vb, then ib (D3D resource release inlined)
 CBox::CBox() :
-	m_size(1.0f, 1.0f, 1.0f)
+	m_size(1.0f, 1.0f, 1.0f),
+	m_pVB(NULL),
+	m_pIB(NULL),
+	m_dirty(true)
 {
-	m_dirty = true;
-
-	m_pVB = NULL;
-	m_pIB = NULL;
 }
 
 CBox::~CBox()
 {
-	if (m_pVB != NULL)
+	if (m_pVB)
 		m_pVB->Release();
-
-	if (m_pIB != NULL)
+	if (m_pIB)
 		m_pIB->Release();
 }
 
+// CBox::Render()
+// Reconstructed from 5960 retail XBE @ 0x00052820 (not a defined function in
+// the Ghidra project, read from the disassembly):
+//     if (dirty) { CreateCube(verts, indices, size, false); dirty = 0; }
+//     if (!vb) { create 0x300 byte vb; copy 0xc0 dwords of verts into it; }
+//     if (!ib) { create 0x48 byte ib; copy 0x12 dwords of indices into it; }
+//     if (vb && ib) { SetStreamSource(0, vb, 0x20); SetIndices(ib, 0);
+//                     SetVertexShader(0x112); draw 36 indices as a triangle list; }
+// The binary's create helper retries until it gets memory, so the copies
+// never check what they got.
 void CBox::Render()
 {
 	if (m_dirty)
 	{
-		TRACE(_T("Creating a cube...\n"));
-		CreateCube(m_pCubeVertices, m_pCubeIndices, m_size);
+		CreateCube(m_vertices, m_indices, m_size);
 		m_dirty = false;
 	}
 
+	BYTE* pDst;
+
 	if (m_pVB == NULL)
 	{
-		void* pVerts;
-		TheseusCreateVertexBuffer(NUM_CUBE_VERTICES * sizeof (D3DVERTEX), D3DUSAGE_DYNAMIC, D3DFVF_VERTEX, D3DPOOL_MANAGED, &m_pVB);
-
-		VERIFYHR(m_pVB->Lock(0, NUM_CUBE_VERTICES * sizeof (D3DVERTEX), (BYTE**)&pVerts, 0));
-		CopyMemory(pVerts, m_pCubeVertices, NUM_CUBE_VERTICES * sizeof (D3DVERTEX));
-		VERIFYHR(m_pVB->Unlock());
+		TheseusCreateVertexBuffer(sizeof (m_vertices), D3DUSAGE_DYNAMIC, D3DFVF_VERTEX, D3DPOOL_MANAGED, &m_pVB);
+		m_pVB->Lock(0, sizeof (m_vertices), &pDst, 0);
+		memcpy(pDst, m_vertices, sizeof (m_vertices));
+		m_pVB->Unlock();
 	}
 
 	if (m_pIB == NULL)
 	{
-		void* pIndices;
-		TheseusCreateIndexBuffer(NUM_CUBE_INDICES * sizeof (WORD), D3DUSAGE_DYNAMIC, D3DFMT_INDEX16, D3DPOOL_MANAGED, &m_pIB);
-		VERIFYHR(m_pIB->Lock(0, NUM_CUBE_INDICES * sizeof (WORD), (BYTE**)&pIndices, 0));
-		CopyMemory(pIndices, m_pCubeIndices, NUM_CUBE_INDICES * sizeof (WORD));
-		VERIFYHR(m_pIB->Unlock());
+		TheseusCreateIndexBuffer(sizeof (m_indices), D3DUSAGE_DYNAMIC, D3DFMT_INDEX16, D3DPOOL_MANAGED, &m_pIB);
+		m_pIB->Lock(0, sizeof (m_indices), &pDst, 0);
+		memcpy(pDst, m_indices, sizeof (m_indices));
+		m_pIB->Unlock();
 	}
 
-	if (m_pVB != NULL && m_pIB != NULL)
-	{
-		TheseusSetStreamSource(0, m_pVB, sizeof (D3DVERTEX));
-		TheseusSetIndices(m_pIB, 0);
-		TheseusSetVertexShader(D3DFVF_VERTEX);
-	    TheseusDrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, NUM_CUBE_VERTICES, 0, 12);
-	}
+	if (m_pVB == NULL || m_pIB == NULL)
+		return;
+
+	TheseusSetStreamSource(0, m_pVB, sizeof (D3DVERTEX));
+	TheseusSetIndices(m_pIB, 0);
+	TheseusSetVertexShader(D3DFVF_VERTEX);
+	TheseusDrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 24, 0, 12);
 }
 
+// CBox::GetBBox(pBBox) / GetRadius()
+// Reconstructed from 5960 retail XBE @ 0x00052960 and 0x00052990:
+//     GetBBox:   center = (0, 0, 0); size = this->size;
+//     GetRadius: return sqrt(x*x + y*y + z*z) * 0.5;   // x87, half the diagonal
 void CBox::GetBBox(BBox* pBBox)
 {
-	pBBox->center.x = 0.0f;
-	pBBox->center.y = 0.0f;
-	pBBox->center.z = 0.0f;
+	pBBox->center = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
 	pBBox->size = m_size;
 }
 
 float CBox::GetRadius()
 {
-	return D3DXVec3Length(&m_size) / 2.0f;
+	return D3DXVec3Length(&m_size) * 0.5f;
 }
 
-// ===== CSphere =====
+
+// ===== CSphere ==============================================================
+// A MeshNode whose mesh comes from MakeSphere: radius 0x40, slices 0x44, stacks 0x48.
 
 extern class CMesh* MakeSphere(float nRadius, int nSlices, int nStacks);
 
@@ -451,7 +474,6 @@ class CSphere : public CMeshNode
 	DECLARE_NODE(CSphere, CMeshNode)
 public:
 	CSphere();
-	~CSphere();
 
 	float m_radius;
 	int m_slices;
@@ -470,6 +492,10 @@ START_NODE_PROPS(CSphere, CMeshNode)
 	NODE_PROP(pt_integer, CSphere, stacks)
 END_NODE_PROPS()
 
+// CSphere::CSphere()
+// Reconstructed from 5960 retail XBE @ 0x00052a00:
+//     (MeshNode ctor inlined) radius = 1.0; slices = 0x20; stacks = 0x20; dirty = 1;
+// The destructor @ 0x00052a90 is only the MeshNode one.
 CSphere::CSphere() :
 	m_radius(1.0f),
 	m_slices(32),
@@ -478,28 +504,31 @@ CSphere::CSphere() :
 	m_dirty = true;
 }
 
-CSphere::~CSphere()
-{
-}
-
+// CSphere::Init()   [MeshNode vtable slot 23]
+// Reconstructed from 5960 retail XBE @ 0x00052aa0. Ghidra decompile:
+//     mesh = MakeSphere(radius, slices, stacks); this[0xc] = mesh;
+//     if (mesh != 0) dirty = 0;
 void CSphere::Init()
 {
 	m_mesh = MakeSphere(m_radius, m_slices, m_stacks);
-
-    if (m_mesh)
-    {
-        m_dirty = false;
-    }
+	if (m_mesh != NULL)
+		m_dirty = false;
 }
 
-// ===== Shader Descriptors =====
-// Xbox-only: real NV2A vertex shader bytecode + the GetEffectShader/
-// GetFixedFunctionShader/CompressNormal/SetFalloffShader/etc helpers
-// that drive it. Desktop has GLSL-sentinel equivalents in falloff.cpp
-// because the desktop GL emulator can't run NV2A microcode.
+
+// ===== Effect vertex shaders ================================================
+// Xbox only: the NV2A microcode and its lookup tables. Desktop can't run
+// NV2A microcode, so it has its own versions below.
+
 #ifdef _XBOX
 
-DWORD dwEffectVertexShader[] = {
+// The five NV2A programs, read word for word out of the XBE data: a header
+// word with the instruction count in the high half, then four words per
+// instruction. Binary data, so any faithful copy is identical.
+
+// @ 0x001754f0, 21 instructions
+static DWORD c_EffectMicrocode[] =
+{
 	0x00152078,
 	0x00000000, 0x00ec001b, 0x0836186c, 0x20708800,
 	0x00000000, 0x00ed401b, 0x0836186c, 0x28200ff8,
@@ -524,7 +553,9 @@ DWORD dwEffectVertexShader[] = {
 	0x00000000, 0x008de01b, 0xa5ff686c, 0x3070f819
 };
 
-DWORD dwEffect2VertexShader[] = {
+// @ 0x00175648, 21 instructions
+static DWORD c_Effect2Microcode[] =
+{
 	0x00152078,
 	0x00000000, 0x00ec001b, 0x0836186c, 0x20708800,
 	0x00000000, 0x00ed401b, 0x0836186c, 0x28200ff8,
@@ -549,7 +580,9 @@ DWORD dwEffect2VertexShader[] = {
 	0x00000000, 0x008de01b, 0xa5ff686c, 0x3070f819
 };
 
-DWORD dwEffect3VertexShader[] = {
+// @ 0x001757a0, 21 instructions
+static DWORD c_Effect3Microcode[] =
+{
 	0x00152078,
 	0x00000000, 0x00ec001b, 0x0836186c, 0x20708800,
 	0x00000000, 0x00ed401b, 0x0836186c, 0x28200ff8,
@@ -574,7 +607,9 @@ DWORD dwEffect3VertexShader[] = {
 	0x00000000, 0x008de01b, 0xa5ff686c, 0x3070f819
 };
 
-DWORD dwEffect4VertexShader[] = {
+// @ 0x001758f8, 29 instructions
+static DWORD c_Effect4Microcode[] =
+{
 	0x001d2078,
 	0x00000000, 0x00f1001b, 0x0836186c, 0x28200ff8,
 	0x00000000, 0x00f1201b, 0x0836186c, 0x24200ff8,
@@ -607,7 +642,9 @@ DWORD dwEffect4VertexShader[] = {
 	0x00000000, 0x0092001a, 0x25feabfc, 0x3070e849
 };
 
-DWORD dwAnisoVertexShader[] = {
+// @ 0x00175ad0, 10 instructions
+static DWORD c_AnisoMicrocode[] =
+{
 	0x000a2078,
 	0x00000000, 0x00ec001b, 0x0836186c, 0x20708800,
 	0x00000000, 0x00ec201b, 0x0836186c, 0x20704800,
@@ -621,217 +658,126 @@ DWORD dwAnisoVertexShader[] = {
 	0x00000000, 0x0087601b, 0xc400286c, 0x3070e801
 };
 
-struct SHADEDESC
+// One lookup entry, 0x14 bytes in the binary: effect number, microcode, the
+// FVF it serves, the shader handle once created, and a spare flag.
+struct EffectShader
 {
-	int m_nEffect;
-	DWORD* m_rgdwMicrocode;
-	DWORD m_fvf;
-	DWORD m_dwShader;
-	bool m_bReportedError;
+	int nEffect;
+	DWORD* pMicrocode;
+	DWORD fvf;
+	DWORD hShader;
+	bool bReported;
 };
 
-#define SHADERNAME(name) dw##name##VertexShader
+#define FVF_PACKED   (D3DFVF_XYZ | D3DFVF_NORMPACKED3)
+#define FVF_FLOAT    (D3DFVF_XYZ | D3DFVF_NORMAL)
 
-SHADEDESC fixed_shaders [] =
+// Table @ 0x00175bb0, 12 entries. Effect 1 is the falloff shader (its own
+// variant when there are texture coordinates), 2 anisotropic, 3 the textured
+// falloff, 4 reflection. Each comes in packed and float normal versions.
+static EffectShader c_effectShaders[] =
 {
-	{
-		0,
-		SHADERNAME(Effect),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3 | D3DFVF_DIFFUSE
-	},
-	{
-		1,
-		SHADERNAME(Effect),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3
-	},
-	{
-		2,
-		SHADERNAME(Effect),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3 | D3DFVF_TEX1
-	},
+	{ 1, c_EffectMicrocode,  FVF_PACKED | D3DFVF_DIFFUSE },
+	{ 1, c_EffectMicrocode,  FVF_PACKED },
+	{ 1, c_Effect2Microcode, FVF_PACKED | D3DFVF_TEX1 },
+	{ 2, c_AnisoMicrocode,   FVF_PACKED },
+	{ 3, c_Effect3Microcode, FVF_PACKED | D3DFVF_TEX1 },
+	{ 4, c_Effect4Microcode, FVF_PACKED },
+	{ 1, c_EffectMicrocode,  FVF_FLOAT | D3DFVF_DIFFUSE },
+	{ 1, c_EffectMicrocode,  FVF_FLOAT },
+	{ 1, c_Effect2Microcode, FVF_FLOAT | D3DFVF_TEX1 },
+	{ 2, c_AnisoMicrocode,   FVF_FLOAT },
+	{ 3, c_Effect3Microcode, FVF_FLOAT | D3DFVF_TEX1 },
+	{ 4, c_Effect4Microcode, FVF_FLOAT },
 };
 
-SHADEDESC shaders [] =
+// Table @ 0x00175b74, 3 entries: the packed normal FVFs that need a
+// declaration to draw fixed function. The microcode pointer is never used.
+static EffectShader c_fixedShaders[] =
 {
-	{
-		1,
-		SHADERNAME(Effect),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3 | D3DFVF_DIFFUSE
-	},
-	{
-		1,
-		SHADERNAME(Effect),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3
-	},
-	{
-		1,
-		SHADERNAME(Effect2),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3 | D3DFVF_TEX1
-	},
-	{
-		2,
-		SHADERNAME(Aniso),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3
-	},
-	{
-		3,
-		SHADERNAME(Effect3),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3 | D3DFVF_TEX1
-	},
-	{
-		4,
-		SHADERNAME(Effect4),
-		D3DFVF_XYZ | D3DFVF_NORMPACKED3
-	},
-	{
-		1,
-		SHADERNAME(Effect),
-		D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE
-	},
-	{
-		1,
-		SHADERNAME(Effect),
-		D3DFVF_XYZ | D3DFVF_NORMAL
-	},
-	{
-		1,
-		SHADERNAME(Effect2),
-		D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX1
-	},
-	{
-		2,
-		SHADERNAME(Aniso),
-		D3DFVF_XYZ | D3DFVF_NORMAL
-	},
-	{
-		3,
-		SHADERNAME(Effect3),
-		D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX1
-	},
-	{
-		4,
-		SHADERNAME(Effect4),
-		D3DFVF_XYZ | D3DFVF_NORMAL
-	},
+	{ 0, c_EffectMicrocode, FVF_PACKED | D3DFVF_DIFFUSE },
+	{ 1, c_EffectMicrocode, FVF_PACKED },
+	{ 2, c_EffectMicrocode, FVF_PACKED | D3DFVF_TEX1 },
 };
 
-// ===== Effect Shader Lookup =====
+// Effect shader declarations @ 0x0017669c..0x001766e0: position in v0,
+// normal in v3, texture coordinates in v6.
+static DWORD c_declFloat [] = { D3DVSD_STREAM(0), D3DVSD_REG(0, D3DVSDT_FLOAT3), D3DVSD_REG(3, D3DVSDT_FLOAT3), D3DVSD_END() };
+static DWORD c_declFloatTex [] = { D3DVSD_STREAM(0), D3DVSD_REG(0, D3DVSDT_FLOAT3), D3DVSD_REG(3, D3DVSDT_FLOAT3), D3DVSD_REG(6, D3DVSDT_FLOAT2), D3DVSD_END() };
+static DWORD c_declPacked [] = { D3DVSD_STREAM(0), D3DVSD_REG(0, D3DVSDT_FLOAT3), D3DVSD_REG(3, D3DVSDT_NORMPACKED3), D3DVSD_END() };
+static DWORD c_declPackedTex [] = { D3DVSD_STREAM(0), D3DVSD_REG(0, D3DVSDT_FLOAT3), D3DVSD_REG(3, D3DVSDT_NORMPACKED3), D3DVSD_REG(6, D3DVSDT_FLOAT2), D3DVSD_END() };
 
+// Fixed function declarations @ 0x00176660, five dwords each, one per c_fixedShaders entry.
+static DWORD c_fixedDecls[3][5] =
+{
+	{ D3DVSD_STREAM(0), D3DVSD_REG(D3DVSDE_POSITION, D3DVSDT_FLOAT3), D3DVSD_REG(D3DVSDE_NORMAL, D3DVSDT_NORMPACKED3), D3DVSD_REG(D3DVSDE_DIFFUSE, D3DVSDT_D3DCOLOR), D3DVSD_END() },
+	{ D3DVSD_STREAM(0), D3DVSD_REG(D3DVSDE_POSITION, D3DVSDT_FLOAT3), D3DVSD_REG(D3DVSDE_NORMAL, D3DVSDT_NORMPACKED3), D3DVSD_END() },
+	{ D3DVSD_STREAM(0), D3DVSD_REG(D3DVSDE_POSITION, D3DVSDT_FLOAT3), D3DVSD_REG(D3DVSDE_NORMAL, D3DVSDT_NORMPACKED3), D3DVSD_REG(D3DVSDE_TEXCOORD0, D3DVSDT_FLOAT2), D3DVSD_END() },
+};
+
+// GetEffectShader(nEffect, fvf)
+// Reconstructed from 5960 retail XBE @ 0x0005c6c0 (effect in ECX, fvf in EAX).
+// Ghidra decompile, trimmed:
+//     if (effect == 0) return fvf;
+//     for (i = 0; e[i].effect != effect || e[i].fvf != fvf; i++) if (i > 10) return fvf;
+//     if (e[i].shader == 0)
+//         CreateVertexShader(packed ? (tex ? 0x1766c0 : 0x1766d4) : (tex ? 0x17669c : 0x1766b0),
+//                            e[i].microcode, &e[i].shader, 0);
+//     return e[i].shader;
+// Shaders are created the first time a material asks for them and kept.
 DWORD GetEffectShader(int nEffect, DWORD fvf)
 {
 	if (nEffect == 0)
 		return fvf;
 
-	SHADEDESC* pShadeDesc = shaders;
-	for (int i = 0; pShadeDesc->m_nEffect != nEffect || pShadeDesc->m_fvf != fvf; i += 1, pShadeDesc += 1)
+	for (int n = 0; n < (int)countof (c_effectShaders); n++)
 	{
-		if (i >= countof (shaders) - 1)
-			return fvf;
+		EffectShader& e = c_effectShaders[n];
+		if (e.nEffect != nEffect || e.fvf != fvf)
+			continue;
+
+		if (e.hShader == 0)
+		{
+			bool bTex = (fvf & D3DFVF_TEX1) != 0;
+			DWORD* pDecl;
+			if (fvf & D3DFVF_NORMPACKED3)
+				pDecl = bTex ? c_declPackedTex : c_declPacked;
+			else
+				pDecl = bTex ? c_declFloatTex : c_declFloat;
+			TheseusCreateVertexShader(pDecl, e.pMicrocode, &e.hShader, 0);
+		}
+		return e.hShader;
 	}
 
-	if (pShadeDesc->m_dwShader == 0)
-	{
-		const DWORD* rgdwFunction = NULL;
-
-		rgdwFunction = pShadeDesc->m_rgdwMicrocode;
-
-		static DWORD decl1 [] =
-		{
-			D3DVSD_STREAM( 0 ),
-			D3DVSD_REG( 0, D3DVSDT_FLOAT3 ),
-			D3DVSD_REG( 3, D3DVSDT_NORMPACKED3 ),
-			D3DVSD_END()
-		};
-
-		static DWORD decl2 [] =
-		{
-			D3DVSD_STREAM( 0 ),
-			D3DVSD_REG( 0, D3DVSDT_FLOAT3 ),
-			D3DVSD_REG( 3, D3DVSDT_NORMPACKED3 ),
-			D3DVSD_REG( 6, D3DVSDT_FLOAT2 ),
-			D3DVSD_END()
-		};
-
-		static DWORD decl3 [] =
-		{
-			D3DVSD_STREAM( 0 ),
-			D3DVSD_REG( 0, D3DVSDT_FLOAT3 ),
-			D3DVSD_REG( 3, D3DVSDT_FLOAT3 ),
-			D3DVSD_END()
-		};
-
-		static DWORD decl4 [] =
-		{
-			D3DVSD_STREAM( 0 ),
-			D3DVSD_REG( 0, D3DVSDT_FLOAT3 ),
-			D3DVSD_REG( 3, D3DVSDT_FLOAT3 ),
-			D3DVSD_REG( 6, D3DVSDT_FLOAT2 ),
-			D3DVSD_END()
-		};
-
-		if (fvf & D3DFVF_NORMPACKED3)
-		{
-			TheseusCreateVertexShader((fvf & D3DFVF_TEX1) ? decl2 : decl1, rgdwFunction, &pShadeDesc->m_dwShader, 0);
-		}
-		else
-		{
-			TheseusCreateVertexShader((fvf & D3DFVF_TEX1) ? decl4 : decl3, rgdwFunction, &pShadeDesc->m_dwShader, 0);
-		}
-	}
-
-	return pShadeDesc->m_dwShader;
+	return fvf;
 }
 
-// ===== Fixed Function Shader Lookup =====
-
+// GetFixedFunctionShader(fvf)
+// Reconstructed from 5960 retail XBE @ 0x0005c740 (fvf in EAX). Finds fvf in
+// the three entry table, else returns fvf unchanged. On first use it builds a
+// shader from the matching declaration with no microcode (CreateVertexShader
+// inlined: XMemAlloc, parse the declaration, handle | 1) and keeps it.
 DWORD GetFixedFunctionShader(DWORD fvf)
 {
-	SHADEDESC* pShadeDesc = fixed_shaders;
-	int i;
-	for (i = 0; pShadeDesc->m_fvf != fvf; i += 1, pShadeDesc += 1)
+	for (int n = 0; n < (int)countof (c_fixedShaders); n++)
 	{
-		if (i >= countof (fixed_shaders) - 1)
-			return fvf;
+		EffectShader& e = c_fixedShaders[n];
+		if (e.fvf != fvf)
+			continue;
+
+		if (e.hShader == 0)
+			TheseusCreateVertexShader(c_fixedDecls[n], NULL, &e.hShader, 0);
+		return e.hShader;
 	}
 
-	if (pShadeDesc->m_dwShader == 0)
-	{
-		static DWORD decl[3][5] =
-		{
-			{
-				D3DVSD_STREAM( 0 ),
-				D3DVSD_REG( D3DVSDE_POSITION, D3DVSDT_FLOAT3 ),
-				D3DVSD_REG( D3DVSDE_NORMAL, D3DVSDT_NORMPACKED3 ),
-				D3DVSD_REG( D3DVSDE_DIFFUSE, D3DVSDT_D3DCOLOR ),
-				D3DVSD_END()
-			},
-			{
-				D3DVSD_STREAM( 0 ),
-				D3DVSD_REG( D3DVSDE_POSITION, D3DVSDT_FLOAT3 ),
-				D3DVSD_REG( D3DVSDE_NORMAL, D3DVSDT_NORMPACKED3 ),
-				D3DVSD_END()
-			},
-			{
-				D3DVSD_STREAM( 0 ),
-				D3DVSD_REG( D3DVSDE_POSITION, D3DVSDT_FLOAT3 ),
-				D3DVSD_REG( D3DVSDE_NORMAL, D3DVSDT_NORMPACKED3 ),
-				D3DVSD_REG( D3DVSDE_TEXCOORD0, D3DVSDT_FLOAT2 ),
-				D3DVSD_END()
-			},
-		};
-
-		TheseusCreateVertexShader(&decl[i][0], NULL, &pShadeDesc->m_dwShader, 0);
-	}
-
-	return pShadeDesc->m_dwShader;
+	return fvf;
 }
 
-#else // !_XBOX, desktop GLSL-sentinel versions
+#else
 
-// Desktop OpenGL has no NV2A vertex shaders. GetEffectShader returns a
-// sentinel (high bit set + real FVF) that tells the d3d8_sdl shim's
-// SetVertexShader to flip m_effectShaderActive while keeping the FVF
-// for vertex attribute layout. GetFixedFunctionShader passes through.
+// Desktop versions, Theseus's own. GetEffectShader hands the bgfx shim a
+// sentinel (high bit plus the real FVF) so its SetVertexShader turns on the
+// effect path and still knows the vertex layout. Fixed function passes through.
 DWORD GetEffectShader(int nEffect, DWORD fvf)
 {
 	if (nEffect == 0)
@@ -846,132 +792,136 @@ DWORD GetFixedFunctionShader(DWORD fvf)
 
 #endif // _XBOX
 
-// ===== Normal Compression =====
-// Below this point is portable D3DX math, with one wrinkle: the float-to-DWORD
-// conversion of negative normal components is undefined behavior in C, so the
-// two platforms cast differently. Xbox MSVC i386 happens to do the right thing
-// with a direct (DWORD)(float) cast; clang on desktop produces 0 for negatives,
-// which corrupts compressed normals and breaks the falloff edge-glow shader.
-// Route through (int) first on desktop so the truncation is well-defined.
 
-DWORD CompressNormal(float* pvNormal) {
+// ===== Normals ==============================================================
 
-    float vNormal[3];
-    float fLength;
+// CompressNormal(pvNormal)
+// Reconstructed from 5960 retail XBE @ 0x0005c820 (vector in EAX):
+//     len = sqrt(x*x + y*y + z*z); x, y, z scaled to unit length;
+//     return (ftol(x * 1023) & 0x7ff) | (ftol(y * 1023) & 0x7ff) << 11 | ftol(z * 511) << 22;
+// ftol truncates through a signed integer, which is what lets negative
+// components wrap into the packed fields. Going through int keeps that on
+// every compiler; a straight float to DWORD cast gives 0 for them on clang.
+// The binary multiplies by 1 / len; dividing keeps the normals Theseus has
+// always packed (the two differ in about 1 vector in 40,000).
+DWORD CompressNormal(float* pvNormal)
+{
+	float len = sqrtf(pvNormal[0] * pvNormal[0] + pvNormal[1] * pvNormal[1] + pvNormal[2] * pvNormal[2]);
+	float x = pvNormal[0] / len;
+	float y = pvNormal[1] / len;
+	float z = pvNormal[2] / len;
 
-    fLength = (float)sqrt(pvNormal[0] * pvNormal[0] + pvNormal[1] * pvNormal[1] + pvNormal[2] * pvNormal[2]);
-
-    vNormal[0] = pvNormal[0] / fLength;
-    vNormal[1] = pvNormal[1] / fLength;
-    vNormal[2] = pvNormal[2] / fLength;
-
-#ifdef _XBOX
-    return ((((DWORD)(vNormal[0] * 1023.0f) & 0x7FF) << 0)  |
-            (((DWORD)(vNormal[1] * 1023.0f) & 0x7FF) << 11) |
-            (((DWORD)(vNormal[2] *  511.0f) & 0x3FF) << 22));
-#else
-    return ((((uint32_t)(int)(vNormal[0] * 1023.0f) & 0x7FF) << 0)  |
-            (((uint32_t)(int)(vNormal[1] * 1023.0f) & 0x7FF) << 11) |
-            (((uint32_t)(int)(vNormal[2] *  511.0f) & 0x3FF) << 22));
-#endif
+	DWORD packed = (DWORD)(int)(x * 1023.0f) & 0x7ff;
+	packed |= ((DWORD)(int)(y * 1023.0f) & 0x7ff) << 11;
+	packed |= ((DWORD)(int)(z * 511.0f) & 0x3ff) << 22;
+	return packed;
 }
 
-// ===== Reflection Shader Setup =====
 
+// ===== Effect shader constants ==============================================
+
+// Light from the upper right front, (1, 1, -1) normalized, taken into the
+// object's space. Both frame value setters below end on this.
+static void SetLightDirection(DWORD reg, const D3DXMATRIX& worldView)
+{
+	D3DXVECTOR4 dir(1.0f, 1.0f, -1.0f, 0.0f);
+	D3DXVec4Normalize(&dir, &dir);
+
+	D3DXMATRIX t;
+	D3DXMatrixTranspose(&t, &worldView);
+	D3DXVec3TransformNormal((D3DXVECTOR3*)&dir, (D3DXVECTOR3*)&dir, &t);
+	D3DXVec4Normalize(&dir, &dir);
+
+	TheseusSetVertexShaderConstant(reg, &dir, 1);
+}
+
+// SetReflectShaderFrameValues()
+// Reconstructed from 5960 retail XBE @ 0x0005c8d0 (constant numbers are the
+// binary's biased by 96):
+//     wv = world (matrix stack top) * view;
+//     c40..43 = transpose(wv); c44..47 = transpose(projection); c48 = (0, 0, 1, 0.5);
+//     c49 = light direction (see above); LIGHTING = FALSE;
+// Desktop skips the LIGHTING write: the bgfx shim never lights fixed function.
 void SetReflectShaderFrameValues()
 {
-    D3DXMATRIX mat, worldView;
+	D3DXMATRIX worldView, t;
+	D3DXMatrixMultiply(&worldView, TheseusGetWorld(), &g_matView);
 
-    D3DXMatrixMultiply(&worldView, TheseusGetWorld(), &g_matView);
+	D3DXMatrixTranspose(&t, &worldView);
+	TheseusSetVertexShaderConstant(40, &t, 4);
 
-    D3DXMatrixTranspose(&mat, &worldView);
-    TheseusSetVertexShaderConstant(40, &mat(0,0), 4);
+	D3DXMatrixTranspose(&t, &g_matProjection);
+	TheseusSetVertexShaderConstant(44, &t, 4);
 
-    D3DXMatrixTranspose(&mat, &g_matProjection);
-    TheseusSetVertexShaderConstant(44, &mat(0,0), 4);
+	D3DXVECTOR4 c48(0.0f, 0.0f, 1.0f, 0.5f);
+	TheseusSetVertexShaderConstant(48, &c48, 1);
 
-		D3DXVECTOR4 reflectConst(0.0f, 0.0f, 1.0f, 0.5f);
-    TheseusSetVertexShaderConstant(48, &reflectConst, 1);
-
-	D3DXVECTOR4 lightDir(1.0f, 1.0f, -1.0f, 0.0f);
-	D3DXVec4Normalize(&lightDir, &lightDir);
-	D3DXMatrixTranspose(&mat, &worldView);
-	D3DXVec3TransformNormal((D3DXVECTOR3*)&lightDir, (D3DXVECTOR3*)&lightDir, &mat);
-	D3DXVec4Normalize(&lightDir, &lightDir);
-	TheseusSetVertexShaderConstant(49, &lightDir, 1);
+	SetLightDirection(49, worldView);
 
 #ifdef _XBOX
-	// GL backend doesn't honor fixed-function LIGHTING; shim stores
-	// the value for GetRenderState round-trips but never enables
-	// glEnable(GL_LIGHTING). Xbox path keeps the original semantics.
 	TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
 #endif
 }
 
-// ===== Falloff Shader Setup =====
-
+// SetFalloffShaderFrameValues()
+// Reconstructed from 5960 retail XBE @ 0x0005ca00:
+//     wv = world * view;
+//     c0..3 = transpose(wv * projection); c10..13 = transpose(wv); c5..8 = inverse(wv);
+//     c9 = (0, 0.5, 1, -1); c4 = light direction;
+//     SetTexture(0, NULL); LIGHTING = FALSE;      // both inlined
+// Runs on every world matrix change. The profiler phase is a Theseus
+// addition, and desktop skips LIGHTING as in the reflection setter.
 void SetFalloffShaderFrameValues()
 {
 	FramePhaseScope world(FP_TREE_WORLD);
-	D3DXMATRIX mat, worldView;
 
+	D3DXMATRIX worldView, t;
 	D3DXMatrixMultiply(&worldView, TheseusGetWorld(), &g_matView);
 
-	D3DXMatrixMultiply(&mat, &worldView, &g_matProjection);
-	D3DXMatrixTranspose(&mat, &mat);
-	TheseusSetVertexShaderConstant(0, &mat(0,0), 4);
+	D3DXMatrixMultiply(&t, &worldView, &g_matProjection);
+	D3DXMatrixTranspose(&t, &t);
+	TheseusSetVertexShaderConstant(0, &t, 4);
 
-	D3DXMatrixTranspose(&mat, &worldView);
-	TheseusSetVertexShaderConstant(10, &mat(0,0), 4);
+	D3DXMatrixTranspose(&t, &worldView);
+	TheseusSetVertexShaderConstant(10, &t, 4);
 
-	D3DXMatrixInverse(&mat, NULL, &worldView);
-	TheseusSetVertexShaderConstant(5, &mat(0,0), 4);
+	D3DXMatrixInverse(&t, NULL, &worldView);
+	TheseusSetVertexShaderConstant(5, &t, 4);
 
-	D3DXVECTOR4 v(0.0f, 0.5f, 1.0f, -1.0f);
-	TheseusSetVertexShaderConstant(9, &v, 1);
+	D3DXVECTOR4 c9(0.0f, 0.5f, 1.0f, -1.0f);
+	TheseusSetVertexShaderConstant(9, &c9, 1);
 
-	D3DXVECTOR4 lightDir(1.0f, 1.0f, -1.0f, 0.0f);
-	D3DXVec4Normalize(&lightDir, &lightDir);
-	D3DXMatrixTranspose(&mat, &worldView);
-	D3DXVec3TransformNormal((D3DXVECTOR3*)&lightDir, (D3DXVECTOR3*)&lightDir, &mat);
-	D3DXVec4Normalize(&lightDir, &lightDir);
-	TheseusSetVertexShaderConstant(4, &lightDir, 1);
+	SetLightDirection(4, worldView);
 
 	TheseusSetTexture(0, NULL);
 #ifdef _XBOX
-	// See shape_render.cpp note above: LIGHTING is FF-only, no GL effect.
 	TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
 #endif
 }
 
-// ===== Falloff Shader Values =====
-
+// Scene wide fade for the effect materials, @ 0x00175ca0, starts at 1.0.
 float g_nEffectAlpha = 1.0f;
 
+// SetFalloffShaderValues(sideColor, frontColor)
+// Inlined in the 5960 retail XBE into each falloff material's Setup, e.g.
+// CFalloffMatInfo_Setup @ 0x00057790:
+//     c15 = (side.rgb, side.a * g_nEffectAlpha);
+//     c16 = (front.rgb - side.rgb, (front.a - side.a) * g_nEffectAlpha);
+// The shader blends from the side color at the silhouette to the front color.
 void SetFalloffShaderValues(const D3DXCOLOR& sideColor, const D3DXCOLOR& frontColor)
 {
-	D3DXVECTOR4 v;
+	D3DXVECTOR4 side(sideColor.r, sideColor.g, sideColor.b, sideColor.a * g_nEffectAlpha);
+	TheseusSetVertexShaderConstant(15, &side, 1);
 
-	v.x = sideColor.r;
-	v.y = sideColor.g;
-	v.z = sideColor.b;
-	v.w = sideColor.a * g_nEffectAlpha;
-	TheseusSetVertexShaderConstant(15, &v, 1);
-
-	v.x = frontColor.r - sideColor.r;
-	v.y = frontColor.g - sideColor.g;
-	v.z = frontColor.b - sideColor.b;
-	v.w = (frontColor.a - sideColor.a) * g_nEffectAlpha;
-	TheseusSetVertexShaderConstant(16, &v, 1);
+	D3DXVECTOR4 delta(frontColor.r - sideColor.r, frontColor.g - sideColor.g, frontColor.b - sideColor.b,
+		(frontColor.a - sideColor.a) * g_nEffectAlpha);
+	TheseusSetVertexShaderConstant(16, &delta, 1);
 }
 
 
-// ============================================================================
-// VRML compatibility stub nodes: parsed but not rendered. Present so the
-// alpha dashboard's IndexedLineSet/Coordinate nodes still parse without
-// "unknown class" errors. No Render() override; the runtime just registers
-// the property surface and walks past at draw time.
-// ============================================================================
+// ===== VRML stub nodes ======================================================
+// Theseus's own, not in 5960: parsed but never drawn, so the alpha dashboards'
+// IndexedLineSet and Coordinate nodes load without "unknown class" errors.
 
 class CIndexedLineSet : public CNode
 {
