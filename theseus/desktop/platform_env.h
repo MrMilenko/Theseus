@@ -5,7 +5,6 @@
 
 #pragma once
 
-#include "platform.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -14,10 +13,9 @@ inline const char* PlatformHomeDir() {
     static bool s_init = false;
     if (!s_init) {
         s_init = true;
+        // USERPROFILE is Windows' HOME; nothing else sets it.
         const char* h = getenv("HOME");
-#ifdef THESEUS_HOST_WIN
         if (!h || !*h) h = getenv("USERPROFILE");
-#endif
         if (h && *h) {
             size_t n = strlen(h);
             if (n >= sizeof(s_home)) n = sizeof(s_home) - 1;
@@ -33,13 +31,10 @@ inline const char* PlatformUserName() {
     static bool s_init = false;
     if (!s_init) {
         s_init = true;
-        const char* u;
-#ifdef THESEUS_HOST_WIN
-        u = getenv("USERNAME");
-#else
-        u = getenv("USER");
+        // Windows only sets USERNAME; POSIX sets USER or LOGNAME.
+        const char* u = getenv("USER");
         if (!u || !*u) u = getenv("LOGNAME");
-#endif
+        if (!u || !*u) u = getenv("USERNAME");
         if (u && *u) {
             size_t n = strlen(u);
             if (n >= sizeof(s_user)) n = sizeof(s_user) - 1;

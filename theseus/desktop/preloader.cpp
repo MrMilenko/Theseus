@@ -15,12 +15,7 @@
 #include <cstdio>
 #include <cmath>
 
-#ifdef THESEUS_HOST_WIN
-#include <io.h>
-#include <direct.h>
-#else
-#include <dirent.h>
-#endif
+#include "host.h"
 
 #include <bgfx/bgfx.h>
 
@@ -50,19 +45,11 @@ static void Preloader_Mkdirp(const char* path) {
     for (char* p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = '\0';
-#ifdef THESEUS_HOST_WIN
-            _mkdir(tmp);
-#else
-            mkdir(tmp, 0755);
-#endif
+            Host_MakeDir(tmp);
             *p = '/';
         }
     }
-#ifdef THESEUS_HOST_WIN
-    _mkdir(tmp);
-#else
-    mkdir(tmp, 0755);
-#endif
+    Host_MakeDir(tmp);
 }
 
 static const char* Preloader_FindName(WORD idx, XTOOL_FILENAME* filenames, int nameCount,
@@ -233,66 +220,29 @@ int Preloader_ExtractXIP(const char* xipPath, const char* outDir) {
 static int Preloader_ExtractAllXIPs(const char* xipsDir, char statusBuf[], int statusBufSize) {
     int totalXips = 0, count = 0;
 
-#ifdef THESEUS_HOST_WIN
-    // Windows: use _findfirst/_findnext
-    char searchPath[1024];
-    snprintf(searchPath, sizeof(searchPath), "%s\\*.xip", xipsDir);
-    struct _finddata_t fd;
-    intptr_t hFind;
-
-    // Count pass
-    hFind = _findfirst(searchPath, &fd);
-    if (hFind == -1) {
-        snprintf(statusBuf, statusBufSize, "Cannot open: %s", xipsDir);
-        return -1;
-    }
-    do { totalXips++; } while (_findnext(hFind, &fd) == 0);
-    _findclose(hFind);
-
-    // Extract pass
-    hFind = _findfirst(searchPath, &fd);
-    if (hFind != -1) {
-        do {
-            char xipPath[1024], outDir[1024];
-            snprintf(xipPath, sizeof(xipPath), "%s\\%s", xipsDir, fd.name);
-            snprintf(outDir, sizeof(outDir), "%s\\%s", xipsDir, fd.name);
-            char* dot = strrchr(outDir + strlen(xipsDir) + 1, '.');
-            if (dot) *dot = '\0';
-
-            snprintf(statusBuf, statusBufSize, "Extracting %s... (%d/%d)", fd.name, count + 1, totalXips);
-            fprintf(stdout, "[Extract] %s\n", fd.name);
-            Preloader_ExtractXIP(xipPath, outDir);
-            count++;
-        } while (_findnext(hFind, &fd) == 0);
-        _findclose(hFind);
-    }
-#else
-    // POSIX: use opendir/readdir
-    DIR* d = opendir(xipsDir);
+    char name[260];
+    HostDir* d = Host_OpenDir(xipsDir);
     if (!d) { snprintf(statusBuf, statusBufSize, "Cannot open: %s", xipsDir); return -1; }
+    while (Host_ReadDir(d, name, sizeof(name), NULL))
+        if (Preloader_EndsWith(name, ".xip")) totalXips++;
+    Host_CloseDir(d);
 
-    struct dirent* ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (Preloader_EndsWith(ent->d_name, ".xip")) totalXips++;
-    }
-    rewinddir(d);
-
-    while ((ent = readdir(d)) != NULL) {
-        if (!Preloader_EndsWith(ent->d_name, ".xip")) continue;
+    d = Host_OpenDir(xipsDir);
+    while (d && Host_ReadDir(d, name, sizeof(name), NULL)) {
+        if (!Preloader_EndsWith(name, ".xip")) continue;
 
         char xipPath[1024], outDir[1024];
-        snprintf(xipPath, sizeof(xipPath), "%s/%s", xipsDir, ent->d_name);
-        snprintf(outDir, sizeof(outDir), "%s/%s", xipsDir, ent->d_name);
+        snprintf(xipPath, sizeof(xipPath), "%s%c%s", xipsDir, Host_PathSep, name);
+        snprintf(outDir, sizeof(outDir), "%s%c%s", xipsDir, Host_PathSep, name);
         char* dot = strrchr(outDir + strlen(xipsDir) + 1, '.');
         if (dot) *dot = '\0';
 
-        snprintf(statusBuf, statusBufSize, "Extracting %s... (%d/%d)", ent->d_name, count + 1, totalXips);
-        fprintf(stdout, "[Extract] %s\n", ent->d_name);
+        snprintf(statusBuf, statusBufSize, "Extracting %s... (%d/%d)", name, count + 1, totalXips);
+        fprintf(stdout, "[Extract] %s\n", name);
         Preloader_ExtractXIP(xipPath, outDir);
         count++;
     }
-    closedir(d);
-#endif
+    Host_CloseDir(d);
 
     snprintf(statusBuf, statusBufSize, "Extracted %d XIP file(s)", count);
     return count;

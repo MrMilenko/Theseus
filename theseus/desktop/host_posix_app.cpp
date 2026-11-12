@@ -171,3 +171,48 @@ bool Host_RegistryString(const char*, const char*, char*, size_t) { return false
 
 // Linux reads its TOC in cdaudio.cpp.
 int Host_CdReadToc(int*, int, bool*) { return -1; }
+
+const char* Host_Name() {
+#ifdef __APPLE__
+	return "macOS";
+#else
+	return "Linux";
+#endif
+}
+
+const char* Host_DefaultShaderDir() {
+#ifdef __APPLE__
+	return "metal";
+#else
+	return "spirv";
+#endif
+}
+
+void Host_UserDataDir(char* out, size_t outSize) {
+	const char* home = getenv("HOME");
+	if (!home) home = "";
+#ifdef __APPLE__
+	snprintf(out, outSize, "%s/Library/Application Support/Theseus", home);
+#else
+	const char* xdg = getenv("XDG_DATA_HOME");
+	if (xdg && *xdg)
+		snprintf(out, outSize, "%s/theseus", xdg);
+	else
+		snprintf(out, outSize, "%s/.local/share/theseus", home);
+#endif
+}
+
+void Host_ShippedDir(const char* exeDir, char* out, size_t outSize) {
+#ifdef __APPLE__
+	// Inside a .app the binary sits in Contents/MacOS and the payload in
+	// Contents/Resources. Loose builds keep everything beside the binary.
+	size_t n = strlen(exeDir);
+	const char kTail[] = "/Contents/MacOS";
+	size_t t = sizeof(kTail) - 1;
+	if (n > t && strcmp(exeDir + n - t, kTail) == 0) {
+		snprintf(out, outSize, "%.*s/Contents/Resources", (int)(n - t), exeDir);
+		return;
+	}
+#endif
+	snprintf(out, outSize, "%s", exeDir);
+}

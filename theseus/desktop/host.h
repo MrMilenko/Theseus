@@ -24,6 +24,9 @@ struct HostFileInfo {
 	int64_t  mtime;    // seconds since 1970, UTC
 };
 
+// The separator native paths show the user.
+extern const char Host_PathSep;
+
 // Files and folders. Host_MakeDir is true when the folder exists afterwards.
 bool Host_MakeDir(const char* path);
 bool Host_RemoveDir(const char* path);
@@ -45,6 +48,10 @@ int64_t Host_Seek(FILE* f, int64_t offset, int whence);
 struct HostDir;
 HostDir* Host_OpenDir(const char* path);
 bool Host_ReadDir(HostDir* dir, char* name, size_t nameSize, HostFileInfo* info);
+// Name and folder-or-not only. Skips the per-entry stat when the OS already
+// knows the type, which matters on a network share. Entries that can't be
+// looked at are skipped.
+bool Host_ReadDirType(HostDir* dir, char* name, size_t nameSize, bool* isDir);
 void Host_CloseDir(HostDir* dir);
 
 // The machine itself.
@@ -79,3 +86,12 @@ bool Host_RegistryString(const char* subKey, const char* value, char* out, size_
 // Audio CD in the first optical drive: track count and per-track lengths
 // in seconds. -1 when there's no readable disc.
 int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio);
+
+// "macOS", "Windows" or "Linux", for people and servers that ask.
+const char* Host_Name();
+// The bgfx shader folder to try when the renderer doesn't say.
+const char* Host_DefaultShaderDir();
+// Where the user's Configs and Library live, and where the shipped Data
+// sits relative to the executable's folder.
+void Host_UserDataDir(char* out, size_t outSize);
+void Host_ShippedDir(const char* exeDir, char* out, size_t outSize);

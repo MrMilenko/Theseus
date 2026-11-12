@@ -20,6 +20,8 @@
 #include <sys/sysinfo.h>
 #endif
 
+const char Host_PathSep = '/';
+
 static void FillInfo(const struct stat& st, HostFileInfo* out) {
 	out->attrs = S_ISDIR(st.st_mode) ? HOST_ATTR_DIR : 0;
 	out->size  = (uint64_t)st.st_size;
@@ -113,6 +115,26 @@ bool Host_ReadDir(HostDir* dir, char* name, size_t nameSize, HostFileInfo* info)
 		Host_Stat(full, info);
 	}
 	return true;
+}
+
+bool Host_ReadDirType(HostDir* dir, char* name, size_t nameSize, bool* isDir) {
+	if (!dir) return false;
+	struct dirent* e;
+	while ((e = readdir(dir->d)) != NULL) {
+		if (e->d_type == DT_DIR)      *isDir = true;
+		else if (e->d_type == DT_REG) *isDir = false;
+		else {
+			// Symlinks and anything readdir won't commit to still need a look.
+			char full[768];
+			snprintf(full, sizeof(full), "%s/%s", dir->path, e->d_name);
+			struct stat st;
+			if (stat(full, &st) != 0) continue;
+			*isDir = S_ISDIR(st.st_mode) != 0;
+		}
+		snprintf(name, nameSize, "%s", e->d_name);
+		return true;
+	}
+	return false;
 }
 
 void Host_CloseDir(HostDir* dir) {

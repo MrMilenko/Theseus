@@ -255,3 +255,21 @@ int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio) {
 	}
 	return count;
 }
+
+const char* Host_Name() { return "Windows"; }
+const char* Host_DefaultShaderDir() { return "dx11"; }
+
+void Host_UserDataDir(char* out, size_t outSize) {
+	const char* appdata = getenv("APPDATA");
+	if (appdata && *appdata) {
+		snprintf(out, outSize, "%s\\Theseus", appdata);
+		return;
+	}
+	const char* home = getenv("HOME");
+	if (!home || !*home) home = getenv("USERPROFILE");
+	snprintf(out, outSize, "%s\\AppData\\Roaming\\Theseus", home ? home : "");
+}
+
+void Host_ShippedDir(const char* exeDir, char* out, size_t outSize) {
+	snprintf(out, outSize, "%s", exeDir);
+}

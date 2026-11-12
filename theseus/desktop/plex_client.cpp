@@ -1,8 +1,8 @@
 // plex_client.cpp: Plex Media Server HTTPS client.
 
-#include "platform.h"
 #include "app_paths.h"
 #include "plex_client.h"
+#include "host.h"
 #include "http_util.h"
 #include "json_util.h"
 #include "client_util.h"
@@ -34,13 +34,7 @@ static HttpHeaders PlexHeaders(bool wantJson, bool withToken)
     h.push_back({ "X-Plex-Product",           "UIX Desktop" });
     h.push_back({ "X-Plex-Version",           "0.3" });
     h.push_back({ "X-Plex-Device-Name",       "UIX Desktop" });
-#if defined(__APPLE__)
-    h.push_back({ "X-Plex-Platform",          "macOS" });
-#elif defined(THESEUS_HOST_WIN)
-    h.push_back({ "X-Plex-Platform",          "Windows" });
-#else
-    h.push_back({ "X-Plex-Platform",          "Linux" });
-#endif
+    h.push_back({ "X-Plex-Platform",          Host_Name() });
     if (withToken && g_plexToken[0]) {
         h.push_back({ "X-Plex-Token", g_plexToken });
     }

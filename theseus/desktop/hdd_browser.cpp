@@ -91,11 +91,11 @@ static const char* GetDefaultQcow2Path() {
     static char path[512] = "";
     if (path[0]) return path;
 
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
     const char* home = getenv("HOME");
     if (home)
         snprintf(path, sizeof(path), "%s/Library/Application Support/xemu/xemu/xbox_hdd.qcow2", home);
-#elif defined(__linux__)
+#elif defined(THESEUS_HOST_LINUX)
     const char* home = getenv("HOME");
     if (home)
         snprintf(path, sizeof(path), "%s/.local/share/xemu/xemu/xbox_hdd.qcow2", home);

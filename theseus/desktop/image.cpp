@@ -12,6 +12,7 @@
 #include "file_util.h"
 #include "xbx_texture.h"
 #include "skin_assets.h"
+#include "host.h"
 
 inline void D3D_FreeNoncontiguousMemory(void *pMemory) { free(pMemory); }
 
@@ -547,27 +548,14 @@ void PreloadSkinTextures()
 		FindImage(wideFileName);
 	};
 
-#ifdef THESEUS_HOST_WIN
-	char searchBuf[512];
-	snprintf(searchBuf, sizeof(searchBuf), "%s\\*.xbx", mappedDir);
-	struct _finddata_t fd;
-	intptr_t hFind = _findfirst(searchBuf, &fd);
-	if (hFind == -1) {
-		OutputDebugStringA("[Preload] Could not open skin directory\n");
-		return;
-	}
-	do { ProcessXbxFile(fd.name); } while (_findnext(hFind, &fd) == 0);
-	_findclose(hFind);
-#else
-	DIR* dir = opendir(mappedDir);
+	HostDir* dir = Host_OpenDir(mappedDir);
 	if (!dir) {
 		OutputDebugStringA("[Preload] Could not open skin directory\n");
 		return;
 	}
-	struct dirent* ent;
-	while ((ent = readdir(dir)) != NULL) ProcessXbxFile(ent->d_name);
-	closedir(dir);
-#endif
+	char name[MAX_PATH];
+	while (Host_ReadDir(dir, name, sizeof(name), NULL)) ProcessXbxFile(name);
+	Host_CloseDir(dir);
 }// ============================================================================
 // Software Rasterization (FillRect / BitBlt)
 // ============================================================================

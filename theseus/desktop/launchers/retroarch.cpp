@@ -135,7 +135,7 @@ bool Build(const char* spec, char* outCmd, size_t outSize) {
 	snprintf(extra, sizeof(extra), "%s%s%s%s", fs,
 	         ovr[0] ? " --appendconfig \"" : "", ovr[0] ? ovr : "", ovr[0] ? "\"" : "");
 
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
 	// macOS: the cores dir is in ~/Library/Application Support/RetroArch,
 	// but the binary is inside /Applications/RetroArch.app. Launch via
 	// `open -na RetroArch --args ...` so we don't hardcode the bundle path.
@@ -249,7 +249,7 @@ bool RetroArch_DiscoverPlaylistsDir(const char* installRoot,
 		if (DirExists(buf)) { strncpy(outDir, buf, outSize - 1); outDir[outSize - 1] = 0; return true; }
 	}
 
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
 	const char* home = getenv("HOME");
 	if (home) {
 		snprintf(buf, sizeof(buf), "%s/Documents/RetroArch/playlists", home);
