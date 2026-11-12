@@ -85,6 +85,9 @@ static std::atomic<bool>                                 s_syncRunning{false};
 static std::atomic<int>                                  s_syncProgress{0};
 static std::string                                       s_syncPhase;
 static std::thread                                       s_syncThread;
+// Bumped by sign out. A worker from an older generation finishes on its own
+// but publishes nothing, and owns s_syncRunning until it does.
+static std::atomic<unsigned>                             s_syncGen{0};
 static std::vector<JellyfinLibrary>                      s_cacheLibs;
 static std::map<std::string, std::vector<JellyfinItem>>  s_cacheItems;
 static std::map<std::string, std::vector<JellyfinSeason>>  s_cacheSeasons;
@@ -136,8 +139,8 @@ void Jellyfin_SignOut()
     s_cacheItems.clear();
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
+    s_syncGen++;
     s_syncReady    = false;
-    s_syncRunning  = false;
     s_syncProgress = 0;
     s_syncPhase.clear();
 }
@@ -348,18 +351,20 @@ static std::vector<JellyfinItem> FetchItemsForLibrary(const std::string& library
 // Sync worker (mirrors Plex_StartSync)
 // ============================================================================
 
-static void SetSyncPhase(const std::string& phase, int progressOf1000)
+static void SetSyncPhase(unsigned gen, const std::string& phase, int progressOf1000)
 {
     std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen != s_syncGen) return;
     s_syncPhase    = phase;
     s_syncProgress = progressOf1000;
 }
 
 static void SyncWorker()
 {
+    const unsigned gen = s_syncGen;
     s_syncReady = false;
 
-    SetSyncPhase("Loading library list", 0);
+    SetSyncPhase(gen, "Loading library list", 0);
     char url[1024];
     snprintf(url, sizeof(url), "%s/Users/%s/Views", g_jellyfinUrl, g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
@@ -384,20 +389,22 @@ static void SyncWorker()
         char phaseBuf[128];
         snprintf(phaseBuf, sizeof(phaseBuf),
                  "Loading %s (%d/%d)", lib.name.c_str(), i + 1, libCount);
-        SetSyncPhase(phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
+        SetSyncPhase(gen, phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
         itemsById[lib.id] = FetchItemsForLibrary(lib.id);
     }
 
+    size_t nLibs = libs.size();
+    SetSyncPhase(gen, "Jellyfin library ready", 1000);
     {
         std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheLibs  = std::move(libs);
-        s_cacheItems = std::move(itemsById);
+        if (gen == s_syncGen) {
+            s_cacheLibs  = std::move(libs);
+            s_cacheItems = std::move(itemsById);
+            s_syncReady  = true;
+        }
     }
-
-    SetSyncPhase("Jellyfin library ready", 1000);
-    s_syncReady   = true;
     s_syncRunning = false;
-    fprintf(stderr, "[Jellyfin] sync complete (%zu libraries)\n", s_cacheLibs.size());
+    fprintf(stderr, "[Jellyfin] sync complete (%zu libraries)\n", nLibs);
 }
 
 void Jellyfin_StartSync()
