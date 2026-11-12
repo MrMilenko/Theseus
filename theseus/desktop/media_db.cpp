@@ -357,8 +357,9 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 			ep.title = ParseEpisodeTitle(e->d_name, ep.season, ep.episode);
 			s.episodes.push_back(ep);
 
+			// Keyed on the file itself so every loose show stays its own entry.
 			sh.title = title;
-			sh.path  = kTvRoot;
+			sh.path  = folder;
 			sh.seasons.push_back(s);
 			out.push_back(sh);
 			BumpProgress((int)out.size());
