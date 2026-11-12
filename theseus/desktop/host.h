@@ -69,7 +69,9 @@ struct SDL_Window;
 void Host_ConsoleOrLog(const char* logPath);
 // Ask the OS for game-like scheduling. No-op where there's nothing to ask.
 void Host_BoostProcess();
-void Host_InstallCrashHandler();
+// Each crash writes crashes/<time>.txt under userDataDir. shippedDir holds
+// Configs/version.
+void Host_InstallCrashHandler(const char* userDataDir, const char* shippedDir);
 // What bgfx needs to draw into the SDL window. ndt is the display
 // connection (X11/Wayland), NULL elsewhere.
 bool Host_NativeWindow(SDL_Window* window, void** nwh, void** ndt, bool* wayland);

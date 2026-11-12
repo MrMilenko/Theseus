@@ -5,7 +5,7 @@
 
 #include "std.h"
 #include "dashapp.h"
-#include "dashlocale.h"
+#include "locale_node.h"
 #include "settingsfile.h"
 #include "network.h"
 #include "discord.h"

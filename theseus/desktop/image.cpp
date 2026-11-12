@@ -251,23 +251,14 @@ void PreloadSkinTextures()
 		return;
 	}
 
-	// Convert skin dir to ANSI path, then map through xboxfs
-	// Desktop: map Q:\path to Data/path for directory enumeration
 	char ansiSkinDir[MAX_PATH] = {0};
 	Ansi(ansiSkinDir, g_sSkinDir, MAX_PATH);
 
+	// The skin menu saves the name with a capital first letter, so on Linux
+	// the folder only turns up through the case blind translator.
 	char mappedDir[MAX_PATH];
-	if (ansiSkinDir[0] && ansiSkinDir[1] == ':' && (ansiSkinDir[2] == '\\' || ansiSkinDir[2] == '/')) {
-		const char* prefix = XboxFS_DriveToPrefix(ansiSkinDir[0]);
-		if (prefix) {
-			snprintf(mappedDir, sizeof(mappedDir), "%s/%s", prefix, ansiSkinDir + 3);
-			for (char* p = mappedDir; *p; p++) if (*p == '\\') *p = '/';
-		} else {
-			mappedDir[0] = '\0';
-		}
-	} else {
-		strncpy(mappedDir, ansiSkinDir, MAX_PATH);
-	}
+	if (!XboxPath_Translate(ansiSkinDir, mappedDir, sizeof(mappedDir)))
+		mappedDir[0] = '\0';
 
 
 	// Extract skin folder name to skip the config .xbx file

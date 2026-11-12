@@ -1,8 +1,5 @@
-// activefile.cpp: CActiveFile, the dashboard's "load file once into RAM"
-// helper. Tracks the open path, in-memory buffer, and length, with a
-// fallback chain that tries skin-override paths, the loose extracted
-// directory, and the XIP archive in order. Decompiled from the 5960
-// retail XBE.
+// activefile.cpp: CActiveFile, a file pulled into memory by URL. Rebuilt
+// function by function from the 5960 retail XBE (0x2e560..0x2e840).
 
 #include "std.h"
 #include "theseus.h"
@@ -15,12 +12,8 @@ CActiveFile::CActiveFile()
 	m_url = NULL;
 	m_content = NULL;
 	m_contentSize = 0;
-	ZeroMemory(&m_modifiedTime, sizeof(m_modifiedTime));
-	m_readPos = 0;
+	memset(&m_modifiedTime, 0, sizeof(m_modifiedTime));
 	m_inXIP = false;
-
-	m_updatePeriod = 5.0f;
-	m_nextUpdateTime = 0.0f;
 }
 
 CActiveFile::~CActiveFile()
@@ -28,202 +21,157 @@ CActiveFile::~CActiveFile()
 	Reset();
 }
 
+// CActiveFile::Reset()
+// Reconstructed from 5960 retail XBE @ 0x0002e560: frees the URL and the
+// content and zeroes the size and the time.
 void CActiveFile::Reset()
 {
 	delete[] m_url;
-
-	TheseusFreeMemory(m_content);
-
 	m_url = NULL;
+	TheseusFreeMemory(m_content);
 	m_content = NULL;
 	m_contentSize = 0;
-	ZeroMemory(&m_modifiedTime, sizeof(m_modifiedTime));
+	memset(&m_modifiedTime, 0, sizeof(m_modifiedTime));
 }
 
 BYTE *CActiveFile::DetachContent()
 {
-	BYTE *pbContent = m_content;
+	BYTE *content = m_content;
 	m_content = NULL;
-	return pbContent;
+	return content;
 }
 
+// Takes url's content out of a loaded XIP if one has it.
+static bool TakeFromXIP(const TCHAR *url, BYTE *&content, DWORD &size, bool &inXIP)
+{
+	if (!FindInXIPAndDetach(url, content, size))
+		return false;
+	inXIP = true;
+	return true;
+}
+
+// CActiveFile::Fetch(url, searchAppDir, try)
+// Reconstructed from 5960 retail XBE @ 0x0002e5a0. Resets and keeps a copy
+// of url. An empty url succeeds with no content. "string:" (any case) makes
+// the rest of the url the content. A relative url (not UNC, no drive) is
+// resolved against the current folder and looked up in the XIPs; failing
+// that, with searchAppDir set and no such file, it falls back to the app
+// folder + url, and that becomes the url. Then the XIPs are tried with the
+// final url, and last the disk through FetchFile.
 bool CActiveFile::Fetch(const TCHAR *szURL, bool bSearchAppDir /*=false*/, bool bTry /*=false*/)
 {
 	Reset();
-
 	m_url = new TCHAR[_tcslen(szURL) + 1];
 	_tcscpy(m_url, szURL);
+	if (m_url[0] == 0)
+		return true;
 
-	if (m_url[0] == '\0')
+	if (_tcsnicmp(m_url, _T("string:"), 7) == 0)
 	{
+		const TCHAR *text = szURL + 7;
+		m_contentSize = _tcslen(text) * sizeof(TCHAR);
+		m_content = (BYTE *)TheseusAllocMemory(m_contentSize + sizeof(TCHAR));
+		_tcscpy((TCHAR *)m_content, text);
 		return true;
 	}
 
-	else if (_tcsnicmp(m_url, _T("string:"), 7) == 0)
-	{
-		szURL += 7; // skip 'string:'
-
-		m_contentSize = _tcslen(szURL) * sizeof(TCHAR);
-		m_content = (BYTE *)TheseusAllocMemory(m_contentSize + sizeof(TCHAR));
-		_tcscpy((TCHAR *)m_content, szURL);
-	}
-	else // file system
-	{
-		bool bAlreadyAbsolute = (szURL[0] == '\\' && szURL[1] == '\\') ||
-		                        (szURL[0] != 0 && szURL[1] == ':');
+	bool absolute = (szURL[0] == '\\' && szURL[1] == '\\') || (szURL[0] != 0 && szURL[1] == ':');
 #ifdef THESEUS_DESKTOP
-		// A host path is absolute too, and the two tests above only know about
-		// UNC and drive letters. Without this a /Users/... or /home/... URL
-		// gets the current base URL glued to the front of it and never opens.
-		// Xbox paths are either "X:\" or a single leading backslash, so this
-		// can't fire there even if the guard ever comes off.
-		if (szURL[0] == '/') bAlreadyAbsolute = true;
+	// Theseus: a host path (/Users/..., /home/...) is absolute as well.
+	if (szURL[0] == '/')
+		absolute = true;
 #endif
-		if (!bAlreadyAbsolute)
-		{
-			// Make it absolute...
-			TCHAR szBuf[MAX_PATH];
-			MakeAbsoluteURL(szBuf, szURL);
-
-			if (FindInXIPAndDetach(szBuf, m_content, m_contentSize))
-			{
-				m_inXIP = true;
-				return true;
-			}
-
-			if (bSearchAppDir && !DoesFileExist(szBuf))
-			{
-				_tcscpy(szBuf, TheseusGetAppDir());
-				_tcscat(szBuf, szURL);
-			}
-
-			delete[] m_url;
-			m_url = new TCHAR[_tcslen(szBuf) + 1];
-			_tcscpy(m_url, szBuf);
-		}
-
-		if (FindInXIPAndDetach(m_url, m_content, m_contentSize))
-		{
-			m_inXIP = true;
+	if (!absolute)
+	{
+		TCHAR resolved[MAX_PATH];
+		MakeAbsoluteURL(resolved, szURL);
+		if (TakeFromXIP(resolved, m_content, m_contentSize, m_inXIP))
 			return true;
-		}
 
-		if (!FetchFile(bTry))
-			return false;
+		if (bSearchAppDir && !DoesFileExist(resolved))
+		{
+			_tcscpy(resolved, TheseusGetAppDir());
+			_tcscat(resolved, szURL);
+		}
+		delete[] m_url;
+		m_url = new TCHAR[_tcslen(resolved) + 1];
+		_tcscpy(m_url, resolved);
 	}
 
-	return true;
+	if (TakeFromXIP(m_url, m_content, m_contentSize, m_inXIP))
+		return true;
+	return FetchFile(bTry);
 }
 
+// CActiveFile::FetchFile(try)
+// Reconstructed from 5960 retail XBE @ 0x0002e750. Opens the url for
+// sequential reading. With try set it gives up unless the size plus 1 MB of
+// physical memory is free. Reads it all, null terminates it (two zero
+// bytes), and keeps it with its write time. Theseus closes the handle on
+// the memory check too, and on a GetFileTime failure frees the new buffer
+// (5960 frees the old content there).
 bool CActiveFile::FetchFile(bool bTry /*=false*/)
 {
-	BYTE *pbContent;
-	DWORD cbContent;
-	MEMORYSTATUS stat;
-
-	HANDLE hFile;
-
-	if ((hFile = TheseusCreateFile(m_url, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL)) == INVALID_HANDLE_VALUE)
-	{
+	HANDLE file = TheseusCreateFile(m_url, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	if (file == INVALID_HANDLE_VALUE)
 		return false;
-	}
 
-	cbContent = GetFileSize(hFile, NULL);
-
+	DWORD size = GetFileSize(file, NULL);
 	if (bTry)
 	{
-		GlobalMemoryStatus(&stat);
-		if (stat.dwAvailPhys < (cbContent + 1024 * 1024))
+		MEMORYSTATUS memory;
+		GlobalMemoryStatus(&memory);
+		if (memory.dwAvailPhys < size + 1024 * 1024)
 		{
-			CloseHandle(hFile);
+			CloseHandle(file);
 			return false;
 		}
 	}
 
-	pbContent = (BYTE *)TheseusAllocMemory(cbContent + sizeof(TCHAR));
-	ReadFile(hFile, pbContent, cbContent, &cbContent, NULL);
+	BYTE *content = (BYTE *)TheseusAllocMemory(size + sizeof(TCHAR));
+	ReadFile(file, content, size, &size, NULL);
+	memset(content + size, 0, sizeof(TCHAR));
 
-	pbContent[cbContent] = 0;
-#ifdef _UNICODE
-	pbContent[cbContent + 1] = 0;
-#endif
-
-	if (!GetFileTime(hFile, NULL, NULL, &m_modifiedTime))
+	bool timed = GetFileTime(file, NULL, NULL, &m_modifiedTime) != 0;
+	CloseHandle(file);
+	if (!timed)
 	{
-		CloseHandle(hFile);
-		TheseusFreeMemory(pbContent);
+		TheseusFreeMemory(content);
 		return false;
 	}
 
-	CloseHandle(hFile);
-
 	TheseusFreeMemory(m_content);
-
-	m_content = pbContent;
-	m_contentSize = cbContent;
+	m_content = content;
+	m_contentSize = size;
 	m_inXIP = false;
-
 	return true;
 }
 
-bool CActiveFile::Update()
-{
-	if (m_inXIP)
-		return false;
-
-	if (m_url == NULL || m_url[0] == '\0')
-		return false;
-
-	if (m_updatePeriod == 0.0f || TheseusGetNow() < m_nextUpdateTime)
-		return false;
-
-	m_nextUpdateTime = TheseusGetNow() + m_updatePeriod + rnd(1.0f);
-
-	if (_tcsnicmp(m_url, _T("string:"), 7) == 0)
-		return false;
-
-	{
-		HANDLE hFile;
-		if ((hFile = TheseusCreateFile(m_url, 0, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL)) != INVALID_HANDLE_VALUE)
-		{
-			FILETIME ft;
-			VERIFY(GetFileTime(hFile, NULL, NULL, &ft));
-			CloseHandle(hFile);
-
-			if (ft.dwHighDateTime > m_modifiedTime.dwHighDateTime || (ft.dwHighDateTime == m_modifiedTime.dwHighDateTime && ft.dwLowDateTime > m_modifiedTime.dwLowDateTime))
-			{
-				m_modifiedTime = ft;
-				return FetchFile();
-			}
-		}
-		else
-		{
-		}
-	}
-
-	return false;
-}
-
 #ifdef _UNICODE
+// Whether the content starts with the FF FE mark (and has more than it).
 bool CActiveFile::IsUnicode()
 {
-	return (m_content != NULL && m_contentSize > 2 && m_content[0] == 0xff && m_content[1] == 0xfe);
+	return m_content != NULL && m_contentSize > 2 && m_content[0] == 0xff && m_content[1] == 0xfe;
 }
 
+// CActiveFile::MakeUnicode()
+// Reconstructed from 5960 retail XBE @ 0x0002e840. Content with the FF FE
+// mark just has it moved off the front (so it no longer reads as Unicode).
+// Anything else is widened byte by byte into a new buffer, terminated, and
+// the size becomes (bytes + 1) * 2.
 void CActiveFile::MakeUnicode()
 {
 	if (IsUnicode())
 	{
-		// NOTE: Once this happens, IsUnicode will return false!
-		MoveMemory(m_content, m_content + 2, m_contentSize);
+		memmove(m_content, m_content + 2, m_contentSize);
 		return;
 	}
 
-	TCHAR *wsz = (TCHAR *)TheseusAllocMemory((m_contentSize + 1) * 2);
-	Unicode(wsz, (const char *)m_content, m_contentSize);
-	wsz[m_contentSize] = 0;
+	TCHAR *wide = (TCHAR *)TheseusAllocMemory((m_contentSize + 1) * 2);
+	Unicode(wide, (const char *)m_content, m_contentSize);
+	wide[m_contentSize] = 0;
 	TheseusFreeMemory(m_content);
-	m_content = (BYTE *)wsz;
+	m_content = (BYTE *)wide;
 	m_contentSize = (m_contentSize + 1) * 2;
 	m_inXIP = false;
 }

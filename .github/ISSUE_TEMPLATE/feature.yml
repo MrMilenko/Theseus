@@ -1,0 +1,52 @@
+name: Feature request
+description: An idea for something Theseus doesn't do yet.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Anything new has to fit the dashboard's look and render through the 3D scene, so describe the problem first and the solution second.
+  - type: dropdown
+    id: build
+    attributes:
+      label: Which build is it for?
+      options:
+        - UIX Desktop (macOS, Windows, Linux)
+        - Xbox dashboard
+        - Both
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Games grid and launching
+        - Media (library, Plex, Jellyfin, playback)
+        - Music, sound or visualizer
+        - Xbox Cloud Gaming and remote play
+        - Skins, XAP scenes or XIPs
+        - Controls
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem or the missing piece, in your own words.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to see?
+      description: How it would work from where you sit. Mockups and screenshots welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you've tried instead
+      description: Workarounds, other apps that do it well, or the original dashboard's behavior if it's relevant.

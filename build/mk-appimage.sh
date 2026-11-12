@@ -9,7 +9,8 @@ set -euo pipefail
 
 SRC="${1:-$HOME/builds/theseus/desktop}"
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="${2:-$REPO/UIX-Desktop-x86_64.AppImage}"
+ARCH="$(uname -m)"
+OUT="${2:-$REPO/UIX-Desktop-$ARCH.AppImage}"
 APP="$REPO/AppDir"
 
 command -v patchelf >/dev/null || { echo "need patchelf"; exit 1; }
@@ -86,9 +87,9 @@ echo "AppDir: $(ls "$APP/usr/lib" | wc -l) bundled libs, $(du -sh "$APP" | cut -
 APPIMAGETOOL="${APPIMAGETOOL:-}"
 if [ -z "$APPIMAGETOOL" ]; then
   APPIMAGETOOL=/tmp/appimagetool
-  wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage -O "$APPIMAGETOOL" ||
-  wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage -O "$APPIMAGETOOL"
+  wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$ARCH.AppImage -O "$APPIMAGETOOL" ||
+  wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-$ARCH.AppImage -O "$APPIMAGETOOL"
   chmod +x "$APPIMAGETOOL"
 fi
-APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APP" "$OUT"
+ARCH="$ARCH" APPIMAGE_EXTRACT_AND_RUN=1 "$APPIMAGETOOL" "$APP" "$OUT"
 echo "built: $OUT ($(du -h "$OUT" | cut -f1))"

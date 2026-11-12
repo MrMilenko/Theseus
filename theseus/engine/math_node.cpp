@@ -1,5 +1,5 @@
-// math_node.cpp: CMathClass, the script's Math object. The 5960 part is
-// rebuilt from the retail XBE (0x32950..0x32ba0); findings are in
+// math_node.cpp: the script Math object, a class with the usual constants
+// and functions. Rebuilt from the 5960 retail XBE (0x32950..0x32ba0); see
 // docs/decomp/Math.md.
 
 #include "std.h"
@@ -7,11 +7,11 @@
 #include "node.h"
 #include "runner.h"
 
-// The one Math object; the binary's lives in .data and is never freed.
+// One for the whole run; it ignores reference counting.
 CMathClass g_Math;
 
-// FND table at 0x0017fb18: the 18 names and signatures script binds to.
-// projectMEnabled and itoa are Theseus additions.
+// FND at 0x0017fb18; projectMEnabled and itoa are Theseus's.
+
 #define _FND_CLASS CMathClass
 START_NODE_FUN(CMathClass, CNodeClass)
 	NODE_FUN_NN(abs)
@@ -38,107 +38,50 @@ END_NODE_FUN()
 #undef _FND_CLASS
 
 // CMathClass::CMathClass()
-// Reconstructed from 5960 retail XBE @ 0x00032950. Ghidra decompile:
-//     <CNodeClass "Math", no factory, no base, no props, linked into the list>
-//     E = 2.7182817; LN2 = 0.6931472; LN10 = 2.3025851; LOG2E = 1.442;
-//     LOG10E = 0.434; PI = 3.1415927; SQRT1_2 = 0.70710677; SQRT2 = 1.4142135;
-// These are the float constants read out of 0x2c034..0x2c04c. LOG2E and
-// LOG10E really are stored to three places in the binary.
+// Reconstructed from 5960 retail XBE @ 0x00032950: registers the "Math"
+// class and loads the eight constants from 0x0002c034..0x0002c04c. LOG2E
+// and LOG10E are stored as 1.442 and 0.434 there, so they are here.
 CMathClass::CMathClass() : CNodeClass(_T("Math"), 0, NULL, NULL, NULL)
 {
-	m_E = 2.7182817f;
-	m_LN2 = 0.6931472f;
-	m_LN10 = 2.3025851f;
-	m_LOG2E = 1.442f;
-	m_LOG10E = 0.434f;
-	m_PI = 3.1415927f;
+	m_E       = 2.7182818f;
+	m_LN2     = 0.6931472f;
+	m_LN10    = 2.3025851f;
+	m_LOG2E   = 1.442f;
+	m_LOG10E  = 0.434f;
+	m_PI      = 3.1415927f;
 	m_SQRT1_2 = 0.70710677f;
-	m_SQRT2 = 1.4142135f;
+	m_SQRT2   = 1.4142135f;
 }
 
-// The static object can't be released; AddRef/Release do nothing.
-void CMathClass::AddRef()
-{
-}
+void CMathClass::AddRef()  {}
+void CMathClass::Release() {}
 
-void CMathClass::Release()
-{
-}
+// The functions, 5960 retail XBE @ 0x00032a20..0x00032ba0: each is the
+// matching x87 instruction or CRT call on a float. Three details are the
+// binary's: atan2 hands its arguments to the arctangent swapped, round is
+// (int)(n + 0.5), and random is rand() over the CRT's top value.
+float CMathClass::abs(float n)   { return fabsf(n); }
+float CMathClass::acos(float n)  { return acosf(n); }
+float CMathClass::asin(float n)  { return asinf(n); }
+float CMathClass::atan(float n)  { return atanf(n); }
+float CMathClass::ceil(float n)  { return ceilf(n); }
+float CMathClass::cos(float n)   { return cosf(n); }
+float CMathClass::exp(float n)   { return expf(n); }
+float CMathClass::floor(float n) { return floorf(n); }
+float CMathClass::log(float n)   { return logf(n); }
+float CMathClass::sin(float n)   { return sinf(n); }
+float CMathClass::sqrt(float n)  { return sqrtf(n); }
+float CMathClass::tan(float n)   { return tanf(n); }
 
-// One argument wrappers, 0x32a20..0x32ba0 (sig 10, float in, float out).
-// Each is a single x87 instruction or CRT call in the binary:
-//     abs  fabs        acos  0x32a30 -> CRT acos   asin  0x32a40 -> CRT asin
-//     atan 0x32a50     ceil  __ceil(double)        cos   fcos
-//     exp  0x32aa0     floor __floor(double)       log   0x32ae0
-//     sin  fsin        sqrt  fsqrt                 tan   fptan
-// A float wrapper around each library function is the whole behavior.
-float CMathClass::abs(float number)   { return fabsf(number); }
-float CMathClass::acos(float number)  { return acosf(number); }
-float CMathClass::asin(float number)  { return asinf(number); }
-float CMathClass::atan(float number)  { return atanf(number); }
-float CMathClass::ceil(float number)  { return ceilf(number); }
-float CMathClass::cos(float number)   { return cosf(number); }
-float CMathClass::exp(float number)   { return expf(number); }
-float CMathClass::floor(float number) { return floorf(number); }
-float CMathClass::log(float number)   { return logf(number); }
-float CMathClass::sin(float number)   { return sinf(number); }
-float CMathClass::sqrt(float number)  { return sqrtf(number); }
-float CMathClass::tan(float number)   { return tanf(number); }
+float CMathClass::atan2(float y, float x)         { return atan2f(x, y); }
+float CMathClass::pow(float base, float exponent) { return powf(base, exponent); }
 
-// CMathClass::atan2(y, x)   [script fn 'atan2', FND 0x0017fb78, sig 11]
-// Reconstructed from 5960 retail XBE @ 0x00032a60. Ghidra decompile:
-//     return fpatan(arg2, arg1);      // atan(arg2 / arg1)
-// The binary feeds the second argument as the numerator, so script's
-// atan2(a, b) is atan2f(b, a). Scripts are written against that.
-float CMathClass::atan2(float y, float x)
-{
-	return atan2f(x, y);
-}
+// @ 0x00032af0 / 0x00032b10: the second argument wins ties.
+float CMathClass::max(float a, float b) { return b < a ? a : b; }
+float CMathClass::min(float a, float b) { return a < b ? a : b; }
 
-// CMathClass::pow(base, exponent)   [script fn 'pow', FND 0x0017fc38, sig 11]
-// Reconstructed from 5960 retail XBE @ 0x00032b30: a jump into the CRT pow.
-float CMathClass::pow(float base, float exponent)
-{
-	return powf(base, exponent);
-}
-
-// CMathClass::max / min   [script fns 'max' 0x0017fc08, 'min' 0x0017fc20, sig 11]
-// Reconstructed from 5960 retail XBE @ 0x00032af0 / 0x00032b10. Ghidra decompile:
-//     max: if (b < a) return a; return b;
-//     min: if (a < b) return a; return b;
-float CMathClass::max(float number1, float number2)
-{
-	if (number2 < number1)
-		return number1;
-	return number2;
-}
-
-float CMathClass::min(float number1, float number2)
-{
-	if (number1 < number2)
-		return number1;
-	return number2;
-}
-
-// CMathClass::random()   [script fn 'random', FND 0x0017fc50, sig 9]
-// Reconstructed from 5960 retail XBE @ 0x00032b40. Ghidra decompile:
-//     return rand() * (1.0 / 32767);
-// 32767 is the Xbox CRT's RAND_MAX; Theseus divides by the host's RAND_MAX
-// so desktop stays in 0..1.
-float CMathClass::random()
-{
-	return (float)rand() / (float)RAND_MAX;
-}
-
-// CMathClass::round(n)   [script fn 'round', FND 0x0017fc68, sig 10]
-// Reconstructed from 5960 retail XBE @ 0x00032b60. Ghidra decompile:
-//     return (float)(int)(n + 0.5);
-// Adds a half and truncates toward zero, so negative halves round up.
-float CMathClass::round(float number)
-{
-	int whole = (int)(number + 0.5f);
-	return (float)whole;
-}
+float CMathClass::random()       { return (float)rand() / (float)RAND_MAX; }
+float CMathClass::round(float n) { return (float)(int)(n + 0.5f); }
 
 // Desktop-only feature flag readable from XAP scripts so the music scene
 // can defer to the projectM overlay rather than running its own fullscreen

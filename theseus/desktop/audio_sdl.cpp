@@ -191,12 +191,14 @@ static Mix_Chunk* LoadXboxADPCM(const char* path)
     }
     free(adpcmData);
 
-    // Build a Mix_Chunk with the PCM data
-    // We need to convert to the audio device format
+    // A chunk has to be in the mixer's own format, mono files included.
+    int mixHz = 44100, mixCh = 2;
+    Uint16 mixFmt = MIX_DEFAULT_FORMAT;
+    Mix_QuerySpec(&mixHz, &mixFmt, &mixCh);
     SDL_AudioCVT cvt;
     int built = SDL_BuildAudioCVT(&cvt,
-        AUDIO_S16LSB, channels, sampleRate,  // source format
-        AUDIO_S16LSB, channels, 44100);       // target (our mixer format)
+        AUDIO_S16LSB, channels, sampleRate,
+        mixFmt, mixCh, mixHz);
 
     uint8_t* finalBuf;
     uint32_t finalLen;
@@ -409,7 +411,9 @@ int DashAudio_Init(void)
     int frames = g_audioBufferFrames;
     if (frames < 256)  frames = 256;
     if (frames > 8192) frames = 8192;
-    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, frames) < 0) {
+    // No format changes allowed: SDL converts for the device, and the ADPCM
+    // chunks and the visualizer tap can count on 44.1 kHz 16 bit stereo.
+    if (Mix_OpenAudioDevice(44100, MIX_DEFAULT_FORMAT, 2, frames, NULL, 0) < 0) {
         fprintf(stderr, "[Audio] Mix_OpenAudio failed: %s\n", Mix_GetError());
         return -1;
     }
