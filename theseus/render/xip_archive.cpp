@@ -94,6 +94,8 @@ static BYTE* AllocBlockBuffer()
 //     index = pos % 0x10000; return 1;
 // current ends up one past the block just read, so seeking back into it reads
 // it again. That is the binary's behavior and costs nothing that matters.
+// Refusing an offset past the end of the file is Theseus's: Read would spin
+// forever on it.
 bool CFileBuffer::Seek(int nPos)
 {
 	if (m_buffer == NULL)
@@ -116,7 +118,10 @@ bool CFileBuffer::Seek(int nPos)
 		m_bufferSize = (int)cbGot;
 	}
 
-	m_readIndex = nPos % XIP_BLOCK;
+	const int nIndex = nPos % XIP_BLOCK;
+	if (nIndex > m_bufferSize)
+		return false;
+	m_readIndex = nIndex;
 	return true;
 }
 
@@ -225,20 +230,24 @@ static void RunLoader(LPTHREAD_START_ROUTINE pfnLoad, CXipFile* pXip)
 //     xip->Load(); return xip;
 // The key keeps "default" while Open drops it, so default.xip never matches
 // itself here; nothing loads it twice. Theseus refuses when the pool is
-// full, where 5960 writes past it, and a sync caller learns about a failed
-// load. isSkin is Theseus's and unused here.
+// full, where 5960 writes past it, a sync caller learns about a failed load,
+// and a name too long or with no extension is refused. isSkin is Theseus's
+// and unused here.
 CXipFile* LoadXIP(const TCHAR* szURL, bool bSync, bool isSkin)
 {
+	const TCHAR* szPrefix = (szURL[0] != 0 && szURL[1] != ':') ? _T("Q:/Xips/") : _T("");
+	if (_tcslen(szPrefix) + _tcslen(szURL) >= MAX_PATH)
+		return NULL;
 	TCHAR szPath[MAX_PATH];
-	if (szURL[0] != 0 && szURL[1] != ':')
-		_tcscpy(szPath, _T("Q:/Xips/"));
-	else
-		szPath[0] = 0;
+	_tcscpy(szPath, szPrefix);
 	_tcscat(szPath, szURL);
 
 	char szKey[MAX_PATH];
 	CleanFilePath(szKey, szPath);
-	*strrchr(szKey, '.') = 0;
+	char* pchExt = strrchr(szKey, '.');
+	if (pchExt == NULL)
+		return NULL;
+	*pchExt = 0;
 
 	for (int i = 0; i < c_nXipFileCount; i++)
 	{
@@ -289,7 +298,9 @@ CXipFile* LoadXIP(const TCHAR* szURL, bool bSync, bool isSkin)
 //         }
 //     }
 //     return 0;
-// The caller owns the bytes from here on; newer archives win.
+// The caller owns the bytes from here on; newer archives win. Only raw
+// entries are handed out (Theseus's check): a texture or mesh ref isn't
+// m_size bytes long, and a bad directory can point a name at one.
 bool FindInXIPAndDetach(const TCHAR* szURL, BYTE*& pbContent, DWORD& cbContent)
 {
 	char szPath[MAX_PATH];
@@ -303,6 +314,9 @@ bool FindInXIPAndDetach(const TCHAR* szURL, BYTE*& pbContent, DWORD& cbContent)
 
 		const int n = xip.Find(szPath);
 		if (n < 0 || xip.m_objects[n] == NULL)
+			continue;
+		const DWORD type = xip.m_filedata[n].m_type;
+		if (type == XIP_TYPE_TEXTURE || type == XIP_TYPE_MESH_REFERENCE)
 			continue;
 
 		pbContent = (BYTE*)xip.m_objects[n];
@@ -459,7 +473,10 @@ bool CXipFile::Open(const TCHAR* szXipFileName)
 
 	char szDir[MAX_PATH];
 	CleanFilePath(szDir, szXipFileName);
-	*strrchr(szDir, '.') = 0;
+	char* pchExt = strrchr(szDir, '.');
+	if (pchExt == NULL)
+		return false;
+	*pchExt = 0;
 
 	char* pszBase = strrchr(szDir, '\\');
 	pszBase = pszBase != NULL ? pszBase + 1 : szDir;
@@ -516,6 +533,35 @@ static bool XipSizeMatches(CFileBuffer& file, const XIPHEADER& hdr)
 	return cbFile != (DWORD)-1 && cbFile == hdr.m_dataStart + hdr.m_dataSize;
 }
 
+// The tables come from the file, so check them before anything indexes with
+// them: every name inside the pool and terminated, every directory entry
+// naming a real entry, and every entry that gets read lying inside the data.
+// 5960 trusts all of it.
+static bool XipTablesValid(const XIPHEADER& hdr, const FILEDATA* pFiles, const FILENAME* pNames,
+	const char* pchPool, int cbPool)
+{
+	if (pchPool[cbPool - 1] != 0)
+		return false;
+
+	for (int i = 0; i < hdr.m_nameCount; i++)
+	{
+		if (pNames[i].m_fileDataIndex >= hdr.m_fileCount || pNames[i].m_nameOffset >= cbPool)
+			return false;
+	}
+
+	for (int i = 0; i < hdr.m_fileCount; i++)
+	{
+		const FILEDATA& fd = pFiles[i];
+		if (fd.m_type == XIP_TYPE_MESH || fd.m_type == XIP_TYPE_MESH_REFERENCE)
+			continue;
+		if ((unsigned long long)fd.m_dataOffset + fd.m_size > hdr.m_dataSize)
+			return false;
+		if (fd.m_type == XIP_TYPE_VERTEXBUFFER && fd.m_size < 8)
+			return false;
+	}
+	return true;
+}
+
 // An archive that fails to load is never read again.
 static void XipClose(CFileBuffer& file)
 {
@@ -539,8 +585,8 @@ static void XipClose(CFileBuffer& file)
 //     names = new(cbNames); read;
 //     CreateObjects(); loaded = 1; return 1;
 // Theseus opens through its own path layer and leaves the y: to x: swap out.
-// Every read must be whole, the header has to describe this exact file, and
-// a failed load closes its handle.
+// Every read must be whole, the header has to describe this exact file, the
+// tables have to hold together, and a failed load closes its handle.
 bool CXipFile::Load()
 {
 	HANDLE hFile = TheseusCreateFile(m_fileName, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING,
@@ -578,6 +624,13 @@ bool CXipFile::Load()
 		|| !XipReadExact(m_file, m_directory, cbDirectory)
 		|| !XipReadExact(m_file, m_names, cbNames))
 	{
+		XipClose(m_file);
+		return false;
+	}
+
+	if (!XipTablesValid(m_header, m_filedata, m_directory, m_names, cbNames))
+	{
+		TRACE(_T("\001CXipFile::Load: %s has a broken table\n"), m_fileName);
 		XipClose(m_file);
 		return false;
 	}
@@ -808,7 +861,8 @@ int CXipFile::Find(const char* szURL)
 //     if (n == -1 || (type != -1 && filedata[n].type != type)) return 0;
 //     if (type == 2) objects[n]->AddRef();     // inlined D3DResource_AddRef
 //     return objects[n];
-// A texture handed out is the caller's reference.
+// A texture handed out is the caller's reference. One that failed to load is
+// NULL, which the binary would AddRef anyway.
 void* CXipFile::FindObject(const char* szURL, int nType)
 {
 	const int n = Find(szURL);
@@ -817,7 +871,7 @@ void* CXipFile::FindObject(const char* szURL, int nType)
 	if (nType != -1 && m_filedata[n].m_type != (DWORD)nType)
 		return NULL;
 
-	if (nType == XIP_TYPE_TEXTURE)
+	if (nType == XIP_TYPE_TEXTURE && m_objects[n] != NULL)
 		((LPDIRECT3DTEXTURE8)m_objects[n])->AddRef();
 	return m_objects[n];
 }
@@ -832,16 +886,22 @@ void* CXipFile::FindObject(const char* szURL, int nType)
 //     read filedata[n].size bytes into buf->ib's data;
 //     buf->indexCount = filedata[n].size >> 1;
 // The binary builds the resource by hand and writes into it; Theseus goes
-// through the device so desktop gets a bgfx buffer, and locks to write.
+// through the device so desktop gets a bgfx buffer, locks to write, and
+// skips the bytes if the device can't give it a buffer.
 void CXipFile::ReadIndexBuffer(int nFileIndex, int nBuffer)
 {
 	CMeshBuffer& buf = m_meshBuffers[nBuffer];
 	const int cb = m_filedata[nFileIndex].m_size;
 
+	buf.m_indexBuffer = NULL;
 	TheseusCreateIndexBuffer(cb, D3DUSAGE_DYNAMIC, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &buf.m_indexBuffer);
 
-	BYTE* pb;
-	buf.m_indexBuffer->Lock(0, cb, &pb, XIP_LOCK);
+	BYTE* pb = NULL;
+	if (buf.m_indexBuffer == NULL || FAILED(buf.m_indexBuffer->Lock(0, cb, &pb, XIP_LOCK)))
+	{
+		XipDiscard(m_file, cb);
+		return;
+	}
 	m_file.Read(pb, cb);
 	buf.m_indexBuffer->Unlock();
 
@@ -885,10 +945,15 @@ void CXipFile::ReadVertexBuffer(int nFileIndex, int nBuffer)
 #endif
 	buf.m_vertexStride = cbVerts / nVerts;
 
+	buf.m_vertexBuffer = NULL;
 	TheseusCreateVertexBuffer(cbVerts, D3DUSAGE_DYNAMIC, fvf, D3DPOOL_DEFAULT, &buf.m_vertexBuffer);
 
-	BYTE* pb;
-	buf.m_vertexBuffer->Lock(0, 0, &pb, XIP_LOCK);
+	BYTE* pb = NULL;
+	if (buf.m_vertexBuffer == NULL || FAILED(buf.m_vertexBuffer->Lock(0, 0, &pb, XIP_LOCK)))
+	{
+		XipDiscard(m_file, cbVerts);
+		return;
+	}
 	m_file.Read(pb, cbVerts);
 	buf.m_vertexBuffer->Unlock();
 
@@ -963,7 +1028,8 @@ bool CleanupMeshCache()
 //     locked = 0; reloading = 0;
 // Brings back what CleanupMeshCache freed, seeking to each buffer since the
 // rest of the archive is still in memory. The CHECKs are Theseus's: an entry
-// CreateObjects refused has no slot to come back to.
+// CreateObjects refused has no slot to come back to. So is skipping a buffer
+// whose offset can't be reached.
 void CXipFile::ReloadMeshBuffers()
 {
 	m_locked = true;
@@ -977,15 +1043,17 @@ void CXipFile::ReloadMeshBuffers()
 		{
 			if (!CHECK(nIndexBuffer < m_indexBufferCount))
 				continue;
-			m_file.Seek(m_header.m_dataStart + fd.m_dataOffset);
-			ReadIndexBuffer(i, nIndexBuffer++);
+			const int nSlot = nIndexBuffer++;
+			if (m_file.Seek(m_header.m_dataStart + fd.m_dataOffset))
+				ReadIndexBuffer(i, nSlot);
 		}
 		else if (fd.m_type == XIP_TYPE_VERTEXBUFFER)
 		{
 			if (!CHECK(nVertexBuffer < m_vertexBufferCount))
 				continue;
-			m_file.Seek(m_header.m_dataStart + fd.m_dataOffset);
-			ReadVertexBuffer(i, nVertexBuffer++);
+			const int nSlot = nVertexBuffer++;
+			if (m_file.Seek(m_header.m_dataStart + fd.m_dataOffset))
+				ReadVertexBuffer(i, nSlot);
 		}
 	}
 
@@ -1034,8 +1102,8 @@ bool CXipFile::IsReloading() const
 //     DrawIndexedVertices(TRIANGLELIST, count * 3, indices + first);
 // Theseus sets those shader matrices on every world change in shape_render
 // instead (SetFalloffShaderFrameValues), and skips the AA swap on desktop
-// where the shim has no edge AA. The index guard and the draw counter are
-// Theseus's.
+// where the shim has no edge AA. The index guard, the check that the slice
+// fits its index buffer, and the draw counter are Theseus's.
 void CMeshRef::Render(bool bSetFVF)
 {
 	if (m_meshBufferIndex >= m_xipFile->m_vertexBufferCount)
@@ -1051,6 +1119,10 @@ void CMeshRef::Render(bool bSetFVF)
 		m_xipFile->Reload();
 		return;
 	}
+
+	if (buf.m_indexBuffer == NULL || m_firstIndex < 0 || m_primitiveCount < 0
+		|| (long long)m_firstIndex + 3LL * m_primitiveCount > buf.m_indexCount)
+		return;
 
 	if (bSetFVF)
 		TheseusSetVertexShader(GetFixedFunctionShader(buf.m_fvf));

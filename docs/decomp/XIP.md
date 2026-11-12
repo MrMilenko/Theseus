@@ -199,7 +199,15 @@ on every world matrix change instead (see `SetFalloffShaderFrameValues`, `0x0005
 - `CreateObjects` refuses mesh references past the last slot and mesh buffers past ten, and reads
   past what it refuses so the entries after stay in line. Textures must hold an XPR header and a
   resource header, and their sizes must fall inside the entry.
-- Reload refuses buffers `CreateObjects` refused, and `CMeshRef` refuses an index past the buffers.
+- `Load` also refuses tables that don't hold together: a name outside the pool or an unterminated
+  pool, a directory record naming an entry that doesn't exist, an entry whose bytes run past the
+  data, or a vertex buffer too short for its count and FVF.
+- `Seek` refuses an offset past the end of the file, which would leave `Read` spinning, and reload
+  skips a buffer it can't seek to.
+- Reload refuses buffers `CreateObjects` refused. `CMeshRef` refuses an index past the buffers and
+  a slice that runs past its index buffer.
+- `FindObject` skips the `AddRef` on a texture that failed to load, `FindInXIPAndDetach` hands out
+  raw entries only, and `LoadXIP` refuses a path with no extension or one too long to build.
 - Buffers are made through the device (bgfx on desktop) and locked to write.
 - Desktop: loads and reloads run inline, textures are decoded in software, raw entries get a
   terminating zero, a refused read is refused instead of rebooting, and there is no edge AA swap.
