@@ -419,3 +419,8 @@ loaded (`+0x28`): clear arrive, bind this level's control as the controller, cal
 - An Inline whose XIP fails to load runs FinishLoad with the absolute url never written.
 - A Background, being a plain CNode, clears its own visible flag the first time a group
   renders it.
+- Background and Transform fades keep running if fade is set to 0 mid fade. The next
+  Advance divides by 0, clamps to the end value and overwrites any alpha stored directly in
+  the meantime.
+- Background's PRD table lists `fade` at `+0x30` and `alpha` at `+0x48` after skyColor,
+  backdrop and isBound; an `alpha` write goes through the SetAlpha path, so it fades too.

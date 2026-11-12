@@ -1504,18 +1504,32 @@ START_NODE_PROPS(CBackground, CNode)
     NODE_PROP(pt_vec3, CBackground, skyColor)
     NODE_PROP(pt_node, CBackground, backdrop)
     NODE_PROP(pt_boolean, CBackground, isBound)
+    NODE_PROP(pt_number, CBackground, fade)
+    NODE_PROP(pt_number, CBackground, alpha)
 END_NODE_PROPS()
+
+#define _FND_CLASS CBackground
+START_NODE_FUN(CBackground, CNode)
+    NODE_FUN_VN(SetAlpha)
+    NODE_FUN_VN(DisappearAfter)
+END_NODE_FUN()
+#undef _FND_CLASS
 
 // CBackground::CBackground()
 // Reconstructed from 5960 retail XBE @ 0x0004fc90. Ghidra decompile:
-//     skyColor = 0; backdrop = 0; isBound = 0; vb = 0; (+ the fade fields below)
+//     skyColor = 0; backdrop = 0; isBound = 0; fade = 0; alphaClock = 0.0;
+//     alphaStart = alphaEnd = 0; alpha = 1.0; disappear = 0.0; vb = 0;
 //     if (g_background == 0) { g_background = this; isBound = 1; }
-// 5960's Background also has fade, alpha, SetAlpha and DisappearAfter; Theseus
-// doesn't carry them.
 CBackground::CBackground() :
     m_backdrop(NULL),
     m_skyColor(0.0f, 0.0f, 0.0f),
     m_isBound(false),
+    m_fade(0.0f),
+    m_timeAlphaStart(0.0),
+    m_alphaStart(0.0f),
+    m_alphaEnd(0.0f),
+    m_alpha(1.0f),
+    m_timeToDisappear(0.0),
     m_vb(NULL)
 {
     if (TheseusGetBackground() == NULL)
@@ -1538,15 +1552,56 @@ CBackground::~CBackground()
         TheseusSetBackground(NULL);
 }
 
+// CBackground::SetAlpha(a)   [script fn 'SetAlpha', FND 0x00187f10, sig 19]
+// Reconstructed from 5960 retail XBE @ 0x0004fde0:
+//     if (fade > 0) { alphaClock = now; alphaStart = alpha; alphaEnd = a; }
+//     else alpha = a;
+void CBackground::SetAlpha(float a)
+{
+    if (m_fade > 0.0f)
+    {
+        m_timeAlphaStart = TheseusGetNow();
+        m_alphaStart = m_alpha;
+        m_alphaEnd = a;
+    }
+    else
+    {
+        m_alpha = a;
+    }
+}
+
+// CBackground::DisappearAfter(t)   [script fn 'DisappearAfter', FND 0x00187f28, sig 19]
+// Reconstructed from 5960 retail XBE @ 0x0004fe20:
+//     disappear = (double)(t + (float)now);
+// The sum is single precision in the binary, kept that way here.
+void CBackground::DisappearAfter(float t)
+{
+    m_timeToDisappear = (double)(t + (float)TheseusGetNow());
+}
+
 // CBackground::Advance(nSeconds)
-// Reconstructed from 5960 retail XBE @ 0x0004fe30. CNode::Advance, the
-// backdrop's Advance, then on first use a 4 vertex D3DVERTEX strip at
-// z = -10000 covering the screen, uv (1,1) (0,1) (1,0) (0,0). The normals
-// hold copies of the corner positions as the binary writes them (nz = 1).
-// The binary steps its alpha fade first; Theseus has none.
+// Reconstructed from 5960 retail XBE @ 0x0004fe30. CNode::Advance, then the
+// alpha fade: t = (now - alphaClock) / fade, clock stopped and t = 1 once it
+// gets there, alpha = alphaStart + (alphaEnd - alphaStart) * t. A disappear
+// time that has come clears itself and sets alpha to 0. Then the backdrop's
+// Advance, and on first use a 4 vertex D3DVERTEX strip at z = -10000 covering
+// the screen, uv (1,1) (0,1) (1,0) (0,0). The normals hold copies of the
+// corner positions as the binary writes them (nz = 1).
 void CBackground::Advance(float nSeconds)
 {
     CNode::Advance(nSeconds);
+
+    if (m_timeAlphaStart > 0.0)
+    {
+        float t = FadeStep(m_timeAlphaStart, m_fade);
+        m_alpha = m_alphaStart + (m_alphaEnd - m_alphaStart) * t;
+    }
+
+    if (m_timeToDisappear > 0.0 && m_timeToDisappear <= TheseusGetNow())
+    {
+        m_timeToDisappear = 0.0;
+        m_alpha = 0.0f;
+    }
 
     if (m_backdrop != NULL)
         m_backdrop->Advance(nSeconds);
@@ -1592,10 +1647,9 @@ void CBackground::Advance(float nSeconds)
 // texture (nothing to do without one), binds it to stage 0 and clears stage
 // 1, saves projection, world and view, sets the ortho screen projection with
 // identity world and view, and draws the strip from Advance with lighting,
-// z writes and backface culling (CCW) saved, set and restored around it.
-// Color comes from the texture. The binary's alpha also comes from a texture
-// factor driven by Background's fade, with blending on; Theseus's Background
-// has no fade, so it takes alpha from the texture and draws with blending off.
+// z writes, blending and culling saved, set (off, off, on, CCW) and restored.
+// Color comes from the texture, alpha from the texture factor,
+// (int)(alpha * 255) << 24, so the backdrop fades over the sky color.
 // The app only calls this when there's a backdrop.
 void CBackground::RenderBackdrop()
 {
@@ -1624,16 +1678,17 @@ void CBackground::RenderBackdrop()
     TheseusGetRenderState(D3DRS_ZWRITEENABLE, &zwrite);
 
     TheseusSetRenderState(D3DRS_LIGHTING, FALSE);
-    TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, FALSE);
+    TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
     TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
     TheseusSetRenderState(D3DRS_ZWRITEENABLE, FALSE);
 
     TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-    TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+    TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
     TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
     TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
     TheseusSetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
     TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+    TheseusSetRenderState(D3DRS_TEXTUREFACTOR, (DWORD)(int)(m_alpha * 255.0f) << 24);
 
     TheseusGetD3DDev()->SetStreamSource(0, m_vb, sizeof(D3DVERTEX));
     TheseusGetD3DDev()->SetVertexShader(D3DFVF_VERTEX);
@@ -1666,11 +1721,21 @@ void CBackground::Bind()
 //     if (prd->offset == 0x2c) { if (*value) { Bind inlined } }
 //     else if (prd->offset == 0x48) { SetAlpha inlined; return 0; }
 //     return 1;
-// Setting isBound true binds; false does nothing. Theseus has no alpha.
+// Setting isBound true binds; false does nothing. An alpha write fades like
+// SetAlpha and the raw store is vetoed.
 bool CBackground::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
-    if (PTR2INT(pprd->pbOffset) == offsetof(m_isBound) && *(const bool*)pvValue)
-        Bind();
+    int offset = PTR2INT(pprd->pbOffset);
+    if (offset == offsetof(m_isBound))
+    {
+        if (*(const bool*)pvValue)
+            Bind();
+    }
+    else if (offset == offsetof(m_alpha))
+    {
+        SetAlpha(*(const float*)pvValue);
+        return false;
+    }
     return true;
 }
 
