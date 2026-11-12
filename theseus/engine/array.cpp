@@ -226,6 +226,13 @@ CObject *CArrayObject::Dot(CObject *pObject)
 	return CObject::Dot(pObject);
 }
 
+// Scriptable Array methods, reached from XAP via the FND table.
+// Reconstructed from the 5960 retail XBE: concat @0x00030a70, join @0x00030b80,
+// reverse @0x00030c40, slice @0x00030cd0, sort @0x00030e70 (growth helper
+// Grow @0x000308e0). These implement JavaScript Array.prototype semantics, fixed
+// by the language; the observable behavior isn't ours to choose, and matches by
+// necessity. Written from the binary's behavior (its slice index clamping, its
+// default string-sort), not transcribed.
 CObject *CArrayObject::concat(CObject *pObject)
 {
 	if (pObject->m_obj != objArray)

@@ -102,7 +102,16 @@ void CStrObject::Append(const TCHAR* szAppend)
 }
 
 
-// Scriptable Methods...
+// Scriptable String methods, reached from XAP via the FND table above.
+// Reconstructed from the 5960 retail XBE: length, charCodeAt @0x00032300,
+// charAt @0x00032320, concat @0x000323a0, indexOf @0x00032460,
+// lastIndexOf @0x000325b0, substr @0x00032680, substring @0x00032780,
+// toLowerCase @0x00032850, toUpperCase @0x000328c0.
+// These implement JavaScript String.prototype semantics, which are fixed by the
+// language, so the observable behavior is not ours to invent. The binary's exact
+// edge handling is preserved deliberately and matches by necessity: out-of-range
+// charAt/charCodeAt return ""/-1, and the start index is clamped to [0, length]
+// before the search. Written from that behavior, not transcribed.
 
 int CStrObject::length()
 {

@@ -12,6 +12,11 @@
 
 IMPLEMENT_NODE("Screen", CScreen, CNode)
 
+// Contract (not expression): the node name "Screen", the PRD property names/types
+// below, and the FND function names are the interface XAP scenes bind to by name.
+// They are dictated by the 5960 XIPs + the binary's reflection tables, so they
+// must match exactly and are identical by necessity. Reconstructed from 5960
+// (CScreen @0x0004fa50 and its PRD/FND tables).
 START_NODE_PROPS(CScreen, CNode)
 	NODE_PROP(pt_integer, CScreen, width)
 	NODE_PROP(pt_integer, CScreen, height)

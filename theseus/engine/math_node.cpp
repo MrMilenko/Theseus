@@ -37,7 +37,11 @@ START_NODE_FUN(CMathClass, CNodeClass)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-// Constructor: populate JS Math constants.
+// Constructor: populate JS Math constants. These are the standard mathematical
+// constants (e, ln2, pi, sqrt2 ...), fixed values, identical in any Math
+// implementation. Reconstructed from the 5960 retail XBE: note LOG2E/LOG10E are
+// stored at the binary's low precision (1.442f / 0.434f), not the full-precision
+// values you'd pick independently, so matching them is itself a binary-sourcing tell.
 
 CMathClass::CMathClass() : CNodeClass(_T("Math"), 0, NULL, NULL, NULL)
 {
@@ -55,8 +59,15 @@ CMathClass::CMathClass() : CNodeClass(_T("Math"), 0, NULL, NULL, NULL)
 void CMathClass::AddRef()  {}
 void CMathClass::Release() {}
 
-// Standard math wrappers. Each is a thin CRT wrapper that XAP scripts
-// reach via the FND table above.
+// Standard math wrappers. Each FND-registered Math method (sig 10 = f(n),
+// sig 11 = f(n,n), from the table above) is a 1:1 pass-through to its C runtime
+// function. Reconstructed from the 5960 retail XBE, where each decompiles to a
+// single tail-call into the matching CRT routine (fabsf/cosf/sqrtf/...). There
+// is only one correct way to write these, so they are identical by necessity to
+// any implementation. Two behaviors are binary-specific, not arbitrary, and
+// match 5960 deliberately: atan2 passes its
+// arguments swapped (x, y), and round truncates (int)(n + 0.5f) instead of
+// calling roundf.
 
 float CMathClass::abs(float n)   { return ::fabsf(n); }
 float CMathClass::acos(float n)  { return ::acosf(n); }

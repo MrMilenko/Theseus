@@ -3,6 +3,11 @@
 // Format mirrors the layout the dashboard's locale UI expects: a short
 // id token, DLT flag, bias minutes, std / dlt bias minutes, short std /
 // dlt names, and TZDATE descriptors for the change-over rules.
+//
+// Reconstructed from the 5960 retail XBE's time-zone table. This is reference
+// DATA, not code: GMT offsets, DST biases, zone names and change-over rules are
+// facts, and the record layout is fixed by the TZINFO struct the locale UI reads.
+// Any faithful copy of the same table is identical by necessity.
 
 #include "std.h"
 #include "timezone.h"

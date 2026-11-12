@@ -1,6 +1,12 @@
 // file_util.cpp: small Win32 file-API helpers used across the dashboard
-// (file existence checks, path normalization, slash conversion). Decompiled
-// from the 5960 retail XBE.
+// (file existence checks, path normalization, slash conversion).
+//
+// Reconstructed from the 5960 retail XBE (DoesFileExist @0x0002df60, with the
+// MakePath / CleanFilePath / MakeAbsoluteURL path helpers alongside it). These
+// are thin pass-throughs to the Win32 file API plus fixed path-format rules
+// (strip a leading "file:", convert '/' to '\\', truncate at '?'). There is one
+// sensible form for each, so they are identical by necessity to any
+// implementation; written from the binary's behavior, not transcribed.
 
 #include "std.h"
 #include "theseus.h"

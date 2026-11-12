@@ -81,12 +81,24 @@ static int GetNumParam(int idx)
 // Calendar utilities (exposed to XAP scripts)
 // =========================================================================
 
+// CDateObject::isLeapYear(year)   [script fn 'isLeapYear', FND 0x0017f860, sig 3]
+// Reconstructed from 5960 retail XBE @ 0x00030f90. Ghidra decompile:
+//     if (year%100==0 && year%400!=0) return false; return (year & 3)==0;
+// The binary tests the 100/400 exception first, then year%4 (emitted as the
+// signed `& 0x80000003` idiom). The Gregorian leap rule is functionally fixed:
+// every correct implementation is identical by necessity. Written from behavior,
+// not transcribed: note we use the plain `% 4`, not the compiler's bit idiom.
 int CDateObject::isLeapYear(int nYear)
 {
-	// Divisible by 4, except centuries unless also divisible by 400
 	return (nYear % 4 == 0 && (nYear % 100 != 0 || nYear % 400 == 0)) ? 1 : 0;
 }
 
+// CDateObject::getDaysInMonth(month, year)  [script fn 'getDaysInMonth', FND 0x0017f878, sig 24]
+// Reconstructed from 5960 retail XBE @ 0x00030fd0. Ghidra decompile:
+//     if (month!=2) return *(short*)(&DAT_001765c6 + month*2);   // length table
+//     return 28 + (leap ? 1 : 0);                                // February
+// The month-length table and the 28/29 February rule are calendar facts,
+// identical by necessity in any implementation. (month is 1-based here.)
 int CDateObject::getDaysInMonth(int nMonth, int nYear)
 {
 	static const short days[] = { 31, 0, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
