@@ -1956,12 +1956,13 @@ void CLevel::Advance(float nSeconds)
 // Reconstructed from 5960 retail XBE @ 0x0005d200:
 //     visible = 0; CallFunction(this, "OnDeactivate");
 //     if (unloadable && !xip->locked) xip->DeleteMeshBuffers();
+// The binary reads the XIP without checking for one; we skip levels with no archive.
 void CLevel::Deactivate()
 {
     m_visible = false;
     CallFunction(this, _T("OnDeactivate"));
 
-    if (m_unloadable && !m_xipFile->m_locked)
+    if (m_unloadable && m_xipFile != NULL && !m_xipFile->m_locked)
         m_xipFile->DeleteMeshBuffers();
 }
 
