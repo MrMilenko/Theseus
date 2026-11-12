@@ -352,9 +352,31 @@ int CLiveAccounts::InternalLogon(int index, const TCHAR* passcode)
 
 
 
+static void EncodePasscode(const TCHAR* szPasscode, BYTE passcode[4]);
+
+// CLiveAccounts::Logon   [script fn 'Logon', FND 0x00188d80, sig 28]
+// The passcode gate is from 5960 @ 0x000699e0:
+//     if (index < count) {
+//         if (passcode && *passcode && Encode(passcode) != users[index].passcode)
+//             { m_hr = 0x80151006; CallFunction(this, L"OnInvalidPassword"); return; }
+//         ... XOnlineLogon ...
+//     }
+// An empty passcode skips the check, which is how the shipped scripts call it.
+// The logon after the gate is Theseus's own.
 void CLiveAccounts::Logon(int index, const TCHAR* passcode)
 {
     OutputDebugString(_T("[LiveAccounts] Logon() called\n"));
+
+    if (index >= 0 && (DWORD)index < g_NumUsers && passcode != NULL && *passcode != 0)
+    {
+        BYTE code[4];
+        EncodePasscode(passcode, code);
+        if (memcmp(code, g_Users[index].pin, sizeof(code)) != 0)
+        {
+            CallFunction(this, _T("OnInvalidPassword"));
+            return;
+        }
+    }
 
     int result = InternalLogon(index, passcode);
 
