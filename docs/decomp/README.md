@@ -334,7 +334,7 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Util | [Util.md](Util.md) | 1 function |
 | Save Games | (no doc yet, narrative TODO) | 29 functions |
 | Live Accounts | (no doc yet, narrative TODO) | 13 verified Theseus mappings + 2 binary-only anchors (bulk delete, single-user delete) |
-| Input | (no doc yet, narrative TODO) | 1 function |
+| Input | [Input.md](Input.md) | 9 functions |
 | Memory Monitor | (no doc yet, narrative TODO) | 12 functions |
 | Music Collection | (no doc yet, narrative TODO) | 5 verified Theseus mappings (FormatSoundtrackSongTime, GetUpdateString + 3 stubs: AddSoundtrack, ClearCopyList, DeleteSoundtrack) + 3 binary-only anchors (global ::DeleteSoundtrack, ::DeleteAllSoundtracks, ThreadProc); more labeling pending |
 | Render | (no doc yet, narrative TODO) | 1 function |
