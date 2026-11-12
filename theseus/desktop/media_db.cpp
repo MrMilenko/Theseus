@@ -483,6 +483,9 @@ static void WriteCacheTo(const std::vector<MovieRec>& movies,
 {
 	// Write atomically: temp file + rename so a kill mid-write never
 	// leaves the cache truncated.
+	// TMDB workers checkpoint in parallel and share the one temp file, so take turns.
+	static std::mutex s_writeMutex;
+	std::lock_guard<std::mutex> writeLock(s_writeMutex);
 	std::string tmp = std::string(path) + ".tmp";
 	FILE* f = fopen(tmp.c_str(), "wb");
 	if (!f) return;
