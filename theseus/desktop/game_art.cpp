@@ -238,8 +238,16 @@ static struct {
 struct Hint { std::string system, rom; };
 static std::map<std::string, Hint> s_hints;
 static std::set<std::string> s_seen;               // queued this run
-static std::map<std::string, int> s_misses;        // titleID -> 1 when SteamGridDB was tried too
+static std::map<std::string, unsigned> s_misses;   // titleID -> KeyTag of the SteamGridDB key tried, 0 for none
 static bool s_missesLoaded = false;
+
+// Which key a miss was tried with, so a new or fixed key looks again. Never 0.
+static unsigned KeyTag(const char* key)
+{
+    unsigned h = 2166136261u;
+    for (const char* p = key; *p; p++) { h ^= (unsigned char)*p; h *= 16777619u; }
+    return h ? h : 1;
+}
 
 static std::string ArtDir()   { return std::string(AppPath_Tree("Configs")) + "/art"; }
 static std::string MissFile() { return ArtDir() + "/misses.txt"; }
@@ -394,8 +402,8 @@ static void LoadMisses()
     char line[256];
     while (fgets(line, sizeof(line), f)) {
         char id[128];
-        int sg = 0;
-        if (sscanf(line, "%127s %d", id, &sg) >= 1) s_misses[id] = sg;
+        unsigned sg = 0;
+        if (sscanf(line, "%127s %u", id, &sg) >= 1) s_misses[id] = sg;
     }
     fclose(f);
 }
@@ -405,8 +413,8 @@ static void SaveMisses()
     Plat_MkdirP(ArtDir().c_str());
     SafeSave save(MissFile().c_str());
     if (!save.f) return;
-    for (std::map<std::string, int>::iterator it = s_misses.begin(); it != s_misses.end(); ++it)
-        fprintf(save.f, "%s %d\n", it->first.c_str(), it->second);
+    for (std::map<std::string, unsigned>::iterator it = s_misses.begin(); it != s_misses.end(); ++it)
+        fprintf(save.f, "%s %u\n", it->first.c_str(), it->second);
     save.Commit();
 }
 
@@ -492,10 +500,10 @@ static void Scan()
         j.wantBig = j.appid > 0 && !GameArt_CachedPath(g.titleID, "cover");
         if (!j.wantIcon && !j.wantBig) continue;
 
-        std::map<std::string, int>::iterator miss = s_misses.find(j.titleID);
+        std::map<std::string, unsigned>::iterator miss = s_misses.find(j.titleID);
         bool missed = miss != s_misses.end();
         // A miss stays a miss until there's somewhere new to look.
-        if (missed && !(haveKey && miss->second == 0)) continue;
+        if (missed && !(haveKey && miss->second != KeyTag(g_steamGridDbKey))) continue;
 
         if (j.appid == 0) {
             std::string sys, rom, core, stem, ext;
@@ -538,7 +546,7 @@ void GameArt_Tick()
         if (!done[i].miss) {
             missesChanged |= s_misses.erase(done[i].titleID) > 0;
         } else {
-            s_misses[done[i].titleID] = done[i].triedSgdb ? 1 : 0;
+            s_misses[done[i].titleID] = done[i].triedSgdb ? KeyTag(s_key.c_str()) : 0;
             missesChanged = true;
         }
     }
