@@ -1,32 +1,95 @@
 name: release
 
+# Channels, picked by the tag:
+#   vX.Y.Z           a release, marked latest
+#   vX.Y.Z-testing   a pre-release
+#   nightly          main's head as the `nightly` pre-release (run by hand,
+#                    replaces the last one)
+# Only commits on main get released. Each job builds and hands its files to
+# `publish`, which makes the release in one go once every platform built.
+
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release as (e.g. v0.5.0)'
+        description: 'Tag to release as (v0.5.0, v0.5.0-testing), or nightly'
         required: true
 
-# Required so softprops/action-gh-release can create / update the
-# release and upload assets via the workflow's GITHUB_TOKEN.
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 # Per-platform: build, package binary + Configs/Data/Library + runtime libs into a
-# platform-named archive, attach to the GitHub Release. All desktop targets ship
-# the bgfx backend (Metal on macOS, Vulkan on Linux / Windows). Shader .bin files
-# live in-tree under Data/shaders/; shaderc only runs offline when authoring new
-# shaders, not during CI.
+# platform-named archive. All desktop targets ship the bgfx backend (Metal on
+# macOS, Vulkan on Linux / Windows). Shader .bin files live in-tree under
+# Data/shaders/; shaderc only runs offline when authoring new shaders, not
+# during CI.
 
 jobs:
-  release-macos:
-    name: Release / macOS
-    runs-on: macos-latest
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      channel: ${{ steps.pick.outputs.channel }}
+      sha: ${{ steps.pick.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Pick the channel and check the commit is on main
+        id: pick
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [ "$TAG" = nightly ]; then
+            CHANNEL=nightly
+          elif [[ "$TAG" == v*-testing ]]; then
+            CHANNEL=testing
+          elif [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)+$ ]]; then
+            CHANNEL=release
+          else
+            echo "::error::$TAG is not vX.Y.Z, vX.Y.Z-testing or nightly"
+            exit 1
+          fi
+
+          if [ "$CHANNEL" = nightly ]; then
+            SHA=$(git rev-parse origin/main)
+          elif SHA=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}"); then
+            :
+          else
+            SHA=$GITHUB_SHA
+          fi
+
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not on main, so it doesn't get released"
+            exit 1
+          fi
+          echo "$TAG ($CHANNEL) from $SHA"
+          {
+            echo "tag=$TAG"
+            echo "channel=$CHANNEL"
+            echo "sha=$SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  release-macos:
+    name: Release / macOS
+    needs: gate
+    runs-on: macos-latest
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
           submodules: recursive
 
       - name: Install deps
@@ -67,7 +130,6 @@ jobs:
         # dylibs come from brew. projectM dylibs come bundled in lib/ next to the
         # binary (Makefile drops them there for @loader_path/lib).
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-macos"
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
@@ -82,31 +144,30 @@ jobs:
         # Ad-hoc signed, which is enough to run but not to hand around
         # unnotarized: Gatekeeper still wants a right click Open.
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           chmod +x build/mk-macapp.sh
           ./build/mk-macapp.sh
           ditto -c -k --keepParent ~/builds/theseus/Theseus.app "Theseus-${TAG}-macos-app.zip"
           echo "APPZIP=Theseus-${TAG}-macos-app.zip" >> "$GITHUB_ENV"
 
-      - name: Upload .app to release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the files to publish
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.APPZIP }}
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ARCHIVE }}
-          fail_on_unmatched_files: true
+          name: release-macos
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.APPZIP }}
+          if-no-files-found: error
 
   release-linux:
     name: Release / Linux x64
+    needs: gate
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           submodules: recursive
 
       - name: Install deps
@@ -146,7 +207,6 @@ jobs:
 
       - name: Package
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-linux-x64"
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
@@ -159,31 +219,30 @@ jobs:
         # One file for Debian and Arch alike, so the exclusion list in the
         # script only names libraries both actually ship.
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           sudo apt-get install -y -qq patchelf wget file
           chmod +x build/mk-appimage.sh
           ./build/mk-appimage.sh ~/builds/theseus/desktop "UIX-Desktop-${TAG}-x86_64.AppImage"
           echo "APPIMAGE=UIX-Desktop-${TAG}-x86_64.AppImage" >> "$GITHUB_ENV"
 
-      - name: Upload AppImage to release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the files to publish
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.APPIMAGE }}
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ARCHIVE }}
-          fail_on_unmatched_files: true
+          name: release-linux-x64
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.APPIMAGE }}
+          if-no-files-found: error
 
   release-linux-arm64:
     name: Release / Linux ARM64
+    needs: gate
     runs-on: ubuntu-24.04-arm
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           submodules: recursive
 
       - name: Install deps
@@ -235,7 +294,6 @@ jobs:
 
       - name: Package
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-linux-arm64"
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
@@ -248,34 +306,32 @@ jobs:
         # The bare binary needs the runner's exact FFmpeg sonames, which
         # newer distros like Debian trixie don't have. The AppImage carries them.
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           sudo apt-get install -y -qq patchelf wget file
           chmod +x build/mk-appimage.sh
           ./build/mk-appimage.sh ~/builds/theseus/desktop "UIX-Desktop-${TAG}-aarch64.AppImage"
           echo "APPIMAGE=UIX-Desktop-${TAG}-aarch64.AppImage" >> "$GITHUB_ENV"
 
-      - name: Upload AppImage to release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the files to publish
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.APPIMAGE }}
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ARCHIVE }}
-          fail_on_unmatched_files: true
+          name: release-linux-arm64
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.APPIMAGE }}
+          if-no-files-found: error
 
   release-win64:
     name: Release / Win64
+    needs: gate
     runs-on: ubuntu-latest
     env:
+      TAG: ${{ needs.gate.outputs.tag }}
       SDL2_VER: 2.32.10
       SDL2_MIXER_VER: 2.8.1
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           submodules: recursive
 
       - name: Install mingw-w64 (posix thread model)
@@ -380,7 +436,6 @@ jobs:
         # dir (SDL2.dll, SDL2_mixer.dll, libmpv-2.dll, libcurl-x64.dll,
         # libwinpthread-1.dll). Ship the whole directory.
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-windows-x64"
           mkdir -p "${DROP}"
           cp -R ~/builds/theseus/desktop-win64/. "${DROP}/"
@@ -391,9 +446,56 @@ jobs:
           zip -r "${DROP}.zip" "${DROP}"
           echo "ARCHIVE=${DROP}.zip" >> "$GITHUB_ENV"
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the files to publish
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ARCHIVE }}
-          fail_on_unmatched_files: true
+          name: release-win64
+          path: |
+            ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [gate, release-macos, release-linux, release-linux-arm64, release-win64]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+      CHANNEL: ${{ needs.gate.outputs.channel }}
+      SHA: ${{ needs.gate.outputs.sha }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        # nightly is one moving pre-release: drop the old one and its tag so
+        # the new tag lands on main's head.
+        run: |
+          case "$CHANNEL" in
+            release) FLAGS=(--latest) ;;
+            *)       FLAGS=(--prerelease --latest=false) ;;
+          esac
+          if [ "$CHANNEL" = nightly ]; then
+            gh release delete nightly --cleanup-tag --yes || true
+            NOTES=(--notes "Nightly build of main at $SHA. Not a release, expect rough edges.")
+            TITLE="UIX Desktop nightly"
+          else
+            NOTES=(--generate-notes)
+            TITLE="UIX Desktop ${TAG#v}"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" "${FLAGS[@]}"
+          else
+            gh release create "$TAG" dist/* --target "$SHA" --title "$TITLE" \
+              "${FLAGS[@]}" "${NOTES[@]}"
+          fi
