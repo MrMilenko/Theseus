@@ -192,7 +192,7 @@ Found a bug? Open an [issue](https://github.com/MrMilenko/Theseus/issues) or fin
 1. **Your OS and version**, and your GPU if it's a display problem
 2. **Which download you're running**: the file name carries the version and package. Help > About UIX Desktop shows it too
 3. **What you did, what you expected, and what happened instead**
-4. **`theseus.log`** from your user data folder (see [First run](#first-run)). If it crashed on the previous launch, attach `theseus.prev.log` as well
+4. **`theseus.log`** from your user data folder (see [First run](#first-run)). If it crashed on the previous launch, attach `theseus.prev.log` as well. A crash also leaves a report in the `crashes` folder there; attach the newest one
 
 On Windows, starting `theseus.exe` from a terminal sends the log to that terminal instead of the file.
 
@@ -266,6 +266,7 @@ For the wider UIX story, see [UIX History](https://github.com/MrMilenko/UIX-Hist
 
 **Upstream code**
 - [Team Resurgent](https://github.com/Team-Resurgent): [PrometheOS](https://github.com/Team-Resurgent/PrometheOS-Firmware) (the Xbox toolbox is forked from it via [UIX Lite Toolbox](https://github.com/OfficialTeamUIX/UIX-Lite-Toolbox)) and [Hermes](https://github.com/Team-Resurgent/Hermes) (ISO/CCI mounting on Xbox)
+- **MrBruh**: the approach behind the Windows crash reports (abort() raised as an exception, stack room kept for an overflow, the Wine aware OS line)
 
 **Libraries**: SDL2, SDL2_mixer, libmpv, libcurl, FFmpeg, Opus, OpenSSL, libdatachannel, bgfx, bx, bimg, projectM, Dear ImGui, ImGuiColorTextEdit, imgui-filebrowser, stb and minimp3. Licenses and links are in [LICENSE-THIRD-PARTY.md](LICENSE-THIRD-PARTY.md).
 
