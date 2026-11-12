@@ -70,6 +70,10 @@ static std::string             s_activeServerUri;
 // pre-stage cache below.
 static std::thread s_seasonsThread;
 static std::thread s_episodesThread;
+// The scene polls the cache every frame, so a fetch already running means
+// "ask again next frame", never "wait for it here".
+static std::atomic<bool> s_seasonsBusy{false};
+static std::atomic<bool> s_episodesBusy{false};
 
 // Art download queue
 static std::mutex                                  s_artMtx;
@@ -360,12 +364,14 @@ static void SeasonsWorker(std::string serverUri, std::string showRk)
         s_cacheSeasons[showRk] = std::move(seasons);
     }
     fprintf(stderr, "[Plex] %zu season(s) under show %s\n", n, showRk.c_str());
+    s_seasonsBusy = false;
 }
 
 void Plex_FetchSeasons(const std::string& serverUri, const std::string& showRatingKey)
 {
     Plex_Init();
-    JoinIf(s_seasonsThread);
+    if (s_seasonsBusy.exchange(true)) return;
+    JoinIf(s_seasonsThread);   // already finished, so this is instant
     s_seasonsThread = std::thread(SeasonsWorker, serverUri, showRatingKey);
 }
 
@@ -401,11 +407,13 @@ static void EpisodesWorker(std::string serverUri, std::string seasonRk)
         s_cacheEpisodes[seasonRk] = std::move(episodes);
     }
     fprintf(stderr, "[Plex] %zu episode(s) under season %s\n", n, seasonRk.c_str());
+    s_episodesBusy = false;
 }
 
 void Plex_FetchEpisodes(const std::string& serverUri, const std::string& seasonRatingKey)
 {
     Plex_Init();
+    if (s_episodesBusy.exchange(true)) return;
     JoinIf(s_episodesThread);
     s_episodesThread = std::thread(EpisodesWorker, serverUri, seasonRatingKey);
 }
