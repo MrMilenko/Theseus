@@ -8,6 +8,10 @@
 #include "theseus.h"
 #include "file_util.h"
 
+#ifndef ERROR_FILE_NOT_FOUND
+#define ERROR_FILE_NOT_FOUND 2
+#endif
+
 // 0x0017a480: the folder relative URLs resolve against.
 TCHAR g_szCurDir[1024];
 
@@ -154,7 +158,8 @@ static bool Cancelled(HANDLE cancel)
 // Reconstructed from 5960 retail XBE @ 0x0002e2d0. One block for the folder
 // itself, each file rounded up to whole blocks, and with recursive set each
 // subfolder not starting with '.' counted the same way. -1 when cancel is
-// signaled before or during the walk, 0 when the folder can't be listed.
+// signaled before or during the walk. When the folder can't be listed it's
+// 1 if it is just empty (ERROR_FILE_NOT_FOUND), else 0.
 int GetDirectoryBlocks(const TCHAR* szDirPath, int nBlockSize, bool bRecursive, HANDLE hCancelEvent)
 {
 	if (Cancelled(hCancelEvent))
@@ -168,7 +173,7 @@ int GetDirectoryBlocks(const TCHAR* szDirPath, int nBlockSize, bool bRecursive, 
 	WIN32_FIND_DATA found;
 	HANDLE find = TheseusFindFirstFile(pattern, &found);
 	if (find == INVALID_HANDLE_VALUE)
-		return 0;
+		return GetLastError() == ERROR_FILE_NOT_FOUND ? 1 : 0;
 
 	int blocks = 1;
 	bool stopped = false;
