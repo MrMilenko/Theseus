@@ -868,6 +868,13 @@ DESKTOP_SRCS_SYSTEM = \
 # Desktop-only platform sources (SDL window, ImGui, audio, tools)
 DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/sdl_main.cpp \
+	$(THESEUS_SRC)/desktop/settings_schema.cpp \
+	$(THESEUS_SRC)/desktop/desktop_settings.cpp \
+	$(THESEUS_SRC)/desktop/guide.cpp \
+	$(THESEUS_SRC)/desktop/ui_overlay.cpp \
+	$(THESEUS_SRC)/desktop/ui_overlay_style.cpp \
+	$(THESEUS_SRC)/desktop/ui_font.cpp \
+	$(THESEUS_SRC)/desktop/log_redact.cpp \
 	$(THESEUS_SRC)/desktop/launch.cpp \
 	$(THESEUS_SRC)/desktop/app_paths.cpp \
 	$(THESEUS_SRC)/desktop/osk.cpp \

@@ -28,6 +28,7 @@
 #include "display.h"
 #include "esde.h"
 #include "esde_vgames.h"
+#include "guide.h"
 
 #include "host.h"
 #include <bgfx/bgfx.h>
@@ -292,276 +293,10 @@ int g_startupMode = 0;      // 0 = ask, 1 = dashboard, 2 = development
 bool g_bUseOnScreenKeyboard = false;  // when true, ignore physical keyboard during keyboard popups
 bool g_bShowBootAnimation   = true;   // play xbox_boot.mp4 once at startup before the dashboard
 
-// Legacy [Progressive] / [Dashboard Settings] sections, round-tripped through
-// desktop.ini so the truncate-rewrite save doesn't drop them.
-char g_use720p[8]        = "Yes";
-char g_useProgressive[8] = "Yes";
-char g_currentSkin[64]   = "Stock";
-
 class CKeyboard;
 extern CKeyboard* g_pActiveKeyboard;
 extern void Keyboard_InsertText(CKeyboard* pKb, const char* sz);
 extern void Keyboard_HandleKey(CKeyboard* pKb, int sdlKey);
-
-void LoadDesktopSettings() {
-    FILE* fp = fopen(AppPath("Configs/desktop.ini"), "r");
-    if (!fp) return;
-    char line[4096];   // xCloud refresh tokens run long
-    while (fgets(line, sizeof(line), fp)) {
-        char* nl = strchr(line, '\n'); if (nl) *nl = 0;
-        char* cr = strchr(line, '\r'); if (cr) *cr = 0;
-        if (strncmp(line, "XemuPath=", 9) == 0)
-            strncpy(s_xemuPath, line + 9, sizeof(s_xemuPath) - 1);
-        else if (strncmp(line, "QcowPath=", 9) == 0)
-            strncpy(g_qcowPath, line + 9, sizeof(g_qcowPath) - 1);
-        else if (strncmp(line, "SteamPath=", 10) == 0)
-            strncpy(s_steamPath, line + 10, sizeof(s_steamPath) - 1);
-        else if (strncmp(line, "EsdePath=", 9) == 0)
-            strncpy(s_esdePath, line + 9, sizeof(s_esdePath) - 1);
-        else if (strncmp(line, "ShowEsdeTab=", 12) == 0)
-            g_showEsdeTab = atoi(line + 12) != 0;
-        else if (strncmp(line, "RetroArchFullscreen=", 20) == 0)
-            g_retroarchFullscreen = atoi(line + 20) != 0;
-        else if (strncmp(line, "AudioBufferFrames=", 18) == 0)
-            g_audioBufferFrames = atoi(line + 18);
-        else if (strncmp(line, "RetroArchPath=", 14) == 0)
-            strncpy(s_retroarchPath, line + 14, sizeof(s_retroarchPath) - 1);
-        else if (strncmp(line, "ShowRetroArchTab=", 17) == 0)
-            g_showRetroArchTab = atoi(line + 17) != 0;
-        else if (strncmp(line, "ShowSteamTab=", 13) == 0)
-            g_showSteamTab = atoi(line + 13) != 0;
-        else if (strncmp(line, "CRT_Enabled=", 12) == 0)
-            g_crt.enabled = atoi(line + 12) != 0;
-        else if (strncmp(line, "CRT_Scanlines=", 14) == 0)
-            g_crt.scanlineIntensity = (float)atof(line + 14);
-        else if (strncmp(line, "CRT_Curvature=", 14) == 0)
-            g_crt.curvature = (float)atof(line + 14);
-        else if (strncmp(line, "CRT_Phosphor=", 13) == 0)
-            g_crt.phosphorMask = (float)atof(line + 13);
-        else if (strncmp(line, "CRT_Vignette=", 13) == 0)
-            g_crt.vignette = (float)atof(line + 13);
-        else if (strncmp(line, "CRT_Bloom=", 10) == 0)
-            g_crt.bloom = (float)atof(line + 10);
-        else if (strncmp(line, "CRT_Flicker=", 12) == 0)
-            g_crt.flickerAmount = (float)atof(line + 12);
-        else if (strncmp(line, "CRT_ColorBleed=", 15) == 0)
-            g_crt.colorBleed = (float)atof(line + 15);
-        else if (strncmp(line, "CRT_Brightness=", 15) == 0)
-            g_crt.brightness = (float)atof(line + 15);
-        else if (strncmp(line, "UseOnScreenKeyboard=", 20) == 0)
-            g_bUseOnScreenKeyboard = atoi(line + 20) != 0;
-        else if (strncmp(line, "ShowBootAnimation=", 18) == 0)
-            g_bShowBootAnimation = atoi(line + 18) != 0;
-        else if (strncmp(line, "Use 720p=", 9) == 0) {
-            strncpy(g_use720p, line + 9, sizeof(g_use720p) - 1);
-            g_use720p[sizeof(g_use720p) - 1] = 0;
-        }
-        else if (strncmp(line, "Use Progressive=", 16) == 0) {
-            strncpy(g_useProgressive, line + 16, sizeof(g_useProgressive) - 1);
-            g_useProgressive[sizeof(g_useProgressive) - 1] = 0;
-        }
-        else if (strncmp(line, "Current Skin=", 13) == 0) {
-            strncpy(g_currentSkin, line + 13, sizeof(g_currentSkin) - 1);
-            g_currentSkin[sizeof(g_currentSkin) - 1] = 0;
-        }
-        else if (strncmp(line, "StartupMode=", 12) == 0) {
-            if (strncmp(line + 12, "dashboard", 9) == 0) g_startupMode = 1;
-            else if (strncmp(line + 12, "development", 11) == 0) g_startupMode = 2;
-            else g_startupMode = 0;
-        }
-        else if (strncmp(line, "MusicRoot=", 10) == 0)
-            strncpy(g_musicRoot, line + 10, sizeof(g_musicRoot) - 1);
-        else if (strncmp(line, "MoviesRoot=", 11) == 0)
-            strncpy(g_moviesRoot, line + 11, sizeof(g_moviesRoot) - 1);
-        else if (strncmp(line, "TvRoot=", 7) == 0)
-            strncpy(g_tvRoot, line + 7, sizeof(g_tvRoot) - 1);
-        else if (strncmp(line, "TMDBKey=", 8) == 0)
-            strncpy(g_tmdbKey, line + 8, sizeof(g_tmdbKey) - 1);
-        else if (strncmp(line, "PlexToken=", 10) == 0) {
-            strncpy(g_plexToken, line + 10, sizeof(g_plexToken) - 1);
-            g_plexToken[sizeof(g_plexToken) - 1] = 0;
-        }
-        else if (strncmp(line, "PlexClientId=", 13) == 0) {
-            strncpy(g_plexClientId, line + 13, sizeof(g_plexClientId) - 1);
-            g_plexClientId[sizeof(g_plexClientId) - 1] = 0;
-        }
-        else if (strncmp(line, "JellyfinUrl=", 12) == 0) {
-            strncpy(g_jellyfinUrl, line + 12, sizeof(g_jellyfinUrl) - 1);
-            g_jellyfinUrl[sizeof(g_jellyfinUrl) - 1] = 0;
-        }
-        else if (strncmp(line, "JellyfinToken=", 14) == 0) {
-            strncpy(g_jellyfinToken, line + 14, sizeof(g_jellyfinToken) - 1);
-            g_jellyfinToken[sizeof(g_jellyfinToken) - 1] = 0;
-        }
-        else if (strncmp(line, "XcloudRefreshToken=", 19) == 0) {
-            strncpy(g_xcloudRefreshToken, line + 19, sizeof(g_xcloudRefreshToken) - 1);
-            g_xcloudRefreshToken[sizeof(g_xcloudRefreshToken) - 1] = 0;
-        }
-        else if (strncmp(line, "JellyfinUserId=", 15) == 0) {
-            strncpy(g_jellyfinUserId, line + 15, sizeof(g_jellyfinUserId) - 1);
-            g_jellyfinUserId[sizeof(g_jellyfinUserId) - 1] = 0;
-        }
-        else if (strncmp(line, "JellyfinClientId=", 17) == 0) {
-            strncpy(g_jellyfinClientId, line + 17, sizeof(g_jellyfinClientId) - 1);
-            g_jellyfinClientId[sizeof(g_jellyfinClientId) - 1] = 0;
-        }
-        else if (strncmp(line, "JellyfinUserName=", 17) == 0) {
-            strncpy(g_jellyfinUserName, line + 17, sizeof(g_jellyfinUserName) - 1);
-            g_jellyfinUserName[sizeof(g_jellyfinUserName) - 1] = 0;
-        }
-        else if (strncmp(line, "RomsDir=", 8) == 0)
-            strncpy(g_romsDir, line + 8, sizeof(g_romsDir) - 1);
-        else if (strncmp(line, "MSAA=", 5) == 0) {
-            int n = atoi(line + 5);
-            if (n == 0 || n == 2 || n == 4 || n == 8)
-                g_msaaSamples = n;
-        }
-        else if (strncmp(line, "EmulateXboxRes=", 15) == 0) {
-            g_bEmulateXboxRes = atoi(line + 15) != 0;
-            TheseusSetProjectionDirty();
-        }
-        else if (strncmp(line, "PadMode=", 8) == 0) {
-            g_padModeEnabled = atoi(line + 8) != 0;
-        }
-        else if (strncmp(line, "MenuBarAutoHide=", 16) == 0) {
-            g_menuBarAutoHide = atoi(line + 16) != 0;
-        }
-        else if (strncmp(line, "Vsync=", 6) == 0) {
-            int n = atoi(line + 6);
-            if (n >= 0 && n <= 2) g_vsyncMode = n;
-        }
-        else if (strncmp(line, "FpsCap=", 7) == 0) {
-            int n = atoi(line + 7);
-            if (n >= 0) g_fpsCap = n;
-        }
-        else if (strncmp(line, "Hwdec=", 6) == 0)
-            g_hwdec = atoi(line + 6) != 0;
-        else if (strncmp(line, "MasterVolume=", 13) == 0) {
-            float v = (float)atof(line + 13);
-            if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
-            g_masterVolume = v;
-        }
-        else if (strncmp(line, "UseMilkdropViz=", 15) == 0)
-            g_useMilkdropViz = atoi(line + 15) != 0;
-        else if (strncmp(line, "ShowAlbumCover=", 15) == 0)
-            g_showAlbumCover = atoi(line + 15) != 0;
-        else if (strncmp(line, "Renderer=", 9) == 0) {
-            const char* v = line + 9;
-            // Order matters: opengles before opengl, metal before "" prefix.
-            if      (strncmp(v, "auto",     4) == 0) g_rendererPref = 0;
-            else if (strncmp(v, "d3d11",    5) == 0) g_rendererPref = 1;
-            else if (strncmp(v, "vulkan",   6) == 0) g_rendererPref = 2;
-            else if (strncmp(v, "opengles", 8) == 0 ||
-                     strncmp(v, "gles",     4) == 0) g_rendererPref = 5;
-            else if (strncmp(v, "opengl",   6) == 0) g_rendererPref = 3;
-            else if (strncmp(v, "metal",    5) == 0) g_rendererPref = 4;
-        }
-        else if (strncmp(line, "Resolution=", 11) == 0) {
-            int n = atoi(line + 11);
-            if (n == 0 || n == 720 || n == 1080 || n == 1440 || n == 2160)
-                g_windowResolution = n;
-        }
-        else if (strncmp(line, "DisplayMode=", 12) == 0) {
-            int n = atoi(line + 12);
-            if (n >= 0 && n <= 2) g_windowMode = n;
-        }
-    }
-    fclose(fp);
-}
-
-// Refresh the legacy sections from disk so a Save doesn't overwrite values
-// the dashboard wrote between Load and Save (e.g. skin change via XAP).
-static void RereadLegacyFromDisk() {
-    FILE* fp = fopen(AppPath("Configs/desktop.ini"), "r");
-    if (!fp) return;
-    char line[1024];
-    while (fgets(line, sizeof(line), fp)) {
-        char* nl = strchr(line, '\n'); if (nl) *nl = 0;
-        char* cr = strchr(line, '\r'); if (cr) *cr = 0;
-        if (strncmp(line, "Use 720p=", 9) == 0) {
-            strncpy(g_use720p, line + 9, sizeof(g_use720p) - 1);
-            g_use720p[sizeof(g_use720p) - 1] = 0;
-        } else if (strncmp(line, "Use Progressive=", 16) == 0) {
-            strncpy(g_useProgressive, line + 16, sizeof(g_useProgressive) - 1);
-            g_useProgressive[sizeof(g_useProgressive) - 1] = 0;
-        }
-    }
-    fclose(fp);
-}
-
-void SaveDesktopSettings() {
-    Plat_MkdirP(AppPath_Tree("Configs"));
-    RereadLegacyFromDisk();
-    SafeSave save(AppPath("Configs/desktop.ini"));
-    FILE* fp = save.f;
-    if (!fp) return;
-    fprintf(fp, "[Desktop]\n");
-    fprintf(fp, "XemuPath=%s\n", s_xemuPath);
-    fprintf(fp, "QcowPath=%s\n", g_qcowPath);
-    fprintf(fp, "SteamPath=%s\n", s_steamPath);
-    fprintf(fp, "RetroArchPath=%s\n", s_retroarchPath);
-    fprintf(fp, "EsdePath=%s\n",       s_esdePath);
-    fprintf(fp, "ShowEsdeTab=%d\n",    g_showEsdeTab ? 1 : 0);
-    fprintf(fp, "RetroArchFullscreen=%d\n", g_retroarchFullscreen ? 1 : 0);
-    fprintf(fp, "AudioBufferFrames=%d\n", g_audioBufferFrames);
-    fprintf(fp, "ShowRetroArchTab=%d\n", g_showRetroArchTab ? 1 : 0);
-    fprintf(fp, "ShowSteamTab=%d\n",     g_showSteamTab     ? 1 : 0);
-    fprintf(fp, "StartupMode=%s\n", g_startupMode == 2 ? "development" : g_startupMode == 1 ? "dashboard" : "");
-    fprintf(fp, "UseOnScreenKeyboard=%d\n", g_bUseOnScreenKeyboard ? 1 : 0);
-    fprintf(fp, "ShowBootAnimation=%d\n",   g_bShowBootAnimation   ? 1 : 0);
-    fprintf(fp, "MSAA=%d\n",                g_msaaSamples);
-    fprintf(fp, "Vsync=%d\n",               g_vsyncMode);
-    fprintf(fp, "MenuBarAutoHide=%d\n",     g_menuBarAutoHide ? 1 : 0);
-    fprintf(fp, "PadMode=%d\n",             g_padModeEnabled ? 1 : 0);
-    fprintf(fp, "EmulateXboxRes=%d\n",      g_bEmulateXboxRes ? 1 : 0);
-    fprintf(fp, "FpsCap=%d\n",              g_fpsCap);
-    fprintf(fp, "Hwdec=%d\n",               g_hwdec ? 1 : 0);
-    fprintf(fp, "MasterVolume=%.3f\n",      g_masterVolume);
-    fprintf(fp, "UseMilkdropViz=%d\n",      g_useMilkdropViz ? 1 : 0);
-    fprintf(fp, "ShowAlbumCover=%d\n",      g_showAlbumCover ? 1 : 0);
-    {
-        const char* rname = (g_rendererPref == 1) ? "d3d11"
-                          : (g_rendererPref == 2) ? "vulkan"
-                          : (g_rendererPref == 3) ? "opengl"
-                          : (g_rendererPref == 4) ? "metal"
-                          : (g_rendererPref == 5) ? "opengles"
-                          : "auto";
-        fprintf(fp, "Renderer=%s\n", rname);
-    }
-    fprintf(fp, "Resolution=%d\n",          g_windowResolution);
-    fprintf(fp, "DisplayMode=%d\n",         g_windowMode);
-    fprintf(fp, "\n[CRT]\n");
-    fprintf(fp, "CRT_Enabled=%d\n", g_crt.enabled ? 1 : 0);
-    fprintf(fp, "CRT_Scanlines=%.3f\n", g_crt.scanlineIntensity);
-    fprintf(fp, "CRT_Curvature=%.3f\n", g_crt.curvature);
-    fprintf(fp, "CRT_Phosphor=%.3f\n", g_crt.phosphorMask);
-    fprintf(fp, "CRT_Vignette=%.3f\n", g_crt.vignette);
-    fprintf(fp, "CRT_Bloom=%.3f\n", g_crt.bloom);
-    fprintf(fp, "CRT_Flicker=%.3f\n", g_crt.flickerAmount);
-    fprintf(fp, "CRT_ColorBleed=%.3f\n", g_crt.colorBleed);
-    fprintf(fp, "CRT_Brightness=%.3f\n", g_crt.brightness);
-    fprintf(fp, "\n[Library]\n");
-    fprintf(fp, "MusicRoot=%s\n", g_musicRoot);
-    fprintf(fp, "MoviesRoot=%s\n", g_moviesRoot);
-    fprintf(fp, "TvRoot=%s\n", g_tvRoot);
-    fprintf(fp, "TMDBKey=%s\n", g_tmdbKey);
-    fprintf(fp, "RomsDir=%s\n", g_romsDir);
-    fprintf(fp, "PlexToken=%s\n",    g_plexToken);
-    fprintf(fp, "PlexClientId=%s\n", g_plexClientId);
-    fprintf(fp, "XcloudRefreshToken=%s\n", g_xcloudRefreshToken);
-    fprintf(fp, "JellyfinUrl=%s\n",      g_jellyfinUrl);
-    fprintf(fp, "JellyfinToken=%s\n",    g_jellyfinToken);
-    fprintf(fp, "JellyfinUserId=%s\n",   g_jellyfinUserId);
-    fprintf(fp, "JellyfinClientId=%s\n", g_jellyfinClientId);
-    fprintf(fp, "JellyfinUserName=%s\n", g_jellyfinUserName);
-    // Legacy Q:\System\config.ini sections (aliased to this file by xbox_path.h).
-    fprintf(fp, "\n[Progressive]\n");
-    fprintf(fp, "Use 720p=%s\n",        g_use720p);
-    fprintf(fp, "Use Progressive=%s\n", g_useProgressive);
-    fprintf(fp, "\n[Dashboard Settings]\n");
-    fprintf(fp, "Current Skin=%s\n",    g_currentSkin);
-    save.Commit();
-}
 
 // Helper: returns true when ImGui has an active text input widget (Title Maker, inspector search, etc.)
 static bool s_imguiHasRendered = false;
@@ -665,22 +400,16 @@ bool g_showMenuBar = true;   // toggled by F10 / View > Hide Menu Bar / --no-too
 // units, so the trigger zone is the same physical size on every DPI.
 static bool MenuBarVisible()
 {
+    // The guide is the menu now; the tool bar is for development.
+    if (!g_extractedMode && g_startupMode != 2) return false;
     if (!g_showMenuBar)     return false;
     if (!g_menuBarAutoHide) return true;
 
     static bool s_shown = false;
     ImGuiIO& io = ImGui::GetIO();
 
-    // No pointer on a pad, so no top edge to reach for. LT+B is the same
-    // chord as the Xbox overlay; here the overlay is ImGui.
-    if (g_padModeEnabled &&
-        ImGui::IsKeyDown(ImGuiKey_GamepadL2) &&
-        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
-        g_padModeActive = !g_padModeActive;
-        // Give nav somewhere to land, otherwise the bar is up but dead.
-        if (g_padModeActive) ImGui::SetWindowFocus("##MainMenuBar");
-    }
-    // Pad mode has its own menu, so the pointer bar steps aside.
+    // Pad mode (the guide's Desktop Tools) has its own menu, so the pointer
+    // bar steps aside.
     if (g_padModeActive)
         return false;
 
@@ -937,6 +666,12 @@ static void PreSwapOverlays() {
         ImGui::End();
     }
 
+    {
+        int gw = 0, gh = 0;
+        Plat_GetDrawableSize(&gw, &gh);
+        Guide_Render(gw, gh);
+    }
+
     ImGui::Render();
     extern void ImGui_ImplBgfx_RenderDrawData(ImDrawData*);
     ImGui_ImplBgfx_RenderDrawData(ImGui::GetDrawData());
@@ -1003,9 +738,9 @@ static void BgfxApplyReset() {
     if (w <= 0 || h <= 0) return;
     bgfx::reset((uint32_t)w, (uint32_t)h, BgfxResetFlags());
     bgfx::setViewRect(0, 0, 0, (uint16_t)w, (uint16_t)h);
-    // ImGui lives on view 2 (sharp on top of any CRT pass on view 1).
+    // ImGui lives on view 3, over the guide on 2 and any CRT pass on 1.
     // bgfx skips views with no rect set, so size it to the backbuffer.
-    bgfx::setViewRect(2, 0, 0, (uint16_t)w, (uint16_t)h);
+    bgfx::setViewRect(3, 0, 0, (uint16_t)w, (uint16_t)h);
     g_pp.BackBufferWidth  = w;
     g_pp.BackBufferHeight = h;
     g_nViewWidth          = (float)w;
@@ -1097,7 +832,6 @@ void RenderXcloudOverlay()
 
 #if defined(THESEUS_HAVE_WEBRTC)
 #include "xcloud_video.h"
-#include "safe_save.h"
 #include <vector>
 
 
@@ -1397,7 +1131,7 @@ int main(int argc, char* argv[]) {
                 // soon as we have one; placeholders here for the first
                 // frame.
                 bgfx::setViewRect(0, 0, 0, (uint16_t)initW, (uint16_t)initH);
-                bgfx::setViewRect(2, 0, 0, (uint16_t)initW, (uint16_t)initH); // ImGui
+                bgfx::setViewRect(3, 0, 0, (uint16_t)initW, (uint16_t)initH); // ImGui
 
                 // The dashboard renders D3D-style: it expects every draw
                 // to land on the framebuffer in the order it was issued,
@@ -1538,11 +1272,12 @@ int main(int argc, char* argv[]) {
         // View layout under bgfx:
         //   view 0 = dashboard 3D scene (FF emulator submits)
         //   view 1 = CRT post-process blit (only touched when g_crt.enabled)
-        //   view 2 = ImGui (menu bar, panels, libmpv via ImGui::AddImage)
-        // ImGui always lives on view 2 so it draws sharp on top of the
-        // post-processed scene, matching the GL backend's behavior.
+        //   view 2 = the guide (guide.cpp)
+        //   view 3 = ImGui (menu bar, panels, libmpv via ImGui::AddImage)
+        // ImGui stays on top so it draws sharp over the post-processed
+        // scene and the guide.
         extern bool ImGui_ImplBgfx_Init(unsigned char);
-        if (!ImGui_ImplBgfx_Init(2))
+        if (!ImGui_ImplBgfx_Init(3))
             fprintf(stderr, "ImGui_ImplBgfx_Init failed!\n");
     }
 
@@ -1669,6 +1404,7 @@ int main(int argc, char* argv[]) {
         while (SDL_PollEvent(&event)) {
             // Let ImGui handle events first
             ImGui_ImplSDL2_ProcessEvent(&event);
+            Guide_HandleEvent(&event);
 
             switch (event.type) {
                 case SDL_QUIT:
@@ -1992,6 +1728,8 @@ int main(int argc, char* argv[]) {
             ApplyEffectiveMute();
         }
 
+        Guide_Frame();
+
         if (!g_mediaFullscreen && !g_xcloudFullscreen) {
             FramePhaseScope advance(FP_ADVANCE);
             Advance();
@@ -2137,6 +1875,7 @@ int main(int argc, char* argv[]) {
 
     // Cleanup
     XapEditor_Cleanup();
+    Guide_Shutdown();
     {
         extern void ImGui_ImplBgfx_Shutdown();
         ImGui_ImplBgfx_Shutdown();

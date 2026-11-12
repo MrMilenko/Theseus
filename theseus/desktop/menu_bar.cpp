@@ -13,6 +13,7 @@ static const char* ShippedVersionPath() {
     return path;
 }
 #include "panel_shared.h"
+#include "settings_schema.h"
 #include "title_maker.h"
 #include "hdd_browser.h"
 #include "audio_sdl.h"
@@ -95,38 +96,6 @@ static void ApplyCRTPreset(const CRTPreset& p) {
     g_crt.brightness = p.brightness;
 }
 
-// ============================================================================
-// MSAA Options (shared between menu and settings)
-// ============================================================================
-
-static const char* s_msaaLabels[] = { "Off", "2x", "4x", "8x" };
-static const int   s_msaaValues[] = { 0, 2, 4, 8 };
-static const int   s_msaaCount = 4;
-
-// bgfx has no adaptive vsync, so the control is a plain On/Off. g_vsyncMode
-// still stores 0/1 = on, 2 = off for config compatibility.
-static const char* s_vsyncLabels[] = { "On", "Off" };
-
-static const char* s_resLabels[] = { "Native", "720p", "1080p", "1440p (2K)", "2160p (4K)" };
-static const int   s_resValues[] = {  0,        720,    1080,    1440,         2160 };
-static const int   s_resCount    = 5;
-static int GetResIndex() {
-    for (int i = 0; i < s_resCount; i++)
-        if (s_resValues[i] == g_windowResolution) return i;
-    return 0;
-}
-
-static const char* s_displayModeLabels[] = { "Windowed", "Borderless", "Fullscreen" };
-
-static const char* s_fpsLabels[] = { "Unlimited", "30", "60", "90", "120", "144", "240" };
-static const int   s_fpsValues[] = { 0,           30,   60,   90,   120,   144,   240 };
-static const int   s_fpsCount    = 7;
-static int GetFpsIndex() {
-    for (int i = 0; i < s_fpsCount; i++)
-        if (s_fpsValues[i] == g_fpsCap) return i;
-    return 0;
-}
-
 static void RestoreDisplayDefaults() {
     g_crt.enabled = false;
     ApplyCRTPreset(s_crtPresets[1]); // "Classic"
@@ -137,10 +106,44 @@ static void RestoreDisplayDefaults() {
     g_hwdec  = false;
 }
 
-static int GetMSAAIndex() {
-    for (int i = 0; i < s_msaaCount; i++)
-        if (s_msaaValues[i] == g_msaaSamples) return i;
-    return 0;
+// ============================================================================
+// Settings rows: label, range and side effects come from the schema
+// ============================================================================
+
+static void SettingChanged(const SettingDef* d)
+{
+    if (d->apply) d->apply();
+    SaveDesktopSettings();
+}
+
+static bool SettingCheckbox(const char* key, const char* label = NULL)
+{
+    const SettingDef* d = DesktopSettings_Find(key);
+    if (!d || d->kind != SK_BOOL) return false;
+    if (!ImGui::Checkbox(label ? label : d->label, (bool*)d->ptr)) return false;
+    SettingChanged(d);
+    return true;
+}
+
+static bool SettingCombo(const char* key, const char* id)
+{
+    const SettingDef* d = DesktopSettings_Find(key);
+    if (!d || d->kind != SK_ENUM) return false;
+    int idx = Setting_EnumIndex(*d);
+    if (idx < 0) idx = 0;
+    if (!ImGui::Combo(id, &idx, d->labels, d->count)) return false;
+    *(int*)d->ptr = d->values[idx];
+    SettingChanged(d);
+    return true;
+}
+
+// Saves once when the drag ends, not every frame.
+static void SettingSlider(const char* key)
+{
+    const SettingDef* d = DesktopSettings_Find(key);
+    if (!d || d->kind != SK_FLOAT) return;
+    ImGui::SliderFloat(d->label, (float*)d->ptr, d->minV, d->maxV, "%.2f");
+    if (ImGui::IsItemDeactivatedAfterEdit()) SettingChanged(d);
 }
 
 // ============================================================================
@@ -575,10 +578,7 @@ void RenderSettingsWindow() {
             // Startup mode
             ImGui::Text("Startup Mode:");
             ImGui::SameLine();
-            const char* modeLabels[] = { "Ask on launch", "Dashboard", "Development" };
-            if (ImGui::Combo("##startupmode", &g_startupMode, modeLabels, 3)) {
-                SaveDesktopSettings();
-            }
+            SettingCombo("StartupMode", "##startupmode");
 
             ImGui::Spacing();
             ImGui::Separator();
@@ -599,9 +599,7 @@ void RenderSettingsWindow() {
 
             ImGui::Spacing();
             {
-                extern bool g_menuBarAutoHide;
-                if (ImGui::Checkbox("Auto-hide menu bar", &g_menuBarAutoHide))
-                    SaveDesktopSettings();
+                SettingCheckbox("MenuBarAutoHide", "Auto-hide menu bar");
                 ImGui::SameLine();
                 ImGui::TextDisabled("(reveals when the pointer reaches the top edge)");
             }
@@ -618,17 +616,13 @@ void RenderSettingsWindow() {
             ImGui::Separator();
             ImGui::Spacing();
 
-            extern bool g_bUseOnScreenKeyboard;
-            if (ImGui::Checkbox("Use On-Screen Keyboard Only", &g_bUseOnScreenKeyboard))
-                SaveDesktopSettings();
+            SettingCheckbox("UseOnScreenKeyboard", "Use On-Screen Keyboard Only");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("When checked, dashboard text fields ignore your physical\nkeyboard and require gamepad navigation of the on-screen keyboard.");
 
-            extern bool g_bShowBootAnimation;
-            if (ImGui::Checkbox("Show Boot Animation", &g_bShowBootAnimation))
-                SaveDesktopSettings();
+            SettingCheckbox("ShowBootAnimation", "Show Boot Animation");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered())
@@ -645,19 +639,15 @@ void RenderSettingsWindow() {
         if (ImGui::BeginTabItem("Display")) {
             ImGui::Spacing();
 
-            // Slider drags fire IsItemDeactivatedAfterEdit on release; saves
-            // once at end of drag, not every frame.
-            if (ImGui::Checkbox("CRT Effect", &g_crt.enabled)) SaveDesktopSettings();
+            SettingCheckbox("CRT_Enabled");
             if (g_crt.enabled) {
                 ImGui::Spacing();
-                ImGui::SliderFloat("Scanlines",     &g_crt.scanlineIntensity, 0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
-                ImGui::SliderFloat("Curvature",     &g_crt.curvature,         0.0f, 2.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
-                ImGui::SliderFloat("Phosphor Mask", &g_crt.phosphorMask,      0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
-                ImGui::SliderFloat("Vignette",      &g_crt.vignette,          0.0f, 2.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
-                ImGui::SliderFloat("Bloom",         &g_crt.bloom,             0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
-                ImGui::SliderFloat("Flicker",       &g_crt.flickerAmount,     0.0f, 1.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
-                ImGui::SliderFloat("Color Bleed",   &g_crt.colorBleed,        0.0f, 4.0f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
-                ImGui::SliderFloat("Brightness",    &g_crt.brightness,        0.8f, 1.3f, "%.2f"); if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+                static const char* kCrtKeys[] = {
+                    "CRT_Scanlines", "CRT_Curvature", "CRT_Phosphor", "CRT_Vignette",
+                    "CRT_Bloom", "CRT_Flicker", "CRT_ColorBleed", "CRT_Brightness",
+                };
+                for (int i = 0; i < (int)(sizeof(kCrtKeys) / sizeof(kCrtKeys[0])); i++)
+                    SettingSlider(kCrtKeys[i]);
 
                 ImGui::Spacing();
                 ImGui::Text("Presets:");
@@ -677,7 +667,7 @@ void RenderSettingsWindow() {
 
             // Toggles grouped together
             if (ImGui::Checkbox("Wireframe", &g_bWireframe)) SaveDesktopSettings();
-            if (ImGui::Checkbox("Hardware video decode (mpv)", &g_hwdec)) SaveDesktopSettings();
+            SettingCheckbox("Hwdec", "Hardware video decode (mpv)");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Off = software decode, safest. On = faster on AMD/NVIDIA.\nApplies to next media open.");
 
@@ -689,60 +679,28 @@ void RenderSettingsWindow() {
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("MSAA:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
-            int msaaIdx = GetMSAAIndex();
-            if (ImGui::Combo("##msaa", &msaaIdx, s_msaaLabels, s_msaaCount)) {
-                g_msaaSamples = s_msaaValues[msaaIdx];
-                g_msaaChangeRequested = true;
-                SaveDesktopSettings();
-            }
+            SettingCombo("MSAA", "##msaa");
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("VSync:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
-            int vsyncIdx = (g_vsyncMode == 2) ? 1 : 0;
-            if (ImGui::Combo("##vsync", &vsyncIdx, s_vsyncLabels, 2)) {
-                g_vsyncMode = (vsyncIdx == 1) ? 2 : 0;
-                g_vsyncChangeRequested = true;
-                SaveDesktopSettings();
-            }
+            SettingCombo("Vsync", "##vsync");
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("FPS Cap:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
-            int fpsIdx = GetFpsIndex();
-            if (ImGui::Combo("##fpscap", &fpsIdx, s_fpsLabels, s_fpsCount)) {
-                g_fpsCap = s_fpsValues[fpsIdx];
-                SaveDesktopSettings();
-            }
+            SettingCombo("FpsCap", "##fpscap");
 
-            if (ImGui::Checkbox("Emulate Xbox Resolution", &g_bEmulateXboxRes)) {
-                TheseusSetProjectionDirty();
-                SaveDesktopSettings();
-            }
+            SettingCheckbox("EmulateXboxRes");
             ImGui::SameLine();
             ImGui::TextDisabled("(720x480 design space, keeps XIP scenes framed as authored)");
             ImGui::Spacing();
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("Resolution:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
-            int resIdx = GetResIndex();
-            if (ImGui::Combo("##res", &resIdx, s_resLabels, s_resCount)) {
-                g_windowResolution = s_resValues[resIdx];
-                g_displayChangeRequested = true;
-                SaveDesktopSettings();
-            }
+            SettingCombo("Resolution", "##res");
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("Renderer:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
-            static const char* s_rendererLabels[] = {
-                "Auto",
-                "Direct3D 11",
-                "Vulkan",
-                "OpenGL",
-                "Metal",
-                "OpenGL ES",
-            };
-            if (ImGui::Combo("##renderer", &g_rendererPref, s_rendererLabels, 6)) {
-                SaveDesktopSettings();
-            }
+            SettingCombo("Renderer", "##renderer");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered())
@@ -755,10 +713,7 @@ void RenderSettingsWindow() {
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("Display Mode:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
-            if (ImGui::Combo("##dispmode", &g_windowMode, s_displayModeLabels, 3)) {
-                g_displayChangeRequested = true;
-                SaveDesktopSettings();
-            }
+            SettingCombo("DisplayMode", "##dispmode");
 
             ImGui::Spacing();
             if (ImGui::Button("Restore Defaults")) {
@@ -806,11 +761,7 @@ void RenderSettingsWindow() {
             ImGui::Separator();
             ImGui::Spacing();
 
-            extern bool g_useMilkdropViz;
-            if (ImGui::Checkbox("Use projectM visualizer (experimental)",
-                                &g_useMilkdropViz)) {
-                SaveDesktopSettings();
-            }
+            SettingCheckbox("UseMilkdropViz", "Use projectM visualizer (experimental)");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered()) {
@@ -820,11 +771,7 @@ void RenderSettingsWindow() {
                     "fullscreens it once enabled.");
             }
 
-            extern bool g_showAlbumCover;
-            if (ImGui::Checkbox("Show album cover in orb",
-                                &g_showAlbumCover)) {
-                SaveDesktopSettings();
-            }
+            SettingCheckbox("ShowAlbumCover", "Show album cover in orb");
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
             if (ImGui::IsItemHovered()) {
