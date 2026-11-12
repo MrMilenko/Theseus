@@ -1034,18 +1034,17 @@ CMesh* MakeSphere(float nRadius, int nSlices, int nStacks)
 		pMesh->m_nIndexCount = pMesh->m_nFaceCount * 3;
 		pMesh->m_nVertexCount = pClone->GetNumVertices();
 	}
-	else
-	{
-		if (pMesh->m_vertexBuffer != NULL)
-			pMesh->m_vertexBuffer->Release();
-		if (pMesh->m_indexBuffer != NULL)
-			pMesh->m_indexBuffer->Release();
-		delete pMesh;
-		pMesh = NULL;
-	}
 
 	if (pClone != NULL)
 		pClone->Release();
+
+	// Theseus: a failed sphere comes back NULL. 5960 released the buffers,
+	// deleted the mesh (releasing them again) and then repacked through NULL.
+	if (FAILED(hr))
+	{
+		delete pMesh;
+		return NULL;
+	}
 
 	const int cbPacked = sizeof(D3DXVECTOR3) + sizeof(DWORD) * 2;
 	LPDIRECT3DVERTEXBUFFER8 pPacked;
