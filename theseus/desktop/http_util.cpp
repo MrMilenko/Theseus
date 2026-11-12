@@ -1,12 +1,9 @@
 #include "http_util.h"
-#include "platform.h"
+#include "host.h"
 #include <curl/curl.h>
 #include <stdio.h>
 #include <mutex>
 #include <atomic>
-#ifdef THESEUS_HOST_WIN
-#include <windows.h>
-#endif
 
 static std::once_flag s_initOnce;
 static void EnsureGlobalInit() {
@@ -122,12 +119,7 @@ bool Http_GetToFile(const std::string& url, const std::string& outPath) {
     curl_easy_cleanup(h);
     bool wrote = (fclose(fp) == 0);
     if (rc != CURLE_OK || !wrote) { remove(part.c_str()); return false; }
-#ifdef THESEUS_HOST_WIN
-    // MS CRT rename() won't replace an existing file.
-    bool moved = MoveFileExA(part.c_str(), outPath.c_str(), MOVEFILE_REPLACE_EXISTING) != 0;
-#else
-    bool moved = rename(part.c_str(), outPath.c_str()) == 0;
-#endif
+    bool moved = Host_RenameReplace(part.c_str(), outPath.c_str());
     if (!moved) { remove(part.c_str()); return false; }
     return true;
 }

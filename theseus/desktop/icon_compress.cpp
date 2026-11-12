@@ -1,3 +1,4 @@
+#include "platform.h"
 #include "icon_compress.h"
 #include "virtual_games.h"   // VGAMES_ICONS
 
@@ -10,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 #include <io.h>
 #else
 #include <dirent.h>
@@ -127,7 +128,7 @@ IconCompressResult Icons_Compress(int maxDim, int quality)
     static char names[8192][256];
     int count = 0;
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     char pattern[1024];
     snprintf(pattern, sizeof(pattern), "%s/*", dir);
     struct _finddata_t fd;

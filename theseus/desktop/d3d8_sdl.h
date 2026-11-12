@@ -10,20 +10,12 @@
 extern "C" unsigned char* stbi_load_from_memory(const unsigned char*, int, int*, int*, int*, int);
 extern "C" void stbi_image_free(void*);
 
-// GL headers, pulled only for base typedefs (GLuint / GLint) that a few
-// inert leftover state structs below still reference. No GL is called under
-// bgfx; on Windows <GL/gl.h> supplies the typedefs (GLEW is not needed).
-#ifdef __APPLE__
-    #define GL_SILENCE_DEPRECATION
-    #include <OpenGL/gl3.h>
-#elif defined(_WIN32)
-        #include <windows.h>
-        #include <GL/gl.h>
-#else
-    #define GL_GLEXT_PROTOTYPES
-    #include <GL/gl.h>
-    #include <GL/glext.h>
-#endif
+// A few inert leftover state structs below still hold GL-typed fields.
+// No GL is called under bgfx, so the base typedefs are all they need.
+typedef unsigned int   GLuint;
+typedef int            GLint;
+typedef unsigned int   GLenum;
+typedef unsigned short GLushort;
 
 // Ensure D3D vertex constructors are available (vertex8.h, hud.cpp)
 #ifndef DIRECT3D_VERSION
@@ -1652,13 +1644,6 @@ public:
         if (m_tss0MinFilter == D3DTEXF_POINT)     f |= BGFX_SAMPLER_MIN_POINT;
         if (m_tss0MagFilter == D3DTEXF_POINT)     f |= BGFX_SAMPLER_MAG_POINT;
         return f;
-    }
-    static GLenum D3DFilterToGL(DWORD d3dFilter, bool isMag) {
-        switch (d3dFilter) {
-            case 1: return GL_NEAREST;  // D3DTEXF_POINT
-            case 2: return GL_LINEAR;   // D3DTEXF_LINEAR
-            default: return isMag ? GL_LINEAR : GL_LINEAR; // ANISOTROPIC/QUINCUNX/GAUSSIAN → linear
-        }
     }
     HRESULT SetTextureStageState(DWORD stage, D3DTEXTURESTAGESTATETYPE type, DWORD value) {
         // Sweep 2 trace counter.

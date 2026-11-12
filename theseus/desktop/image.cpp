@@ -547,7 +547,7 @@ void PreloadSkinTextures()
 		FindImage(wideFileName);
 	};
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 	char searchBuf[512];
 	snprintf(searchBuf, sizeof(searchBuf), "%s\\*.xbx", mappedDir);
 	struct _finddata_t fd;

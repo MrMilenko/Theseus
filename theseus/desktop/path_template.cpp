@@ -11,6 +11,7 @@
 // each module will call a Register-style API instead of editing
 // this table; for now we hardcode the existing dispatcher knobs.
 
+#include "platform.h"
 #include "path_template.h"
 
 #include <cstdio>
@@ -80,7 +81,7 @@ static const char* HomeDir() {
 	if (!s_init) {
 		s_init = true;
 		const char* h = getenv("HOME");
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 		if (!h || !*h) h = getenv("USERPROFILE");
 #endif
 		if (h && *h) {

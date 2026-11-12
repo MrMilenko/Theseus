@@ -9,16 +9,8 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#include <direct.h>
-#else
-#include <dirent.h>
-#include <unistd.h>
-#endif
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
+#include "platform.h"
+#include "host.h"
 
 // The only thing that stays with the binary. Nobody hand edits a .bin, and
 // packagers want it read only.
@@ -30,26 +22,14 @@ const char* Plat_ExeDir() {
     if (s_init) return s_dir;
     s_init = true;
 
-#ifdef _WIN32
-    DWORD len = GetModuleFileNameA(NULL, s_dir, sizeof(s_dir));
-    if (len > 0) {
-        char* last = strrchr(s_dir, '\\');
-        if (last) *last = '\0';
-    }
-#elif defined(__APPLE__)
-    uint32_t sz = sizeof(s_dir);
-    if (_NSGetExecutablePath(s_dir, &sz) == 0) {
+    if (Host_ExePath(s_dir, sizeof(s_dir))) {
         char* last = strrchr(s_dir, '/');
+        char* back = strrchr(s_dir, '\\');
+        if (back > last) last = back;
         if (last) *last = '\0';
+    } else {
+        s_dir[0] = '\0';
     }
-#else
-    ssize_t len = readlink("/proc/self/exe", s_dir, sizeof(s_dir) - 1);
-    if (len > 0) {
-        s_dir[len] = '\0';
-        char* last = strrchr(s_dir, '/');
-        if (last) *last = '\0';
-    }
-#endif
     if (!s_dir[0]) strcpy(s_dir, ".");
     return s_dir;
 }
@@ -60,13 +40,13 @@ const char* Plat_UserDataDir() {
     if (s_init) return s_dir;
     s_init = true;
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     const char* appdata = getenv("APPDATA");
     if (appdata && *appdata)
         snprintf(s_dir, sizeof(s_dir), "%s\\Theseus", appdata);
     else
         snprintf(s_dir, sizeof(s_dir), "%s\\AppData\\Roaming\\Theseus", PlatformHomeDir());
-#elif defined(__APPLE__)
+#elif defined(THESEUS_HOST_MAC)
     snprintf(s_dir, sizeof(s_dir), "%s/Library/Application Support/Theseus", PlatformHomeDir());
 #else
     const char* xdg = getenv("XDG_DATA_HOME");
@@ -79,7 +59,7 @@ const char* Plat_UserDataDir() {
 }
 
 const char* Plat_ShippedDir() {
-#ifdef __APPLE__
+#ifdef THESEUS_HOST_MAC
     // Inside a .app the binary sits in Contents/MacOS and the payload in
     // Contents/Resources. Loose builds keep everything beside the binary.
     static char s_dir[1024] = {0};
@@ -130,36 +110,19 @@ static void CopyTree(const char* src, const char* dst) {
     struct stat st;
     if (stat(src, &st) != 0) return;
     Plat_MkdirP(dst);
-#ifdef _WIN32
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s/*", src);
-    struct _finddata_t fd;
-    intptr_t h = _findfirst(pattern, &fd);
-    if (h == -1) return;
-    do {
-        if (!strcmp(fd.name, ".") || !strcmp(fd.name, "..")) continue;
-        char s[1024], d[1024];
-        snprintf(s, sizeof(s), "%s/%s", src, fd.name);
-        snprintf(d, sizeof(d), "%s/%s", dst, fd.name);
-        if (fd.attrib & _A_SUBDIR) CopyTree(s, d);
-        else                       CopyFile(s, d);
-    } while (_findnext(h, &fd) == 0);
-    _findclose(h);
-#else
-    DIR* dir = opendir(src);
+    HostDir* dir = Host_OpenDir(src);
     if (!dir) return;
-    struct dirent* e;
-    while ((e = readdir(dir)) != NULL) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+    char name[260];
+    HostFileInfo info;
+    while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
         char s[1024], d[1024];
-        snprintf(s, sizeof(s), "%s/%s", src, e->d_name);
-        snprintf(d, sizeof(d), "%s/%s", dst, e->d_name);
-        struct stat es;
-        if (stat(s, &es) == 0 && S_ISDIR(es.st_mode)) CopyTree(s, d);
-        else                                          CopyFile(s, d);
+        snprintf(s, sizeof(s), "%s/%s", src, name);
+        snprintf(d, sizeof(d), "%s/%s", dst, name);
+        if (info.attrs & HOST_ATTR_DIR) CopyTree(s, d);
+        else                            CopyFile(s, d);
     }
-    closedir(dir);
-#endif
+    Host_CloseDir(dir);
 }
 
 // Copy one tree into the user dir if it isn't there yet.
@@ -190,38 +153,19 @@ void AppPaths_Init() {
     snprintf(dataDir, sizeof(dataDir), "%s/Data", Plat_ShippedDir());
     Plat_MkdirP(AppPath_Tree("Data"));
 
-#ifdef _WIN32
-    char pattern[1024];
-    snprintf(pattern, sizeof(pattern), "%s/*", dataDir);
-    struct _finddata_t fd;
-    intptr_t h = _findfirst(pattern, &fd);
-    if (h == -1) return;
-    do {
-        if (!(fd.attrib & _A_SUBDIR)) continue;
-        if (!strcmp(fd.name, ".") || !strcmp(fd.name, "..")) continue;
-        if (!strcasecmp(fd.name, "shaders")) continue;
-        char rel[1024];
-        snprintf(rel, sizeof(rel), "Data/%s", fd.name);
-        SeedTree(rel);
-    } while (_findnext(h, &fd) == 0);
-    _findclose(h);
-#else
-    DIR* dir = opendir(dataDir);
+    HostDir* dir = Host_OpenDir(dataDir);
     if (!dir) return;
-    struct dirent* e;
-    while ((e = readdir(dir)) != NULL) {
-        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
-        if (!strcasecmp(e->d_name, "shaders")) continue;
-        char probe[1024];
-        snprintf(probe, sizeof(probe), "%s/%s", dataDir, e->d_name);
-        struct stat es;
-        if (stat(probe, &es) != 0 || !S_ISDIR(es.st_mode)) continue;
+    char name[260];
+    HostFileInfo info;
+    while (Host_ReadDir(dir, name, sizeof(name), &info)) {
+        if (!(info.attrs & HOST_ATTR_DIR)) continue;
+        if (!strcmp(name, ".") || !strcmp(name, "..")) continue;
+        if (!strcasecmp(name, "shaders")) continue;
         char rel[1024];
-        snprintf(rel, sizeof(rel), "Data/%s", e->d_name);
+        snprintf(rel, sizeof(rel), "Data/%s", name);
         SeedTree(rel);
     }
-    closedir(dir);
-#endif
+    Host_CloseDir(dir);
 }
 
 const char* AppPathf(const char* fmt, ...) {
@@ -251,23 +195,7 @@ const char* AppPath_Tree(const char* tree) {
 
 void Plat_OpenInFileManager(const char* dir) {
     if (!dir || !*dir) return;
-#ifdef _WIN32
-    ShellExecuteA(NULL, "open", dir, NULL, NULL, SW_SHOWNORMAL);
-#else
-    // Fork so a slow file manager can't stall us, and no shell is involved.
-    pid_t pid = fork();
-    if (pid == 0) {
-#ifdef __APPLE__
-        execlp("open", "open", dir, (char*)NULL);
-#else
-        // Under flatpak we want the host's file manager.
-        if (getenv("FLATPAK_ID"))
-            execlp("flatpak-spawn", "flatpak-spawn", "--host", "xdg-open", dir, (char*)NULL);
-        execlp("xdg-open", "xdg-open", dir, (char*)NULL);
-#endif
-        _exit(127);
-    }
-#endif
+    Host_OpenFolder(dir);
 }
 
 const char* AppPath(const char* logical) {

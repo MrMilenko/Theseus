@@ -20,7 +20,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 #include <io.h>
 #include <direct.h>
 #define strcasecmp _stricmp
@@ -174,7 +174,7 @@ void XapEditor_Cleanup() {}
 // ============================================================================
 
 static void XapEditor_ScanDir(const char* dir, char fileList[][512], int* count, int maxFiles) {
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     char searchPath[512];
     snprintf(searchPath, sizeof(searchPath), "%s\\*", dir);
     struct _finddata_t fd;

@@ -11,6 +11,7 @@
 // DisplayPos / DisplaySize. Each ImDrawCmd is a setScissor + draw of
 // (ElemCount) indices at (IdxOffset, VtxOffset).
 
+#include "platform.h"
 #include "app_paths.h"
 #include "imgui_impl_bgfx.h"
 #include "imgui.h"
@@ -38,7 +39,7 @@ static BgfxImguiBackend g_bd;
 // via a header; same pattern.
 static bgfx::ShaderHandle LoadShader(const char* name)
 {
-#if defined(_WIN32)
+#if defined(THESEUS_HOST_WIN)
 	const char* sub = "dx11";
 #elif defined(__APPLE__)
 	const char* sub = "metal";

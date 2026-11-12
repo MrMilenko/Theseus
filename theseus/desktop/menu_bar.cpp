@@ -1266,7 +1266,7 @@ void RenderAboutWindow() {
         "macOS"
 #elif defined(__linux__)
         "Linux"
-#elif defined(_WIN32)
+#elif defined(THESEUS_HOST_WIN)
         "Windows"
 #else
         "Unknown"

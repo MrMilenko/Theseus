@@ -28,9 +28,8 @@
 #include "display.h"
 #include "esde.h"
 #include "esde_vgames.h"
-#include <signal.h>
 
-#include <SDL_syswm.h>
+#include "host.h"
 #include <bgfx/bgfx.h>
 #include <bgfx/platform.h>
 #include <cstring>
@@ -40,9 +39,9 @@
 // Loads Data/shaders/<backend>/<name>.bin. Picks subdir from the active renderer.
 bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
 {
-#if defined(_WIN32)
+#if defined(THESEUS_HOST_WIN)
 	const char* sub = "dx11";
-#elif defined(__APPLE__)
+#elif defined(THESEUS_HOST_MAC)
 	const char* sub = "metal";
 #else
 	const char* sub = "spirv";
@@ -72,94 +71,7 @@ bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
 	bgfx::setName(sh, name);
 	return sh;
 }
-#ifdef __APPLE__
-#include <mach-o/dyld.h>  // _NSGetExecutablePath
-#endif
-#ifdef __linux__
-#include <sys/wait.h>
-#endif
-
-#ifdef _WIN32
-#include <io.h>
-#include <direct.h>
-#include <process.h>
-#include <dbghelp.h>
-#include <avrt.h>
-#include <dwmapi.h>
-#pragma comment(lib, "dbghelp.lib")
-
-// Watchdog: dumps main thread stack to hang_dump.txt in the user data dir after 10s of detected hang
-static DWORD WINAPI HangWatchdog(LPVOID param) {
-    DWORD mainThread = (DWORD)(uintptr_t)param;
-    while (true) {
-        Sleep(2000);
-        extern volatile bool g_hangCheck;
-        extern volatile DWORD g_hangStartTime;
-        if (!g_hangCheck) continue;
-        if (GetTickCount() - g_hangStartTime < 10000) continue;
-
-        char dumpPath[512];
-        snprintf(dumpPath, sizeof(dumpPath), "%s/hang_dump.txt", Plat_UserDataDir());
-        FILE* f = fopen(dumpPath, "w");
-        if (!f) continue;
-        fprintf(f, "=== HANG DETECTED (>10s) ===\n");
-        fprintf(f, "Main thread ID: %lu\n\n", mainThread);
-
-        HANDLE hThread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, mainThread);
-        if (hThread) {
-            SuspendThread(hThread);
-            CONTEXT ctx = {};
-            ctx.ContextFlags = CONTEXT_FULL;
-            GetThreadContext(hThread, &ctx);
-
-            SymInitialize(GetCurrentProcess(), NULL, TRUE);
-            STACKFRAME64 sf = {};
-            sf.AddrPC.Offset = ctx.Rip; sf.AddrPC.Mode = AddrModeFlat;
-            sf.AddrFrame.Offset = ctx.Rbp; sf.AddrFrame.Mode = AddrModeFlat;
-            sf.AddrStack.Offset = ctx.Rsp; sf.AddrStack.Mode = AddrModeFlat;
-
-            fprintf(f, "Call stack:\n");
-            for (int i = 0; i < 50; i++) {
-                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), hThread, &sf, &ctx, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
-                    break;
-                char symBuf[sizeof(SYMBOL_INFO) + 256];
-                SYMBOL_INFO* sym = (SYMBOL_INFO*)symBuf;
-                sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-                sym->MaxNameLen = 255;
-                DWORD64 disp = 0;
-                if (SymFromAddr(GetCurrentProcess(), sf.AddrPC.Offset, &disp, sym))
-                    fprintf(f, "  [%d] %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
-                else
-                    fprintf(f, "  [%d] 0x%llx\n", i, (unsigned long long)sf.AddrPC.Offset);
-            }
-            SymCleanup(GetCurrentProcess());
-            ResumeThread(hThread);
-            CloseHandle(hThread);
-        }
-        fclose(f);
-        fprintf(stderr, "[Watchdog] Hang dump written to %s\n", dumpPath);
-        g_hangCheck = false;
-    }
-    return 0;
-}
-volatile bool g_hangCheck = false;
-volatile DWORD g_hangStartTime = 0;
-#define strcasecmp _stricmp
-#define rmdir _rmdir
-#ifndef S_ISDIR
-#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
-#endif
-#ifndef S_ISREG
-#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
-#endif
-#else
 #include <unistd.h>
-#include <dirent.h>
-#if defined(__APPLE__) || defined(__GLIBC__)
-#include <execinfo.h>
-#define HAS_BACKTRACE 1
-#endif
-#endif
 
 // Dear ImGui
 #include "imgui.h"
@@ -224,11 +136,6 @@ struct CRTDefaults {
     }
 } g_crtDefaults;
 static float s_crtTime = 0.0f;
-
-#ifdef _WIN32
-// Force discrete GPU on Optimus / switchable laptops. bgfx exports its own
-// pair, so skip under BGFX to avoid the dup-symbol link error.
-#endif
 
 // --graphics-debug also leaves a perf trail testers can attach to a report:
 // one line every 5 seconds in theseus_perf.log in the user data dir.
@@ -324,14 +231,6 @@ int g_argc = 0;
 char** g_argv = NULL;
 
 // Game process tracking; hide dashboard while game runs, soft restart on exit
-#ifdef _WIN32
-static DWORD  s_gamePID = 0;        // PID of launched game (0 = none)
-#else
-#include <signal.h>
-#include <spawn.h>
-extern char **environ;
-static pid_t  s_gamePID = 0;        // PID of launched game (0 = none)
-#endif
 static bool   s_gameRunning = false; // true while waiting for game to exit
 static bool   s_softRestartPending = false; // reinit after game exits
 
@@ -1293,65 +1192,6 @@ int g_mediaPlaybackExited = 0;
 
 // ReloadSceneFromEditor is now in xap_editor.cpp
 
-static void crash_handler(int sig) {
-    fprintf(stderr, "\n[CRASH] Signal %d (%s)\n", sig, sig == SIGSEGV ? "SIGSEGV" : sig == SIGABRT ? "SIGABRT" : "OTHER");
-    fflush(stderr);
-#ifdef HAS_BACKTRACE
-    void* bt[64];
-    int n = backtrace(bt, 64);
-    backtrace_symbols_fd(bt, n, 2);
-#endif
-#ifndef _WIN32
-    _exit(128 + sig);
-#else
-    exit(128 + sig);
-#endif
-}
-
-#ifdef _WIN32
-#include <windows.h>
-#include <dbghelp.h>
-#pragma comment(lib, "dbghelp.lib")
-static LONG WINAPI WindowsCrashHandler(EXCEPTION_POINTERS* ep) {
-    fprintf(stderr, "\n[CRASH] Exception 0x%08lX at address 0x%p\n",
-            ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress);
-    if (ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2) {
-        fprintf(stderr, "[CRASH] %s address 0x%p\n",
-                ep->ExceptionRecord->ExceptionInformation[0] ? "Writing" : "Reading",
-                (void*)ep->ExceptionRecord->ExceptionInformation[1]);
-    }
-    // Walk the stack
-    HANDLE process = GetCurrentProcess();
-    SymInitialize(process, NULL, TRUE);
-    STACKFRAME64 frame = {};
-    CONTEXT* ctx = ep->ContextRecord;
-    frame.AddrPC.Offset = ctx->Rip;
-    frame.AddrPC.Mode = AddrModeFlat;
-    frame.AddrFrame.Offset = ctx->Rbp;
-    frame.AddrFrame.Mode = AddrModeFlat;
-    frame.AddrStack.Offset = ctx->Rsp;
-    frame.AddrStack.Mode = AddrModeFlat;
-    fprintf(stderr, "[CRASH] Stack trace:\n");
-    for (int i = 0; i < 32; i++) {
-        if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, ctx, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
-            break;
-        char symBuf[sizeof(SYMBOL_INFO) + 256];
-        SYMBOL_INFO* sym = (SYMBOL_INFO*)symBuf;
-        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
-        sym->MaxNameLen = 255;
-        DWORD64 disp = 0;
-        if (SymFromAddr(process, frame.AddrPC.Offset, &disp, sym))
-            fprintf(stderr, "  [%d] %s + 0x%llx\n", i, sym->Name, (unsigned long long)disp);
-        else
-            fprintf(stderr, "  [%d] 0x%p\n", i, (void*)frame.AddrPC.Offset);
-    }
-    fflush(stderr);
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-#endif
-
-
-
 // Inspector panel (DrawSelectionHighlight, RenderNodeTree, RenderInspectorPanel,
 // etc.) is now in inspector.cpp
 // RenderXAPEditor is now in xap_editor.cpp
@@ -1363,76 +1203,17 @@ int main(int argc, char* argv[]) {
     g_argv = argv;
     s_execPath = argv[0];
 
-#ifdef _WIN32
-    // /SUBSYSTEM:WINDOWS so explorer launches don't pop a console, but
-    // attach to a parent shell when one exists so stdout/stderr show up.
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-        freopen("CONOUT$", "w", stdout);
-        freopen("CONOUT$", "w", stderr);
-        freopen("CONIN$", "r", stdin);
-    } else {
-        // Launched from Explorer, so there's no console and every fprintf
-        // below goes nowhere. Tee to a log the user can actually send back.
-        char logPath[1024];
-        Plat_MkdirP(Plat_UserDataDir());
-        snprintf(logPath, sizeof(logPath), "%s/theseus.log", Plat_UserDataDir());
-        if (freopen(logPath, "w", stdout)) {
-            setvbuf(stdout, NULL, _IOLBF, 0);
-            _dup2(_fileno(stdout), _fileno(stderr));
-        }
-    }
-
-    //Milenko-Testing: I don't run windows, i googled this. don't know if it will work as intended.
-    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
-    DwmEnableMMCSS(TRUE);
     {
-        DWORD taskIdx = 0;
-        AvSetMmThreadCharacteristicsW(L"Games", &taskIdx);
+        char logPath[1024];
+        snprintf(logPath, sizeof(logPath), "%s/theseus.log", Plat_UserDataDir());
+        Host_ConsoleOrLog(logPath);
     }
-    typedef BOOL (WINAPI *SetProcessInfoFn)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD);
-    HMODULE hKernel = GetModuleHandleA("kernel32.dll");
-    if (hKernel) {
-        SetProcessInfoFn pSetProcessInformation =
-            (SetProcessInfoFn)GetProcAddress(hKernel, "SetProcessInformation");
-        if (pSetProcessInformation) {
-            PROCESS_POWER_THROTTLING_STATE pt = {0};
-            pt.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-            pt.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-            pt.StateMask = 0; // 0 == opt out of throttling
-            pSetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pt, sizeof(pt));
-        }
-    }
-#endif
+    Host_BoostProcess();
+
 
     // Change working directory to the executable's directory so that
     // relative paths (xboxfs/, etc.) work when launched from Finder/Explorer.
-    {
-        char exeDir[1024];
-#ifdef _WIN32
-        // GetModuleFileName + strip filename
-        DWORD len = GetModuleFileNameA(NULL, exeDir, sizeof(exeDir));
-        if (len > 0) {
-            char* last = strrchr(exeDir, '\\');
-            if (last) *last = '\0';
-            _chdir(exeDir);
-        }
-#elif defined(__APPLE__)
-        uint32_t sz = sizeof(exeDir);
-        if (_NSGetExecutablePath(exeDir, &sz) == 0) {
-            char* last = strrchr(exeDir, '/');
-            if (last) *last = '\0';
-            chdir(exeDir);
-        }
-#else
-        ssize_t len = readlink("/proc/self/exe", exeDir, sizeof(exeDir) - 1);
-        if (len > 0) {
-            exeDir[len] = '\0';
-            char* last = strrchr(exeDir, '/');
-            if (last) *last = '\0';
-            chdir(exeDir);
-        }
-#endif
-    }
+    chdir(Plat_ExeDir());
 
     // Before anything reads a config.
     AppPaths_Init();
@@ -1463,13 +1244,7 @@ int main(int argc, char* argv[]) {
 #if !defined(ASAN_ACTIVE)
     // ASan installs its own SIGSEGV/SIGBUS handlers; ours would eat them.
     // Skip our handler entirely on asan builds.
-#  ifdef _WIN32
-    SetUnhandledExceptionFilter(WindowsCrashHandler);
-#  else
-    signal(SIGSEGV, crash_handler);
-    signal(SIGBUS, crash_handler);
-#  endif
-    signal(SIGABRT, crash_handler);
+    Host_InstallCrashHandler();
 #endif
 
 #undef ASAN_ACTIVE // Clean up
@@ -1530,31 +1305,16 @@ int main(int argc, char* argv[]) {
 
     // bgfx::init. nwh = NSWindow* on macOS, HWND on Win32, Window on X11.
     {
-        SDL_SysWMinfo wmi;
-        SDL_VERSION(&wmi.version);
-        if (!SDL_GetWindowWMInfo(g_pSDLWindow, &wmi)) {
-            fprintf(stderr, "SDL_GetWindowWMInfo failed: %s\n", SDL_GetError());
-        } else {
+        void* nwh = NULL;
+        void* ndt = NULL;
+        bool wayland = false;
+        if (Host_NativeWindow(g_pSDLWindow, &nwh, &ndt, &wayland)) {
             bgfx::PlatformData pd;
             std::memset(&pd, 0, sizeof(pd));
-#  if defined(__APPLE__)
-            pd.nwh = wmi.info.cocoa.window;
-#  elif defined(_WIN32)
-            pd.nwh = wmi.info.win.window;
-#  else
-            // Branch on SDL's actual subsystem. Feeding x11 lanes to
-            // bgfx on a Wayland session hands RADV a NULL Display and
-            // it crashes in vkGetPhysicalDeviceSurfaceSupportKHR.
-            if (wmi.subsystem == SDL_SYSWM_WAYLAND) {
-                pd.ndt  = wmi.info.wl.display;
-                pd.nwh  = wmi.info.wl.surface;
-                pd.type = bgfx::NativeWindowHandleType::Wayland;
-            } else {
-                pd.ndt  = wmi.info.x11.display;
-                pd.nwh  = (void*)(uintptr_t)wmi.info.x11.window;
-                pd.type = bgfx::NativeWindowHandleType::Default; // X11
-            }
-#  endif
+            pd.nwh  = nwh;
+            pd.ndt  = ndt;
+            pd.type = wayland ? bgfx::NativeWindowHandleType::Wayland
+                              : bgfx::NativeWindowHandleType::Default;
             bgfx::Init bgfxInit;
             bgfxInit.platformData       = pd;
             // Pixels, not points. On a HiDPI display the drawable is larger
@@ -2161,13 +1921,9 @@ int main(int argc, char* argv[]) {
                 newArgv[g_argc + 1] = NULL;
             }
 
-#ifdef _WIN32
             // Show window again if it was hidden (game launch)
             if (g_pSDLWindow) SDL_ShowWindow(g_pSDLWindow);
-            _execv(g_argv[0], newArgv);
-#else
             execv(g_argv[0], newArgv);
-#endif
             // fallthrough if execv fails
             fprintf(stderr, "[Desktop] execv failed: %s\n", strerror(errno));
         }

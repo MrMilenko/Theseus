@@ -3,6 +3,7 @@
 // MP3, WAV, and XAP-script-driven audio cues. Intentionally does NOT
 // include std.h, to avoid #define new conflicts with STL.
 
+#include "platform.h"
 #include "app_paths.h"
 #include <SDL.h>
 #include <SDL_mixer.h>
@@ -14,7 +15,7 @@
 #include <map>
 #include <algorithm>
 #include <sys/stat.h>
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
 #include <io.h>
 #include <direct.h>
 #ifndef S_ISDIR
@@ -1092,7 +1093,7 @@ int DashMusic_Scan(const char* musicRoot)
             soundtrack.songs.push_back(BuildSong(full, StripExtension(songName)));
         };
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
         char searchBuf[512];
         snprintf(searchBuf, sizeof(searchBuf), "%s\\*", stPath.c_str());
         struct _finddata_t fd;
@@ -1162,7 +1163,7 @@ int DashMusic_Scan(const char* musicRoot)
         looseMusic.songs.push_back(BuildSong(full, StripExtension(fileName)));
     };
 
-#ifdef _WIN32
+#ifdef THESEUS_HOST_WIN
     char searchBuf[512];
     snprintf(searchBuf, sizeof(searchBuf), "%s\\*", musicRoot);
     struct _finddata_t fd;
