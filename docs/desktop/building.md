@@ -42,16 +42,16 @@ make -C .build/projects/gmake-osx-arm64 -j$(sysctl -n hw.ncpu) bx bimg bgfx conf
 # Linux
 ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
 make -C .build/projects/gmake-linux-gcc -j$(nproc) bx bimg bgfx config=release64 \
-     CXXFLAGS=-DBGFX_CONFIG_RENDERER_OPENGL=33
+     CXXFLAGS=-DBGFX_CONFIG_RENDERER_OPENGL_MIN_VERSION=33
 
 # Windows, cross from Linux
 ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
 make -C .build/projects/gmake-mingw-gcc -j$(nproc) bx bimg bgfx config=release64 \
      CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
-     CXXFLAGS=-DBGFX_CONFIG_RENDERER_OPENGL=33
+     CXXFLAGS=-DBGFX_CONFIG_RENDERER_OPENGL_MIN_VERSION=33
 ```
 
-The OpenGL renderer needs `BGFX_CONFIG_RENDERER_OPENGL=33`. Without it bgfx targets OpenGL 2.1, compiles the shaders as GLSL 1.20, and strict drivers reject them, which leaves a black screen and then a crash.
+The OpenGL renderer needs `BGFX_CONFIG_RENDERER_OPENGL_MIN_VERSION=33`. Without it bgfx targets OpenGL 2.1, compiles the shaders as GLSL 1.20, and strict drivers reject them, which leaves a black screen and then a crash.
 
 Always give `-j` a number. A bare `-j` starts every compile at once, and on a small machine that runs it out of memory and can freeze the whole desktop. If a low RAM machine with no swap still struggles, use a smaller number than the core count. The same goes for every `make` and `cmake --build` below.
 
