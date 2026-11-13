@@ -23,7 +23,7 @@
 struct VirtualGame {
     char name[128];        // display name and virtual folder name
     char titleID[16];      // hex title id, e.g. "45410013"
-    char launch[512];
+    char launch[1024];     // an xemu line carries two full paths
     char drive[4];         // "E", "F", "G"
     char category[32];     // "Games", "Applications", "Homebrew", ...
     // Optional folder path under the category, "/" separated, e.g.
@@ -65,7 +65,7 @@ inline void VGames_Load() {
     FILE* fp = fopen(VGAMES_INI, "r");
     if (!fp) return;
 
-    char line[1024];
+    char line[2048];
     VirtualGame* cur = NULL;
 
     while (fgets(line, sizeof(line), fp)) {
@@ -238,22 +238,7 @@ inline void VGames_DeleteByName(const char* name) {
     g_vgames.games[idx].valid = false;
     g_vgames.generation++;
 
-    SafeSave save(AppPath("Configs/games.ini"));
-    FILE* fp = save.f;
-    if (fp) {
-        for (int i = 0; i < g_vgames.count; i++) {
-            if (!g_vgames.games[i].valid) continue;
-            if (VGames_IsStreaming(g_vgames.games[i]) || g_vgames.games[i].transient) continue;
-            fprintf(fp, "[%s]\n", g_vgames.games[i].name);
-            fprintf(fp, "TitleID=%s\n", g_vgames.games[i].titleID);
-            fprintf(fp, "Launch=%s\n", g_vgames.games[i].launch);
-            fprintf(fp, "Drive=%s\n", g_vgames.games[i].drive);
-            if (g_vgames.games[i].category[0])
-                fprintf(fp, "Category=%s\n", g_vgames.games[i].category);
-            fprintf(fp, "\n");
-        }
-        save.Commit();
-    }
+    VGames_Save();
     fprintf(stderr, "[VGames] Deleted: %s\n", name);
 }
 

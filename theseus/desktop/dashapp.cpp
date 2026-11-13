@@ -16,6 +16,7 @@
 #include "audio_sdl.h"
 #include "cdaudio.h"
 #include "settingsfile.h"
+#include "display.h"
 
 #include <algorithm>
 extern void PreloadSkinTextures();
@@ -415,9 +416,12 @@ bool InitD3D()
 
 	uint32_t dwBehavior = D3DCREATE_HARDWARE_VERTEXPROCESSING;
 
-	// Desktop: resolution follows SDL window size, updated on resize
-	g_pp.BackBufferWidth = 1280;
-	g_pp.BackBufferHeight = 720;
+	// Desktop: resolution follows the window. Read it here, since a saved
+	// borderless or 1080 mode was already applied before we got this far.
+	int drawW = 0, drawH = 0;
+	Plat_GetDrawableSize(&drawW, &drawH);
+	g_pp.BackBufferWidth = drawW > 0 ? drawW : 1280;
+	g_pp.BackBufferHeight = drawH > 0 ? drawH : 720;
 	g_pp.Flags = D3DPRESENTFLAG_PROGRESSIVE | D3DPRESENTFLAG_WIDESCREEN;
 	g_bStretchWidescreen = false;
 

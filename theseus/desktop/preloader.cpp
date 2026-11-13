@@ -1,23 +1,18 @@
-// preloader.cpp: desktop preloader UI and XIP extraction. Shows the
-// boot splash and unpacks bundled XIP archives into xboxfs/ on first
-// run. Desktop-only.
+// preloader.cpp: startup mode and XIP extraction. Development mode unpacks
+// the bundled XIP archives into folders the first time. Desktop-only.
 
 #include "display.h"
 #include "app_paths.h"
 #include "preloader.h"
 #include "std.h"
-#include "imgui.h"
-#include "imgui_impl_sdl2.h"
 #include <SDL.h>
 #include <sys/stat.h>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
-#include <cmath>
 
 #include "host.h"
 
-#include <bgfx/bgfx.h>
 
 // ============================================================================
 // XIP Extraction (ported from xiptool.c)
@@ -256,290 +251,20 @@ static bool Preloader_HasExtractedXIPs() {
 
 // StartupMode is stored in desktop.ini via g_startupMode (loaded by sdl_main.cpp)
 extern int g_startupMode;
-extern void SaveDesktopSettings();
 
-// ============================================================================
-// Preloader UI
-// ============================================================================
-
-// Helper: draw a large styled button
-static bool PreloaderButton(const char* label, const char* desc, float width, const ImVec4& color) {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(color.x * 0.6f, color.y * 0.6f, color.z * 0.6f, 0.9f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(color.x * 0.8f, color.y * 0.8f, color.z * 0.8f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, color);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16, 12));
-
-    bool clicked = ImGui::Button(label, ImVec2(width, 0));
-
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(3);
-
-    if (desc && desc[0]) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.6f, 0.5f, 1.0f));
-        float textW = ImGui::CalcTextSize(desc).x;
-        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - textW) * 0.5f);
-        ImGui::TextUnformatted(desc);
-        ImGui::PopStyleColor();
-    }
-
-    return clicked;
+// Development mode runs the scenes from unpacked folders; unpack them the
+// first time it's picked.
+bool Preloader_EnsureExtracted() {
+    if (Preloader_HasExtractedXIPs()) return true;
+    char status[256] = "";
+    Preloader_ExtractAllXIPs(AppPath("Data/Xips"), status, sizeof(status));
+    fprintf(stderr, "[Preloader] %s\n", status);
+    return Preloader_HasExtractedXIPs();
 }
 
-bool RunPreloader(SDL_Window* window) {
-    // If user saved a preference, skip the UI entirely
-    if (g_startupMode == 1) return false;  // dashboard mode
-    if (g_startupMode == 2) return true;   // development mode
-
-    enum { PAGE_MAIN, PAGE_EXTRACTED, PAGE_EXTRACTING, PAGE_EXTRACT_DONE } page = PAGE_MAIN;
-    bool done = false;
-    bool extractedMode = false;
-    bool rememberChoice = false;
-    char extractStatus[256] = "";
-    bool hasExtracted = Preloader_HasExtractedXIPs();
-    float animTime = 0.0f;
-
-    while (!done) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            ImGui_ImplSDL2_ProcessEvent(&event);
-            if (event.type == SDL_QUIT) exit(0);
-            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_ESCAPE) {
-                if (page == PAGE_EXTRACTED || page == PAGE_EXTRACT_DONE)
-                    page = PAGE_MAIN;
-            }
-        }
-
-        animTime += 0.016f;
-
-        extern void ImGui_ImplBgfx_NewFrame();
-        ImGui_ImplBgfx_NewFrame();
-        ImGui_ImplSDL2_NewFrame();
-        ImGui::NewFrame();
-
-        int winW, winH;
-        SDL_GetWindowSize(window, &winW, &winH);
-
-        // Background glow effect
-        ImDrawList* bgDL = ImGui::GetBackgroundDrawList();
-        // Subtle green radial glow
-        float pulse = 0.5f + 0.15f * sinf(animTime * 0.8f);
-        ImVec2 center(winW * 0.5f, winH * 0.45f);
-        for (int r = 300; r > 0; r -= 4) {
-            float t = (float)r / 300.0f;
-            float a = (1.0f - t) * 0.08f * pulse;
-            bgDL->AddCircleFilled(center, (float)r, IM_COL32((int)(20 * a * 255), (int)(80 * a * 255), (int)(20 * a * 255), (int)(a * 255)), 64);
-        }
-
-        // Centered panel
-        float panelW = 460, panelH = (page == PAGE_MAIN) ? 380 : 420;
-        ImGui::SetNextWindowPos(ImVec2(winW * 0.5f, winH * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-        ImGui::SetNextWindowSize(ImVec2(panelW, panelH), ImGuiCond_Always);
-
-        ImGuiWindowFlags flags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
-                                 ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar |
-                                 ImGuiWindowFlags_NoScrollbar;
-
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 16.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(36, 28));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.07f, 0.04f, 0.96f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.15f, 0.4f, 0.15f, 0.5f));
-
-        ImGui::Begin("##preloader", NULL, flags);
-
-        // Title
-        {
-            ImGui::PushFont(NULL); // default font, just make it colored
-            const char* title = "UIX Desktop";
-            float titleW = ImGui::CalcTextSize(title).x;
-            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - titleW) * 0.5f);
-            float glow = 0.8f + 0.2f * sinf(animTime * 1.2f);
-            ImGui::TextColored(ImVec4(0.3f * glow, 1.0f * glow, 0.3f * glow, 1.0f), "%s", title);
-            ImGui::PopFont();
-        }
-
-        // Subtitle
-        {
-            const char* sub = "Select Startup Mode";
-            float subW = ImGui::CalcTextSize(sub).x;
-            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - subW) * 0.5f);
-            ImGui::TextColored(ImVec4(0.4f, 0.5f, 0.4f, 0.8f), "%s", sub);
-        }
-
-        // Decorative line
-        ImGui::Spacing();
-        {
-            ImVec2 p = ImGui::GetCursorScreenPos();
-            float lineW = ImGui::GetContentRegionAvail().x;
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            float cx = p.x + lineW * 0.5f;
-            // Gradient line from center outward
-            dl->AddRectFilledMultiColor(
-                ImVec2(cx - lineW * 0.4f, p.y), ImVec2(cx, p.y + 2),
-                IM_COL32(0, 80, 0, 0), IM_COL32(60, 200, 60, 200),
-                IM_COL32(60, 200, 60, 200), IM_COL32(0, 80, 0, 0));
-            dl->AddRectFilledMultiColor(
-                ImVec2(cx, p.y), ImVec2(cx + lineW * 0.4f, p.y + 2),
-                IM_COL32(60, 200, 60, 200), IM_COL32(0, 80, 0, 0),
-                IM_COL32(0, 80, 0, 0), IM_COL32(60, 200, 60, 200));
-            ImGui::Dummy(ImVec2(0, 8));
-        }
-
-        float btnWidth = ImGui::GetContentRegionAvail().x;
-
-        if (page == PAGE_MAIN) {
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            // Dashboard Mode button
-            if (PreloaderButton("Dashboard Mode", "Load the dashboard from XIP archives", btnWidth,
-                               ImVec4(0.2f, 0.6f, 0.2f, 1.0f))) {
-                extractedMode = false;
-                if (rememberChoice) { g_startupMode = 1; SaveDesktopSettings(); }
-                done = true;
-            }
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            // Development Mode button
-            if (PreloaderButton("Development Mode", "Edit XAP scripts and preview changes live", btnWidth,
-                               ImVec4(0.15f, 0.45f, 0.55f, 1.0f))) {
-                page = PAGE_EXTRACTED;
-            }
-
-            // Remember choice checkbox
-            ImGui::Spacing();
-            ImGui::Spacing();
-            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 200) * 0.5f);
-            ImGui::Checkbox("Remember my choice", &rememberChoice);
-
-            // Version info at bottom
-            ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 44);
-            {
-                ImGui::Separator();
-                ImGui::Spacing();
-                const char* ver = "Change later in Settings";
-                float verW = ImGui::CalcTextSize(ver).x;
-                ImGui::SetCursorPosX((ImGui::GetWindowWidth() - verW) * 0.5f);
-                ImGui::TextColored(ImVec4(0.3f, 0.4f, 0.3f, 0.6f), "%s", ver);
-            }
-
-        } else if (page == PAGE_EXTRACTED) {
-            ImGui::Spacing();
-
-            // Back button
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.15f, 0.15f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-            if (ImGui::SmallButton("<< Back")) page = PAGE_MAIN;
-            ImGui::PopStyleColor(2);
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            // Extract XIPs button
-            if (PreloaderButton("Extract XIPs from Archives", "Unpack all .xip files into editable folders", btnWidth,
-                               ImVec4(0.5f, 0.4f, 0.15f, 1.0f))) {
-                page = PAGE_EXTRACTING;
-                // Run extraction synchronously (it's fast, just file I/O)
-                Preloader_ExtractAllXIPs(AppPath("Data/Xips"), extractStatus, sizeof(extractStatus));
-                hasExtracted = Preloader_HasExtractedXIPs();
-                page = PAGE_EXTRACT_DONE;
-            }
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            // Load from extracted folder
-            {
-                bool canLoad = hasExtracted;
-                if (!canLoad) {
-                    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.4f);
-                }
-
-                if (PreloaderButton("Start Development Mode",
-                                   canLoad ? "Load scene from extracted XAP files"
-                                           : "No extracted XIPs found - extract first",
-                                   btnWidth, ImVec4(0.15f, 0.45f, 0.55f, 1.0f)) && canLoad) {
-                    extractedMode = true;
-                    if (rememberChoice) { g_startupMode = 2; SaveDesktopSettings(); }
-                    done = true;
-                }
-
-                if (!canLoad) {
-                    ImGui::PopStyleVar();
-                }
-            }
-
-            // Status
-            if (hasExtracted) {
-                ImGui::Spacing();
-                ImGui::Spacing();
-                ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 0.7f), "  Extracted XIPs detected");
-            }
-
-        } else if (page == PAGE_EXTRACT_DONE) {
-            ImGui::Spacing();
-
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.15f, 0.15f, 0.8f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.2f, 0.2f, 1.0f));
-            if (ImGui::SmallButton("<< Back")) page = PAGE_MAIN;
-            ImGui::PopStyleColor(2);
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            // Show extraction result
-            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.4f, 1.0f), "Extraction Complete!");
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.6f, 0.7f, 0.6f, 0.9f), "%s", extractStatus);
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            // Now they can load from the extracted folder
-            if (PreloaderButton("Load from Extracted Folder",
-                               "Open XAP editor with live scene reload",
-                               btnWidth, ImVec4(0.15f, 0.45f, 0.55f, 1.0f))) {
-                extractedMode = true;
-                done = true;
-            }
-
-            ImGui::Spacing();
-            ImGui::Spacing();
-
-            // Or go back and use compiled
-            if (PreloaderButton("Load Compiled XIPs Instead",
-                               "Use original .xip archives",
-                               btnWidth, ImVec4(0.2f, 0.6f, 0.2f, 1.0f))) {
-                extractedMode = false;
-                done = true;
-            }
-        }
-
-        ImGui::End();
-        ImGui::PopStyleColor(2);
-        ImGui::PopStyleVar(3);
-
-        // Render
-        ImGui::Render();
-        // Pixels here; winW/winH are points and drive the ImGui layout above.
-        int pw = 0, ph = 0;
-        Plat_GetDrawableSize(&pw, &ph);
-        if (pw <= 0 || ph <= 0) { pw = winW; ph = winH; }
-        bgfx::setViewRect(0, 0, 0, (uint16_t)pw, (uint16_t)ph);
-        bgfx::setViewClear(0, BGFX_CLEAR_COLOR,
-                           (uint32_t)((5<<24) | (8<<16) | (5<<8) | 0xFF),
-                           1.0f, 0);
-        bgfx::touch(0);
-        extern void ImGui_ImplBgfx_RenderDrawData(ImDrawData*);
-        ImGui_ImplBgfx_RenderDrawData(ImGui::GetDrawData());
-        bgfx::frame();
-    }
-
-    return extractedMode;
+// The mode question itself is asked by the guide once the dashboard is up.
+bool RunPreloader(SDL_Window*) {
+    if (g_startupMode != 2) return false;
+    Preloader_EnsureExtracted();
+    return true;
 }

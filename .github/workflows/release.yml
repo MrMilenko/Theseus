@@ -1,32 +1,98 @@
 name: release
 
+# Channels, picked by the tag:
+#   vX.Y.Z           a release, marked latest
+#   vX.Y.Z-testing   a pre-release
+#   nightly          main's head as the `nightly` pre-release (run by hand,
+#                    replaces the last one)
+# Only commits on main get released. Each job builds and hands its files to
+# `publish`, which writes SHA256SUMS.txt and makes the release in one go once
+# every platform built. The notes come from release-notes/<tag without the v>.md
+# (release-notes/0.5.0.md for v0.5.0) when that commit has one, otherwise
+# GitHub writes them.
+
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release as (e.g. v0.5.0)'
+        description: 'Tag to release as (v0.5.0, v0.5.0-testing), or nightly'
         required: true
 
-# Required so softprops/action-gh-release can create / update the
-# release and upload assets via the workflow's GITHUB_TOKEN.
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 # Per-platform: build, package binary + Configs/Data/Library + runtime libs into a
-# platform-named archive, attach to the GitHub Release. All desktop targets ship
-# the bgfx backend (Metal on macOS, Vulkan on Linux / Windows). Shader .bin files
-# live in-tree under Data/shaders/; shaderc only runs offline when authoring new
-# shaders, not during CI.
+# platform-named archive. All desktop targets ship the bgfx backend (Metal on
+# macOS, Vulkan on Linux / Windows). Shader .bin files live in-tree under
+# Data/shaders/; shaderc only runs offline when authoring new shaders, not
+# during CI.
 
 jobs:
-  release-macos:
-    name: Release / macOS
-    runs-on: macos-latest
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+      channel: ${{ steps.pick.outputs.channel }}
+      sha: ${{ steps.pick.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: main
+          fetch-depth: 0
+          filter: blob:none
+
+      - name: Pick the channel and check the commit is on main
+        id: pick
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [ "$TAG" = nightly ]; then
+            CHANNEL=nightly
+          elif [[ "$TAG" == v*-testing ]]; then
+            CHANNEL=testing
+          elif [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)+$ ]]; then
+            CHANNEL=release
+          else
+            echo "::error::$TAG is not vX.Y.Z, vX.Y.Z-testing or nightly"
+            exit 1
+          fi
+
+          if [ "$CHANNEL" = nightly ]; then
+            SHA=$(git rev-parse origin/main)
+          elif SHA=$(git rev-parse -q --verify "refs/tags/$TAG^{commit}"); then
+            :
+          else
+            SHA=$GITHUB_SHA
+          fi
+
+          if ! git merge-base --is-ancestor "$SHA" origin/main; then
+            echo "::error::$SHA is not on main, so it doesn't get released"
+            exit 1
+          fi
+          echo "$TAG ($CHANNEL) from $SHA"
+          {
+            echo "tag=$TAG"
+            echo "channel=$CHANNEL"
+            echo "sha=$SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  release-macos:
+    name: Release / macOS
+    needs: gate
+    runs-on: macos-latest
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
           submodules: recursive
 
       - name: Install deps
@@ -67,7 +133,6 @@ jobs:
         # dylibs come from brew. projectM dylibs come bundled in lib/ next to the
         # binary (Makefile drops them there for @loader_path/lib).
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-macos"
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
@@ -82,31 +147,43 @@ jobs:
         # Ad-hoc signed, which is enough to run but not to hand around
         # unnotarized: Gatekeeper still wants a right click Open.
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           chmod +x build/mk-macapp.sh
           ./build/mk-macapp.sh
           ditto -c -k --keepParent ~/builds/theseus/Theseus.app "Theseus-${TAG}-macos-app.zip"
           echo "APPZIP=Theseus-${TAG}-macos-app.zip" >> "$GITHUB_ENV"
 
-      - name: Upload .app to release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the files to publish
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.APPZIP }}
-
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ARCHIVE }}
-          fail_on_unmatched_files: true
+          name: release-macos
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.APPZIP }}
+          if-no-files-found: error
 
   release-linux:
     name: Release / Linux x64
+    needs: gate
+    # Debian 12 has glibc 2.36, so the build and the libraries the AppImage
+    # carries start on SteamOS 3.5 and up. Ubuntu's glibc is newer than that,
+    # and 22.04's SDL is too old to build against.
     runs-on: ubuntu-latest
+    container: debian:bookworm
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+      DEBIAN_FRONTEND: noninteractive
     steps:
+      - name: Container tools
+        # checkout wants git in the container for submodules, and the version
+        # stamp runs git on a tree the container user doesn't own.
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates
+          git config --global --add safe.directory '*'
+
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           submodules: recursive
 
       - name: Install deps
@@ -114,8 +191,8 @@ jobs:
         # though the running binary uses bgfx/Vulkan.
         # cmake: GitHub runners preinstall it, but make it explicit.
         run: |
-          sudo apt update
-          sudo apt install -y build-essential pkg-config cmake \
+          apt-get update
+          apt-get install -y build-essential pkg-config cmake \
                               libsdl2-dev libsdl2-mixer-dev \
                               libvulkan-dev libx11-dev libgl-dev \
                               libmpv-dev libcurl4-openssl-dev libssl-dev \
@@ -124,12 +201,19 @@ jobs:
       - name: Stub Configs/Data/Library
         run: mkdir -p Configs Data Library
 
+      - name: Build GENie from source
+        # The genie checked into bx wants glibc 2.38, newer than Debian 12's.
+        run: |
+          git clone --depth 1 https://github.com/bkaradzic/GENie.git /tmp/genie
+          make -C /tmp/genie
+          cp /tmp/genie/bin/linux/genie theseus/third-party/bx/tools/bin/linux/genie
+
       - name: Build bgfx libs
         run: |
           cd theseus/third-party/bgfx
           ../bx/tools/bin/linux/genie --gcc=linux-gcc gmake
           make -C .build/projects/gmake-linux-gcc -j$(nproc) \
-               bx bimg bgfx config=release64
+               bx bimg bgfx config=release64 CXXFLAGS=-DBGFX_CONFIG_RENDERER_OPENGL=33
 
       - name: Build libdatachannel
         # See the macOS job: no lib means xCloud quietly compiles out.
@@ -146,7 +230,6 @@ jobs:
 
       - name: Package
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-linux-x64"
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
@@ -159,39 +242,81 @@ jobs:
         # One file for Debian and Arch alike, so the exclusion list in the
         # script only names libraries both actually ship.
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          sudo apt-get install -y -qq patchelf wget file
+          apt-get install -y -qq patchelf wget file
           chmod +x build/mk-appimage.sh
           ./build/mk-appimage.sh ~/builds/theseus/desktop "UIX-Desktop-${TAG}-x86_64.AppImage"
           echo "APPIMAGE=UIX-Desktop-${TAG}-x86_64.AppImage" >> "$GITHUB_ENV"
 
-      - name: Upload AppImage to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.APPIMAGE }}
+      - name: glibc baseline
+        # Fails if the binary or anything in the AppImage wants a newer glibc
+        # than SteamOS 3.5's 2.37 (3.6 has 2.39, 3.7 2.40, 3.8 2.41).
+        shell: bash
+        run: |
+          MAX=2.37
+          GLIBC_LIBS=$(find AppDir/usr/lib -regextype posix-extended \
+                       -regex '.*/(libc|libm|libmvec|libdl|libpthread|librt|libresolv)\.so.*')
+          if [ -n "$GLIBC_LIBS" ]; then
+            echo "::error::the AppImage bundles part of glibc: $GLIBC_LIBS"
+            exit 1
+          fi
+          BAD=0
+          NEWEST=0
+          while IFS= read -r -d '' F; do
+            head -c4 "$F" | cmp -s - <(printf '\177ELF') || continue
+            V=$(readelf -V -W "$F")
+            if grep -q GLIBC_PRIVATE <<< "$V"; then
+              echo "::error::$F uses GLIBC_PRIVATE"
+              BAD=1
+            fi
+            NEED=$(grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' <<< "$V" | sed 's/GLIBC_//' | sort -uV | tail -1 || true)
+            [ -n "$NEED" ] || continue
+            NEWEST=$(printf '%s\n%s\n' "$NEWEST" "$NEED" | sort -V | tail -1)
+            if [ "$(printf '%s\n%s\n' "$NEED" "$MAX" | sort -V | tail -1)" != "$MAX" ]; then
+              echo "::error::$F needs GLIBC_$NEED, newer than $MAX"
+              BAD=1
+            fi
+          done < <(find ~/builds/theseus/desktop/theseus ~/builds/theseus/desktop/lib AppDir -type f -print0 2>/dev/null)
+          echo "newest glibc needed: $NEWEST (limit $MAX)"
+          exit $BAD
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the files to publish
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ARCHIVE }}
-          fail_on_unmatched_files: true
+          name: release-linux-x64
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.APPIMAGE }}
+          if-no-files-found: error
 
   release-linux-arm64:
     name: Release / Linux ARM64
+    needs: gate
+    # Debian 12 for the same glibc reason as the x64 job.
     runs-on: ubuntu-24.04-arm
+    container: debian:bookworm
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+      DEBIAN_FRONTEND: noninteractive
     steps:
+      - name: Container tools
+        # checkout wants git in the container for submodules, and the version
+        # stamp runs git on a tree the container user doesn't own.
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates
+          git config --global --add safe.directory '*'
+
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           submodules: recursive
 
       - name: Install deps
         # libgl-dev: needed by projectM's cmake FindOpenGL probe.
         # cmake: GitHub runners preinstall it, but make it explicit.
         run: |
-          sudo apt update
-          sudo apt install -y build-essential pkg-config cmake \
+          apt-get update
+          apt-get install -y build-essential pkg-config cmake \
                               libsdl2-dev libsdl2-mixer-dev \
                               libvulkan-dev libx11-dev libgl-dev \
                               libmpv-dev libcurl4-openssl-dev libssl-dev \
@@ -218,7 +343,7 @@ jobs:
           find .build/projects/gmake-linux-gcc -name '*.make' -exec \
                sed -i -e 's/-m64//g' -e 's/-mfpmath=sse//g' -e 's/-msse4.2//g' {} +
           make -C .build/projects/gmake-linux-gcc -j$(nproc) \
-               bx bimg bgfx config=release64
+               bx bimg bgfx config=release64 CXXFLAGS=-DBGFX_CONFIG_RENDERER_OPENGL=33
 
       - name: Build libdatachannel
         # See the macOS job: no lib means xCloud quietly compiles out.
@@ -235,7 +360,6 @@ jobs:
 
       - name: Package
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-linux-arm64"
           mkdir -p "${DROP}"
           cp ~/builds/theseus/desktop/theseus "${DROP}/"
@@ -248,34 +372,64 @@ jobs:
         # The bare binary needs the runner's exact FFmpeg sonames, which
         # newer distros like Debian trixie don't have. The AppImage carries them.
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          sudo apt-get install -y -qq patchelf wget file
+          apt-get install -y -qq patchelf wget file
           chmod +x build/mk-appimage.sh
           ./build/mk-appimage.sh ~/builds/theseus/desktop "UIX-Desktop-${TAG}-aarch64.AppImage"
           echo "APPIMAGE=UIX-Desktop-${TAG}-aarch64.AppImage" >> "$GITHUB_ENV"
 
-      - name: Upload AppImage to release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.APPIMAGE }}
+      - name: glibc baseline
+        # Fails if the binary or anything in the AppImage wants a newer glibc
+        # than SteamOS 3.5's 2.37 (3.6 has 2.39, 3.7 2.40, 3.8 2.41).
+        shell: bash
+        run: |
+          MAX=2.37
+          GLIBC_LIBS=$(find AppDir/usr/lib -regextype posix-extended \
+                       -regex '.*/(libc|libm|libmvec|libdl|libpthread|librt|libresolv)\.so.*')
+          if [ -n "$GLIBC_LIBS" ]; then
+            echo "::error::the AppImage bundles part of glibc: $GLIBC_LIBS"
+            exit 1
+          fi
+          BAD=0
+          NEWEST=0
+          while IFS= read -r -d '' F; do
+            head -c4 "$F" | cmp -s - <(printf '\177ELF') || continue
+            V=$(readelf -V -W "$F")
+            if grep -q GLIBC_PRIVATE <<< "$V"; then
+              echo "::error::$F uses GLIBC_PRIVATE"
+              BAD=1
+            fi
+            NEED=$(grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' <<< "$V" | sed 's/GLIBC_//' | sort -uV | tail -1 || true)
+            [ -n "$NEED" ] || continue
+            NEWEST=$(printf '%s\n%s\n' "$NEWEST" "$NEED" | sort -V | tail -1)
+            if [ "$(printf '%s\n%s\n' "$NEED" "$MAX" | sort -V | tail -1)" != "$MAX" ]; then
+              echo "::error::$F needs GLIBC_$NEED, newer than $MAX"
+              BAD=1
+            fi
+          done < <(find ~/builds/theseus/desktop/theseus ~/builds/theseus/desktop/lib AppDir -type f -print0 2>/dev/null)
+          echo "newest glibc needed: $NEWEST (limit $MAX)"
+          exit $BAD
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the files to publish
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ARCHIVE }}
-          fail_on_unmatched_files: true
+          name: release-linux-arm64
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.APPIMAGE }}
+          if-no-files-found: error
 
   release-win64:
     name: Release / Win64
+    needs: gate
     runs-on: ubuntu-latest
     env:
+      TAG: ${{ needs.gate.outputs.tag }}
       SDL2_VER: 2.32.10
       SDL2_MIXER_VER: 2.8.1
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ needs.gate.outputs.sha }}
           submodules: recursive
 
       - name: Install mingw-w64 (posix thread model)
@@ -342,7 +496,8 @@ jobs:
           ../bx/tools/bin/linux/genie --gcc=mingw-gcc gmake
           make -C .build/projects/gmake-mingw-gcc -j$(nproc) \
                bx bimg bgfx config=release64 \
-               CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
+               CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ \
+               CXXFLAGS=-DBGFX_CONFIG_RENDERER_OPENGL=33
 
       - name: Fetch mingw deps (openssl, opus, ffmpeg)
         # OpenSSL and opus come prebuilt from MSYS2; ffmpeg is built here,
@@ -380,7 +535,6 @@ jobs:
         # dir (SDL2.dll, SDL2_mixer.dll, libmpv-2.dll, libcurl-x64.dll,
         # libwinpthread-1.dll). Ship the whole directory.
         run: |
-          TAG="${{ github.event.inputs.tag || github.ref_name }}"
           DROP="Theseus-${TAG}-windows-x64"
           mkdir -p "${DROP}"
           cp -R ~/builds/theseus/desktop-win64/. "${DROP}/"
@@ -391,9 +545,64 @@ jobs:
           zip -r "${DROP}.zip" "${DROP}"
           echo "ARCHIVE=${DROP}.zip" >> "$GITHUB_ENV"
 
-      - name: Upload to release
-        uses: softprops/action-gh-release@v2
+      - name: Hand the files to publish
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: ${{ env.ARCHIVE }}
-          fail_on_unmatched_files: true
+          name: release-win64
+          path: |
+            ${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [gate, release-macos, release-linux, release-linux-arm64, release-win64]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.gate.outputs.tag }}
+      CHANNEL: ${{ needs.gate.outputs.channel }}
+      SHA: ${{ needs.gate.outputs.sha }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: SHA256SUMS
+        run: |
+          cd dist
+          sha256sum -- * > ../SHA256SUMS.txt
+          mv ../SHA256SUMS.txt .
+          cat SHA256SUMS.txt
+
+      - name: Publish
+        # nightly is one moving pre-release: drop the old one and its tag so
+        # the new tag lands on main's head.
+        run: |
+          case "$CHANNEL" in
+            release) FLAGS=(--latest) ;;
+            *)       FLAGS=(--prerelease --latest=false) ;;
+          esac
+          TITLE="UIX Desktop ${TAG#v}"
+          if [ "$CHANNEL" = nightly ]; then
+            gh release delete nightly --cleanup-tag --yes || true
+            NOTES=(--notes "Nightly build of main at $SHA. Not a release, expect rough edges.")
+          elif [ -f "release-notes/${TAG#v}.md" ]; then
+            NOTES=(--notes-file "release-notes/${TAG#v}.md")
+          else
+            NOTES=(--generate-notes)
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+            gh release edit "$TAG" "${FLAGS[@]}"
+          else
+            gh release create "$TAG" dist/* --target "$SHA" --title "$TITLE" \
+              "${FLAGS[@]}" "${NOTES[@]}"
+          fi

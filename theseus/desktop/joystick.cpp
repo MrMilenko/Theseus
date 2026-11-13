@@ -4,9 +4,12 @@
 // place of XInput is Theseus's. Counterpart to xbox/input.cpp.
 
 #include "std.h"
+#include <string>
+#include <vector>
 #include "dashapp.h"
 #include "node.h"
 #include <SDL.h>
+#include "guide.h"
 
 #define REPEAT_DELAY 0.3f
 #define REPEAT_INTERVAL 0.12f
@@ -383,20 +386,17 @@ void CJoystick::EnableGlobalInput(int bEnable)
 // ============================================================================
 // Input Polling
 // ============================================================================
-void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
+static bool GuideChord(SDL_GameController* gc);
+static void DevPadScript(JoySnapshot* out);
+
+// The pad's buttons and sticks as a snapshot. holdB drops the B of LT+B.
+static void ReadPad(SDL_GameController* gc, bool holdB, JoySnapshot* out)
 {
-    memset(out, 0, sizeof(*out));
-
-    // Tools have the pad: leave it zeroed and the dashboard sits still.
-    extern bool ImGui_OwnsPad();
-    if (ImGui_OwnsPad()) return;
-
-    // --- Physical controller ---
     if (gc)
     {
         // Face buttons -> analogDown[0..3] = A,B,X,Y
         out->analogDown[0] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A);
-        out->analogDown[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B);
+        out->analogDown[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) && !holdB;
         out->analogDown[2] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X);
         out->analogDown[3] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y);
         // Black(RB), White(LB) -> analogDown[4,5]
@@ -435,6 +435,21 @@ void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
         out->thumbRX = rx;
         out->thumbRY = ry;
     }
+}
+
+void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
+{
+    memset(out, 0, sizeof(*out));
+
+    // Tools have the pad: leave it zeroed and the dashboard sits still.
+    extern bool ImGui_OwnsPad();
+    if (ImGui_OwnsPad()) return;
+    // So does the guide, while it's open.
+    if (Guide_TakesInput()) return;
+
+    const bool guideHoldsB = GuideChord(gc);
+
+    ReadPad(gc, guideHoldsB, out);
 
     // --- Keyboard overlay (OR on top) ---
     extern bool ImGui_WantsKeyboard();
@@ -499,6 +514,204 @@ void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
             else if (keys[SDL_SCANCODE_S]) out->thumbLY = -1.0f;
         }
     }
+
+    DevPadScript(out);
+}
+
+// Guide button, LT+B or F7 asks for the guide. The B of LT+B never reaches
+// the scene, or it would also back out of whatever is under the guide.
+static bool GuideChord(SDL_GameController* gc)
+{
+    extern bool g_guideRequested;
+    extern SDL_Window* g_pSDLWindow;
+    static bool s_guide = false, s_chord = false, s_f7 = false;
+    static bool s_holdB = false;
+
+    bool guide = false, chord = false, b = false;
+    if (gc) {
+        guide = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_GUIDE) != 0;
+        b = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) != 0;
+        chord = b && SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000;
+    }
+    extern bool ImGui_WantsKeyboard();
+    const bool f7 = SDL_GetKeyboardFocus() == g_pSDLWindow && !ImGui_WantsKeyboard() &&
+                    SDL_GetKeyboardState(NULL)[SDL_SCANCODE_F7];
+
+    if ((guide && !s_guide) || (chord && !s_chord) || (f7 && !s_f7))
+        g_guideRequested = true;
+    if (chord && !s_chord) s_holdB = true;
+    s_guide = guide; s_chord = chord; s_f7 = f7;
+
+    if (s_holdB && !b) s_holdB = false;
+    return s_holdB;
+}
+
+// Development only: UIX_DEV_PAD="14:guide 16:down 17.5:a" presses pad buttons
+// at those seconds after start, so screens can be captured without a pad.
+static void DevPadScript(JoySnapshot* out)
+{
+    struct Press { Uint32 at; int kind, idx; };
+    static std::vector<Press> s_presses;
+    static bool s_parsed = false;
+    if (!s_parsed) {
+        s_parsed = true;
+        const char* env = getenv("UIX_DEV_PAD");
+        static const struct { const char* name; int kind, idx; } kNames[] = {
+            { "a", 0, 0 }, { "b", 0, 1 }, { "x", 0, 2 }, { "y", 0, 3 },
+            { "black", 0, 4 }, { "white", 0, 5 }, { "lt", 0, 6 }, { "rt", 0, 7 },
+            { "up", 1, 0 }, { "down", 1, 1 }, { "left", 1, 2 }, { "right", 1, 3 },
+            { "start", 1, 4 }, { "back", 1, 5 }, { "guide", 2, 0 },
+        };
+        while (env && *env) {
+            float t = 0; char name[16] = "";
+            int used = 0;
+            if (sscanf(env, " %f:%15[a-z]%n", &t, name, &used) != 2) break;
+            env += used;
+            for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++)
+                if (strcmp(kNames[i].name, name) == 0) {
+                    Press p = { (Uint32)(t * 1000.0f), kNames[i].kind, kNames[i].idx };
+                    s_presses.push_back(p);
+                }
+        }
+    }
+    const Uint32 now = SDL_GetTicks();
+    for (size_t i = 0; i < s_presses.size(); i++) {
+        const Press& p = s_presses[i];
+        if (now < p.at || now > p.at + 150) continue;
+        if (p.kind == 0) out->analogDown[p.idx] = true;
+        else if (p.kind == 1) out->digitalDown[p.idx] = true;
+        else { extern bool g_guideRequested; static Uint32 s_last = 0;
+               if (s_last != p.at) { s_last = p.at; g_guideRequested = true; } }
+    }
+}
+
+// Development only: UIX_DEV_EVENTS="15:move=320,200 16:click=320,200,1 17:rclick
+// 18:wheel=-1 19:text=abc 20:key=ctrl+v" queues pointer and key events at those
+// seconds, in window points. Nothing moves the real pointer.
+static void DevEventScript()
+{
+    struct Event { Uint32 at; std::string kind, value; };
+    static std::vector<Event> s_events;
+    static size_t s_next = 0;
+    static bool s_parsed = false;
+    static int s_x = 0, s_y = 0, s_clicks = 1;
+    if (!s_parsed) {
+        s_parsed = true;
+        const char* env = getenv("UIX_DEV_EVENTS");
+        while (env && *env) {
+            float t = 0; char kind[16] = "", value[256] = "";
+            int used = 0;
+            if (sscanf(env, " %f:%15[a-z]%n", &t, kind, &used) != 2) break;
+            env += used;
+            if (*env == '=' && sscanf(env + 1, "%255s%n", value, &used) == 1) env += 1 + used;
+            Event e = { (Uint32)(t * 1000.0f), kind, value };
+            s_events.push_back(e);
+        }
+    }
+    extern SDL_Window* g_pSDLWindow;
+    if (!g_pSDLWindow) return;
+    const Uint32 win = SDL_GetWindowID(g_pSDLWindow);
+    while (s_next < s_events.size() && SDL_GetTicks() >= s_events[s_next].at) {
+        const Event& e = s_events[s_next++];
+        SDL_Event ev;
+        memset(&ev, 0, sizeof(ev));
+        if (e.kind == "move" || e.kind == "click") {
+            s_clicks = 1;
+            if (sscanf(e.value.c_str(), "%d,%d,%d", &s_x, &s_y, &s_clicks) >= 2 || e.kind == "move") {
+                ev.type = SDL_MOUSEMOTION;
+                ev.motion.windowID = win;
+                ev.motion.x = s_x; ev.motion.y = s_y;
+                SDL_PushEvent(&ev);
+            }
+        }
+        if (e.kind == "click" || e.kind == "rclick") {
+            memset(&ev, 0, sizeof(ev));
+            ev.type = SDL_MOUSEBUTTONDOWN;
+            ev.button.windowID = win;
+            ev.button.button = e.kind == "click" ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT;
+            ev.button.state = SDL_PRESSED;
+            ev.button.clicks = (Uint8)(e.kind == "click" ? s_clicks : 1);
+            ev.button.x = s_x; ev.button.y = s_y;
+            SDL_PushEvent(&ev);
+            ev.type = SDL_MOUSEBUTTONUP;
+            ev.button.state = SDL_RELEASED;
+            SDL_PushEvent(&ev);
+        } else if (e.kind == "wheel") {
+            ev.type = SDL_MOUSEWHEEL;
+            ev.wheel.windowID = win;
+            ev.wheel.y = atoi(e.value.c_str());
+            ev.wheel.preciseY = (float)ev.wheel.y;
+            SDL_PushEvent(&ev);
+        } else if (e.kind == "text") {
+            // sdl2-compat can't queue text, so it goes to the guide directly.
+            ev.type = SDL_TEXTINPUT;
+            ev.text.timestamp = SDL_GetTicks();
+            ev.text.windowID = win;
+            snprintf(ev.text.text, sizeof(ev.text.text), "%s", e.value.c_str());
+            Guide_HandleEvent(&ev);
+        } else if (e.kind == "key") {
+            std::string name = e.value;
+            Uint16 mod = 0;
+            if (name.compare(0, 5, "ctrl+") == 0) { mod = KMOD_LCTRL; name = name.substr(5); }
+            ev.type = SDL_KEYDOWN;
+            ev.key.windowID = win;
+            ev.key.state = SDL_PRESSED;
+            ev.key.keysym.sym = SDL_GetKeyFromName(name.c_str());
+            ev.key.keysym.scancode = SDL_GetScancodeFromKey(ev.key.keysym.sym);
+            ev.key.keysym.mod = mod;
+            SDL_PushEvent(&ev);
+            ev.type = SDL_KEYUP;
+            ev.key.state = SDL_RELEASED;
+            SDL_PushEvent(&ev);
+        }
+    }
+}
+
+// The guide's buttons: the pad, the keyboard and the dev script. Called
+// every frame, so the Guide button, LT+B and F7 work with the guide open.
+unsigned Joy_GuideButtons(int* device)
+{
+    extern SDL_Window* g_pSDLWindow;
+    extern bool ImGui_WantsKeyboard();
+    SDL_GameController* gc = CJoystick::c_controller;
+    const bool holdB = GuideChord(gc);
+
+    JoySnapshot pad;
+    memset(&pad, 0, sizeof(pad));
+    ReadPad(gc, holdB, &pad);
+    DevPadScript(&pad);
+    DevEventScript();
+    unsigned bits = 0;
+    if (pad.analogDown[0]) bits |= GUIDE_A;
+    if (pad.analogDown[1]) bits |= GUIDE_B;
+    if (pad.analogDown[2]) bits |= GUIDE_X;
+    if (pad.analogDown[3]) bits |= GUIDE_Y;
+    if (pad.analogDown[5]) bits |= GUIDE_LB;
+    if (pad.analogDown[4]) bits |= GUIDE_RB;
+    if (pad.digitalDown[0] || pad.thumbLY > 0.5f)  bits |= GUIDE_UP;
+    if (pad.digitalDown[1] || pad.thumbLY < -0.5f) bits |= GUIDE_DOWN;
+    if (pad.digitalDown[2] || pad.thumbLX < -0.5f) bits |= GUIDE_LEFT;
+    if (pad.digitalDown[3] || pad.thumbLX > 0.5f)  bits |= GUIDE_RIGHT;
+    if (pad.digitalDown[4]) bits |= GUIDE_START;
+    if (pad.digitalDown[5]) bits |= GUIDE_BACK;
+
+    unsigned keys = 0;
+    if (SDL_GetKeyboardFocus() == g_pSDLWindow && !ImGui_WantsKeyboard() && !Guide_Typing()) {
+        const Uint8* k = SDL_GetKeyboardState(NULL);
+        if (k[SDL_SCANCODE_RETURN] || k[SDL_SCANCODE_KP_ENTER] || k[SDL_SCANCODE_SPACE]) keys |= GUIDE_A;
+        if (k[SDL_SCANCODE_ESCAPE] || k[SDL_SCANCODE_BACKSPACE]) keys |= GUIDE_B;
+        if (k[SDL_SCANCODE_UP]    || k[SDL_SCANCODE_W]) keys |= GUIDE_UP;
+        if (k[SDL_SCANCODE_DOWN]  || k[SDL_SCANCODE_S]) keys |= GUIDE_DOWN;
+        if (k[SDL_SCANCODE_LEFT]  || k[SDL_SCANCODE_A]) keys |= GUIDE_LEFT;
+        if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) keys |= GUIDE_RIGHT;
+        if (k[SDL_SCANCODE_Q]) keys |= GUIDE_LB;
+        if (k[SDL_SCANCODE_E]) keys |= GUIDE_RB;
+    }
+    if (bits) *device = 1;
+    else if (keys) *device = 0;
+    // Back is B in here, like Backspace.
+    if ((bits | keys) & GUIDE_BACK) bits |= GUIDE_B;
+    return bits | keys;
 }
 
 // ============================================================================
@@ -536,6 +749,8 @@ void CJoystick::ProcessMediaKeys()
     // Fire on rising edges only
     uint32_t pressed = cur & ~m_prevMediaKeys;
     m_prevMediaKeys = cur;
+    // The guide has the keys while it's up; a 1 typed there isn't On1.
+    if (Guide_TakesInput()) return;
 
     if (pressed & (1 << 0))  CallFunction("OnReverse");
     if (pressed & (1 << 1))  CallFunction("OnForward");
