@@ -253,7 +253,7 @@ enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLIST
             GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS };
 
 // What a game list shows.
-enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER };
+enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH };
 
 static const View kSectionViews[SEC_COUNT] = {
     GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_LOGS, GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT,
@@ -267,7 +267,7 @@ enum Act {
     GA_BROWSEUP, GA_BROWSE, GA_PLAYLIST,
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
-    GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER,
+    GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
     GA_COUNT
 };
 
@@ -311,7 +311,7 @@ static const float kWideKeys[KEY_COUNT - KEY_CHARS][2] = {
     { 0, 1.5f }, { 1.5f, 1.5f }, { 3, 3 }, { 6, 1.5f }, { 7.5f, 1.25f }, { 8.75f, 1.25f },
 };
 
-enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN };
+enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH };
 
 struct Editor {
     bool on, secret, shift, symbols;
@@ -343,6 +343,7 @@ static struct Guide {
     int category, playlist;
     int gameList, game;
     char letter;           // GL_LETTER's initial, '#' for digits and the rest
+    std::string search;    // GL_SEARCH's text
     unsigned gameLayout;   // g_vgames.layout when game was picked
 
     std::vector<HitTarget> targets;
@@ -365,6 +366,18 @@ static char Initial(const char* name)
     return (c >= 'A' && c <= 'Z') ? c : '#';
 }
 
+// Case blind, so "halo" finds "Halo 2".
+static bool NameHas(const char* name, const std::string& part)
+{
+    size_t n = strlen(name);
+    for (size_t i = 0; i + part.size() <= n; i++) {
+        size_t k = 0;
+        while (k < part.size() && tolower((unsigned char)name[i + k]) == tolower((unsigned char)part[k])) k++;
+        if (k == part.size()) return true;
+    }
+    return false;
+}
+
 // The rows of one game list, as DB indices.
 static void GameListRows(int list, std::vector<int>& out)
 {
@@ -376,6 +389,7 @@ static void GameListRows(int list, std::vector<int>& out)
         const VirtualGame& vg = g_vgames.games[i];
         if (list == GL_HIDDEN ? !(vg.valid && vg.hidden) : !VGames_IsShown(vg)) continue;
         if (list == GL_LETTER && Initial(vg.name) != g.letter) continue;
+        if (list == GL_SEARCH && !NameHas(vg.name, g.search)) continue;
         out.push_back(i);
     }
     std::sort(out.begin(), out.end(), [](int a, int b) {
@@ -400,7 +414,7 @@ static VirtualGame* PickedGame()
     return vg->valid ? vg : NULL;
 }
 
-static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "" };
+static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "" };
 
 static void Build()
 {
@@ -449,6 +463,7 @@ static void Build()
         break;
     }
     case GV_LIBRARY: {
+        Add("Search by Name", "", "Type part of a name. \"halo\" finds Halo 2.", GA_SEARCH);
         Add("Find a Game", "", "Pick the first letter, then the game.", GA_VIEW, GV_LETTERS);
         Add("Add a Game", "", "Pick a program or file and it shows up in the launcher.", GA_VIEW, GV_ADDGAME);
         Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
@@ -497,7 +512,8 @@ static void Build()
             std::string value = g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed) : std::string(vg.category);
             Add(vg.name, value.c_str(), vg.group[0] ? vg.group : vg.category, GA_GAME, list[i]);
         }
-        if (g.rows.empty()) Add(g.gameList == GL_HIDDEN ? "Nothing hidden" : "Nothing here yet", "", NULL);
+        if (g.rows.empty())
+            Add(g.gameList == GL_HIDDEN ? "Nothing hidden" : g.gameList == GL_SEARCH ? "No matches" : "Nothing here yet", "", NULL);
         break;
     }
     case GV_LETTERS: {
@@ -648,8 +664,9 @@ static const char* ViewTitle()
     case GV_LETTERS:   return "Find a Game";
     case GV_GAMES: {
         static char title[32];
-        if (g.gameList != GL_LETTER) return kGameListNames[g.gameList];
-        snprintf(title, sizeof(title), "Games: %c", g.letter);
+        if (g.gameList == GL_SEARCH) snprintf(title, sizeof(title), "Search: %.20s", g.search.c_str());
+        else if (g.gameList == GL_LETTER) snprintf(title, sizeof(title), "Games: %c", g.letter);
+        else return kGameListNames[g.gameList];
         return title;
     }
     case GV_GAME: {
@@ -830,8 +847,16 @@ static void EditDone()
     case ED_JELLYFIN:
         Jellyfin_SetServerUrl(Tidy(e.text, false));
         break;
+    case ED_SEARCH:
+        g.search = Tidy(e.text, false);
+        break;
     }
+    bool search = e.what == ED_SEARCH && !g.search.empty();
     EditClose();
+    if (search) {
+        g.gameList = GL_SEARCH;
+        Push(GV_GAMES);
+    }
 }
 
 static void EditInsert(const char* s)
@@ -999,6 +1024,9 @@ static void Select()
         break;
     case GA_JELLYFINURL:
         EditOpen(ED_JELLYFIN, 0, "Jellyfin Server", Jellyfin_GetServerUrl(), 500, false);
+        break;
+    case GA_SEARCH:
+        EditOpen(ED_SEARCH, 0, "Search by Name", g.search, 60, false);
         break;
     case GA_PADTOOLS:
         Close();
