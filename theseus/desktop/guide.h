@@ -26,4 +26,6 @@ bool Guide_IsOpen();
 // True while the guide has the input, and after it closes until the
 // buttons that closed it are let go of.
 bool Guide_TakesInput();
+// True while its keyboard is up: keys type, they aren't buttons.
+bool Guide_Typing();
 void Guide_Shutdown();
