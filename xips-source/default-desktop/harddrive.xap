@@ -331,6 +331,20 @@ function LoadMenuItems()
 	TotalSections = 0;
 	arrMenuNames = new Array;
 	arrMenuPaths = new Array;
+	// Built from what you've played and starred, so like ES-DE they show up
+	// only once there's something in them.
+	if(theGamesCollection.CountInCategory("Recently Played") > 0)
+	{
+		arrMenuNames[TotalSections] = "Recently Played";
+		arrMenuPaths[TotalSections] = "Recently Played";
+		TotalSections = TotalSections + 1;
+	}
+	if(theGamesCollection.CountInCategory("Favorites") > 0)
+	{
+		arrMenuNames[TotalSections] = "Favorites";
+		arrMenuPaths[TotalSections] = "Favorites";
+		TotalSections = TotalSections + 1;
+	}
 	for (var x = 0; x < 5; x = x + 1)
 	{
 		c.theMenuButtons.children[x].visible = false;
@@ -772,6 +786,12 @@ DEF theLauncher Level
 					nPlayScroll0 = 0;
 					nPlayCursor0 = 0;
 					UpdateTrackList();
+					return;
+				}
+				// These lists mix categories, so there's no folder path to build.
+				if((CurFillDir == "Recently Played") | (CurFillDir == "Favorites"))
+				{
+					theGamesCollection.LaunchTitle(nPlayCursor0);
 					return;
 				}
 				LaunchItem(CurFillDir,TempTitleList[nPlayCursor0]);

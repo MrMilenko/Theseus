@@ -4253,7 +4253,7 @@ extern void DesktopLaunchTitle(const char* devicePath);
 class CGamesCollection : public CNode
 {
 public:
-	CGamesCollection() : m_gen(0)
+	CGamesCollection() : m_gen(0), m_showHidden(false)
 	{
 		m_category[0] = 0;
 		m_group[0] = 0;
@@ -4273,6 +4273,8 @@ public:
 	std::vector<int> m_slice;
 	// Last seen generation. Re-filter when it changes.
 	unsigned int m_gen;
+	// Hidden titles come back so a scene can offer to unhide them.
+	bool m_showHidden;
 
 	// Rows are folders first, then titles, so an index below the folder count
 	// addresses m_folders and anything above it addresses m_slice.
@@ -4293,6 +4295,11 @@ public:
 			m_gen = g_vgames.generation;
 			return;
 		}
+		if (VGames_IsMarkList(m_category)) {
+			VGames_MarkList(m_category, m_slice);
+			m_gen = g_vgames.generation;
+			return;
+		}
 		// Match what xboxfs / Title Maker do: drive defaults to "E" for the
 		// harddrive view. Future-proofed for F/G if those ever come back.
 		int tmp[VGAMES_MAX];
@@ -4300,6 +4307,7 @@ public:
 		size_t glen = strlen(m_group);
 
 		for (int i = 0; i < n; i++) {
+			if (!m_showHidden && !VGames_IsShown(g_vgames.games[tmp[i]])) continue;
 			const char* grp = g_vgames.games[tmp[i]].group;
 			const char* rest;
 			if (glen == 0) {
@@ -4369,12 +4377,48 @@ public:
 	{
 		VGames_Load();
 		if (!cat || !*cat) return 0;
+		if (VGames_IsMarkList(cat)) {
+			std::vector<int> list;
+			VGames_MarkList(cat, list);
+			return (int)list.size();
+		}
 		int n = 0;
 		for (int i = 0; i < g_vgames.count; i++) {
 			const VirtualGame& g = g_vgames.games[i];
-			if (g.valid && strcasecmp(g.category, cat) == 0) n++;
+			if (VGames_IsShown(g) && strcasecmp(g.category, cat) == 0) n++;
 		}
 		return n;
+	}
+
+	// The DB row behind a list row, or -1 for folders and anything past the end.
+	int Row(int i)
+	{
+		EnsureFresh();
+		int t = TitleIndex(i);
+		return (t >= 0 && t < (int)m_slice.size()) ? m_slice[t] : -1;
+	}
+
+	int IsFavorite(int i) { int r = Row(i); return (r >= 0 && g_vgames.games[r].favorite) ? 1 : 0; }
+	int IsHidden(int i)   { int r = Row(i); return (r >= 0 && g_vgames.games[r].hidden) ? 1 : 0; }
+	void SetFavorite(int i, int on) { VGames_SetFavorite(Row(i), on != 0); }
+	void SetHidden(int i, int on)   { VGames_SetHidden(Row(i), on != 0); }
+
+	// 1 lists hidden titles too, 0 goes back to normal.
+	void ShowHidden(int on)
+	{
+		m_showHidden = on != 0;
+		Rebuild();
+	}
+
+	// "2026-11-12 18:40", or empty for never.
+	CStrObject* GetLastPlayed(int i)
+	{
+		int r = Row(i);
+		if (r < 0 || !g_vgames.games[r].lastPlayed) return new CStrObject;
+		time_t t = (time_t)g_vgames.games[r].lastPlayed;
+		char buf[32];
+		strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M", localtime(&t));
+		return new CStrObject(buf);
 	}
 
 	// 1 when the row drills down instead of launching.
@@ -4506,6 +4550,12 @@ START_NODE_FUN(CGamesCollection, CNode)
 	NODE_FUN_SI(GetIcon)
 	NODE_FUN_VI(LaunchTitle)
 	NODE_FUN_VV(Refresh)
+	NODE_FUN_II(IsFavorite)
+	NODE_FUN_VII(SetFavorite)
+	NODE_FUN_II(IsHidden)
+	NODE_FUN_VII(SetHidden)
+	NODE_FUN_VI(ShowHidden)
+	NODE_FUN_SI(GetLastPlayed)
 END_NODE_FUN()
 
 

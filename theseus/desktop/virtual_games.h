@@ -10,6 +10,11 @@
 #include <cstdlib>
 #include <cctype>
 #include <sys/stat.h>
+#include <time.h>
+#include <map>
+#include <vector>
+#include <algorithm>
+#include <string>
 #include "xboxfs_drive.h"
 #include "safe_save.h"
 
@@ -34,6 +39,12 @@ struct VirtualGame {
     // as long as the app does, same deal as the streaming entries.
     bool transient;
     bool valid;
+    // Yours, kept in games.ini (live rows keep theirs in games_live.ini).
+    bool favorite;
+    bool hidden;
+    long long lastPlayed;  // unix time of the last launch that started, 0 for never
+    // Another source has the same game and wins (VGames_FindDuplicates).
+    bool duplicate;
 };
 
 struct VirtualGameDB {
@@ -107,6 +118,12 @@ inline void VGames_Load() {
             strncpy(cur->category, val, sizeof(cur->category) - 1);
         else if (strcmp(key, "Group") == 0)
             strncpy(cur->group, val, sizeof(cur->group) - 1);
+        else if (strcmp(key, "Favorite") == 0)
+            cur->favorite = atoi(val) != 0;
+        else if (strcmp(key, "Hidden") == 0)
+            cur->hidden = atoi(val) != 0;
+        else if (strcmp(key, "LastPlayed") == 0)
+            cur->lastPlayed = atoll(val);
     }
     fclose(fp);
     g_vgames.generation++;
@@ -172,6 +189,9 @@ inline void VGames_Save() {
         // Only written when set, so a library with no folders reads back
         // byte for byte the way it always did.
         if (g.group[0]) fprintf(fp, "Group=%s\n", g.group);
+        if (g.favorite) fprintf(fp, "Favorite=1\n");
+        if (g.hidden) fprintf(fp, "Hidden=1\n");
+        if (g.lastPlayed) fprintf(fp, "LastPlayed=%lld\n", g.lastPlayed);
         fprintf(fp, "\n");
     }
     save.Commit();
@@ -365,4 +385,210 @@ inline int VGames_MakeShortcutContent(int idx, char* buf, int bufSize) {
     return snprintf(buf, bufSize,
         "[Title]\nName=%s\nTitleID=%s\nLaunch=%s\n",
         g.name, g.titleID, g.launch);
+}
+
+// Favorites, hidden and last played for live rows (ES-DE, xCloud), which
+// never reach games.ini. Keyed by title id, which both keep stable.
+struct VGameMarks { bool favorite, hidden; long long lastPlayed; };
+#define VGAMES_LIVE_INI AppPath("Configs/games_live.ini")
+
+inline std::map<std::string, VGameMarks>& VGames_LiveMarks() {
+    static std::map<std::string, VGameMarks> s_marks;
+    static bool s_loaded = false;
+    if (s_loaded) return s_marks;
+    s_loaded = true;
+    FILE* fp = fopen(VGAMES_LIVE_INI, "r");
+    if (!fp) return s_marks;
+    char line[512];
+    VGameMarks* cur = NULL;
+    while (fgets(line, sizeof(line), fp)) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (line[0] == '[') {
+            char* end = strrchr(line, ']');
+            if (!end) { cur = NULL; continue; }
+            *end = 0;
+            VGameMarks blank = { false, false, 0 };
+            cur = &(s_marks[line + 1] = blank);
+            continue;
+        }
+        char* eq = strchr(line, '=');
+        if (!cur || !eq) continue;
+        *eq = 0;
+        if (strcmp(line, "Favorite") == 0)        cur->favorite = atoi(eq + 1) != 0;
+        else if (strcmp(line, "Hidden") == 0)     cur->hidden = atoi(eq + 1) != 0;
+        else if (strcmp(line, "LastPlayed") == 0) cur->lastPlayed = atoll(eq + 1);
+    }
+    fclose(fp);
+    return s_marks;
+}
+
+inline void VGames_SaveLiveMarks() {
+    Plat_MkdirP(AppPath_Tree("Configs"));
+    SafeSave save(VGAMES_LIVE_INI);
+    if (!save.f) return;
+    std::map<std::string, VGameMarks>& m = VGames_LiveMarks();
+    for (std::map<std::string, VGameMarks>::iterator it = m.begin(); it != m.end(); ++it) {
+        const VGameMarks& k = it->second;
+        if (!k.favorite && !k.hidden && !k.lastPlayed) continue;
+        fprintf(save.f, "[%s]\n", it->first.c_str());
+        if (k.favorite) fprintf(save.f, "Favorite=1\n");
+        if (k.hidden) fprintf(save.f, "Hidden=1\n");
+        if (k.lastPlayed) fprintf(save.f, "LastPlayed=%lld\n", k.lastPlayed);
+        fprintf(save.f, "\n");
+    }
+    save.Commit();
+}
+
+// Importers call this right after injecting a live row.
+inline void VGames_ApplyLiveMarks(int idx) {
+    if (idx < 0 || idx >= g_vgames.count) return;
+    VirtualGame& g = g_vgames.games[idx];
+    std::map<std::string, VGameMarks>& m = VGames_LiveMarks();
+    std::map<std::string, VGameMarks>::iterator it = m.find(g.titleID);
+    if (it == m.end()) return;
+    g.favorite = it->second.favorite;
+    g.hidden = it->second.hidden;
+    g.lastPlayed = it->second.lastPlayed;
+}
+
+// Writes the row's marks wherever that row lives.
+inline void VGames_StoreMarks(int idx) {
+    if (idx < 0 || idx >= g_vgames.count) return;
+    VirtualGame& g = g_vgames.games[idx];
+    g_vgames.generation++;
+    if (!VGames_IsLive(g)) { VGames_Save(); return; }
+    VGameMarks k = { g.favorite, g.hidden, g.lastPlayed };
+    VGames_LiveMarks()[g.titleID] = k;
+    VGames_SaveLiveMarks();
+}
+
+inline void VGames_SetFavorite(int idx, bool on) {
+    if (idx < 0 || idx >= g_vgames.count || g_vgames.games[idx].favorite == on) return;
+    g_vgames.games[idx].favorite = on;
+    VGames_StoreMarks(idx);
+}
+
+inline void VGames_SetHidden(int idx, bool on) {
+    if (idx < 0 || idx >= g_vgames.count || g_vgames.games[idx].hidden == on) return;
+    g_vgames.games[idx].hidden = on;
+    VGames_StoreMarks(idx);
+}
+
+// The launcher calls this once a launch has actually started. Matches on the
+// launch line, since that's all the spawn knows.
+inline void VGames_MarkPlayed(const char* launch) {
+    if (!launch || !*launch) return;
+    VGames_Load();
+    long long now = (long long)time(NULL);
+    for (int i = 0; i < g_vgames.count; i++) {
+        VirtualGame& g = g_vgames.games[i];
+        if (!g.valid || strcmp(g.launch, launch) != 0) continue;
+        g.lastPlayed = now;
+        VGames_StoreMarks(i);
+    }
+}
+
+// The two lists the launcher builds from marks instead of a category.
+#define VGAMES_FAVORITES  "Favorites"
+#define VGAMES_RECENT     "Recently Played"
+#define VGAMES_RECENT_MAX 20
+
+extern bool g_hideDuplicateGames;   // desktop.ini HideDuplicateGames
+
+// Which copy of a game wins when sources overlap: Steam, then anything you
+// added yourself, then ES-DE. Streaming rows are a different way to play, so
+// they never count.
+inline int VGames_SourceRank(const VirtualGame& g) {
+    if (g.transient) return 2;
+    return strncmp(g.launch, "steam://", 8) == 0 ? 0 : 1;
+}
+
+// "The Legend of Zelda: A Link to the Past (USA)" and "Legend of Zelda, The -
+// A Link to the Past" both come out "legendofzeldaalinktopast".
+inline std::string VGames_MatchName(const char* name) {
+    std::string out, word;
+    int depth = 0;
+    for (const char* p = name;; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c == '(' || c == '[') { depth++; continue; }
+        if ((c == ')' || c == ']') && depth > 0) { depth--; continue; }
+        if (depth > 0 && c) continue;
+        if (c && c < 0x80 && isalnum(c)) { word += (char)tolower(c); continue; }
+        // Accented letters and trademark signs drop out with the punctuation.
+        if (c >= 0x80) continue;
+        if (!word.empty() && word != "the") out += word;
+        word.clear();
+        if (!c) break;
+    }
+    return out;
+}
+
+// Marks the losing copies. Cheap to call, it only redoes the work when the DB changed.
+inline void VGames_FindDuplicates() {
+    static unsigned s_gen = ~0u;
+    if (s_gen == g_vgames.generation) return;
+    s_gen = g_vgames.generation;
+    std::map<std::string, int> best;
+    std::vector<std::string> keys((size_t)g_vgames.count * 2);
+    for (int i = 0; i < g_vgames.count; i++) {
+        VirtualGame& g = g_vgames.games[i];
+        g.duplicate = false;
+        if (!g.valid || VGames_IsStreaming(g)) continue;
+        const char* steam = strstr(g.launch, "steam://rungameid/");
+        if (steam) keys[i * 2] = std::string("steam:") + std::to_string(atoll(steam + 18));
+        std::string n = VGames_MatchName(g.name);
+        if (!n.empty()) keys[i * 2 + 1] = "name:" + n;
+        int rank = VGames_SourceRank(g);
+        for (int k = 0; k < 2; k++) {
+            const std::string& key = keys[i * 2 + k];
+            if (key.empty()) continue;
+            std::map<std::string, int>::iterator it = best.find(key);
+            if (it == best.end() || rank < it->second) best[key] = rank;
+        }
+    }
+    // Only a better source hides a row. Two copies from the same place are
+    // probably on purpose (two regions, two versions) and both stay.
+    for (int i = 0; i < g_vgames.count; i++) {
+        VirtualGame& g = g_vgames.games[i];
+        if (!g.valid || VGames_IsStreaming(g)) continue;
+        int rank = VGames_SourceRank(g);
+        for (int k = 0; k < 2; k++) {
+            const std::string& key = keys[i * 2 + k];
+            if (!key.empty() && best[key] < rank) g.duplicate = true;
+        }
+    }
+}
+
+// What the launcher lists. Hidden rows stay in the DB, just out of sight.
+inline bool VGames_IsShown(const VirtualGame& g) {
+    if (!g.valid || g.hidden) return false;
+    if (!g_hideDuplicateGames) return true;
+    VGames_FindDuplicates();
+    return !g.duplicate;
+}
+
+inline bool VGames_IsMarkList(const char* category) {
+    return category && (strcasecmp(category, VGAMES_FAVORITES) == 0 || strcasecmp(category, VGAMES_RECENT) == 0);
+}
+
+// Favorites by name, or recently played newest first.
+inline void VGames_MarkList(const char* category, std::vector<int>& out) {
+    VGames_Load();
+    out.clear();
+    bool recent = strcasecmp(category, VGAMES_RECENT) == 0;
+    for (int i = 0; i < g_vgames.count; i++) {
+        const VirtualGame& g = g_vgames.games[i];
+        if (!VGames_IsShown(g)) continue;
+        if (recent ? g.lastPlayed > 0 : g.favorite) out.push_back(i);
+    }
+    if (recent) {
+        std::sort(out.begin(), out.end(), [](int a, int b) {
+            return g_vgames.games[a].lastPlayed > g_vgames.games[b].lastPlayed;
+        });
+        if ((int)out.size() > VGAMES_RECENT_MAX) out.resize(VGAMES_RECENT_MAX);
+    } else {
+        std::sort(out.begin(), out.end(), [](int a, int b) {
+            return strcasecmp(g_vgames.games[a].name, g_vgames.games[b].name) < 0;
+        });
+    }
 }

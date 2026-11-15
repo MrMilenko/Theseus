@@ -189,6 +189,7 @@ static void SpawnLaunchSpec(const char* spec)
 {
 	char finalCmd[2048];
 	if (!Launch_ExpandAndSpawn(spec, finalCmd, sizeof(finalCmd))) return;
+	VGames_MarkPlayed(spec);
 
 	extern SDL_Window* g_pSDLWindow;
 	if (g_pSDLWindow) SDL_MinimizeWindow(g_pSDLWindow);

@@ -9,6 +9,7 @@
 #include "esde.h"
 #include "esde_vgames.h"
 #include "virtual_games.h"
+#include "game_art.h"
 
 #include <stdio.h>
 #include <time.h>
@@ -115,11 +116,13 @@ void EsdeVGames_Sync(const char* esdeRoot)
                 snprintf(group, sizeof(group), "%s", systems[s].fullname);
             VGames_SetGroup(idx, group);
             g_vgames.games[idx].transient = true;
+            VGames_ApplyLiveMarks(idx);
 
             // Their scraped art, cached the way Steam icons are.
             c0 = clock();
             const char* art = Esde_FindArt(esdeRoot, &systems[s], &games[i]);
             if (art[0] && CacheIcon(art, titleID)) withArt++;
+            else GameArt_Hint(titleID, systems[s].name, games[i].path);
             tArt += (double)(clock() - c0) / CLOCKS_PER_SEC;
             total++;
         }

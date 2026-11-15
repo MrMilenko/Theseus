@@ -228,6 +228,8 @@ static const char* SettingHelp(const SettingDef& d)
         { "ShowAlbumCover",      "Show album art in the orb when a soundtrack has it." },
         { "CRT_Enabled",         "Old TV look over the whole dashboard." },
         { "GuideTheme",          "The guide's colors." },
+        { "FetchGameArt",        "Box art for games without an icon. Icons you picked are never replaced." },
+        { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
     };
     for (size_t i = 0; i < sizeof(kHelp) / sizeof(kHelp[0]); i++)
         if (strcmp(kHelp[i].key, d.key) == 0) return kHelp[i].help;
@@ -248,7 +250,10 @@ static const char* kSections[SEC_COUNT] = {
 };
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
-            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME };
+            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS };
+
+// What a game list shows.
+enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH };
 
 static const View kSectionViews[SEC_COUNT] = {
     GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_LOGS, GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT,
@@ -262,6 +267,7 @@ enum Act {
     GA_BROWSEUP, GA_BROWSE, GA_PLAYLIST,
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
+    GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
     GA_COUNT
 };
 
@@ -305,7 +311,7 @@ static const float kWideKeys[KEY_COUNT - KEY_CHARS][2] = {
     { 0, 1.5f }, { 1.5f, 1.5f }, { 3, 3 }, { 6, 1.5f }, { 7.5f, 1.25f }, { 8.75f, 1.25f },
 };
 
-enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN };
+enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH };
 
 struct Editor {
     bool on, secret, shift, symbols;
@@ -335,6 +341,10 @@ static struct Guide {
     std::vector<BrowseEntry> entries;
     bool browseStale;
     int category, playlist;
+    int gameList, game;
+    char letter;           // GL_LETTER's initial, '#' for digits and the rest
+    std::string search;    // GL_SEARCH's text
+    unsigned gameLayout;   // g_vgames.layout when game was picked
 
     std::vector<HitTarget> targets;
     int promptButtons[6];
@@ -348,6 +358,63 @@ static void Add(const char* label, const char* value, const char* help, int act 
     r.act = act; r.arg = arg;
     g.rows.push_back(r);
 }
+
+// What a name files under: A to Z, everything else is '#'.
+static char Initial(const char* name)
+{
+    char c = (char)toupper((unsigned char)name[0]);
+    return (c >= 'A' && c <= 'Z') ? c : '#';
+}
+
+// Case blind, so "halo" finds "Halo 2".
+static bool NameHas(const char* name, const std::string& part)
+{
+    size_t n = strlen(name);
+    for (size_t i = 0; i + part.size() <= n; i++) {
+        size_t k = 0;
+        while (k < part.size() && tolower((unsigned char)name[i + k]) == tolower((unsigned char)part[k])) k++;
+        if (k == part.size()) return true;
+    }
+    return false;
+}
+
+// The rows of one game list, as DB indices.
+static void GameListRows(int list, std::vector<int>& out)
+{
+    out.clear();
+    if (list == GL_FAVORITES) { VGames_MarkList(VGAMES_FAVORITES, out); return; }
+    if (list == GL_RECENT)    { VGames_MarkList(VGAMES_RECENT, out); return; }
+    VGames_Load();
+    for (int i = 0; i < g_vgames.count; i++) {
+        const VirtualGame& vg = g_vgames.games[i];
+        if (list == GL_HIDDEN ? !(vg.valid && vg.hidden) : !VGames_IsShown(vg)) continue;
+        if (list == GL_LETTER && Initial(vg.name) != g.letter) continue;
+        if (list == GL_SEARCH && !NameHas(vg.name, g.search)) continue;
+        out.push_back(i);
+    }
+    std::sort(out.begin(), out.end(), [](int a, int b) {
+        return strcasecmp(g_vgames.games[a].name, g_vgames.games[b].name) < 0;
+    });
+}
+
+static std::string PlayedOn(long long t)
+{
+    if (!t) return "Never";
+    time_t tt = (time_t)t;
+    char buf[32];
+    strftime(buf, sizeof(buf), "%b %d, %H:%M", localtime(&tt));
+    return buf;
+}
+
+// The picked game, or NULL once the DB has moved rows around under us.
+static VirtualGame* PickedGame()
+{
+    if (g.gameLayout != g_vgames.layout || g.game < 0 || g.game >= g_vgames.count) return NULL;
+    VirtualGame* vg = &g_vgames.games[g.game];
+    return vg->valid ? vg : NULL;
+}
+
+static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "" };
 
 static void Build()
 {
@@ -396,11 +463,25 @@ static void Build()
         break;
     }
     case GV_LIBRARY: {
+        Add("Search by Name", "", "Type part of a name. \"halo\" finds Halo 2.", GA_SEARCH);
+        Add("Find a Game", "", "Pick the first letter, then the game.", GA_VIEW, GV_LETTERS);
         Add("Add a Game", "", "Pick a program or file and it shows up in the launcher.", GA_VIEW, GV_ADDGAME);
         Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
         Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
         Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
         char n[32];
+        std::vector<int> list;
+        static const char* kListHelp[] = {
+            "Games you starred. They get their own spot in the launcher too.",
+            "The last games you started, newest first.",
+            "Games kept out of the launcher. Pick one to bring it back.",
+            "Everything in the launcher, A to Z. LB and RB jump a letter.",
+        };
+        for (int l = GL_FAVORITES; l <= GL_ALL; l++) {
+            GameListRows(l, list);
+            snprintf(n, sizeof(n), "%d", (int)list.size());
+            Add(kGameListNames[l], n, kListHelp[l], GA_GAMELIST, l);
+        }
         snprintf(n, sizeof(n), "%d", Playlist_Count());
         Add("Playlists", n, "Made in the Playlist Maker.", GA_VIEW, GV_PLAYLISTS);
         break;
@@ -423,6 +504,49 @@ static void Build()
         for (size_t i = 0; i < g.entries.size(); i++)
             Add(g.entries[i].name.c_str(), g.entries[i].dir ? "Folder" : "", g.browseDir.c_str(), GA_BROWSE, (int)i);
         break;
+    case GV_GAMES: {
+        std::vector<int> list;
+        GameListRows(g.gameList, list);
+        for (size_t i = 0; i < list.size(); i++) {
+            const VirtualGame& vg = g_vgames.games[list[i]];
+            std::string value = g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed) : std::string(vg.category);
+            Add(vg.name, value.c_str(), vg.group[0] ? vg.group : vg.category, GA_GAME, list[i]);
+        }
+        if (g.rows.empty())
+            Add(g.gameList == GL_HIDDEN ? "Nothing hidden" : g.gameList == GL_SEARCH ? "No matches" : "Nothing here yet", "", NULL);
+        break;
+    }
+    case GV_LETTERS: {
+        // Only letters something starts with, so every row leads somewhere.
+        int counts[27] = {};
+        std::vector<int> all;
+        GameListRows(GL_ALL, all);
+        for (size_t i = 0; i < all.size(); i++) {
+            char c = Initial(g_vgames.games[all[i]].name);
+            counts[c == '#' ? 26 : c - 'A']++;
+        }
+        for (int k = 0; k < 27; k++) {
+            if (!counts[k]) continue;
+            char label[2] = { k == 26 ? '#' : (char)('A' + k), 0 };
+            char n[16];
+            snprintf(n, sizeof(n), "%d", counts[k]);
+            Add(label, n, k == 26 ? "Names starting with a number or a symbol." : NULL, GA_LETTER, label[0]);
+        }
+        if (g.rows.empty()) Add("No games yet", "", "Add some from the Games & Playlists page.");
+        break;
+    }
+    case GV_GAME: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) { Add("This game moved", "", "Go back and pick it again."); break; }
+        Add("Launch", "", vg->launch, GA_LAUNCH);
+        Add("Favorite", vg->favorite ? "Yes" : "No", "Starred games get their own spot in the launcher.", GA_FAVORITE);
+        Add("Hidden", vg->hidden ? "Yes" : "No", "Hidden games stay out of the launcher until you bring them back.",
+            GA_HIDE);
+        Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
+        std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
+        Add("Category", where.c_str(), NULL);
+        break;
+    }
     case GV_PLAYLISTS:
         for (int i = 0; i < Playlist_Count(); i++) {
             const Playlist* pl = Playlist_Get(i);
@@ -537,6 +661,18 @@ static const char* ViewTitle()
     case GV_ADDGAME:   return "Add a Game";
     case GV_BROWSE:    return "Choose a File";
     case GV_PLAYLISTS: return "Playlists";
+    case GV_LETTERS:   return "Find a Game";
+    case GV_GAMES: {
+        static char title[32];
+        if (g.gameList == GL_SEARCH) snprintf(title, sizeof(title), "Search: %.20s", g.search.c_str());
+        else if (g.gameList == GL_LETTER) snprintf(title, sizeof(title), "Games: %c", g.letter);
+        else return kGameListNames[g.gameList];
+        return title;
+    }
+    case GV_GAME: {
+        VirtualGame* vg = PickedGame();
+        return vg ? vg->name : "Game";
+    }
     case GV_PLAYLIST: {
         const Playlist* pl = Playlist_Get(g.playlist);
         return pl ? pl->name.c_str() : "Playlist";
@@ -711,8 +847,16 @@ static void EditDone()
     case ED_JELLYFIN:
         Jellyfin_SetServerUrl(Tidy(e.text, false));
         break;
+    case ED_SEARCH:
+        g.search = Tidy(e.text, false);
+        break;
     }
+    bool search = e.what == ED_SEARCH && !g.search.empty();
     EditClose();
+    if (search) {
+        g.gameList = GL_SEARCH;
+        Push(GV_GAMES);
+    }
 }
 
 static void EditInsert(const char* s)
@@ -881,6 +1025,9 @@ static void Select()
     case GA_JELLYFINURL:
         EditOpen(ED_JELLYFIN, 0, "Jellyfin Server", Jellyfin_GetServerUrl(), 500, false);
         break;
+    case GA_SEARCH:
+        EditOpen(ED_SEARCH, 0, "Search by Name", g.search, 60, false);
+        break;
     case GA_PADTOOLS:
         Close();
         g_padModeActive = true;
@@ -993,6 +1140,41 @@ static void Select()
         g.playlist = r.arg;
         Push(GV_PLAYLIST);
         break;
+    case GA_GAMELIST:
+        g.gameList = r.arg;
+        Push(GV_GAMES);
+        break;
+    case GA_LETTER:
+        g.gameList = GL_LETTER;
+        g.letter = (char)r.arg;
+        Push(GV_GAMES);
+        break;
+    case GA_GAME:
+        g.game = r.arg;
+        g.gameLayout = g_vgames.layout;
+        Push(GV_GAME);
+        break;
+    case GA_FAVORITE:
+    case GA_HIDE: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        if (r.act == GA_FAVORITE) VGames_SetFavorite(g.game, !vg->favorite);
+        else                      VGames_SetHidden(g.game, !vg->hidden);
+        Build();
+        break;
+    }
+    case GA_LAUNCH: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        // The same Xbox-style path the launcher hands over.
+        char devicePath[512];
+        snprintf(devicePath, sizeof(devicePath), "\\Device\\Harddisk0\\Partition1\\%s\\%s",
+                 vg->category[0] ? vg->category : "Games", vg->name);
+        Close();
+        extern void DesktopLaunchTitle(const char* devicePath);
+        DesktopLaunchTitle(devicePath);
+        break;
+    }
     case GA_OPENLOGS:
         Host_OpenFolder(Plat_UserDataDir());
         break;
@@ -1022,8 +1204,29 @@ static void MoveCursor(int step)
     if (g.cursor >= n) g.cursor = n - 1;
 }
 
+// In a long game list LB and RB jump to the previous or next letter.
+static void LetterStep(int step)
+{
+    int n = (int)g.rows.size();
+    if (n == 0 || g.cursor < 0 || g.cursor >= n || g.rows[g.cursor].act != GA_GAME) return;
+    char cur = Initial(g.rows[g.cursor].label.c_str());
+    int i = g.cursor;
+    if (step > 0) {
+        while (i < n && Initial(g.rows[i].label.c_str()) == cur) i++;
+        if (i >= n) return;
+    } else {
+        while (i > 0 && Initial(g.rows[i].label.c_str()) == cur) i--;
+        char prev = Initial(g.rows[i].label.c_str());
+        if (prev == cur) return;
+        while (i > 0 && Initial(g.rows[i - 1].label.c_str()) == prev) i--;
+    }
+    g.cursor = i;
+    g.scroll = i;
+}
+
 static void PageStep(int step)
 {
+    if (g.view == GV_GAMES && g.gameList == GL_ALL) { LetterStep(step); return; }
     if (g.view != GV_PAGE) return;
     g.page = (g.page + step + kPageCount) % kPageCount;
     g.cursor = g.scroll = 0;

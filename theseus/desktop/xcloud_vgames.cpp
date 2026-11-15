@@ -42,8 +42,9 @@ static void Inject()
         // The id doubles as the icon filename, so it has to be a safe one.
         if (!g.playable || !Http_IsSafeFileId(g.titleId)) continue;
         std::string launch = "xcloud://" + g.titleId;
-        if (VGames_Add(g.name.c_str(), g.titleId.c_str(), launch.c_str(), "E", "Cloud Gaming") < 0)
-            break;   // DB full
+        int idx = VGames_Add(g.name.c_str(), g.titleId.c_str(), launch.c_str(), "E", "Cloud Gaming");
+        if (idx < 0) break;   // DB full
+        VGames_ApplyLiveMarks(idx);
         Xcloud_QueueArtDownload(g.titleId, g.artUrl);
         nGames++;
     }

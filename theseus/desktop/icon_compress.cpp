@@ -140,3 +140,43 @@ IconCompressResult Icons_Compress(int maxDim, int quality)
     }
     return r;
 }
+
+bool Icons_FitFile(const char* src, const char* dst, int maxDim, int quality)
+{
+    int w = 0, h = 0, ch = 0;
+    unsigned char* rgba = stbi_load(src, &w, &h, &ch, 4);
+    if (!rgba || w <= 0 || h <= 0) { if (rgba) stbi_image_free(rgba); return false; }
+
+    // Box art with a transparent edge would otherwise keep whatever color sat under it.
+    unsigned char* rgb = (unsigned char*)malloc((size_t)w * h * 3);
+    if (!rgb) { stbi_image_free(rgba); return false; }
+    for (size_t i = 0, n = (size_t)w * h; i < n; i++) {
+        unsigned a = rgba[i * 4 + 3];
+        rgb[i * 3 + 0] = (unsigned char)(rgba[i * 4 + 0] * a / 255);
+        rgb[i * 3 + 1] = (unsigned char)(rgba[i * 4 + 1] * a / 255);
+        rgb[i * 3 + 2] = (unsigned char)(rgba[i * 4 + 2] * a / 255);
+    }
+    stbi_image_free(rgba);
+
+    int big = (w > h) ? w : h;
+    int dw = w, dh = h;
+    unsigned char* out = rgb;
+    if (big > maxDim) {
+        dw = (w * maxDim + big - 1) / big;
+        dh = (h * maxDim + big - 1) / big;
+        if (dw < 1) dw = 1;
+        if (dh < 1) dh = 1;
+        out = (unsigned char*)malloc((size_t)dw * dh * 3);
+        if (!out) { free(rgb); return false; }
+        Downscale(rgb, w, h, out, dw, dh);
+    }
+
+    char tmp[1024];
+    snprintf(tmp, sizeof(tmp), "%s.tmp", dst);
+    int ok = stbi_write_jpg(tmp, dw, dh, 3, out, quality);
+    if (out != rgb) free(out);
+    free(rgb);
+    if (!ok) { remove(tmp); return false; }
+    if (!Host_RenameReplace(tmp, dst)) { remove(tmp); return false; }
+    return true;
+}
