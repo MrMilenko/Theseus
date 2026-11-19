@@ -570,8 +570,8 @@ void CConfig::SetMoviePCFlags(int nFlags)
 // CConfig::GetLaunchReason()   [script fn 'GetLaunchReason', FND 0x0017fe98, sig 8]
 // Reconstructed from 5960 retail XBE @ 0x0003b2d0: with launch data, the
 // reason as a name (jump table @ 0x0003b3ac); otherwise, or for a reason
-// it doesn't name, an empty string. Theseus names the online menu, account
-// signup and network settings by this XDK's numbering.
+// it doesn't name, an empty string. Theseus also names the online menu,
+// account signup and network settings by this XDK's older numbering.
 CStrObject *CConfig::GetLaunchReason()
 {
 	const TCHAR *szReason = _T("");
@@ -586,6 +586,14 @@ CStrObject *CConfig::GetLaunchReason()
 		case XLD_LAUNCH_DASHBOARD_ONLINE_MENU:           szReason = _T("FromOnlineDash");          break;
 		case XLD_LAUNCH_DASHBOARD_NEW_ACCOUNT_SIGNUP:    szReason = _T("NewAccountInternal");      break;
 		case XLD_LAUNCH_DASHBOARD_NETWORK_CONFIGURATION: szReason = _T("NetworkSettingsInternal"); break;
+		case 12: szReason = _T("FromOnlineDash");            break;
+		case 13: szReason = _T("FriendsInternal");           break;
+		case 14: szReason = _T("VoiceChatInternal");         break;
+		case 15: szReason = _T("MessagesInternal");          break;
+		case 16: szReason = _T("AccountManagementInternal"); break;
+		case 17: szReason = _T("NewAccountInternal");        break;
+		case 18: szReason = _T("AccountRecoveryInternal");   break;
+		case 19: szReason = _T("NetworkSettingsInternal");   break;
 		}
 	}
 	return new CStrObject(szReason);
