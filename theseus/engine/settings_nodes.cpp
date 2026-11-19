@@ -95,7 +95,7 @@ CSettings::~CSettings()
 CObject* CSettings::Dot(CObject* member)
 {
 	CObject* own = CNode::Dot(member);
-	if (own != NULL || member->m_obj != objVariable)
+	if (own != NULL || member->m_kind != objVariable)
 		return own;
 
 	const TCHAR* name = ((CVarObject*)member)->m_text;

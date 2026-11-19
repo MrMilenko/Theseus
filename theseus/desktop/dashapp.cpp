@@ -750,8 +750,8 @@ bool InitApp()
 	if (!g_pClass->Load(szStartup))
 	{
 		// A parse error has already said what went wrong.
-		extern bool g_bParseError;
-		if (!g_bParseError)
+		extern bool g_bXapSyntaxError;
+		if (!g_bXapSyntaxError)
 			Alert("%s\n\nCannot open file.", szStartup);
 		return false;
 	}

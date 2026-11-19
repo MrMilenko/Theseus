@@ -45,7 +45,7 @@ The macro patterns were deduced from the init function structure in the binary. 
 3. Stores the CreateNode factory function pointer
 4. Links to the base class's CNodeClass
 5. Links to the PRD table
-6. Inserts itself into a global linked list (c_pFirstClass)
+6. Inserts itself into a global linked list (c_pClassChain)
 
 This was confirmed by Ghidra cross-references resolving each registered class to its CNodeClass instance, one per node type, all linked into the same global list.
 
@@ -78,7 +78,7 @@ Example: `sig_si` = returns CStrObject*, takes one int parameter.
 
 ### Key Addresses
 
-- `CNodeClass::c_pFirstClass` at `0x0001a068`: head of registered class list
+- `CNodeClass::c_pClassChain` at `0x0001a068`: head of registered class list
 - `_classCObject` at `0x0001a06c`: CObject's class descriptor
 - `_classCTheseusNode`: base node class descriptor
 - Individual class descriptors for all 64+ node types
@@ -97,7 +97,7 @@ Additional virtuals: OnLoad, Advance, Render, GetBBox, GetRadius, GetPalette, Re
 
 ### Object Type IDs
 
-The `m_obj` field encodes runtime type. Values recovered from switch statements throughout the VM (CRunner::Step, CObject::Dot, Dereference, etc.):
+The `m_kind` field encodes runtime type. Values recovered from switch statements throughout the VM (CRunner::Step, CObject::Dot, Dereference, etc.):
 
 ```
 0  = objUndefined      8  = objFunctionRef
@@ -113,7 +113,7 @@ The `m_obj` field encodes runtime type. Values recovered from switch statements 
 
 ### Typed Array Classes
 
-CIntArray, CNumArray, CVec2Array, CVec3Array, CVec4Array all follow the same pattern: `m_nAlloc`, `m_nSize`, `m_value` pointer. Used by PRD entries with types pt_intarray through pt_vec4array. Confirmed by SetProperty handling for each type.
+CIntArray, CNumArray, CVec2Array, CVec3Array, CVec4Array all follow the same pattern: `m_reserved`, `m_nSize`, `m_value` pointer. Used by PRD entries with types pt_intarray through pt_vec4array. Confirmed by SetProperty handling for each type.
 
 ### CNodeArray
 
@@ -136,18 +136,18 @@ The base classes sit in three runs of code, each in source-file order.
 ### Object layouts
 
 ```
-CObject      0x14 bytes   +0x00 vtable  +0x04 m_nRefCount  +0x08 m_obj
-                          +0x0c m_parent  +0x10 m_members (CNameSpace*)
+CObject      0x14 bytes   +0x00 vtable  +0x04 m_nRefCount  +0x08 m_kind
+                          +0x0c m_parent  +0x10 m_pScope (CNameSpace*)
 CNode        0x1c bytes   +0x14 m_behavior (CRunner*)  +0x18 m_visible
 CTimeDepNode 0x30 bytes   +0x1c m_loop  +0x20 m_startTime  +0x24 m_stopTime
-                          +0x28 m_isActive  +0x2c m_lastStartTime
+                          +0x28 m_isActive  +0x2c m_prevStartTime
 CNodeClass                +0x14 m_className  +0x18 m_nObjectSize
-                          +0x1c m_pfnCreateNode  +0x20 m_baseClass
+                          +0x1c m_pfnNew  +0x20 m_baseClass
                           +0x24 m_rgprd  +0x28 m_nextClass
 CClass                    +0x2c m_url  +0x30 m_file  +0x58 m_instanceFunctions
                           +0x64 m_constructor  +0x68 m_nVarCount
-CInstance    0x54 bytes   CGroup up to +0x44, +0x44 m_class  +0x48 m_vars
-CNodeArray   0x0c bytes   +0x00 m_length  +0x04 m_nAlloc  +0x08 m_rgpNode
+CInstance    0x54 bytes   CGroup up to +0x44, +0x44 m_classDef  +0x48 m_vars
+CNodeArray   0x0c bytes   +0x00 m_length  +0x04 m_reserved  +0x08 m_nodes
 ```
 
 Vtables: CObject `0x00021b00`, CNodeClass `0x00021958`, CNode `0x000219f8`, CTimeDepNode `0x00021990`, CInstance `0x000226a0`, CClass `0x000226fc`. Slots referenced by the code below: `+0x04` GetPropMap, `+0x08` OnSetProperty, `+0x0c` AddRef, `+0x10` Release, `+0x14` GetFunctionMap, `+0x18` GetNodeClass, `+0x1c` ToNum, `+0x20` ToStr, `+0x24` Deref, `+0x34` GetMember, `+0x38` OnLoad, `+0x5c` CTimeDepNode::OnIsActiveChanged.

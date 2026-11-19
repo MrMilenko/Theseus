@@ -1103,10 +1103,10 @@ bool InitApp()
 
 	if (!g_pClass->Load(szFileToLoad))
 	{
-		extern bool g_bParseError;
+		extern bool g_bXapSyntaxError;
 		TCHAR reason[MAX_PATH + 64];
 		_stprintf(reason,
-		          g_bParseError ? _T("Parse error in %s")
+		          g_bXapSyntaxError ? _T("Parse error in %s")
 		                        : _T("Cannot open %s"),
 		          szFileToLoad);
 		TheseusPanic(reason,

@@ -31,7 +31,7 @@ END_NODE_FUN()
 // Reconstructed from 5960 retail XBE @ 0x00032040: type 3, no buffer.
 CStrObject::CStrObject()
 {
-	m_obj = objString;
+	m_kind = objString;
 	m_text = NULL;
 	m_length = 0;
 	m_capacity = 0;
@@ -43,7 +43,7 @@ CStrObject::CStrObject()
 //     copy cch characters; text[cch] = 0;
 CStrObject::CStrObject(const TCHAR* pch, int cch)
 {
-	m_obj = objString;
+	m_kind = objString;
 	m_length = cch;
 	m_capacity = cch + 1;
 	m_text = new TCHAR[m_capacity];
@@ -58,7 +58,7 @@ CStrObject::CStrObject(const TCHAR* sz)
 {
 	if (sz == NULL)
 		sz = _T("");
-	m_obj = objString;
+	m_kind = objString;
 	m_length = (int)_tcslen(sz);
 	m_capacity = m_length + 1;
 	m_text = new TCHAR[m_capacity];
@@ -189,7 +189,7 @@ CObject* CStrObject::indexOf(CObject** rgparam, int nParam)
 {
 	if (nParam != 1 && nParam != 2)
 	{
-		g_pRunner->Error(_T("invalid number of parameters"));
+		g_pActiveRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 
@@ -231,7 +231,7 @@ CObject* CStrObject::lastIndexOf(CObject** rgparam, int nParam)
 {
 	if (nParam != 1 && nParam != 2)
 	{
-		g_pRunner->Error(_T("invalid number of parameters"));
+		g_pActiveRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 
@@ -250,7 +250,7 @@ CObject* CStrObject::substr(CObject** rgparam, int nParam)
 {
 	if (nParam != 1 && nParam != 2)
 	{
-		g_pRunner->Error(_T("invalid number of parameters"));
+		g_pActiveRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 
@@ -273,7 +273,7 @@ CObject* CStrObject::substring(CObject** rgparam, int nParam)
 {
 	if (nParam != 2)
 	{
-		g_pRunner->Error(_T("invalid number of parameters"));
+		g_pActiveRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 

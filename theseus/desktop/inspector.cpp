@@ -56,10 +56,10 @@ void SetVisibilityRecursive(CNode* pNode, bool visible, int depth) {
 
 // Find the DEF name for a node by searching an instance's class members
 static const TCHAR* FindNodeDefNameInInstance(CNode* pNode, CInstance* pInst) {
-    if (!pNode || !pInst || !pInst->m_class || !pInst->m_class->m_members)
+    if (!pNode || !pInst || !pInst->m_classDef || !pInst->m_classDef->m_pScope)
         return NULL;
-    for (CDefine* d = pInst->m_class->m_members->m_firstDefine; d; d = d->m_next) {
-        if (d->m_node && d->m_node->m_obj == objMember) {
+    for (CDefine* d = pInst->m_classDef->m_pScope->m_firstDefine; d; d = d->m_next) {
+        if (d->m_node && d->m_node->m_kind == objMember) {
             CMember* mem = (CMember*)d->m_node;
             int idx = mem->m_memberIndex;
             if (idx >= 0 && idx < pInst->m_vars.GetLength()) {
@@ -505,13 +505,13 @@ void RenderInspectorPanel(IDirect3DDevice8* dev) {
 
         // Instance: show script variables
         CInstance* inst = dynamic_cast<CInstance*>(sel);
-        if (inst && inst->m_class && inst->m_class->m_members) {
+        if (inst && inst->m_classDef && inst->m_classDef->m_pScope) {
             int varCount = inst->m_vars.GetLength();
             if (varCount > 0) {
                 ImGui::Spacing();
                 if (ImGui::CollapsingHeader("Script Variables", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    for (CDefine* d = inst->m_class->m_members->m_firstDefine; d; d = d->m_next) {
-                        if (!d->m_node || d->m_node->m_obj != objMember) continue;
+                    for (CDefine* d = inst->m_classDef->m_pScope->m_firstDefine; d; d = d->m_next) {
+                        if (!d->m_node || d->m_node->m_kind != objMember) continue;
                         CMember* mem = (CMember*)d->m_node;
                         int idx = mem->m_memberIndex;
                         if (idx < 0 || idx >= varCount) continue;
@@ -521,10 +521,10 @@ void RenderInspectorPanel(IDirect3DDevice8* dev) {
                             continue;
                         }
                         // Show value based on object type
-                        if (varNode->m_obj == objNumber) {
+                        if (varNode->m_kind == objNumber) {
                             CNumObject* num = (CNumObject*)varNode;
                             ImGui::Text("  %s: %.4g", d->m_name, num->m_value);
-                        } else if (varNode->m_obj == objString) {
+                        } else if (varNode->m_kind == objString) {
                             CStrObject* str = (CStrObject*)varNode;
                             const TCHAR* sv = str->GetSz();
                             // Truncate long strings in display
@@ -535,12 +535,12 @@ void RenderInspectorPanel(IDirect3DDevice8* dev) {
                             } else {
                                 ImGui::Text("  %s: \"%s\"", d->m_name, sv ? sv : "");
                             }
-                        } else if (varNode->m_obj == objNode) {
+                        } else if (varNode->m_kind == objNode) {
                             CNodeClass* vnc = varNode->GetNodeClass();
                             ImGui::TextColored(ImVec4(0.6f, 0.8f, 0.6f, 1.0f), "  %s: [%s]", d->m_name,
                                 (vnc && vnc->m_className) ? vnc->m_className : "node");
                         } else {
-                            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  %s: (type %d)", d->m_name, varNode->m_obj);
+                            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "  %s: (type %d)", d->m_name, varNode->m_kind);
                         }
                     }
                 }

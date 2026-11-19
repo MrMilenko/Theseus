@@ -3,8 +3,8 @@
 // CFunctionCompiler a function body. Bodies in xap_compile.cpp, binary
 // write-up in docs/decomp/Compiler.md.
 //
-// CCompiler layout matches 5960: vtbl, m_nop 0x04, m_ops 0x08,
-// m_opsSize 0x0c, m_bError 0x10.
+// CCompiler layout matches 5960: vtbl, m_opPos 0x04, m_code 0x08,
+// m_opsSize 0x0c, m_bFailed 0x10.
 
 #pragma once
 
@@ -60,7 +60,7 @@ struct DOPER
 struct BREAK
 {
 	BREAK* m_next;
-	int m_nop;
+	int m_opPos;
 };
 
 // Growable op buffer shared by both compilers.
@@ -73,10 +73,10 @@ public:
 	// 5960 grows when the write would reach the end, then copies (0x34440).
 	inline void Write(const void* data, int size)
 	{
-		if (m_nop + size >= m_opsSize)
-			GrowTo(m_nop + size);
-		memcpy(m_ops + m_nop, data, size);
-		m_nop += size;
+		if (m_opPos + size >= m_opsSize)
+			GrowTo(m_opPos + size);
+		memcpy(m_code + m_opPos, data, size);
+		m_opPos += size;
 	}
 
 	inline void Write(BYTE b) { Write(&b, 1); }
@@ -90,27 +90,27 @@ public:
 		Write(src, len * sizeof (TCHAR));
 	}
 
-	inline UINT GetAddress() { return m_nop; }
+	inline UINT GetAddress() { return m_opPos; }
 
 	// Patches a jump or frame size written earlier. 5960 stores straight in.
 	inline void Fixup(UINT at, UINT value)
 	{
-		if (CHECK(at + sizeof (UINT) <= m_nop))
-			memcpy(m_ops + at, &value, sizeof (value));
+		if (CHECK(at + sizeof (UINT) <= m_opPos))
+			memcpy(m_code + at, &value, sizeof (value));
 	}
 
 	void GrowTo(int size);
 	CFunction* CreateFunction();
 
 	void SyntaxError(const TCHAR* fmt, ...);
-	inline void SetError() { m_bError = true; }
-	inline bool HadError() const { return m_bError; }
+	inline void SetError() { m_bFailed = true; }
+	inline bool HadError() const { return m_bFailed; }
 
 protected:
-	UINT m_nop;
-	BYTE* m_ops;
+	UINT m_opPos;
+	BYTE* m_code;
 	UINT m_opsSize;
-	bool m_bError;
+	bool m_bFailed;
 };
 
 // Compiles one function or behavior body.
@@ -143,8 +143,8 @@ public:
 	ST m_rgstLocal[100];
 	int m_nFrameSize;
 	BREAK* m_breaks;
-	int m_nBreakables;
-	int m_nopTopOfLoop;
+	int m_breakDepth;
+	int m_loopStartOp;
 	bool m_bBehavior;
 };
 

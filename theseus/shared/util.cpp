@@ -202,22 +202,22 @@ static void GrowArray(int& alloc, int& size, T*& values, int newSize)
 	size = newSize;
 }
 
-CIntArray::CIntArray()   { m_nAlloc = 0; m_nSize = 0; m_value = NULL; }
+CIntArray::CIntArray()   { m_reserved = 0; m_nSize = 0; m_value = NULL; }
 CIntArray::~CIntArray()  { delete[] m_value; }
-void CIntArray::SetSize(int n) { GrowArray(m_nAlloc, m_nSize, m_value, n); }
+void CIntArray::SetSize(int n) { GrowArray(m_reserved, m_nSize, m_value, n); }
 
-CNumArray::CNumArray()   { m_nAlloc = 0; m_nSize = 0; m_value = NULL; }
+CNumArray::CNumArray()   { m_reserved = 0; m_nSize = 0; m_value = NULL; }
 CNumArray::~CNumArray()  { delete[] m_value; }
-void CNumArray::SetSize(int n) { GrowArray(m_nAlloc, m_nSize, m_value, n); }
+void CNumArray::SetSize(int n) { GrowArray(m_reserved, m_nSize, m_value, n); }
 
-CVec2Array::CVec2Array()  { m_nAlloc = 0; m_nSize = 0; m_value = NULL; }
+CVec2Array::CVec2Array()  { m_reserved = 0; m_nSize = 0; m_value = NULL; }
 CVec2Array::~CVec2Array() { delete[] m_value; }
-void CVec2Array::SetSize(int n) { GrowArray(m_nAlloc, m_nSize, m_value, n); }
+void CVec2Array::SetSize(int n) { GrowArray(m_reserved, m_nSize, m_value, n); }
 
-CVec3Array::CVec3Array()  { m_nAlloc = 0; m_nSize = 0; m_value = NULL; }
+CVec3Array::CVec3Array()  { m_reserved = 0; m_nSize = 0; m_value = NULL; }
 CVec3Array::~CVec3Array() { delete[] m_value; }
-void CVec3Array::SetSize(int n) { GrowArray(m_nAlloc, m_nSize, m_value, n); }
+void CVec3Array::SetSize(int n) { GrowArray(m_reserved, m_nSize, m_value, n); }
 
-CVec4Array::CVec4Array()  { m_nAlloc = 0; m_nSize = 0; m_value = NULL; }
+CVec4Array::CVec4Array()  { m_reserved = 0; m_nSize = 0; m_value = NULL; }
 CVec4Array::~CVec4Array() { delete[] m_value; }
-void CVec4Array::SetSize(int n) { GrowArray(m_nAlloc, m_nSize, m_value, n); }
+void CVec4Array::SetSize(int n) { GrowArray(m_reserved, m_nSize, m_value, n); }

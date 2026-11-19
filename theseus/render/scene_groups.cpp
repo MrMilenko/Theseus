@@ -559,7 +559,7 @@ protected:
     CXipFile* m_xipFile;
     XTIME m_timeOfLoad;
 
-    CClass m_class;
+    CClass m_classDef;
 
     DECLARE_NODE_PROPS()
 
@@ -645,7 +645,7 @@ void CInline::Init()
 
 // CInline::FinishLoad()
 // Reconstructed from 5960 retail XBE @ 0x0004e560. Ghidra decompile:
-//     if (m_class.LoadAbsURL(absURL)) { n = m_class.CreateNode();
+//     if (m_classDef.LoadAbsURL(absURL)) { n = m_classDef.CreateNode();
 //         CallFunction(n, "initialize"); children.AddNode(n); n->parent = this;
 //         CallFunction(this, "onLoad"); }
 //     firstLoad = 0; classLoaded = 1;
@@ -654,9 +654,9 @@ void CInline::FinishLoad()
 {
     long long started = Frame_Now();
 
-    if (m_class.LoadAbsURL(m_szAbsURL))
+    if (m_classDef.LoadAbsURL(m_szAbsURL))
     {
-        CNode* root = m_class.CreateNode();
+        CNode* root = m_classDef.CreateNode();
         CallFunction(root, _T("initialize"));
         m_children.AddNode(root);
         root->m_parent = this;
@@ -2054,9 +2054,9 @@ static void CollectInlinesRecursive(CNode* pNode, CInstance* pRoot, InlineInfo* 
             out[*count].url = inl->m_url;
 
             out[*count].defName = NULL;
-            if (pRoot && pRoot->m_class && pRoot->m_class->m_members) {
-                for (CDefine* d = pRoot->m_class->m_members->m_firstDefine; d; d = d->m_next) {
-                    if (d->m_node && d->m_node->m_obj == objMember) {
+            if (pRoot && pRoot->m_classDef && pRoot->m_classDef->m_pScope) {
+                for (CDefine* d = pRoot->m_classDef->m_pScope->m_firstDefine; d; d = d->m_next) {
+                    if (d->m_node && d->m_node->m_kind == objMember) {
                         CMember* mem = (CMember*)d->m_node;
                         int idx = mem->m_memberIndex;
                         if (idx >= 0 && idx < pRoot->m_vars.GetLength()) {
@@ -2100,30 +2100,30 @@ bool CInline::ReloadFromText(const char* xapText) {
 
     m_children.ReleaseAll();
 
-    m_class.~CClass();
-    new (&m_class) CClass;
+    m_classDef.~CClass();
+    new (&m_classDef) CClass;
 
     char absURL[MAX_PATH];
     MakeAbsoluteURL(absURL, m_url);
 
     int cch = (int)strlen(absURL) + 1;
-    m_class.m_url = new char[cch];
-    memcpy(m_class.m_url, absURL, cch * sizeof(char));
+    m_classDef.m_url = new char[cch];
+    memcpy(m_classDef.m_url, absURL, cch * sizeof(char));
 
-    extern bool g_bParseError;
-    g_bParseError = false;
+    extern bool g_bXapSyntaxError;
+    g_bXapSyntaxError = false;
 
     size_t len = strlen(xapText);
     char* parseBuf = (char*)malloc(len + 1);
     memcpy(parseBuf, xapText, len + 1);
 
-    bool ok = m_class.ParseFile(absURL, (const char*)parseBuf);
+    bool ok = m_classDef.ParseFile(absURL, (const char*)parseBuf);
     free(parseBuf);
 
-    if (!ok || g_bParseError)
+    if (!ok || g_bXapSyntaxError)
         return false;
 
-    CNode* pNode = m_class.CreateNode();
+    CNode* pNode = m_classDef.CreateNode();
     if (!pNode)
         return false;
 

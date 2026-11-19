@@ -16,8 +16,8 @@
 #include "activefile.h"
 #include "xip_archive.h"
 
-extern bool g_bParseError;
-extern CRunner* g_pRunner;
+extern bool g_bXapSyntaxError;
+extern CRunner* g_pActiveRunner;
 extern CObject* g_pThis;
 
 extern CObject* Dereference(CObject* pObject);
@@ -40,15 +40,15 @@ CNodeClass CObject::classCObject(_T("Object"), sizeof(class CObject), CObject::C
 // CObject::CObject / CObject::CreateNode
 // Reconstructed from 5960 retail XBE @ 0x0002f500 (the factory inlines the
 // constructor):
-//     p = new(0x14); p->vtbl = CObject; p->m_obj = 0; p->m_nRefCount = 1;
-//     p->m_parent = 0; p->m_members = 0;
+//     p = new(0x14); p->vtbl = CObject; p->m_kind = 0; p->m_nRefCount = 1;
+//     p->m_parent = 0; p->m_pScope = 0;
 // A fresh object is untyped, owned once, parentless and has no members.
 CObject::CObject()
 {
 	m_nRefCount = 1;
-	m_obj = objUndefined;
+	m_kind = objUndefined;
 	m_parent = NULL;
-	m_members = NULL;
+	m_pScope = NULL;
 }
 
 CObject* CObject::CreateNode()
@@ -59,13 +59,13 @@ CObject* CObject::CreateNode()
 // CObject::~CObject
 // Reconstructed from 5960 retail XBE @ 0x0002f450:
 //     CLerper_RemoveObject(this);
-//     if (m_members) { for each define d: d->m_node->Release(); free(d); free(m_members); }
+//     if (m_pScope) { for each define d: d->m_node->Release(); free(d); free(m_pScope); }
 // Drops any running lerps on this object, then frees the member list
 // (CNameSpace's destructor does the per-entry release and free).
 CObject::~CObject()
 {
 	CLerper::RemoveObject(this);
-	delete m_members;
+	delete m_pScope;
 }
 
 // CObject::AddRef / CObject::Release
@@ -353,7 +353,7 @@ CObject* CObject::Call(int nFunction, CObject** rgparam, int nParam)
 	const SIGSHAPE& shape = c_rgSigShape[pfnd->sig];
 	if (nParam != (int)strlen(shape.args))
 	{
-		g_pRunner->Error(_T("invalid number of parameters"));
+		g_pActiveRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 
@@ -460,7 +460,7 @@ CObject* CObject::Call(int nFunction, CObject** rgparam, int nParam)
 // CMemberFunctionObject bound to this, so the call runs with the right self.
 CObject* CObject::Dot(CObject* pObj)
 {
-	if (pObj->m_obj != objVariable)
+	if (pObj->m_kind != objVariable)
 		return NULL;
 
 	const CVarObject* pName = (const CVarObject*)pObj;
@@ -480,7 +480,7 @@ CObject* CObject::Dot(CObject* pObj)
 	CObject* pMember = GetMember(pchName, cchName);
 	if (pMember != NULL)
 	{
-		if (pMember->m_obj == objFunction)
+		if (pMember->m_kind == objFunction)
 		{
 			AddRef();
 			return new CMemberFunctionObject(this, (CFunction*)pMember);
@@ -499,47 +499,47 @@ CObject* CObject::Dot(CObject* pObj)
 
 // CObject::AddMember / SetMember / GetMember
 // Reconstructed from 5960 retail XBE @ 0x00030310 / 0x00030380 / 0x000303c0:
-//     if (!m_members) m_members = new CNameSpace;     // 4 bytes, head = 0
+//     if (!m_pScope) m_pScope = new CNameSpace;     // 4 bytes, head = 0
 //     AddMember: push a new define at the head and point it at the object
 //     SetMember: find-or-add the define, point it at the object
-//     GetMember: m_members ? lookup by name : 0
+//     GetMember: m_pScope ? lookup by name : 0
 // AddMember always adds, so a duplicate name shadows the older entry.
 void CObject::AddMember(const TCHAR* pchName, int cchName, CObject* pObject)
 {
-	if (m_members == NULL)
-		m_members = new CNameSpace;
-	m_members->Add(pchName, cchName)->m_node = (CNode*)pObject;
+	if (m_pScope == NULL)
+		m_pScope = new CNameSpace;
+	m_pScope->Add(pchName, cchName)->m_node = (CNode*)pObject;
 }
 
 void CObject::SetMember(const TCHAR* pchName, int cchName, CObject* pObject)
 {
-	if (m_members == NULL)
-		m_members = new CNameSpace;
-	m_members->Get(pchName, cchName)->m_node = (CNode*)pObject;
+	if (m_pScope == NULL)
+		m_pScope = new CNameSpace;
+	m_pScope->Get(pchName, cchName)->m_node = (CNode*)pObject;
 }
 
 CObject* CObject::GetMember(const TCHAR* pchName, int cchName)
 {
-	return m_members != NULL ? m_members->Lookup(pchName, cchName) : NULL;
+	return m_pScope != NULL ? m_pScope->Lookup(pchName, cchName) : NULL;
 }
 
 // CObject::FindMemberFunction
 // Reconstructed from 5960 retail XBE @ 0x000303e0:
 //     f = this->GetMember(name);
-//     if (f && f->m_obj == 13) return f;
+//     if (f && f->m_kind == 13) return f;
 //     for (c = this->GetNodeClass(); c; c = c->m_baseClass)
-//         if ((f = c->GetMember(name)) != 0) return f->m_obj == 13 ? f : 0;
+//         if ((f = c->GetMember(name)) != 0) return f->m_kind == 13 ? f : 0;
 //     return 0;
 // The object's own members win, then the first class up the chain that
 // knows the name decides. FindMember is that class walk.
 CFunction* CObject::FindMemberFunction(const TCHAR* pchName, int cchName)
 {
 	CObject* pFound = GetMember(pchName, cchName);
-	if (pFound != NULL && pFound->m_obj == objFunction)
+	if (pFound != NULL && pFound->m_kind == objFunction)
 		return (CFunction*)pFound;
 
 	pFound = FindMember(GetNodeClass(), pchName, cchName);
-	if (pFound != NULL && pFound->m_obj == objFunction)
+	if (pFound != NULL && pFound->m_kind == objFunction)
 		return (CFunction*)pFound;
 
 	return NULL;
@@ -557,35 +557,35 @@ void CObject::Dump() const
 // =========================================================================
 
 // Head of the class list; 0x0017e730 in the binary.
-CNodeClass* CNodeClass::c_pFirstClass = NULL;
+CNodeClass* CNodeClass::c_pClassChain = NULL;
 
 // CNodeClass::CNodeClass
 // Reconstructed from 5960 retail XBE @ 0x0002e900:
 //     CObject fields reset; m_className = name; m_nObjectSize = size;
-//     m_pfnCreateNode = create; m_baseClass = base; m_rgprd = prd;
-//     m_nextClass = c_pFirstClass; c_pFirstClass = this;
+//     m_pfnNew = create; m_baseClass = base; m_rgprd = prd;
+//     m_nextClass = c_pClassChain; c_pClassChain = this;
 // Every class record pushes itself on the front of one global list.
 CNodeClass::CNodeClass(const TCHAR* szClassName, int nObjectSize,
 	CObject* (*pfnCreateNode)(), CNodeClass* pBaseClass, const PRD* rgprd)
 {
 	m_className = szClassName;
 	m_nObjectSize = nObjectSize;
-	m_pfnCreateNode = pfnCreateNode;
+	m_pfnNew = pfnCreateNode;
 	m_baseClass = pBaseClass;
 	m_rgprd = rgprd;
 
-	m_nextClass = c_pFirstClass;
-	c_pFirstClass = this;
+	m_nextClass = c_pClassChain;
+	c_pClassChain = this;
 }
 
 // CNodeClass::~CNodeClass
 // Reconstructed from 5960 retail XBE @ 0x0002e970:
-//     for (pp = &c_pFirstClass; *pp && *pp != this; pp = &(*pp)->m_nextClass) ;
+//     for (pp = &c_pClassChain; *pp && *pp != this; pp = &(*pp)->m_nextClass) ;
 //     if (*pp == this) *pp = m_nextClass;
 //     then the inlined CObject destructor
 CNodeClass::~CNodeClass()
 {
-	CNodeClass** ppLink = &c_pFirstClass;
+	CNodeClass** ppLink = &c_pClassChain;
 	while (*ppLink != NULL && *ppLink != this)
 		ppLink = &(*ppLink)->m_nextClass;
 
@@ -594,22 +594,22 @@ CNodeClass::~CNodeClass()
 }
 
 // CNodeClass::CreateNode   Inlined into CreateNewObject @ 0x00037580:
-//     return m_pfnCreateNode();
+//     return m_pfnNew();
 CObject* CNodeClass::CreateNode()
 {
-	return m_pfnCreateNode();
+	return m_pfnNew();
 }
 
 // CNodeClass::FindByName
 // Reconstructed from 5960 retail XBE @ 0x0002ea20:
-//     for (c = c_pFirstClass; c; c = c->m_nextClass)
+//     for (c = c_pClassChain; c; c = c->m_nextClass)
 //         if (!wcsncmp(c->m_className, name, cch) && c->m_className[cch] == 0)
 //             return c;
 //     return 0;
 // Case-sensitive, full-length match against the registered names.
 CNodeClass* CNodeClass::FindByName(const TCHAR* pchNodeClass, int cchNodeClass)
 {
-	for (CNodeClass* pClass = c_pFirstClass; pClass != NULL; pClass = pClass->m_nextClass)
+	for (CNodeClass* pClass = c_pClassChain; pClass != NULL; pClass = pClass->m_nextClass)
 	{
 		const TCHAR* szName = pClass->m_className;
 		if (_tcsncmp(szName, pchNodeClass, cchNodeClass) == 0 && szName[cchNodeClass] == 0)
@@ -652,11 +652,11 @@ CNodeClass CNode::classCNode(_T("Node"), sizeof(class CNode), CNode::CreateNode,
 
 // CNode::CNode / CNode::CreateNode
 // Reconstructed from 5960 retail XBE @ 0x0002ebf0 (factory, ctor inlined):
-//     p = new(0x1c); CObject fields; p->m_obj = 5; p->m_behavior = 0; p->m_visible = 1;
+//     p = new(0x1c); CObject fields; p->m_kind = 5; p->m_behavior = 0; p->m_visible = 1;
 // A node starts visible with no behavior script.
 CNode::CNode()
 {
-	m_obj = objNode;
+	m_kind = objNode;
 	m_behavior = NULL;
 	m_visible = true;
 }
@@ -699,7 +699,7 @@ void CNode::OnLoad()
 // Reconstructed from 5960 retail XBE @ 0x0002ee60:
 //     r = m_behavior; if (!r) return;
 //     if (r->m_wakeup != 0) { if (now < r->m_wakeup) return; r->m_wakeup = 0; }
-//     g_pRunner = r; g_pThis = this;
+//     g_pActiveRunner = r; g_pThis = this;
 //     for (;;) {
 //         do { if (!r->Step()) r->ResetFunc(); } while (r->m_wakeup == 0);
 //         if (now < r->m_wakeup) break;
@@ -712,7 +712,7 @@ void CNode::Advance(float nSeconds)
 	if (m_behavior == NULL || m_behavior->IsSleeping())
 		return;
 
-	g_pRunner = m_behavior;
+	g_pActiveRunner = m_behavior;
 	g_pThis = this;
 
 	do
@@ -778,8 +778,8 @@ void CNode::Dump() const
 CNodeArray::CNodeArray()
 {
 	m_length = 0;
-	m_nAlloc = 0;
-	m_rgpNode = NULL;
+	m_reserved = 0;
+	m_nodes = NULL;
 }
 
 CNodeArray::~CNodeArray()
@@ -789,15 +789,15 @@ CNodeArray::~CNodeArray()
 
 // CNodeArray::AddNode
 // Inlined at its callers (e.g. CInstance::Construct @ 0x00033f00):
-//     if (m_nAlloc < m_length + 1) Allocate(m_nAlloc + 16);
-//     m_rgpNode[m_length++] = node;
+//     if (m_reserved < m_length + 1) Allocate(m_reserved + 16);
+//     m_nodes[m_length++] = node;
 // Grows sixteen slots at a time. Takes over the caller's reference.
 void CNodeArray::AddNode(CNode* pNode)
 {
-	if (m_length + 1 > m_nAlloc)
-		Allocate(m_nAlloc + 16);
+	if (m_length + 1 > m_reserved)
+		Allocate(m_reserved + 16);
 
-	m_rgpNode[m_length] = pNode;
+	m_nodes[m_length] = pNode;
 	m_length++;
 }
 
@@ -811,27 +811,27 @@ void CNodeArray::RemoveNode(CNode* pNode)
 	int i = 0;
 	while (i < m_length)
 	{
-		if (m_rgpNode[i] != pNode)
+		if (m_nodes[i] != pNode)
 		{
 			i++;
 			continue;
 		}
 
 		for (int j = i; j < m_length - 1; j++)
-			m_rgpNode[j] = m_rgpNode[j + 1];
+			m_nodes[j] = m_nodes[j + 1];
 		m_length--;
 	}
 }
 
 // CNodeArray::ReleaseAll / RemoveAll
 // Reconstructed from 5960 retail XBE @ 0x0002efa0 (RemoveAll inlined):
-//     for (i = 0; i < m_length; i++) if (m_rgpNode[i]) m_rgpNode[i]->Release();
-//     m_length = 0; m_nAlloc = 0; free(m_rgpNode); m_rgpNode = 0;
+//     for (i = 0; i < m_length; i++) if (m_nodes[i]) m_nodes[i]->Release();
+//     m_length = 0; m_reserved = 0; free(m_nodes); m_nodes = 0;
 void CNodeArray::ReleaseAll()
 {
 	for (int i = 0; i < m_length; i++)
 	{
-		CNode* pNode = m_rgpNode[i];
+		CNode* pNode = m_nodes[i];
 		if (pNode != NULL)
 			pNode->Release();
 	}
@@ -840,32 +840,32 @@ void CNodeArray::ReleaseAll()
 
 void CNodeArray::RemoveAll()
 {
-	delete[] m_rgpNode;
-	m_rgpNode = NULL;
+	delete[] m_nodes;
+	m_nodes = NULL;
 	m_length = 0;
-	m_nAlloc = 0;
+	m_reserved = 0;
 }
 
 // CNodeArray::Allocate
 // Reconstructed from 5960 retail XBE @ 0x0002eff0:
-//     if (m_nAlloc < n) { p = new CNode*[n]; copy the old m_nAlloc slots;
-//                         free the old block; m_rgpNode = p; m_nAlloc = n; }
+//     if (m_reserved < n) { p = new CNode*[n]; copy the old m_reserved slots;
+//                         free the old block; m_nodes = p; m_reserved = n; }
 // Never shrinks; new slots past the old capacity are left uninitialized.
 void CNodeArray::Allocate(int nLength)
 {
-	if (nLength <= m_nAlloc)
+	if (nLength <= m_reserved)
 		return;
 
 	CNode** rgpGrown = new CNode*[nLength];
-	if (m_rgpNode != NULL)
+	if (m_nodes != NULL)
 	{
-		for (int i = 0; i < m_nAlloc; i++)
-			rgpGrown[i] = m_rgpNode[i];
-		delete[] m_rgpNode;
+		for (int i = 0; i < m_reserved; i++)
+			rgpGrown[i] = m_nodes[i];
+		delete[] m_nodes;
 	}
 
-	m_rgpNode = rgpGrown;
-	m_nAlloc = nLength;
+	m_nodes = rgpGrown;
+	m_reserved = nLength;
 }
 
 // CNodeArray::SetLength
@@ -875,7 +875,7 @@ void CNodeArray::SetLength(int nLength)
 {
 	Allocate(nLength);
 	for (int i = m_length; i < nLength; i++)
-		m_rgpNode[i] = NULL;
+		m_nodes[i] = NULL;
 	m_length = nLength;
 }
 
@@ -896,14 +896,14 @@ END_NODE_PROPS()
 // CTimeDepNode::CTimeDepNode
 // Reconstructed from 5960 retail XBE @ 0x0002f050 (factory, ctor inlined):
 //     CNode fields; m_loop = 0; m_startTime = 0; m_stopTime = 0;
-//     m_isActive = 0; m_lastStartTime = 0;
+//     m_isActive = 0; m_prevStartTime = 0;
 CTimeDepNode::CTimeDepNode()
 {
 	m_loop = false;
 	m_startTime = 0.0f;
 	m_stopTime = 0.0f;
 	m_isActive = false;
-	m_lastStartTime = 0.0f;
+	m_prevStartTime = 0.0f;
 }
 
 // CTimeDepNode::Advance
@@ -925,11 +925,11 @@ void CTimeDepNode::Advance(float nSeconds)
 
 	if (!m_isActive)
 	{
-		bool fNewStart = now >= m_startTime && m_startTime != m_lastStartTime;
+		bool fNewStart = now >= m_startTime && m_startTime != m_prevStartTime;
 		bool fBeforeStop = m_stopTime == 0.0f || now < m_stopTime;
 		if (fNewStart && fBeforeStop)
 		{
-			m_lastStartTime = m_startTime;
+			m_prevStartTime = m_startTime;
 			m_isActive = true;
 			OnIsActiveChanged();
 		}
@@ -962,7 +962,7 @@ void CTimeDepNode::OnCycleEnded()
 // own fields and marks itself objClass (6).
 CClass::CClass() : CNodeClass(_T("[class]"), 0, NULL, NULL, NULL)
 {
-	m_obj = objClass;
+	m_kind = objClass;
 	m_url = NULL;
 	m_constructor = NULL;
 	m_nVarCount = 0;
@@ -1033,7 +1033,7 @@ bool CClass::LoadAbsURL(const TCHAR* szURL)
 //     StartParse(file, name);                  // file name, line 1, no error
 //     end = ParseClassBody(text);
 //     if (*end) SyntaxError(L"Stuff past expected end of file!");
-//     EndParse(); return !g_bParseError;
+//     EndParse(); return !g_bXapSyntaxError;
 bool CClass::ParseFile(const TCHAR* szFileName, const TCHAR* szFile)
 {
 	StartParse(szFile, szFileName);
@@ -1043,7 +1043,7 @@ bool CClass::ParseFile(const TCHAR* szFileName, const TCHAR* szFile)
 		SyntaxError(_T("Stuff past expected end of file!"));
 
 	EndParse();
-	return !g_bParseError;
+	return !g_bXapSyntaxError;
 }
 
 // CClass::ParseClassBody
@@ -1069,8 +1069,8 @@ const TCHAR* CClass::ParseClassBody(const TCHAR* pch)
 // class constructor, then gets OnLoad like any other node.
 CInstance::CInstance(CClass* pClass)
 {
-	m_obj = objInstance;
-	m_class = pClass;
+	m_kind = objInstance;
+	m_classDef = pClass;
 	pClass->AddRef();
 
 	m_vars.SetLength(pClass->GetVariableCount());
@@ -1084,13 +1084,13 @@ CInstance::CInstance(CClass* pClass)
 // m_vars.ReleaseAll() and the CGroup destructor (member and base dtors).
 CInstance::~CInstance()
 {
-	m_class->Release();
+	m_classDef->Release();
 }
 
 // CInstance::GetNodeClass: an instance reports its script class.
 CNodeClass* CInstance::GetNodeClass() const
 {
-	return m_class;
+	return m_classDef;
 }
 
 // CInstance::Render: draws as the group it is.
@@ -1106,15 +1106,15 @@ void CInstance::Render()
 // else goes to the ordinary node lookup.
 CObject* CInstance::Dot(CObject* pObj)
 {
-	if (pObj->m_obj == objVariable && m_class->m_members != NULL)
+	if (pObj->m_kind == objVariable && m_classDef->m_pScope != NULL)
 	{
 		const CVarObject* pName = (const CVarObject*)pObj;
-		CObject* pEntry = m_class->m_members->Lookup(pName->m_text, pName->m_length);
+		CObject* pEntry = m_classDef->m_pScope->Lookup(pName->m_text, pName->m_length);
 		if (pEntry != NULL)
 		{
-			if (pEntry->m_obj == objMember)
+			if (pEntry->m_kind == objMember)
 				return new CMemberVarObject(this, ((CMember*)pEntry)->m_memberIndex);
-			if (pEntry->m_obj == objFunction)
+			if (pEntry->m_kind == objFunction)
 				return new CMemberFunctionObject(this, (CFunction*)pEntry);
 		}
 	}
@@ -1174,7 +1174,7 @@ struct CTORREADER
 BYTE* CInstance::Construct()
 {
 	CTORREADER code;
-	code.pb = m_class->m_constructor->m_rgop;
+	code.pb = m_classDef->m_constructor->m_bytecode;
 	if (code.pb == NULL)
 		return NULL;
 
@@ -1308,7 +1308,7 @@ BYTE* CInstance::Construct()
 		{
 			int cch = code.Int();
 			const TCHAR* pchName = code.Name(cch);
-			CObject* pFunction = m_class->m_instanceFunctions.GetNode(code.Int());
+			CObject* pFunction = m_classDef->m_instanceFunctions.GetNode(code.Int());
 			pFunction->AddRef();
 			pCurrent->SetMember(pchName, cch, pFunction);
 		}

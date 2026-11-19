@@ -13,8 +13,8 @@
 
 // Shared runner state. 5960 keeps the same four at 0x17ae9c..0x17aea8.
 CObject* g_pThis;
-CRunner* g_pRunner;
-CObject** g_rgParam;
+CRunner* g_pActiveRunner;
+CObject** g_scriptArgs;
 int g_nParam;
 
 extern bool g_bInputEnable;
@@ -30,24 +30,24 @@ CObject* LookupMember(CObject* pThis, const TCHAR* pchName, int cchName);
 // CNumObject constructors   [type 2, vtable 0x22c50]
 // Reconstructed from 5960 retail XBE @ 0x00038fa0 (float form; the empty form
 // only shows up inlined). Decompile:
-//     m_nRefCount = 1; m_obj = 2; m_value = xmm0;
+//     m_nRefCount = 1; m_kind = 2; m_value = xmm0;
 // The string form has no standalone copy in the binary; CStrObject::ToNum
 // @ 0x32200 does the same (float)wcstod(sz, NULL) inline. Kept for runner.h.
 CNumObject::CNumObject()
 {
-	m_obj = objNumber;
+	m_kind = objNumber;
 	m_value = 0.0f;
 }
 
 CNumObject::CNumObject(float nValue)
 {
-	m_obj = objNumber;
+	m_kind = objNumber;
 	m_value = nValue;
 }
 
 CNumObject::CNumObject(const TCHAR* szValue)
 {
-	m_obj = objNumber;
+	m_kind = objNumber;
 	m_value = (float)_tcstod(szValue, NULL);
 }
 
@@ -97,10 +97,10 @@ END_NODE_PROPS()
 // CVec3Object constructors   [type 16, vtable 0x22c88]
 // Reconstructed from 5960 retail XBE @ 0x00039070 (empty, via the factory)
 // and @ 0x000390c0 (copy). Decompile:
-//     m_obj = 0x10; m_x = v[0]; m_y = v[1]; m_z = v[2];     (or all 0)
+//     m_kind = 0x10; m_x = v[0]; m_y = v[1]; m_z = v[2];     (or all 0)
 CVec3Object::CVec3Object()
 {
-	m_obj = objVec3;
+	m_kind = objVec3;
 	m_x = 0.0f;
 	m_y = 0.0f;
 	m_z = 0.0f;
@@ -108,7 +108,7 @@ CVec3Object::CVec3Object()
 
 CVec3Object::CVec3Object(const D3DXVECTOR3& v)
 {
-	m_obj = objVec3;
+	m_kind = objVec3;
 	m_x = v.x;
 	m_y = v.y;
 	m_z = v.z;
@@ -138,7 +138,7 @@ public:
 	~CLocalVariable();
 	CObject* Deref();
 	void Assign(CObject* pValue);
-	CObject* m_pValue;
+	CObject* m_pHeld;
 };
 
 // CLocalVariable   [vtable 0x22e48]
@@ -151,27 +151,27 @@ public:
 // Deref trades the reference to the slot for one to its value.
 CLocalVariable::CLocalVariable()
 {
-	m_pValue = NULL;
+	m_pHeld = NULL;
 }
 
 CLocalVariable::~CLocalVariable()
 {
-	if (m_pValue != NULL)
-		m_pValue->Release();
+	if (m_pHeld != NULL)
+		m_pHeld->Release();
 }
 
 void CLocalVariable::Assign(CObject* pValue)
 {
-	if (m_pValue != NULL)
-		m_pValue->Release();
-	m_pValue = pValue;
+	if (m_pHeld != NULL)
+		m_pHeld->Release();
+	m_pHeld = pValue;
 	if (pValue != NULL)
 		pValue->AddRef();
 }
 
 CObject* CLocalVariable::Deref()
 {
-	CObject* pValue = m_pValue;
+	CObject* pValue = m_pHeld;
 	if (pValue != NULL)
 		pValue->AddRef();
 	Release();
@@ -185,7 +185,7 @@ CObject* CLocalVariable::Deref()
 //     dtor: free(m_text);
 CVarObject::CVarObject(const TCHAR* pch, int cch)
 {
-	m_obj = objVariable;
+	m_kind = objVariable;
 	m_length = cch;
 	m_capacity = cch + 1;
 	m_text = new TCHAR[cch + 1];
@@ -218,10 +218,10 @@ CObject* CVarObject::Deref()
 		pFound = &theCamera;
 	else
 	{
-		pFound = g_pRunner->LookupVariable(m_text, _tcslen(m_text));
+		pFound = g_pActiveRunner->LookupVariable(m_text, _tcslen(m_text));
 		if (pFound == NULL)
 		{
-			g_pRunner->Error(_T("Unknown object: %s"), m_text);
+			g_pActiveRunner->Error(_T("Unknown object: %s"), m_text);
 			return NULL;
 		}
 	}
@@ -239,11 +239,11 @@ CObject* CVarObject::Deref()
 //     obj->Assign(value);
 void CVarObject::Assign(CObject* pValue)
 {
-	CObject* pTarget = g_pRunner->LookupVariable(m_text, _tcslen(m_text));
+	CObject* pTarget = g_pActiveRunner->LookupVariable(m_text, _tcslen(m_text));
 	if (pTarget != NULL)
 		pTarget->Assign(pValue);
 	else
-		g_pRunner->Error(_T("Unknown variable: %s"), m_text);
+		g_pActiveRunner->Error(_T("Unknown variable: %s"), m_text);
 }
 
 // =========================================================================
@@ -262,7 +262,7 @@ void CVarObject::Assign(CObject* pValue)
 // The range checks are what CNodeArray::GetNode/SetNode already do.
 CMemberVarObject::CMemberVarObject(CInstance* pInstance, int iMember)
 {
-	m_obj = objMemberVar;
+	m_kind = objMemberVar;
 	m_owner = pInstance;
 	m_memberIndex = iMember;
 	pInstance->AddRef();
@@ -297,13 +297,13 @@ void CMemberVarObject::Assign(CObject* pValue)
 // Reconstructed from 5960 retail XBE @ 0x000397b0 (ctor) and @ 0x00039810
 // (Deref). Decompile:
 //     ctor:  m_owner = owner; m_function = fn;            (no AddRef)
-//     Deref: CRunner r(m_owner); r.ResetFunc(); r.m_ops = m_function->m_rgop;
+//     Deref: CRunner r(m_owner); r.ResetFunc(); r.m_code = m_function->m_bytecode;
 //            ret = r.Run(); this->Release(); return ret;
 // Reading a method without calling it runs it on a fresh runner. The owner
 // is a plain CObject in Theseus so non-instance nodes can hand these out.
 CMemberFunctionObject::CMemberFunctionObject(CObject* pOwner, CFunction* pFunction)
 {
-	m_obj = objMemberFunction;
+	m_kind = objMemberFunction;
 	m_owner = pOwner;
 	m_function = pFunction;
 }
@@ -324,12 +324,12 @@ CObject* CMemberFunctionObject::Deref()
 // CFunctionObject   [type 8, vtable 0x22cc0]
 // Reconstructed from 5960 retail XBE @ 0x00039920 (ctor), 0x39960 (dtor),
 // 0x399c0 (Call). Decompile:
-//     ctor: m_obj = 8; m_owner = NULL;
+//     ctor: m_kind = 8; m_owner = NULL;
 //     dtor: if (m_owner) m_owner->Release();
 //     Call: return m_owner->Call(m_functionIndex, rgparam, nParam);
 CFunctionObject::CFunctionObject()
 {
-	m_obj = objFunctionRef;
+	m_kind = objFunctionRef;
 	m_owner = NULL;
 }
 
@@ -346,12 +346,12 @@ CObject* CFunctionObject::Call(CObject** rgArgs, int nArgs)
 
 // CFunction   [type 13, vtable 0x22c18]
 // Reconstructed from 5960 retail XBE: the constructor is inlined in
-// CCompiler::CreateFunction @ 0x34670 (m_obj = 0xd, m_codeSize = 0) and the
+// CCompiler::CreateFunction @ 0x34670 (m_kind = 0xd, m_codeSize = 0) and the
 // destructor @ 0x39b00 does nothing of its own. m_name is Theseus's debug
 // name for the function, so Theseus frees it here.
 CFunction::CFunction()
 {
-	m_obj = objFunction;
+	m_kind = objFunction;
 	m_codeSize = 0;
 	m_name = NULL;
 }
@@ -363,7 +363,7 @@ CFunction::~CFunction()
 
 // CMember   [type 9, vtable 0x22dd8]
 // Reconstructed from 5960 retail XBE: ctor inlined in
-// CClassCompiler::ParseMemberVar @ 0x36ad0 (m_obj = 9, m_memberIndex = -1),
+// CClassCompiler::ParseMemberVar @ 0x36ad0 (m_kind = 9, m_memberIndex = -1),
 // dtor @ 0x39b30, Deref @ 0x39b40, Assign @ 0x39b90. Decompile:
 //     Deref:  v = g_pThis->m_vars[i]; if (v) v->AddRef(); Release(); return v;
 //     Assign: old = g_pThis->m_vars[i]; if (old) old->Release();
@@ -372,14 +372,14 @@ CFunction::~CFunction()
 // now (LookupMember sets it). 5960 just casts g_pThis; Theseus checks first.
 static CInstance* MemberOwner()
 {
-	if (!CHECK(g_pThis != NULL && g_pThis->m_obj == objInstance))
+	if (!CHECK(g_pThis != NULL && g_pThis->m_kind == objInstance))
 		return NULL;
 	return (CInstance*)g_pThis;
 }
 
 CMember::CMember()
 {
-	m_obj = objMember;
+	m_kind = objMember;
 	m_memberIndex = -1;
 }
 
@@ -417,7 +417,7 @@ void CMember::Assign(CObject* pValue)
 //     Error(L"Cannot assign to objects");
 void CObject::Assign(CObject* pValue)
 {
-	g_pRunner->Error(_T("Cannot assign to objects"));
+	g_pActiveRunner->Error(_T("Cannot assign to objects"));
 }
 
 // =========================================================================
@@ -426,10 +426,10 @@ void CObject::Assign(CObject* pValue)
 
 // CNodeArrayObject constructor   [type 7, vtable 0x22d30]
 // Reconstructed from 5960 retail XBE: inlined in CProperty::Deref @ 0x38b00.
-//     m_obj = 7; m_nodeArray = (CNodeArray*)(node + prop offset);
+//     m_kind = 7; m_nodeArray = (CNodeArray*)(node + prop offset);
 CNodeArrayObject::CNodeArrayObject(CNodeArray* pArray)
 {
-	m_obj = objNodeArray;
+	m_kind = objNodeArray;
 	m_nodeArray = pArray;
 }
 
@@ -469,22 +469,22 @@ CObject* CNodeArrayObject::Call(int nFunction, CObject** rgArgs, int nArgs)
 
 // CNodeArrayObject::Dot
 // Reconstructed from 5960 retail XBE @ 0x00039260. Decompile:
-//     if (key->m_obj != objVariable) {
+//     if (key->m_kind != objVariable) {
 //         i = (int)key->m_value;
 //         if (i < 0 || i >= m_nodeArray->m_length)
 //             { Error(L"Array reference out of bounds"); return 0; }
-//         n = m_nodeArray->m_rgpNode[i]; n->AddRef(); return n; }
+//         n = m_nodeArray->m_nodes[i]; n->AddRef(); return n; }
 //     "length"(6) / "add"(3) / "remove"(6) -> new CFunctionObject
 //         { m_functionIndex = 0 / 1 / 2, m_owner = this }; this->AddRef();
 //     else return CObject::Dot(key);
 CObject* CNodeArrayObject::Dot(CObject* pKey)
 {
-	if (pKey->m_obj != objVariable)
+	if (pKey->m_kind != objVariable)
 	{
 		int iItem = (int)((CNumObject*)pKey)->m_value;
 		if (iItem < 0 || iItem >= m_nodeArray->GetLength())
 		{
-			g_pRunner->Error(_T("Array reference out of bounds"));
+			g_pActiveRunner->Error(_T("Array reference out of bounds"));
 			return NULL;
 		}
 
@@ -585,7 +585,7 @@ CObject* CProperty::Deref()
 		break;
 
 	default:
-		g_pRunner->Error(_T("Unknown property type"));
+		g_pActiveRunner->Error(_T("Unknown property type"));
 		return NULL;
 	}
 
@@ -599,7 +599,7 @@ CObject* CProperty::Deref()
 //     integer: n = value->Deref()->ToNum(); SetProperty(prd, &(int)n->m_value);
 //     boolean: b = n->m_value != 0;         SetProperty(prd, &b);
 //     number:  SetProperty(prd, &n->m_value);              (then n->Release())
-//     vec3:    v = value->Deref(); if (v->m_obj == objVec3) SetProperty(prd, &v->m_x);
+//     vec3:    v = value->Deref(); if (v->m_kind == objVec3) SetProperty(prd, &v->m_x);
 //     node:    p = value ? value->Deref() : NULL; SetProperty(prd, &p);
 //     string:  s = value->Deref()->ToStr(); SetProperty(prd, &s->m_text); s->Release();
 // "assignement" is the binary's spelling. Theseus passes the byte count to
@@ -609,7 +609,7 @@ void CProperty::Assign(CObject* pValue)
 	const PROP_TYPE type = m_pprd->nType;
 	if (pValue == NULL && type != pt_node)
 	{
-		g_pRunner->Error(_T("Illegal null assignement"));
+		g_pActiveRunner->Error(_T("Illegal null assignement"));
 		return;
 	}
 
@@ -636,7 +636,7 @@ void CProperty::Assign(CObject* pValue)
 	else if (type == pt_vec3)
 	{
 		CObject* pVec = pValue->Deref();
-		if (pVec->m_obj == objVec3)
+		if (pVec->m_kind == objVec3)
 			m_node->SetProperty(m_pprd, &((CVec3Object*)pVec)->m_x, 3 * sizeof(float));
 	}
 	else if (type == pt_node)
@@ -690,26 +690,26 @@ CObject* Dereference(CObject* p)
 
 // LookupClass
 // Reconstructed from 5960 retail XBE: inlined at the top of CreateNewObject
-// @ 0x37580 as g_classes->Lookup(name) (0x32ca0) plus an objClass check.
+// @ 0x37580 as g_classTable->Lookup(name) (0x32ca0) plus an objClass check.
 CClass* LookupClass(const TCHAR* pchName, int cchName)
 {
-	extern CNameSpace* g_classes;
-	CObject* pFound = g_classes->Lookup(pchName, cchName);
-	if (pFound != NULL && pFound->m_obj == objClass)
+	extern CNameSpace* g_classTable;
+	CObject* pFound = g_classTable->Lookup(pchName, cchName);
+	if (pFound != NULL && pFound->m_kind == objClass)
 		return (CClass*)pFound;
 	return NULL;
 }
 
 // CreateNewObject
 // Reconstructed from 5960 retail XBE @ 0x00037580. Decompile:
-//     g_rgParam = rgparam; g_nParam = nParam;
-//     c = g_classes->Lookup(name); if (c && c->m_obj == objClass) return c->CreateNode();
+//     g_scriptArgs = rgparam; g_nParam = nParam;
+//     c = g_classTable->Lookup(name); if (c && c->m_kind == objClass) return c->CreateNode();
 //     nc = CNodeClass::FindByName(name); if (nc && (o = nc->CreateNode())) return o;
 //     return 0;
-// The constructor args ride in g_rgParam / g_nParam for Date, Array and friends.
+// The constructor args ride in g_scriptArgs / g_nParam for Date, Array and friends.
 CObject* CreateNewObject(const TCHAR* pchClassName, int cchClassName, CObject** rgArgs, int nArgs)
 {
-	g_rgParam = rgArgs;
+	g_scriptArgs = rgArgs;
 	g_nParam = nArgs;
 
 	CClass* pScripted = LookupClass(pchClassName, cchClassName);
@@ -721,9 +721,9 @@ CObject* CreateNewObject(const TCHAR* pchClassName, int cchClassName, CObject** 
 
 // ExecuteScript
 // Reconstructed from 5960 retail XBE @ 0x00036fb0. Decompile:
-//     CFunctionCompiler c; c.ParseBlock(sz); if (c.m_bError) return false;
+//     CFunctionCompiler c; c.ParseBlock(sz); if (c.m_bFailed) return false;
 //     c.Write(opRet); f = c.CreateFunction();
-//     CRunner r(obj); r.ResetFunc(); r.m_ops = f->m_rgop; r.Run();
+//     CRunner r(obj); r.ResetFunc(); r.m_code = f->m_bytecode; r.Run();
 //     delete f; return true;
 bool ExecuteScript(CObject* pObject, const TCHAR* szScript)
 {
@@ -745,7 +745,7 @@ bool ExecuteScript(CObject* pObject, const TCHAR* szScript)
 // CallFunction
 // Reconstructed from 5960 retail XBE @ 0x000371a0. Decompile:
 //     g_pThis = obj; CRunner r(obj); r.ResetFunc();
-//     if (!(r.m_ops = r.LookupFunction(name, wcslen(name), r.m_self))) return false;
+//     if (!(r.m_code = r.LookupFunction(name, wcslen(name), r.m_self))) return false;
 //     for (i = 0; i < n; i++) r.m_stack[r.m_sp++] = rgParam[i];
 //     r.Run(); return true;
 // The arguments go on the stack as is; the caller's references move with them.
@@ -782,7 +782,7 @@ CObject* FindMember(CNodeClass* pClass, const TCHAR* pchName, int cchName)
 // LookupMember
 // Reconstructed from 5960 retail XBE @ 0x000399e0. Decompile:
 //     g_pThis = obj;
-//     if (obj->m_obj == objNode && (prd = obj->FindProp(name)))
+//     if (obj->m_kind == objNode && (prd = obj->FindProp(name)))
 //         { p = new CProperty(obj, prd); p->m_nRefCount = 0; return p; }
 //     if ((m = obj->GetMember(name))) return m;
 //     for (c = obj->GetNodeClass(); c; c = c->m_baseClass)
@@ -796,7 +796,7 @@ CObject* LookupMember(CObject* pObj, const TCHAR* pchName, int cchName)
 {
 	g_pThis = pObj;
 
-	if (pObj->m_obj == objNode)
+	if (pObj->m_kind == objNode)
 	{
 		const PRD* pprd = pObj->FindProp(pchName, cchName);
 		if (pprd != NULL)
@@ -825,8 +825,8 @@ CObject* LookupMember(CObject* pObj, const TCHAR* pchName, int cchName)
 // Reconstructed from 5960 retail XBE: the runner is built on the stack in
 // CallFunction @ 0x371a0, ExecuteScript @ 0x36fb0 and
 // CMemberFunctionObject::Deref @ 0x39810, always the same way:
-//     m_sp = m_nop = 0; m_ops = NULL; m_self = m_thisRef = obj;
-//     m_bError = false; m_nextContext = NULL; zero the stack;
+//     m_sp = m_opPos = 0; m_code = NULL; m_self = m_thisRef = obj;
+//     m_bFailed = false; m_nextContext = NULL; zero the stack;
 // and torn down with ResetFunc. 5960's stack holds 100 entries; Theseus's
 // holds 256 (see runner.h). Theseus also starts the line at 0 so an error
 // before the first statement doesn't print a junk line number.
@@ -836,12 +836,12 @@ CRunner::CRunner(CObject* pOwner)
 	m_sp = 0;
 	m_spFrame = 0;
 	m_spBase = 0;
-	m_ops = NULL;
-	m_nop = 0;
+	m_code = NULL;
+	m_opPos = 0;
 	m_self = pOwner;
 	m_thisRef = pOwner;
 	m_nextContext = NULL;
-	m_bError = false;
+	m_bFailed = false;
 	m_nLine = 0;
 	m_wakeup = 0.0f;
 }
@@ -852,22 +852,22 @@ CRunner::~CRunner()
 }
 
 // CRunner::SetFunc   [inlined at each runner site in 5960]
-// By name: ResetFunc, then m_ops = LookupFunction(name) (see CallFunction).
-// By function: ResetFunc, then m_ops = fn->m_rgop with nop/sp/frame at 0.
+// By name: ResetFunc, then m_code = LookupFunction(name) (see CallFunction).
+// By function: ResetFunc, then m_code = fn->m_bytecode with nop/sp/frame at 0.
 // Theseus also clears the line number and the sleep deadline here.
 bool CRunner::SetFunc(const TCHAR* szFunc)
 {
 	ResetFunc();
 	BYTE* pbCode = LookupFunction(szFunc, _tcslen(szFunc), m_thisRef);
-	m_ops = pbCode;
+	m_code = pbCode;
 	return pbCode != NULL;
 }
 
 void CRunner::SetFunc(CFunction* pFunction)
 {
 	ResetFunc();
-	m_ops = pFunction->m_rgop;
-	m_nop = 0;
+	m_code = pFunction->m_bytecode;
+	m_opPos = 0;
 	m_sp = 0;
 	m_spFrame = 0;
 	m_nLine = 0;
@@ -877,7 +877,7 @@ void CRunner::SetFunc(CFunction* pFunction)
 // CRunner::ResetFunc
 // Reconstructed from 5960 retail XBE @ 0x00037400. Decompile:
 //     while (m_sp) { p = m_stack[--m_sp]; m_stack[m_sp] = 0; if (p) p->Release(); }
-//     m_bError = 0; m_nop = 0; m_wakeup = 0.0; m_sp = 0; m_spFrame = 0;
+//     m_bFailed = 0; m_opPos = 0; m_wakeup = 0.0; m_sp = 0; m_spFrame = 0;
 void CRunner::ResetFunc()
 {
 	while (m_sp != 0)
@@ -887,8 +887,8 @@ void CRunner::ResetFunc()
 			pSlot->Release();
 	}
 
-	m_bError = false;
-	m_nop = 0;
+	m_bFailed = false;
+	m_opPos = 0;
 	m_wakeup = 0.0f;
 	m_spFrame = 0;
 }
@@ -943,20 +943,20 @@ CObject* CRunner::Pop()
 
 // CRunner::Error
 // Reconstructed from 5960 retail XBE @ 0x000375e0. Decompile:
-//     if (m_bError) return;
+//     if (m_bFailed) return;
 //     vswprintf(msg, 512, fmt, args);
 //     if (m_nLine == 0) swprintf(out, L"###...\n###Runtime Error\n\n%s\n###...", msg);
 //     else swprintf(out, L"###...\n###Runtime Error\n\nLine: %d\n\n%s\n###...", m_nLine, msg);
-//     m_bError = 1;
+//     m_bFailed = 1;
 // Only the first error of a run is reported; Run stops on the flag. Retail
 // builds the text and shows it nowhere. Theseus keeps the core of that text
 // without the # banners, sends it to the trace output with the house error
 // marker, and pops a message box on desktop.
 void CRunner::Error(const TCHAR* szFmt, ...)
 {
-	if (m_bError)
+	if (m_bFailed)
 		return;
-	m_bError = true;
+	m_bFailed = true;
 
 	TCHAR szWhat[512];
 	va_list args;
@@ -980,7 +980,7 @@ void CRunner::Error(const TCHAR* szFmt, ...)
 
 // CRunner::PushContext
 // Reconstructed from 5960 retail XBE @ 0x00037690. Decompile:
-//     c = new RUNCONTEXT;  c->m_ops = m_ops; c->m_nop = m_nop;
+//     c = new RUNCONTEXT;  c->m_code = m_code; c->m_opPos = m_opPos;
 //     c->m_spFrame = m_spFrame; c->m_self = m_self; c->m_thisRef = m_thisRef;
 //     c->m_sp = m_sp - nParam - 1; c->m_next = m_nextContext; m_nextContext = c;
 // The saved sp sits under the callee and its arguments, so returning drops both.
@@ -988,8 +988,8 @@ void CRunner::PushContext(UINT nArgs)
 {
 	RUNCONTEXT* pSaved = new RUNCONTEXT;
 	pSaved->m_nextContext = m_nextContext;
-	pSaved->m_ops = m_ops;
-	pSaved->m_nop = m_nop;
+	pSaved->m_code = m_code;
+	pSaved->m_opPos = m_opPos;
 	pSaved->m_spFrame = m_spFrame;
 	pSaved->m_self = m_self;
 	pSaved->m_thisRef = m_thisRef;
@@ -1014,7 +1014,7 @@ static void ReleaseRange(CObject** rgSlot, UINT cSlot)
 // CRunner::PopContext
 // Reconstructed from 5960 retail XBE @ 0x000376e0. Decompile:
 //     c = m_nextContext; ret = Dereference(Pop());
-//     m_ops/m_nop/m_spFrame/m_self = c->...; g_pThis = m_thisRef = c->m_thisRef;
+//     m_code/m_opPos/m_spFrame/m_self = c->...; g_pThis = m_thisRef = c->m_thisRef;
 //     for (i = c->m_sp; i < m_sp; i++) if (m_stack[i]) { m_stack[i]->Release(); m_stack[i] = 0; }
 //     m_sp = c->m_sp; m_nextContext = c->m_next; delete c; m_stack[m_sp++] = ret;
 void CRunner::PopContext()
@@ -1022,8 +1022,8 @@ void CRunner::PopContext()
 	RUNCONTEXT* pSaved = m_nextContext;
 	CObject* pResult = Dereference(Pop());
 
-	m_ops = pSaved->m_ops;
-	m_nop = pSaved->m_nop;
+	m_code = pSaved->m_code;
+	m_opPos = pSaved->m_opPos;
 	m_spFrame = pSaved->m_spFrame;
 	m_self = pSaved->m_self;
 	m_thisRef = pSaved->m_thisRef;
@@ -1041,17 +1041,17 @@ void CRunner::PopContext()
 // CRunner::Run
 // Reconstructed from 5960 retail XBE @ 0x000377b0. Decompile:
 //     m_spBase = m_sp;
-//     while (!m_bError) if (!Step(&ret)) break;
+//     while (!m_bFailed) if (!Step(&ret)) break;
 // Theseus hands back whatever the outermost return left (NULL on error).
 CObject* CRunner::Run()
 {
 	m_spBase = m_sp;
 
 	CObject* pResult = NULL;
-	while (!m_bError && Step(&pResult))
+	while (!m_bFailed && Step(&pResult))
 		pResult = NULL;
 
-	return m_bError ? NULL : pResult;
+	return m_bFailed ? NULL : pResult;
 }
 
 // =========================================================================
@@ -1060,17 +1060,17 @@ CObject* CRunner::Run()
 
 // CRunner::Step
 // Reconstructed from 5960 retail XBE @ 0x00037800 (1880 bytes, one switch on
-// the opcode byte). Sets g_pRunner, fetches the opcode and runs it; returns
+// the opcode byte). Sets g_pActiveRunner, fetches the opcode and runs it; returns
 // false to stop (outermost return, error, or an opcode it doesn't know).
 // Each case is described next to its code below; the full write-up with the
 // decompile excerpts is in docs/decomp/VM.md. Theseus adds the stack checks
 // on opFrame and opCall and the null check on opCall.
 bool CRunner::Step(CObject** ppRetObj)
 {
-	g_pRunner = this;
+	g_pActiveRunner = this;
 
-	const BYTE opcode = m_ops[m_nop];
-	m_nop++;
+	const BYTE opcode = m_code[m_opPos];
+	m_opPos++;
 
 	switch (opcode)
 	{
@@ -1116,7 +1116,7 @@ bool CRunner::Step(CObject** ppRetObj)
 
 	// uint target.
 	case opJump:
-		m_nop = FetchUInt();
+		m_opPos = FetchUInt();
 		return true;
 
 	// uint target. Pop a value; true (nonzero number) falls through, false
@@ -1135,7 +1135,7 @@ bool CRunner::Step(CObject** ppRetObj)
 
 			UINT nopElse = FetchUInt();
 			if (!bTaken)
-				m_nop = nopElse;
+				m_opPos = nopElse;
 		}
 		return true;
 
@@ -1145,8 +1145,8 @@ bool CRunner::Step(CObject** ppRetObj)
 	// function lookup.
 	case opCall:
 		{
-			int nArgs = m_ops[m_nop];
-			m_nop++;
+			int nArgs = m_code[m_opPos];
+			m_opPos++;
 
 			// Theseus: not enough on the stack is a stop, not a wild read.
 			if (!CHECK(m_sp > (UINT)nArgs))
@@ -1163,7 +1163,7 @@ bool CRunner::Step(CObject** ppRetObj)
 				return false;
 			}
 
-			if (pCallee->m_obj == objFunctionRef)
+			if (pCallee->m_kind == objFunctionRef)
 			{
 				m_stack[spCallee] = NULL;
 				CObject* pResult = ((CFunctionObject*)pCallee)->Call(rgArgs, nArgs);
@@ -1175,15 +1175,15 @@ bool CRunner::Step(CObject** ppRetObj)
 				return true;
 			}
 
-			if (pCallee->m_obj == objMemberFunction)
+			if (pCallee->m_kind == objMemberFunction)
 			{
 				CMemberFunctionObject* pMethod = (CMemberFunctionObject*)pCallee;
 				pMethod->AddRef();
 				PushContext(nArgs);
 				m_spFrame = spCallee + 1;
 				m_self = pMethod->m_owner;
-				m_ops = pMethod->m_function->m_rgop;
-				m_nop = 0;
+				m_code = pMethod->m_function->m_bytecode;
+				m_opPos = 0;
 				return true;
 			}
 
@@ -1216,8 +1216,8 @@ bool CRunner::Step(CObject** ppRetObj)
 			m_self = pOwner;
 			g_pThis = pOwner;
 			m_spFrame = spCallee + 1;
-			m_ops = pbCode;
-			m_nop = 0;
+			m_code = pbCode;
+			m_opPos = 0;
 		}
 		return true;
 
@@ -1280,7 +1280,7 @@ bool CRunner::Step(CObject** ppRetObj)
 			CObject* pMember = pTarget->Dot(pKey);
 			if (pMember == NULL)
 			{
-				if (pKey->m_obj == objVariable)
+				if (pKey->m_kind == objVariable)
 				{
 					Error(_T("Unknown member: %s"), ((CVarObject*)pKey)->m_text);
 				}
@@ -1357,7 +1357,7 @@ bool CRunner::Step(CObject** ppRetObj)
 	case opNeg:
 		{
 			CObject* pValue = Dereference(Pop());
-			if (pValue == NULL || pValue->m_obj != objNumber)
+			if (pValue == NULL || pValue->m_kind != objNumber)
 			{
 				Error(_T("expected a number"));
 				return false;
@@ -1401,7 +1401,7 @@ bool CRunner::Step(CObject** ppRetObj)
 				Error(_T("illegal null reference"));
 				return false;
 			}
-			if (pDelay->m_obj != objNumber)
+			if (pDelay->m_kind != objNumber)
 			{
 				Error(_T("expected a number"));
 				return false;
@@ -1438,7 +1438,7 @@ bool CRunner::BinaryOperator(BYTE op)
 	CObject* pB = Dereference(Pop());
 	CObject* pA = Dereference(Pop());
 
-	if (pA == NULL || pB == NULL || (pA->m_obj == objNode && pB->m_obj == objNode))
+	if (pA == NULL || pB == NULL || (pA->m_kind == objNode && pB->m_kind == objNode))
 	{
 		if (op != opEQ && op != opNE)
 		{
@@ -1456,8 +1456,8 @@ bool CRunner::BinaryOperator(BYTE op)
 		return true;
 	}
 
-	const int typeA = pA->m_obj;
-	const int typeB = pB->m_obj;
+	const int typeA = pA->m_kind;
+	const int typeB = pB->m_kind;
 
 	if (typeA == objString && typeB == objString && op != opAdd)
 	{
@@ -1666,10 +1666,10 @@ BOOL CRunner::ExecuteBuiltIn(const TCHAR* pchName, int cchName, int nArgs, CObje
 // CRunner::LookupFunction
 // Reconstructed from 5960 retail XBE @ 0x000389b0. Decompile:
 //     owner = m_self;
-//     if ((f = m_self->FindMemberFunction(name))) return f->m_rgop;
+//     if ((f = m_self->FindMemberFunction(name))) return f->m_bytecode;
 //     for (p = m_self->m_parent; p; p = p->m_parent)
 //         if ((m = LookupMember(p, name))) {
-//             owner = p; return m->m_obj == objFunction ? m->m_rgop : (BYTE*)m; }
+//             owner = p; return m->m_kind == objFunction ? m->m_bytecode : (BYTE*)m; }
 //     owner = NULL; return NULL;
 // A non-function hit comes back as a raw pointer, as in the binary.
 BYTE* CRunner::LookupFunction(const TCHAR* pchName, int cchName, CObject*& pOwner)
@@ -1678,7 +1678,7 @@ BYTE* CRunner::LookupFunction(const TCHAR* pchName, int cchName, CObject*& pOwne
 
 	CFunction* pOwn = m_self->FindMemberFunction(pchName, cchName);
 	if (pOwn != NULL)
-		return pOwn->m_rgop;
+		return pOwn->m_bytecode;
 
 	for (CObject* pUp = m_self->m_parent; pUp != NULL; pUp = pUp->m_parent)
 	{
@@ -1686,7 +1686,7 @@ BYTE* CRunner::LookupFunction(const TCHAR* pchName, int cchName, CObject*& pOwne
 		if (pFound != NULL)
 		{
 			pOwner = pUp;
-			return (pFound->m_obj == objFunction) ? ((CFunction*)pFound)->m_rgop : (BYTE*)pFound;
+			return (pFound->m_kind == objFunction) ? ((CFunction*)pFound)->m_bytecode : (BYTE*)pFound;
 		}
 	}
 

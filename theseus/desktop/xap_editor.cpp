@@ -220,8 +220,8 @@ void ReloadSceneFromEditor() {
     delete g_pClass;
     g_pClass = new CClass;
 
-    extern bool g_bParseError;
-    g_bParseError = false;
+    extern bool g_bXapSyntaxError;
+    g_bXapSyntaxError = false;
 
     char* parseBuf = (char*)malloc(text.size() + 1);
     memcpy(parseBuf, text.c_str(), text.size() + 1);
@@ -237,7 +237,7 @@ void ReloadSceneFromEditor() {
     bool ok = g_pClass->ParseFile(url, (const TCHAR*)parseBuf);
     free(parseBuf);
 
-    if (!ok || g_bParseError) {
+    if (!ok || g_bXapSyntaxError) {
         snprintf(g_xapEditorStatus, sizeof(g_xapEditorStatus), "Parse error! Check console.");
         g_xapEditorStatusTime = (float)SDL_GetTicks() / 1000.0f;
         g_pObject = (CInstance*)g_pClass->CreateNode();
