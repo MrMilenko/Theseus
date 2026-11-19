@@ -1,8 +1,10 @@
-// audio_system.cpp: DirectSound-based audio pipeline. Three layers:
-// CAudioBuf (static buffer), CAudioPump (streaming base with worker
-// thread), and the script-callable CAudioClip / CMusicCollection /
-// CFilePump nodes. Decompiled from the 5960 retail XBE; see
-// docs/decomp/AudioSystem.md.
+// audio_system.cpp: sound playback for the Xbox build. CAudioBuf holds a
+// short sound whole, CAudioPump streams a long one through a ring of
+// segments, CFilePump reads wave data for it and CMP3Pump decodes
+// soundtrack MP3s (Theseus's, 5960 streams WMA). On top sit the AudioClip
+// and PeriodicAudioGroup nodes. Rebuilt from the 5960 retail XBE
+// (0x61890..0x63320); see docs/decomp/AudioSystem.md. Theseus creates
+// buffers through DSoundManager instead of 5960's XAppCreateSoundBuffer.
 
 #include "std.h"
 #include "theseus.h"
@@ -19,117 +21,113 @@
 #include "toolbox/xboxinternals.h"
 #include "minimp3.h"
 
-// Latches the most recently active CAudioClip's removeVoice setting so the
-// audio mixer can decide whether to keep the voice channel allocated when
-// the clip stops. Set every Advance pass; read by the dsound pump on the
-// next buffer notify.
+// removeVoice of the clip that advanced last (5960 keeps it at 0x17e768).
 bool g_removeVoice = false;
 extern bool g_bLevelTransition;
 
+static DWORD LoopFlag(bool loop)
+{
+	return loop ? DSBPLAY_LOOPING : 0;
+}
+
 // =========================================================================
-// CAudioBuf: single-shot sound buffer
+// CAudioBuf
 // =========================================================================
 
+// 5960 builds these inline where a short wave file is loaded (0x61d20):
+// no buffer yet, not looping, not paused.
 CAudioBuf::CAudioBuf()
 {
-	m_dsBuffer = NULL;
-	m_paused = false;
 	m_loop = false;
+	m_paused = false;
 	m_bufferBytes = 0;
+	m_dsBuffer = NULL;
 }
 
+// CAudioBuf::~CAudioBuf
+// Reconstructed from 5960 retail XBE @ 0x62960: stop and release the buffer.
 CAudioBuf::~CAudioBuf()
 {
-	if (m_dsBuffer != NULL)
-	{
-		m_dsBuffer->Stop();
-		m_dsBuffer->Release();
-	}
+	if (m_dsBuffer == NULL)
+		return;
+	m_dsBuffer->Stop();
+	m_dsBuffer->Release();
 }
 
-HRESULT CAudioBuf::Initialize(WAVEFORMATEX* pWaveFormat, int nBufferBytes, const void* pvSamples/*=NULL*/)
+// CAudioBuf::Initialize(format, bytes, samples)
+// 5960 inlines this into the wave loader: remember the size and byte rate,
+// make a buffer with volume and frequency control. Theseus can also hand
+// the samples over up front.
+HRESULT CAudioBuf::Initialize(WAVEFORMATEX* pWaveFormat, int nBufferBytes, const void* pvSamples)
 {
 	m_bufferBytes = nBufferBytes;
 	m_bytesPerSecond = pWaveFormat->nAvgBytesPerSec;
 
-	HRESULT hr = DSoundManager::Instance()->DSoundCreateSoundBuffer(
-		pWaveFormat, nBufferBytes,
-		DSBCAPS_CTRLVOLUME | DSBCAPS_CTRLFREQUENCY,
-		&m_dsBuffer);
-	if (FAILED(hr) || m_dsBuffer == NULL)
-	{
-		DbgPrint("CAudioBuf::Initialize - fail to create sound buffer");
-		return FAILED(hr) ? hr : E_INVALIDARG;
-	}
+	DSoundManager* ds = DSoundManager::Instance();
+	HRESULT hr = ds->DSoundCreateSoundBuffer(pWaveFormat, nBufferBytes, DSBCAPS_CTRLVOLUME | DSBCAPS_CTRLFREQUENCY, &m_dsBuffer);
+	if (FAILED(hr))
+		return hr;
+	if (m_dsBuffer == NULL)
+		return E_INVALIDARG;
 
 	if (pvSamples != NULL)
 	{
-		hr = DSoundManager::Instance()->DSoundSetSoundBufferData(
-			m_dsBuffer, 0, nBufferBytes, pvSamples);
+		hr = ds->DSoundSetSoundBufferData(m_dsBuffer, 0, nBufferBytes, pvSamples);
 		if (FAILED(hr))
-		{
-			DbgPrint("CAudioBuf::Initialize - fail to set sound buffer");
 			return hr;
-		}
 	}
-
 	return S_OK;
 }
 
+// CAudioBuf::Lock / Unlock
+// Reconstructed from 5960 retail XBE @ 0x629a0 / 0x629d0: the whole buffer
+// from offset 0.
 void* CAudioBuf::Lock()
 {
-	LPVOID pvBuffer;
-	DWORD dwBufferLength;
-
-	ASSERT(m_dsBuffer != NULL);
-
-	VERIFYHR(m_dsBuffer->Lock(0, m_bufferBytes, &pvBuffer, &dwBufferLength, NULL, NULL, 0L));
-	ASSERT(dwBufferLength == (DWORD)m_bufferBytes);
-	return pvBuffer;
+	void* data;
+	DWORD bytes;
+	m_dsBuffer->Lock(0, m_bufferBytes, &data, &bytes, NULL, NULL, 0);
+	return data;
 }
 
 void CAudioBuf::Unlock(void* pvBuffer)
 {
-	VERIFYHR(m_dsBuffer->Unlock(pvBuffer, m_bufferBytes, NULL, 0));
+	m_dsBuffer->Unlock(pvBuffer, m_bufferBytes, NULL, 0);
 }
 
-bool CAudioBuf::Play(bool bLoop/*=false*/)
+// Rewind and start, looping if asked. False with no buffer.
+bool CAudioBuf::Play(bool bLoop)
 {
 	m_paused = false;
 	m_loop = bLoop;
-
 	if (m_dsBuffer == NULL)
 		return false;
 
-	VERIFYHR(m_dsBuffer->SetCurrentPosition(0));
-	VERIFYHR(m_dsBuffer->Play(0, 0, m_loop ? DSBPLAY_LOOPING : 0));
-
+	m_dsBuffer->SetCurrentPosition(0);
+	m_dsBuffer->Play(0, 0, LoopFlag(m_loop));
 	return true;
 }
 
+// CAudioBuf::Stop
+// 5960 @ 0x62a30 stops the buffer (and then waits for it to report
+// stopped; Theseus doesn't wait).
 void CAudioBuf::Stop()
 {
 	if (m_dsBuffer != NULL)
-    {
-		VERIFYHR(m_dsBuffer->Stop());
-    }
+		m_dsBuffer->Stop();
 }
 
+// Theseus pauses by stopping in place and resumes with Play.
 void CAudioBuf::Pause(bool bPause)
 {
 	if (m_dsBuffer == NULL)
 		return;
 
+	m_paused = bPause;
 	if (bPause)
-	{
-		m_paused = true;
-		VERIFYHR(m_dsBuffer->Stop());
-	}
+		m_dsBuffer->Stop();
 	else
-	{
-		m_paused = false;
-		VERIFYHR(m_dsBuffer->Play(0, 0, m_loop ? DSBPLAY_LOOPING : 0));
-	}
+		m_dsBuffer->Play(0, 0, LoopFlag(m_loop));
 }
 
 bool CAudioBuf::IsPlaying()
@@ -137,26 +135,29 @@ bool CAudioBuf::IsPlaying()
 	if (m_dsBuffer == NULL)
 		return false;
 
-	DWORD dwStatus;
-	VERIFYHR(m_dsBuffer->GetStatus(&dwStatus));
-	return (dwStatus & DSBSTATUS_PLAYING) != 0;
+	DWORD status;
+	m_dsBuffer->GetStatus(&status);
+	return (status & DSBSTATUS_PLAYING) != 0;
 }
 
+// Attenuation in dB to DirectSound's hundredths of a dB, negative.
 void CAudioBuf::SetAttenuation(float nAttenuation)
 {
-	ASSERT(m_dsBuffer != NULL);
-	VERIFYHR(m_dsBuffer->SetVolume(-(int)(nAttenuation * 100.0f)));
+	m_dsBuffer->SetVolume(-(int)(nAttenuation * 100.0f));
 }
 
+// 5960's clip remembers pan but never applies it.
 void CAudioBuf::SetPan(float nPan)
 {
-	ASSERT(m_dsBuffer != NULL);
 }
 
+// CAudioBuf::SetFrequency(hz)
+// Reconstructed from 5960 retail XBE @ 0x62ad0:
+//     SetFrequency(buffer, hz == 0 ? 0 : (int)hz);
+// 0 is DSBFREQUENCY_ORIGINAL.
 void CAudioBuf::SetFrequency(float nFrequency)
 {
-	ASSERT(m_dsBuffer != NULL);
-	VERIFYHR(m_dsBuffer->SetFrequency(nFrequency == 0.0f ? DSBFREQUENCY_ORIGINAL : (DWORD)nFrequency));
+	m_dsBuffer->SetFrequency(nFrequency == 0.0f ? DSBFREQUENCY_ORIGINAL : (DWORD)nFrequency);
 }
 
 float CAudioBuf::GetPlaybackTime()
@@ -164,10 +165,9 @@ float CAudioBuf::GetPlaybackTime()
 	if (m_dsBuffer == NULL)
 		return 0.0f;
 
-	DWORD dwPlayCursor;
-	VERIFYHR(m_dsBuffer->GetCurrentPosition(&dwPlayCursor, NULL));
-
-	return (float)dwPlayCursor / m_bytesPerSecond;
+	DWORD cursor;
+	m_dsBuffer->GetCurrentPosition(&cursor, NULL);
+	return (float)cursor / m_bytesPerSecond;
 }
 
 float CAudioBuf::GetPlaybackLength()
@@ -175,45 +175,55 @@ float CAudioBuf::GetPlaybackLength()
 	return (float)m_bufferBytes / m_bytesPerSecond;
 }
 
-void* CAudioBuf::GetSampleBuffer() { return NULL; }
-DWORD CAudioBuf::GetSampleBufferSize() { return 0; }
-
-// =========================================================================
-// CAudioPump: streaming audio with threaded buffer fill
-// =========================================================================
-
-CAudioPump::CAudioPump()
+void* CAudioBuf::GetSampleBuffer()
 {
-	m_playThread = NULL;
-	m_terminateEvent = NULL;
-    m_mutex = NULL;
-	m_bufferBytes = 0;
-	m_completedBuffers = 0;
-    m_prevCursor = 0;
-    m_filledBuffers = 0;
-    m_pumpState = PUMPSTATE_STOPPED;
-
-    m_notifyEvents = NULL;
-    m_segmentsPerBuffer = 0;
-    m_bufferFilled = 0;
+	return NULL;
 }
 
+DWORD CAudioBuf::GetSampleBufferSize()
+{
+	return 0;
+}
+
+// =========================================================================
+// CAudioPump
+// =========================================================================
+
+// 5960's pump constructor is folded into its subclasses (0x63220,
+// 0x63430): everything zero and stopped.
+CAudioPump::CAudioPump()
+{
+	m_bufferBytes = 0;
+	m_segments = 0;
+	m_prebuffer = 0;
+	m_state = PUMP_STOPPED;
+	m_filled = 0;
+	m_wraps = 0;
+	m_lastCursor = 0;
+	m_segmentFilled = NULL;
+	m_segmentEvents = NULL;
+	m_quit = NULL;
+	m_lock = NULL;
+	m_worker = NULL;
+}
+
+// CAudioPump::~CAudioPump
+// Reconstructed from 5960 retail XBE @ 0x62b90: tell the worker to quit
+// and wait for it, close the quit event and the lock, stop and release
+// the buffer, close the segment events, free the arrays.
 CAudioPump::~CAudioPump()
 {
-	if (m_terminateEvent != NULL)
-		SetEvent(m_terminateEvent);
-
-	if (m_playThread != NULL)
+	if (m_quit != NULL)
+		SetEvent(m_quit);
+	if (m_worker != NULL)
 	{
-		WaitForSingleObject(m_playThread, INFINITE);
-		CloseHandle(m_playThread);
+		WaitForSingleObject(m_worker, INFINITE);
+		CloseHandle(m_worker);
 	}
-
-	if (m_terminateEvent != NULL)
-		CloseHandle(m_terminateEvent);
-
-	if (m_mutex != NULL)
-		CloseHandle(m_mutex);
+	if (m_quit != NULL)
+		CloseHandle(m_quit);
+	if (m_lock != NULL)
+		CloseHandle(m_lock);
 
 	if (m_dsBuffer != NULL)
 	{
@@ -222,466 +232,365 @@ CAudioPump::~CAudioPump()
 		m_dsBuffer = NULL;
 	}
 
-    if(m_notifyEvents){
-	    int i;
-	    for (i = 0; i < m_segmentsPerBuffer; i++)
-        {
-            if (m_notifyEvents[i])
-                CloseHandle(m_notifyEvents[i]);
-        }
-        delete [] m_notifyEvents;
-    }
-    if(m_bufferFilled){
-        delete [] m_bufferFilled;
-    }
+	if (m_segmentEvents != NULL)
+	{
+		for (int i = 0; i < m_segments; i++)
+		{
+			if (m_segmentEvents[i] != NULL)
+				CloseHandle(m_segmentEvents[i]);
+		}
+		delete [] m_segmentEvents;
+	}
+	delete [] m_segmentFilled;
 }
 
-DWORD CALLBACK CAudioPump::StartThread(LPVOID pvContext)
+DWORD CALLBACK CAudioPump::ThreadEntry(LPVOID pvContext)
 {
-	CAudioPump *pThis = (CAudioPump*)pvContext;
-	return pThis->ThreadProc();
+	return ((CAudioPump*)pvContext)->ThreadProc();
 }
 
+// CAudioPump::ThreadProc
+// Reconstructed from 5960 retail XBE @ 0x62c90. Waits on the quit event
+// plus every segment event, then on quit or the lock. Quit stops playback
+// and ends the thread. Holding the lock: nothing to do when stopped; while
+// buffering the next segment in order is filled; once draining with no
+// filled segments left it stops and runs OnAudioEnd; otherwise the first
+// signaled segment is refilled. The lock is let go before waiting again.
+// 5960 also clears a segment's filled mark and drops the count when it
+// comes round; Theseus doesn't (see the doc).
 DWORD CAudioPump::ThreadProc()
 {
-    const HANDLE ahMutex[] = { m_terminateEvent, m_mutex };
-    HANDLE* ahNotify = new HANDLE[1 + m_segmentsPerBuffer];
-    if(!ahNotify){
-        return -1;
-    }
-    int nBuffer;
-    bool fMutex = false;
-    DWORD dwWaitObj;
+	HANDLE* waitList = new HANDLE [m_segments + 1];
+	if (waitList == NULL)
+		return (DWORD)-1;
 
-    ahNotify[0] = m_terminateEvent;
+	waitList[0] = m_quit;
+	for (int i = 0; i < m_segments; i++)
+		waitList[i + 1] = m_segmentEvents[i];
 
-    for (int i = 0; i < m_segmentsPerBuffer; i++)
-    {
-        ahNotify[i + 1] = m_notifyEvents[i];
-    }
-
+	const HANDLE quitOrLock[] = { m_quit, m_lock };
+	bool locked = false;
 	for (;;)
 	{
-		if (fMutex)
-        {
-            ReleaseMutex(m_mutex);
-            fMutex = false;
-        }
+		if (locked)
+		{
+			ReleaseMutex(m_lock);
+			locked = false;
+		}
 
-        dwWaitObj = WaitForMultipleObjects(1 + m_segmentsPerBuffer, ahNotify, FALSE, INFINITE);
-		if (dwWaitObj == WAIT_OBJECT_0)
-        {
-            break;
-        }
-
-        dwWaitObj = WaitForMultipleObjects(2, ahMutex, FALSE, INFINITE);
-		if (dwWaitObj == WAIT_OBJECT_0)
-        {
+		if (WaitForMultipleObjects(m_segments + 1, waitList, FALSE, INFINITE) == WAIT_OBJECT_0)
 			break;
-        }
+		if (WaitForMultipleObjects(2, quitOrLock, FALSE, INFINITE) == WAIT_OBJECT_0)
+			break;
+		locked = true;
 
-        fMutex = true;
+		if (m_state == PUMP_STOPPED)
+			continue;
 
-        if (m_pumpState == PUMPSTATE_STOPPED)
-        {
-            continue;
-        }
+		if (m_state == PUMP_BUFFERING)
+		{
+			FillBuffer(m_filled);
+			continue;
+		}
 
-        if (m_pumpState == PUMPSTATE_BUFFERING)
-        {
-            FillBuffer(m_filledBuffers);
-            continue;
-        }
+		if (m_state == PUMP_DRAINING && m_filled <= 0)
+		{
+			Stop();
+			OnAudioEnd();
+			continue;
+		}
 
-        if ((m_pumpState == PUMPSTATE_STOPPING) && (m_filledBuffers <= 0))
-        {
-            Stop();
-			OnAudioEnd();  // check if smthng to be done at the end of the play,
-						   // eg. change track to the next one for the CD player
-            continue;
-        }
-
-        int i;
-        for (i = 0; i < m_segmentsPerBuffer; i++)
-        {
-            if (WAIT_OBJECT_0 == WaitForSingleObject(m_notifyEvents[i], 0))
-            {
-                nBuffer = i;
-
-                break;
-            }
-        }
-
-        if (i >= m_segmentsPerBuffer)
-        {
-            continue;
-        }
-
-        // We start the ball rolling by signaled all events. This
-        // wakes us enough times that we can fill up all our buffers.
-        // But, a side effect is that we get a bunch of false
-        // signals. When we are playing very short audio clips, there may
-        // actually be more false signals than there is data to play.
-        // To keep this case from confusing us, we need to keep track
-        // of which buffers actually have data in them.
-        //
-        // The m_bufferFilled array keeps track of which buffers are
-        // actually  filled. This allows us to distinguish the initial
-        // false signals from the normal signals.
-
-		FillBuffer(nBuffer);
+		int seg = 0;
+		while (seg < m_segments && WaitForSingleObject(m_segmentEvents[seg], 0) != WAIT_OBJECT_0)
+			seg++;
+		if (seg < m_segments)
+			FillBuffer(seg);
 	}
 
-    Stop();
-
-    if (fMutex)
-    {
-        ReleaseMutex(m_mutex);
-    }
-
-    if(ahNotify){
-        delete [] ahNotify;
-    }
-
+	Stop();
+	if (locked)
+		ReleaseMutex(m_lock);
+	delete [] waitList;
 	return 0;
 }
 
+// CAudioPump::Initialize(stack, format, segmentBytes, segments, prebuffer)
+// Reconstructed from 5960 retail XBE @ 0x62de0. Keeps the segment size and
+// byte rate, makes one manual reset event per segment, an auto reset quit
+// event, the lock and the worker thread, then a buffer of segments *
+// segmentBytes with position notify, volume and frequency control. Each
+// segment's event fires a block before its end. Theseus reports which step
+// failed instead of a bool.
 HRESULT CAudioPump::Initialize(DWORD dwStackSize, WAVEFORMATEX* pWaveFormat, int nBufferBytes, int nSegmentsPerBuffer, int nPrebufferSegments)
 {
-
 	m_bytesPerSecond = pWaveFormat->nAvgBytesPerSec;
 	m_bufferBytes = nBufferBytes;
+	m_segments = nSegmentsPerBuffer;
+	m_prebuffer = nPrebufferSegments;
 
-    m_segmentsPerBuffer = nSegmentsPerBuffer;
-    m_prebufferSegments = nPrebufferSegments;
+	m_segmentEvents = new HANDLE [m_segments];
+	if (m_segmentEvents == NULL)
+		return E_OUTOFMEMORY;
+	for (int i = 0; i < m_segments; i++)
+		m_segmentEvents[i] = NULL;
 
-    ASSERT((m_prebufferSegments <= m_segmentsPerBuffer));
-
-    m_notifyEvents = new HANDLE[m_segmentsPerBuffer];
-    if(m_notifyEvents == NULL)
-	{
-        return E_OUTOFMEMORY;
-    }
-
-    int i;
-    for (i = 0; i < m_segmentsPerBuffer; i++)
-    {
-        m_notifyEvents[i] = NULL;
-    }
-
-	m_terminateEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-	ASSERT(	m_terminateEvent != INVALID_HANDLE_VALUE);
-	if(m_terminateEvent == INVALID_HANDLE_VALUE)
-	{
+	m_quit = CreateEvent(NULL, FALSE, FALSE, NULL);
+	if (m_quit == INVALID_HANDLE_VALUE)
 		return ERROR_INVALID_HANDLE;
-	}
-
-    m_mutex = CreateMutex(NULL, FALSE, NULL);
-	ASSERT(m_mutex != INVALID_HANDLE_VALUE );
-	if(m_mutex == INVALID_HANDLE_VALUE)
-	{
+	m_lock = CreateMutex(NULL, FALSE, NULL);
+	if (m_lock == INVALID_HANDLE_VALUE)
 		return ERROR_INVALID_HANDLE;
-	}
-
-    for (i = 0; i < m_segmentsPerBuffer; i++)
-    {
-	    m_notifyEvents[i] = CreateEvent(NULL, TRUE, FALSE, NULL);
-		if(m_notifyEvents[i] == INVALID_HANDLE_VALUE)
-		{
+	for (int i = 0; i < m_segments; i++)
+	{
+		m_segmentEvents[i] = CreateEvent(NULL, TRUE, FALSE, NULL);
+		if (m_segmentEvents[i] == INVALID_HANDLE_VALUE)
 			return E_OUTOFMEMORY;
-		}
-    }
-
-    m_bufferFilled = new bool[m_segmentsPerBuffer];
-    if(!m_bufferFilled){
-        return E_OUTOFMEMORY;
-    }
-
-	DWORD dwThreadId;
-	m_playThread = CreateThread(NULL, dwStackSize, StartThread, this, 0, &dwThreadId);
-
-	ASSERT(m_playThread!= INVALID_HANDLE_VALUE);
-	if(m_playThread == INVALID_HANDLE_VALUE)
-	{
-		return ERROR_INVALID_HANDLE;
 	}
 
-	HRESULT hr = DSoundManager::Instance()->DSoundCreateSoundBuffer(pWaveFormat, m_segmentsPerBuffer * m_bufferBytes, DSBCAPS_CTRLPOSITIONNOTIFY | DSBCAPS_CTRLVOLUME | DSBCAPS_CTRLFREQUENCY, &m_dsBuffer);
-
-    if (m_dsBuffer == NULL)
-	{
-		DbgPrint("CAudioPump::Initialize - fail to create sound buffer");
-		return hr;
-	}
-
-	// Wire each segment boundary to its corresponding notify event so the
-	// pump thread wakes up exactly when a buffer slot is ready to be refilled.
-	DSBPOSITIONNOTIFY* dsbpn = new DSBPOSITIONNOTIFY[m_segmentsPerBuffer];
-	if (dsbpn == NULL)
+	m_segmentFilled = new bool [m_segments];
+	if (m_segmentFilled == NULL)
 		return E_OUTOFMEMORY;
 
-	for (i = 0; i < m_segmentsPerBuffer; i++)
+	DWORD id;
+	m_worker = CreateThread(NULL, dwStackSize, ThreadEntry, this, 0, &id);
+	if (m_worker == INVALID_HANDLE_VALUE)
+		return ERROR_INVALID_HANDLE;
+
+	DSoundManager* ds = DSoundManager::Instance();
+	HRESULT hr = ds->DSoundCreateSoundBuffer(pWaveFormat, m_segments * m_bufferBytes,
+		DSBCAPS_CTRLPOSITIONNOTIFY | DSBCAPS_CTRLVOLUME | DSBCAPS_CTRLFREQUENCY, &m_dsBuffer);
+	if (m_dsBuffer == NULL)
+		return hr;
+
+	DSBPOSITIONNOTIFY* marks = new DSBPOSITIONNOTIFY [m_segments];
+	if (marks == NULL)
+		return E_OUTOFMEMORY;
+	for (int i = 0; i < m_segments; i++)
 	{
-		dsbpn[i].dwOffset      = m_bufferBytes * (i + 1) - pWaveFormat->nBlockAlign;
-		dsbpn[i].hEventNotify  = m_notifyEvents[i];
+		marks[i].dwOffset = (i + 1) * m_bufferBytes - pWaveFormat->nBlockAlign;
+		marks[i].hEventNotify = m_segmentEvents[i];
 	}
-
-	hr = DSoundManager::Instance()->DSoundSetSoundBufferNotify(m_dsBuffer, m_segmentsPerBuffer, dsbpn);
-	if (FAILED(hr))
-		DbgPrint("CAudioPump::Initialize - fail to set sound buffer notify");
-
-	delete [] dsbpn;
+	hr = ds->DSoundSetSoundBufferNotify(m_dsBuffer, m_segments, marks);
+	delete [] marks;
 	return hr;
 }
 
-bool CAudioPump::Play(bool bLoop/*=false*/)
+// Theseus's Play: under the lock, stop, then start buffering with every
+// segment event set so the worker fills them all, fill the prebuffer
+// segments here, and start the ring looping.
+bool CAudioPump::Play(bool bLoop)
 {
-    m_loop = bLoop;
-
+	m_loop = bLoop;
 	if (m_dsBuffer == NULL)
 		return false;
 
-    WaitForSingleObject(m_mutex, INFINITE);
-
-    Stop();
-
-    m_pumpState = PUMPSTATE_BUFFERING;
-
-    int i;
-    for (i = 0; i < m_segmentsPerBuffer; i++)
-    {
-        SetEvent(m_notifyEvents[i]);
-        m_bufferFilled[i] = false;
-    }
-
-	for (i = 0; i < m_prebufferSegments; i++)
-    {
-        FillBuffer(i);
-    }
-
-	VERIFYHR(m_dsBuffer->Play(0, 0, DSBPLAY_LOOPING));
-
-    ReleaseMutex(m_mutex);
-
+	WaitForSingleObject(m_lock, INFINITE);
+	Stop();
+	m_state = PUMP_BUFFERING;
+	for (int i = 0; i < m_segments; i++)
+	{
+		SetEvent(m_segmentEvents[i]);
+		m_segmentFilled[i] = false;
+	}
+	for (int i = 0; i < m_prebuffer; i++)
+		FillBuffer(i);
+	m_dsBuffer->Play(0, 0, DSBPLAY_LOOPING);
+	ReleaseMutex(m_lock);
 	return true;
 }
 
+// CAudioPump::Stop
+// Reconstructed from 5960 retail XBE @ 0x62fe0. Under the lock: stop,
+// rewind, let DirectSound catch up, clear every segment event, and reset
+// the counters to stopped.
 void CAudioPump::Stop()
 {
 	if (m_dsBuffer == NULL)
 		return;
 
-    WaitForSingleObject(m_mutex, INFINITE);
-
-	VERIFYHR(m_dsBuffer->Stop());
-	VERIFYHR(m_dsBuffer->SetCurrentPosition(0));
-
-    DirectSoundDoWork();
-
-    int i;
-    for (i = 0; i < m_segmentsPerBuffer; i++)
-    {
-        ResetEvent(m_notifyEvents[i]);
-    }
-
-	m_completedBuffers = 0;
-    m_filledBuffers = 0;
-    m_pumpState = PUMPSTATE_STOPPED;
-
-    ReleaseMutex(m_mutex);
+	WaitForSingleObject(m_lock, INFINITE);
+	m_dsBuffer->Stop();
+	m_dsBuffer->SetCurrentPosition(0);
+	DirectSoundDoWork();
+	for (int i = 0; i < m_segments; i++)
+		ResetEvent(m_segmentEvents[i]);
+	m_wraps = 0;
+	m_filled = 0;
+	m_state = PUMP_STOPPED;
+	ReleaseMutex(m_lock);
 }
 
+// CAudioPump::Pause(pause)
+// Reconstructed from 5960 retail XBE @ 0x63060: flag and buffer under the
+// lock. 5960 calls IDirectSoundBuffer_Pause; Theseus stops and replays.
 void CAudioPump::Pause(bool bPause)
 {
 	if (m_dsBuffer == NULL)
 		return;
 
-    WaitForSingleObject(m_mutex, INFINITE);
-
+	WaitForSingleObject(m_lock, INFINITE);
+	m_paused = bPause;
 	if (bPause)
-	{
-		m_paused = true;
-		VERIFYHR(m_dsBuffer->Stop());
-	}
+		m_dsBuffer->Stop();
 	else
-	{
-		m_paused = false;
-		VERIFYHR(m_dsBuffer->Play(0, 0, DSBPLAY_LOOPING));
-	}
-
-    ReleaseMutex(m_mutex);
+		m_dsBuffer->Play(0, 0, DSBPLAY_LOOPING);
+	ReleaseMutex(m_lock);
 }
 
 bool CAudioPump::IsPlaying()
 {
-	return (PUMPSTATE_STOPPED != m_pumpState);
+	return m_state != PUMP_STOPPED;
 }
 
-bool CAudioPump::FillBuffer(int nBuffer)
+// CAudioPump::FillBuffer(segment)
+// Reconstructed from 5960 retail XBE @ 0x630d0. Under the lock: clear the
+// segment's event, lock its bytes and ask GetData for them (nothing once
+// draining). A short read means the sound is ending: drain, and zero the
+// rest. A segment that got data is marked filled and counted; when
+// buffering has filled the whole ring the pump is running. True when
+// there was data.
+bool CAudioPump::FillBuffer(int nSegment)
 {
-	int nBytes;
+	WaitForSingleObject(m_lock, INFINITE);
+	ResetEvent(m_segmentEvents[nSegment]);
 
-    ASSERT(m_dsBuffer != NULL);
+	void* data;
+	DWORD bytes;
+	m_dsBuffer->Lock(nSegment * m_bufferBytes, m_bufferBytes, &data, &bytes, NULL, NULL, 0);
 
-	LPVOID pvBuffer;
-	DWORD dwBufferLength;
+	int got = (m_state == PUMP_DRAINING) ? 0 : GetData((BYTE*)data, m_bufferBytes);
+	if (got < m_bufferBytes)
+	{
+		m_state = PUMP_DRAINING;
+		int keep = got > 0 ? got : 0;
+		ZeroMemory((BYTE*)data + keep, m_bufferBytes - keep);
+	}
 
-    WaitForSingleObject(m_mutex, INFINITE);
+	m_dsBuffer->Unlock(data, bytes, NULL, 0);
 
-    ResetEvent(m_notifyEvents[nBuffer]);
+	if (got > 0)
+	{
+		m_segmentFilled[nSegment] = true;
+		m_filled++;
+		if (m_state == PUMP_BUFFERING && m_filled >= m_segments)
+			m_state = PUMP_RUNNING;
+	}
 
-	VERIFYHR(m_dsBuffer->Lock(nBuffer * m_bufferBytes, m_bufferBytes, &pvBuffer, &dwBufferLength, NULL, NULL, 0L));
-	ASSERT(dwBufferLength == (DWORD)m_bufferBytes);
-
-	if (PUMPSTATE_STOPPING == m_pumpState)
-    {
-        nBytes = 0;
-    }
-    else
-    {
-        nBytes = GetData((BYTE*)pvBuffer, m_bufferBytes);
-    }
-
-	if (nBytes < m_bufferBytes)
-    {
-        m_pumpState = PUMPSTATE_STOPPING;
-
-        if (nBytes > 0)
-        {
-		    ZeroMemory(((BYTE*)pvBuffer) + nBytes, m_bufferBytes - nBytes);
-        }
-        else
-        {
-		    ZeroMemory(pvBuffer, m_bufferBytes);
-        }
-    }
-
-	VERIFYHR(m_dsBuffer->Unlock(pvBuffer, dwBufferLength, NULL, 0));
-
-    if (nBytes > 0)
-    {
-        m_bufferFilled[nBuffer] = true;
-        m_filledBuffers++;
-
-        if (PUMPSTATE_BUFFERING == m_pumpState)
-        {
-            if(m_filledBuffers >= m_segmentsPerBuffer)
-            {
-                m_pumpState = PUMPSTATE_RUNNING;
-            }
-        }
-    }
-
-    ReleaseMutex(m_mutex);
-
-	return nBytes > 0;
+	ReleaseMutex(m_lock);
+	return got > 0;
 }
 
+// CAudioPump::GetPlaybackTime
+// Reconstructed from 5960 retail XBE @ 0x631c0. The cursor going backwards
+// means it went round the ring once more:
+//     if (cursor < last) wraps++; last = cursor;
+//     return (wraps * segments * segmentBytes + cursor) / bytesPerSecond;
 float CAudioPump::GetPlaybackTime()
 {
 	if (m_dsBuffer == NULL)
 		return 0.0f;
 
-	DWORD dwPlayCursor;
-	VERIFYHR(m_dsBuffer->GetCurrentPosition(&dwPlayCursor, NULL));
+	DWORD cursor;
+	m_dsBuffer->GetCurrentPosition(&cursor, NULL);
+	if (cursor < m_lastCursor)
+		m_wraps++;
+	m_lastCursor = cursor;
 
-    if( dwPlayCursor < m_prevCursor )
-    {
-        m_completedBuffers++;
-    }
-
-    m_prevCursor = dwPlayCursor;
-
-    return (float)(m_completedBuffers * ( m_bufferBytes * m_segmentsPerBuffer ) + dwPlayCursor) / m_bytesPerSecond;
+	return (float)(m_wraps * (m_bufferBytes * m_segments) + cursor) / m_bytesPerSecond;
 }
 
+// A stream doesn't know its length; subclasses that do override this.
 float CAudioPump::GetPlaybackLength()
 {
 	return 0.0f;
 }
 
 // =========================================================================
-// CFilePump: WAV file streaming via CAudioPump
+// CFilePump
 // =========================================================================
 
+// Reconstructed from 5960 retail XBE @ 0x63220: no file yet.
 CFilePump::CFilePump()
 {
-	m_buffer = NULL;
 	m_file = INVALID_HANDLE_VALUE;
-	m_startPos = 0;
-    m_bufferSize = 0;
+	m_dataStart = 0;
+	m_lastBlock = NULL;
+	m_blockBytes = 0;
 }
 
+// Reconstructed from 5960 retail XBE @ 0x63290: close the file.
 CFilePump::~CFilePump()
 {
 	if (m_file != INVALID_HANDLE_VALUE)
 		CloseHandle(m_file);
 }
 
+// CFilePump::Initialize(file, dataBytes, format)
+// Reconstructed from 5960 retail XBE @ 0x632b0. Segments are the most
+// whole blocks that fit in 8 KB; the pump gets an 8 KB stack. The pump
+// takes the open file, works out the length in seconds and remembers where
+// the samples start.
 HRESULT CFilePump::Initialize(HANDLE hFile, int nFileBytes, WAVEFORMATEX* pFormat)
 {
-	HRESULT hr = S_OK;
-    m_bufferSize = (0x2000/pFormat->nBlockAlign) * pFormat->nBlockAlign;
+	m_blockBytes = (0x2000 / pFormat->nBlockAlign) * pFormat->nBlockAlign;
 
-	hr = CAudioPump::Initialize(8192, pFormat, m_bufferSize);
+	HRESULT hr = CAudioPump::Initialize(0x2000, pFormat, m_blockBytes);
 	if (FAILED(hr))
-	{
-		DbgPrint("CFilePump::Initialize - fail to init CAudioPump");
 		return hr;
-	}
 
 	m_file = hFile;
-	m_playbackLength = (float)nFileBytes / m_bytesPerSecond;
-	m_startPos = SetFilePointer(m_file, 0, NULL, FILE_CURRENT);
-
+	m_seconds = (float)nFileBytes / m_bytesPerSecond;
+	m_dataStart = SetFilePointer(m_file, 0, NULL, FILE_CURRENT);
 	return hr;
 }
 
+// Stop and wind the file back to the first sample.
 void CFilePump::Stop()
 {
 	if (m_file == INVALID_HANDLE_VALUE)
 		return;
-
 	CAudioPump::Stop();
-
-	SetFilePointer(m_file, m_startPos, NULL, FILE_BEGIN);
+	SetFilePointer(m_file, m_dataStart, NULL, FILE_BEGIN);
 }
 
-float CFilePump::GetPlaybackLength() { return m_playbackLength; }
-void* CFilePump::GetSampleBuffer() { return m_buffer; }
-DWORD CFilePump::GetSampleBufferSize() { return m_bufferSize; }
+float CFilePump::GetPlaybackLength()
+{
+	return m_seconds;
+}
 
+void* CFilePump::GetSampleBuffer()
+{
+	return m_lastBlock;
+}
+
+DWORD CFilePump::GetSampleBufferSize()
+{
+	return m_blockBytes;
+}
+
+// Reads the next block. When looping, a short read wraps to the first
+// sample and tops the block up. -1 on a read error.
 int CFilePump::GetData(BYTE* pbBuffer, int cbBuffer)
 {
-	DWORD dwRead;
-
-	if (!ReadFile(m_file, pbBuffer, cbBuffer, &dwRead, NULL))
-	{
-		DbgPrint("CFilePump::GetData ReadFile failed (%d)\n", GetLastError());
+	DWORD got;
+	if (!ReadFile(m_file, pbBuffer, cbBuffer, &got, NULL))
 		return -1;
-	}
 
-	if (m_loop && dwRead != (DWORD)cbBuffer)
+	if (m_loop && got != (DWORD)cbBuffer)
 	{
-		SetFilePointer(m_file, m_startPos, NULL, FILE_BEGIN);
-
-		DWORD dwRead2;
-		if (!ReadFile(m_file, pbBuffer + dwRead, cbBuffer - dwRead, &dwRead2, NULL))
-		{
-			DbgPrint("CFilePump::GetData ReadFile failed (%d)\n", GetLastError());
+		SetFilePointer(m_file, m_dataStart, NULL, FILE_BEGIN);
+		DWORD more;
+		if (!ReadFile(m_file, pbBuffer + got, cbBuffer - got, &more, NULL))
 			return -1;
-		}
-
-		dwRead += dwRead2;
+		got += more;
 	}
 
-	m_buffer = pbBuffer;
-
-	return (int)dwRead;
+	m_lastBlock = pbBuffer;
+	return (int)got;
 }
 
 // =========================================================================
-// CMP3Pump: streaming MP3 decode via minimp3
+// CMP3Pump: Theseus's soundtrack decoder, not in 5960
 // =========================================================================
 
 extern void mp3dec_init_s(mp3dec_t* dec);
@@ -831,8 +740,9 @@ int CMP3Pump::GetData(BYTE* pbBuffer, int cbBuffer)
 	return bytesWritten;
 }
 
+
 // =========================================================================
-// CAudioClip: XAP AudioClip node
+// CAudioClip
 // =========================================================================
 
 IMPLEMENT_NODE("AudioClip", CAudioClip, CTimeDepNode)
@@ -861,77 +771,78 @@ START_NODE_FUN(CAudioClip, CTimeDepNode)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-CAudioClip::CAudioClip() :
-	m_fade(0.0f),
-	m_volume(1.0f),
-	m_pan(0.0f),
-	m_frequency(0.0f),
-	m_url(NULL),
-	m_transportMode(TRANSPORT_STOP)
+// CAudioClip::CAudioClip
+// Reconstructed from 5960 retail XBE @ 0x61890: invisible, full volume,
+// centered, recorded rate, no fade, no url, stopped, and dirty so the
+// first use loads the sound. The last applied volume starts at 1.
+CAudioClip::CAudioClip()
 {
+	m_visible = false;
+	m_url = NULL;
+	m_capturedLoop = false;
+	m_sendProgress = false;
+	m_pause_on_moving = false;
+	m_progress = 0.0f;
 	m_removeVoice = false;
-    m_sendProgress = false;
-    m_pause_on_moving = false;
-    m_unpauseNeeded = false;
-	m_progress = 0;
-
-	m_dirty = true;
+	m_transportMode = TRANSPORT_STOP;
 	m_lastTransportMode = -1;
+	m_dirty = true;
+	m_unpauseNeeded = false;
 	m_lastVolume = 1.0f;
 	m_lastPan = 0.0f;
 	m_lastFrequency = 0.0f;
-
+	m_fade = 0.0f;
+	m_volume = 1.0f;
+	m_pan = 0.0f;
+	m_frequency = 0.0f;
 	m_sound = NULL;
-	m_visible = false;
-	m_capturedLoop = false;
 }
 
+// Reconstructed from 5960 retail XBE @ 0x61940: stop and drop the sound,
+// free the url.
 CAudioClip::~CAudioClip()
 {
 	Cleanup();
 	delete [] m_url;
 }
 
+// CAudioClip::OnSetProperty
+// Reconstructed from 5960 retail XBE @ 0x619f0. With a fade set, a new
+// volume or pan isn't stored; a lerper glides the field there over fade
+// seconds instead (replacing any running one on this clip). A new url
+// marks the clip dirty, and isActive starts or stops it. Theseus also
+// takes sendProgress here.
 bool CAudioClip::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
-	if (PTR2INT(pprd->pbOffset) == offsetof(m_sendProgress))
+	int field = PTR2INT(pprd->pbOffset);
+
+	if (field == offsetof(m_sendProgress))
+		m_sendProgress = *(const bool*)pvValue;
+
+	if ((field == offsetof(m_volume) || field == offsetof(m_pan)) && m_fade != 0.0f)
 	{
-		m_sendProgress = *(bool*)pvValue;
+		float* target = (field == offsetof(m_volume)) ? &m_volume : &m_pan;
+		float value = *(const float*)pvValue;
+		CLerper::RemoveObject(this);
+		new CLerper(this, target, value, m_fade);
+		return false;
 	}
 
-	if (PTR2INT(pprd->pbOffset) == offsetof(m_volume))
-	{
-		if (m_fade != 0.0f)
-		{
-			float volume = *(float*)pvValue;
-			CLerper::RemoveObject(this);
-			new CLerper(this, &m_volume, volume, m_fade);
-			return false;
-		}
-	}
-	if (PTR2INT(pprd->pbOffset) == offsetof(m_pan))
-	{
-		if (m_fade != 0.0f)
-		{
-			float pan = *(float*)pvValue;
-			CLerper::RemoveObject(this);
-			new CLerper(this, &m_pan, pan, m_fade);
-			return false;
-		}
-	}
-	else if (PTR2INT(pprd->pbOffset) == offsetof(m_url))
+	if (field == offsetof(m_url))
 	{
 		m_dirty = true;
 	}
-	else if (PTR2INT(pprd->pbOffset) == offsetof(m_isActive))
+	else if (field == offsetof(m_isActive))
 	{
-		m_isActive = *(bool*)pvValue;
+		m_isActive = *(const bool*)pvValue;
 		OnIsActiveChanged();
 	}
-
 	return true;
 }
 
+// CAudioClip::OnIsActiveChanged
+// Reconstructed from 5960 retail XBE @ 0x61ae0: load if dirty, then Play
+// when active, Stop when not.
 void CAudioClip::OnIsActiveChanged()
 {
 	if (m_dirty)
@@ -943,11 +854,12 @@ void CAudioClip::OnIsActiveChanged()
 		Stop();
 }
 
-
+// CAudioClip::Cleanup
+// Reconstructed from 5960 retail XBE @ 0x61b40: Stop, delete the sound,
+// and forget the volume, pan and rate last applied.
 HRESULT CAudioClip::Cleanup()
 {
 	Stop();
-
 	delete m_sound;
 	m_sound = NULL;
 	m_lastVolume = 1.0f;
@@ -956,22 +868,20 @@ HRESULT CAudioClip::Cleanup()
 	return S_OK;
 }
 
-
-
+// CAudioClip::Initialize
+// Reconstructed from 5960 retail XBE @ 0x61ba0. Drops the old sound and
+// clears dirty. An empty url plays nothing. Then by url: "cd:" is an audio
+// CD track, "st:" a soundtrack song, and otherwise the extension picks the
+// loader. 5960 plays CDs and WMA soundtracks and files; Theseus has no CD
+// playback, streams soundtrack MP3s and loads only .wav files here.
 HRESULT CAudioClip::Initialize()
 {
-	ASSERT(m_dirty);
-
-	// Drop any prior sound buffer before we wire a new one in.
 	Cleanup();
 	m_dirty = false;
 
 	if (m_url == NULL || m_url[0] == 0)
 		return S_FALSE;
 
-	// Dispatch on URL scheme: cd:* (legacy CD playback, removed),
-	// st:<id> (MP3 soundtrack streamed from disk), or any other path
-	// is treated as a sample-based wave file.
 	if (_tcsnicmp(m_url, _T("cd:"), 3) == 0)
 	{
 		DbgPrint("CD playback not supported\n");
@@ -984,202 +894,138 @@ HRESULT CAudioClip::Initialize()
 		return S_OK;
 	}
 
-	{
-		char dbgUrl[256];
-		WideCharToMultiByte(CP_ACP, 0, m_url, -1, dbgUrl, sizeof(dbgUrl), NULL, NULL);
-		DbgPrint("[AudioClip] url = \"%s\"\n", dbgUrl);
-	}
+	char narrowUrl[256];
+	WideCharToMultiByte(CP_ACP, 0, m_url, -1, narrowUrl, sizeof(narrowUrl), NULL, NULL);
+	DbgPrint("[AudioClip] url = \"%s\"\n", narrowUrl);
 
 	const TCHAR* ext = _tcsrchr(m_url, '.');
 	if (ext != NULL && _tcsicmp(ext + 1, _T("wav")) == 0)
-	{
 		OpenWaveFile();
-	}
 	else
-	{
-		char dbgUrl[256];
-		WideCharToMultiByte(CP_ACP, 0, m_url, -1, dbgUrl, sizeof(dbgUrl), NULL, NULL);
-		DbgPrint("Invalid AudioClip url: %s\n", dbgUrl);
-	}
+		DbgPrint("Invalid AudioClip url: %s\n", narrowUrl);
 
 	return S_OK;
 }
 
-struct WAVFILE1
+// The RIFF header up to the format chunk's size, and the head of every
+// chunk after it.
+struct RiffWaveHead
 {
-	BYTE riff [4];
-	DWORD dwSize;
-	BYTE wave [4];
-	BYTE fmt [4];
-	DWORD dwFormatSize;
+	char riff[4];
+	DWORD fileBytes;
+	char wave[4];
+	char fmt[4];
+	DWORD formatBytes;
 };
 
-struct WAVFILE2
+struct RiffChunkHead
 {
-	BYTE data [4];
-	DWORD dwDataSize;
+	DWORD id;
+	DWORD bytes;
 };
 
-typedef struct
+static bool TagIs(const char* tag, const char* want)
 {
-    FOURCC  fccChunkId;
-    DWORD   dwDataSize;
-} RIFFHEADER, *LPRIFFHEADER;
+	return tag[0] == want[0] && tag[1] == want[1] && tag[2] == want[2] && tag[3] == want[3];
+}
 
-#ifndef FOURCC_RIFF
-#define FOURCC_RIFF 'FFIR'
-#endif // FOURCC_RIFF
-
-#ifndef FOURCC_WAVE
-#define FOURCC_WAVE 'EVAW'
-#endif // FOURCC_WAVE
-
-#ifndef FOURCC_FORMAT
-#define FOURCC_FORMAT ' tmf'
-#endif // FOURCC_FORMAT
-
-#ifndef FOURCC_DATA
-#define FOURCC_DATA 'atad'
-#endif // FOURCC_DATA
-
+// CAudioClip::OpenWaveFile
+// Reconstructed from 5960 retail XBE @ 0x61d20. Finds the file the url
+// names and checks for "RIFF....WAVEfmt ". The format chunk is read into
+// m_format (as much as fits; the rest is skipped), then chunks are skipped
+// until "data". Up to 64 KB of samples load into a CAudioBuf; anything
+// longer streams from the file through a CFilePump, which then owns it.
 bool CAudioClip::OpenWaveFile()
 {
-	TCHAR szBuf [MAX_PATH];
-	FindFilePath(szBuf, m_url);
-	HANDLE hFile = TheseusCreateFile(szBuf, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-	if (hFile == INVALID_HANDLE_VALUE)
+	TCHAR path[MAX_PATH];
+	FindFilePath(path, m_url);
+	HANDLE file = TheseusCreateFile(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	if (file == INVALID_HANDLE_VALUE)
+		return false;
+
+	DWORD got;
+	RiffWaveHead head;
+	if (!ReadFile(file, &head, sizeof (head), &got, NULL) || got != sizeof (head) ||
+		!TagIs(head.riff, "RIFF") || !TagIs(head.wave, "WAVE") || !TagIs(head.fmt, "fmt "))
 	{
- 	    DbgPrint("\001Cannot open wave file: %s\n", m_url);
+		CloseHandle(file);
 		return false;
 	}
 
-	DWORD dwRead;
-	WAVFILE1 header;
-    RIFFHEADER RiffHeader;
-
-	if (!ReadFile(hFile, &header, sizeof (header), &dwRead, NULL) || dwRead != sizeof (header))
+	ZeroMemory(&m_format, sizeof (m_format));
+	DWORD formatBytes = head.formatBytes < sizeof (m_format) ? head.formatBytes : sizeof (m_format);
+	if (!ReadFile(file, &m_format, formatBytes, &got, NULL) || got != formatBytes)
 	{
-		DbgPrint("\001%s is not a valid wave file...\n", m_url);
-		CloseHandle(hFile);
+		CloseHandle(file);
 		return false;
 	}
+	if (head.formatBytes != formatBytes)
+		SetFilePointer(file, head.formatBytes - formatBytes, 0, FILE_CURRENT);
 
-	if (header.riff[0] != 'R' || header.riff[1] != 'I' || header.riff[2] != 'F' || header.riff[3] != 'F' ||
-		header.wave[0] != 'W' || header.wave[1] != 'A' || header.wave[2] != 'V' || header.wave[3] != 'E' ||
-		header.fmt[0] != 'f' || header.fmt[1] != 'm' || header.fmt[2] != 't' || header.fmt[3] != ' ')
+	DWORD dataBytes = 0;
+	RiffChunkHead chunk;
+	while (ReadFile(file, &chunk, sizeof (chunk), &got, NULL))
 	{
-		DbgPrint("\001%s is not a valid wave file (bad header chunk)\n", m_url);
-		CloseHandle(hFile);
-		return false;
-	}
-
-	DWORD dwFormatSize = header.dwFormatSize;
-	ZeroMemory(&m_format, sizeof(m_format));
-
-	if (dwFormatSize > sizeof(m_format))
-    {
-		dwFormatSize = sizeof(m_format);
-    }
-
-	if (!ReadFile(hFile, &m_format, dwFormatSize, &dwRead, NULL) || dwRead != dwFormatSize)
-	{
-		DbgPrint("\001%s is not a valid wave file (bad format chunk)\n", m_url);
-		CloseHandle(hFile);
-		return false;
-	}
-
-    if (header.dwFormatSize != dwFormatSize)
-    {
-        SetFilePointer(hFile, header.dwFormatSize - dwFormatSize, 0, FILE_CURRENT);
-    }
-
-    DWORD dwDataSize = 0;
-
-    ASSERT(m_format.wfx.wFormatTag == WAVE_FORMAT_PCM || m_format.wfx.wFormatTag == WAVE_FORMAT_XBOX_ADPCM);
-
-	// Walk RIFF chunks until we hit FOURCC_DATA, skipping anything else.
-	for (;;)
-	{
-		if (!ReadFile(hFile, &RiffHeader, sizeof(RiffHeader), &dwRead, NULL))
-			break;
-
-		if (RiffHeader.fccChunkId == FOURCC_DATA)
+		if (chunk.id == 'atad')
 		{
-			dwDataSize = RiffHeader.dwDataSize;
+			dataBytes = chunk.bytes;
 			break;
 		}
-
-		if (!SetFilePointer(hFile, RiffHeader.dwDataSize, 0, FILE_CURRENT))
+		if (!SetFilePointer(file, chunk.bytes, 0, FILE_CURRENT))
 			break;
 	}
-
-    if (dwDataSize == 0)
-    {
-        DbgPrint("\001%s is not a valid wave file (bad data chunk)\n", m_url);
-        CloseHandle(hFile);
-        return false;
-    }
-
-	HRESULT hr = S_OK;
-	ASSERT(m_sound == NULL);
-	if (dwDataSize > 65536)
+	if (dataBytes == 0)
 	{
-		CFilePump* pSound = new CFilePump;
-		m_sound = pSound;
-		hr = pSound->Initialize(hFile, dwDataSize, &m_format.wfx);
-		if (FAILED(hr))
+		CloseHandle(file);
+		return false;
+	}
+
+	if (dataBytes > 65536)
+	{
+		CFilePump* pump = new CFilePump;
+		m_sound = pump;
+		if (FAILED(pump->Initialize(file, dataBytes, &m_format.wfx)))
 		{
-			DbgPrint("Could not initialize CFilePump for %s\n", m_url);
-			CloseHandle(hFile);
-			delete pSound;
+			CloseHandle(file);
+			delete pump;
 			m_sound = NULL;
 			return false;
 		}
-
-		// NOTE: File will be closed by CFilePump when it's done...
+		return true;
 	}
-	else
+
+	m_sound = new CAudioBuf;
+	if (FAILED(m_sound->Initialize(&m_format.wfx, dataBytes)))
 	{
-		m_sound = new CAudioBuf;
-		hr = m_sound->Initialize(&m_format.wfx, dwDataSize);
-		if(FAILED(hr))
-		{
-			DbgPrint("Could not initialize CAudioBuf for %s\n", m_url);
-			CloseHandle(hFile);
-			delete m_sound;
-			m_sound = NULL;
-			return false;
-		}
-
-		void* pvBuffer = m_sound->Lock();
-		bool bError = !ReadFile(hFile, pvBuffer, dwDataSize, &dwRead, NULL) || dwRead != dwDataSize;
-		m_sound->Unlock(pvBuffer);
-
-		CloseHandle(hFile);
-
-		if (bError)
-		{
-			DbgPrint("\001%s is not a valid wave file...\n", m_url);
-			delete m_sound;
-			m_sound = NULL;
-
-			return false;
-		}
+		CloseHandle(file);
+		delete m_sound;
+		m_sound = NULL;
+		return false;
 	}
 
+	void* samples = m_sound->Lock();
+	bool bad = !ReadFile(file, samples, dataBytes, &got, NULL) || got != dataBytes;
+	m_sound->Unlock(samples);
+	CloseHandle(file);
+
+	if (bad)
+	{
+		delete m_sound;
+		m_sound = NULL;
+		return false;
+	}
 	return true;
 }
 
-// MP3 soundtrack via streaming pump (CMP3Pump). The pump owns the file
-// data and runs decode on its worker thread; no full-song PCM ever lives
-// in RAM.
+// Theseus: st:<id> is a song from music_collection.cpp's MP3 scan,
+// decoded on the pump's thread so the song never sits in RAM as PCM.
 extern const char* MusicCollection_FindSongByID(int songID);
 
 bool CAudioClip::OpenMP3Soundtrack()
 {
-	int songID = _ttoi(m_url + 3); // skip "st:"
+	int songID = _ttoi(m_url + 3);
 	const char* songPath = MusicCollection_FindSongByID(songID);
-	if (!songPath)
+	if (songPath == NULL)
 	{
 		DbgPrint("[AudioClip] st: song ID %d not found\n", songID);
 		return false;
@@ -1187,53 +1033,63 @@ bool CAudioClip::OpenMP3Soundtrack()
 
 	DbgPrint("[AudioClip] Loading MP3: %s\n", songPath);
 
-	ASSERT(m_sound == NULL);
-	CMP3Pump* pPump = new CMP3Pump;
-	m_sound = pPump;
-
-	HRESULT hr = pPump->Initialize(songPath);
-	if (FAILED(hr))
+	CMP3Pump* pump = new CMP3Pump;
+	m_sound = pump;
+	if (FAILED(pump->Initialize(songPath)))
 	{
 		DbgPrint("[AudioClip] CMP3Pump init failed for %s\n", songPath);
-		delete pPump;
+		delete pump;
 		m_sound = NULL;
 		return false;
 	}
-
 	return true;
 }
 
+// Fraction of the sound played, 0 when the length isn't known.
+static float PlayedFraction(CAudioBuf* sound)
+{
+	float length = sound->GetPlaybackLength();
+	return length != 0.0f ? sound->GetPlaybackTime() / length : 0.0f;
+}
+
+// CAudioClip::Advance(seconds)
+// Reconstructed from 5960 retail XBE @ 0x62050. Loads if dirty. With
+// pause_on_moving and a sound that isn't muted, a level change pauses it
+// (and skips the rest of the frame) and the end of one resumes it. After
+// the time-dependent base advance it publishes removeVoice. With no sound
+// the clip is inactive and stopped. While active it applies volume
+// changes, pausing at zero volume and resuming when it comes back, plus
+// pan and rate; sends OnProgressChanged when sendProgress is on and the
+// fraction moved; and tracks pause and play state, firing OnEndOfAudio
+// when a playing sound stops. Any transport change fires
+// OnTransportModeChanged. 5960 only ends a looping clip when it's also
+// inactive; Theseus ends any that stops, and with sendProgress also one
+// that has played past its length.
 void CAudioClip::Advance(float nSeconds)
 {
-    if (m_dirty)
-        Initialize();
+	if (m_dirty)
+		Initialize();
 
-    // Pause this audio clip if we are in the middle of level transition
-    if (m_pause_on_moving && m_sound && m_volume != 0.0f)
-    {
-        if (g_bLevelTransition)
-        {
-            if (!m_sound->IsPaused())
-            {
-                m_sound->Pause(true);
-                m_unpauseNeeded = true;
-            }
-            return;
-        }
-
-        if (!g_bLevelTransition && m_unpauseNeeded)
-        {
-            if (m_sound->IsPaused())
-            {
-                m_sound->Pause(false);
-            }
-
-            m_unpauseNeeded = false;
-        }
-    }
+	if (m_pause_on_moving && m_sound != NULL && m_volume != 0.0f)
+	{
+		if (g_bLevelTransition)
+		{
+			if (!m_sound->IsPaused())
+			{
+				m_sound->Pause(true);
+				m_unpauseNeeded = true;
+			}
+			return;
+		}
+		if (m_unpauseNeeded)
+		{
+			if (m_sound->IsPaused())
+				m_sound->Pause(false);
+			m_unpauseNeeded = false;
+		}
+	}
 
 	CTimeDepNode::Advance(nSeconds);
-
 	g_removeVoice = m_removeVoice;
 
 	if (m_sound == NULL)
@@ -1246,89 +1102,60 @@ void CAudioClip::Advance(float nSeconds)
 		if (m_volume != m_lastVolume)
 		{
 			if (m_lastVolume == 0.0f && m_transportMode == TRANSPORT_PAUSE)
-			{
-				TRACE(_T("Un-Pausing %s due to non-zero volume...\n"), m_url);
 				Pause();
-			}
-
 			m_lastVolume = m_volume;
-
 			m_sound->SetAttenuation((1.0f - m_volume) * 100.0f);
-
 			if (m_volume == 0.0f && m_transportMode == TRANSPORT_PLAY)
-			{
-				TRACE(_T("Pausing %s due to zero volume...\n"), m_url);
 				Pause();
-			}
 		}
 
 		if (m_pan != m_lastPan)
 		{
 			m_lastPan = m_pan;
-
 			m_sound->SetPan(m_pan);
 		}
 
 		if (m_frequency != m_lastFrequency)
 		{
 			m_lastFrequency = m_frequency;
-
 			m_sound->SetFrequency(m_frequency);
 		}
 
-		// Update the script-visible progress fraction if the clip
-		// has opted in via sendProgress. Skipped by default to avoid
-		// per-frame property writes that would re-fire OnProgressChanged
-		// every Advance.
-        if (m_sendProgress)
+		if (m_sendProgress)
 		{
-			float progress = 0.0f;
-
-			float nLength = m_sound->GetPlaybackLength();
-			if (nLength != 0.0f)
-				progress = m_sound->GetPlaybackTime() / nLength;
-
-			if (progress != m_progress)
+			float fraction = PlayedFraction(m_sound);
+			if (fraction != m_progress)
 			{
-				m_progress = progress;
+				m_progress = fraction;
 				CallFunction(this, _T("OnProgressChanged"));
 			}
 		}
 
+		bool ended = false;
 		if (m_sound->IsPaused())
 		{
 			m_transportMode = TRANSPORT_PAUSE;
 		}
-		else if( m_sound->IsPlaying() )
+		else if (m_sound->IsPlaying())
 		{
 			m_transportMode = TRANSPORT_PLAY;
-
-			if( m_sendProgress )
+			if (m_sendProgress)
 			{
-				float progress = 0.0f;
-				float nLength = m_sound->GetPlaybackLength();
-				if (nLength != 0.0f)
-				{
-					progress = m_sound->GetPlaybackTime();
-				}
-
-				if(progress > nLength)
-				{
-					m_transportMode = TRANSPORT_STOP;
-					m_isActive = false;
-					CallFunction(this, _T("OnEndOfAudio"));
-				}
+				float length = m_sound->GetPlaybackLength();
+				float played = length != 0.0f ? m_sound->GetPlaybackTime() : 0.0f;
+				ended = played > length;
 			}
 		}
 		else
 		{
-			if (m_transportMode == TRANSPORT_PLAY)
-			{
-				m_transportMode = TRANSPORT_STOP;
-				m_isActive = false;
+			ended = m_transportMode == TRANSPORT_PLAY;
+		}
 
-				CallFunction(this, _T("OnEndOfAudio"));
-			}
+		if (ended)
+		{
+			m_transportMode = TRANSPORT_STOP;
+			m_isActive = false;
+			CallFunction(this, _T("OnEndOfAudio"));
 		}
 	}
 
@@ -1339,90 +1166,81 @@ void CAudioClip::Advance(float nSeconds)
 	}
 }
 
+// CAudioClip::PlayOrPause   [script fn 'PlayOrPause', FND 0x00188720, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x62290:
+//     if (transportMode is PLAY or PAUSE) Pause(); else Play();
 void CAudioClip::PlayOrPause()
 {
-	switch (m_transportMode)
-	{
-	case TRANSPORT_PLAY:
-	case TRANSPORT_PAUSE:
+	if (m_transportMode == TRANSPORT_PLAY || m_transportMode == TRANSPORT_PAUSE)
 		Pause();
-		break;
-
-	default:
+	else
 		Play();
-		break;
-	}
 }
 
-void CAudioClip::Play(/*bool bLoop*/)
+// CAudioClip::Play   [script fn 'Play', FND 0x001886a8, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x622b0. Loads if dirty, applies
+// volume, pan and rate, and starts the sound looping when the clip loops;
+// if it started the clip is playing and active.
+void CAudioClip::Play()
 {
 	if (m_dirty)
 		Initialize();
 
 	m_capturedLoop = m_loop;
+	if (m_sound == NULL)
+		return;
 
-	if (m_sound != NULL)
+	m_sound->SetAttenuation((1.0f - m_volume) * 100.0f);
+	m_sound->SetPan(m_pan);
+	m_sound->SetFrequency(m_frequency);
+	if (m_sound->Play(m_capturedLoop))
 	{
-		m_sound->SetAttenuation((1.0f - m_volume) * 100.0f);
-		m_sound->SetPan(m_pan);
-		m_sound->SetFrequency(m_frequency);
-
-		if (m_sound->Play(m_capturedLoop))
-		{
-			m_transportMode = TRANSPORT_PLAY;
-			m_isActive = true;
-		}
-        else DbgPrint("Play failed!\n");
+		m_transportMode = TRANSPORT_PLAY;
+		m_isActive = true;
 	}
-
 }
 
+// CAudioClip::Stop   [script fn 'Stop', FND 0x001886c0, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x62350. Unless already stopped:
+// stop and delete the sound, go inactive and mark dirty so the next play
+// loads it fresh from the start.
 void CAudioClip::Stop()
 {
 	if (m_transportMode == TRANSPORT_STOP)
 		return;
 
 	m_transportMode = TRANSPORT_STOP;
-
 	if (m_sound != NULL)
 		m_sound->Stop();
-
 	delete m_sound;
 	m_sound = NULL;
-
 	m_isActive = false;
-	m_dirty = true; // so audio buffer is re-created and will start over
+	m_dirty = true;
 }
 
+// CAudioClip::Pause   [script fn 'Pause', FND 0x001886d8, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x62390: loads if dirty, then
+// toggles between paused and playing.
 void CAudioClip::Pause()
 {
 	if (m_dirty)
 		Initialize();
 
-	if (m_transportMode == TRANSPORT_PAUSE)
-	{
-		m_transportMode = TRANSPORT_PLAY;
-
-		if (m_sound != NULL)
-			m_sound->Pause(false);
-	}
-	else
-	{
-		m_transportMode = TRANSPORT_PAUSE;
-
-		if (m_sound != NULL)
-			m_sound->Pause(true);
-	}
+	bool pausing = m_transportMode != TRANSPORT_PAUSE;
+	m_transportMode = pausing ? TRANSPORT_PAUSE : TRANSPORT_PLAY;
+	if (m_sound != NULL)
+		m_sound->Pause(pausing);
 }
 
+// CAudioClip::getMinutes / getSeconds   [script fns, FND 0x001886f0 / 0x00188708, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x623e0 / 0x62420: whole seconds
+// played, / 60 or % 60; 0 without a sound.
 int CAudioClip::getMinutes()
 {
 	if (m_dirty)
 		Initialize();
-
 	if (m_sound == NULL)
 		return 0;
-
 	return (int)m_sound->GetPlaybackTime() / 60;
 }
 
@@ -1430,48 +1248,40 @@ int CAudioClip::getSeconds()
 {
 	if (m_dirty)
 		Initialize();
-
 	if (m_sound == NULL)
 		return 0;
-
 	return (int)m_sound->GetPlaybackTime() % 60;
 }
 
+// Theseus: the visualizer reads the block the sound played last.
 void* CAudioClip::GetSampleBuffer()
 {
-	if (m_sound == NULL)
-		return NULL;
-
-	return m_sound->GetSampleBuffer();
+	return m_sound != NULL ? m_sound->GetSampleBuffer() : NULL;
 }
 
 int CAudioClip::GetSampleBufferSize()
 {
-	if (m_sound == NULL)
-		return 0;
-
-	return m_sound->GetSampleBufferSize();
+	return m_sound != NULL ? m_sound->GetSampleBufferSize() : 0;
 }
 
+// Theseus: lets native code point a clip at a file.
 void CAudioClip::SetUrl(const TCHAR* pszAudioFile)
 {
-	if(m_url)
-	{
-		delete [] m_url;
-	}
+	delete [] m_url;
 	m_dirty = true;
-	if(pszAudioFile)
+	if (pszAudioFile != NULL)
 	{
-		m_url = new TCHAR[_tcslen(pszAudioFile)+1];
+		m_url = new TCHAR [_tcslen(pszAudioFile) + 1];
 		_tcscpy(m_url, pszAudioFile);
 	}
-
 }
 
 // =========================================================================
-// CPeriodicAudioGroup: timed random audio clip playback
+// CPeriodicAudioGroup
 // =========================================================================
 
+// Plays its AudioClip children one after another, every period seconds
+// plus up to periodNoise more.
 class CPeriodicAudioGroup : public CGroup
 {
 	DECLARE_NODE(CPeriodicAudioGroup, CGroup)
@@ -1481,13 +1291,13 @@ public:
 	void Advance(float nSeconds);
 
 	bool m_isActive;
-    bool m_pause_on_moving;
+	bool m_pause_on_moving;
 	float m_period;
 	float m_periodNoise;
 
-	XTIME m_timeOfNextEvent;
-	int m_nextClipIndex;
-    CAudioClip* m_currentClip;
+	XTIME m_nextPlay;         // 0 until the next one is scheduled
+	int m_nextChild;          // -1 until a random first pick
+	CAudioClip* m_playing;
 
 	DECLARE_NODE_PROPS()
 };
@@ -1500,72 +1310,66 @@ START_NODE_PROPS(CPeriodicAudioGroup, CGroup)
 	NODE_PROP(pt_number, CPeriodicAudioGroup, periodNoise)
 END_NODE_PROPS()
 
-
-CPeriodicAudioGroup::CPeriodicAudioGroup() :
-	m_isActive(false),
-    m_pause_on_moving(true),
-	m_period(10.0f),
-	m_periodNoise(0.0f)
+// CPeriodicAudioGroup::CPeriodicAudioGroup
+// Reconstructed from 5960 retail XBE @ 0x624a0: invisible, inactive, holds
+// still through level changes, a 10 second period with no noise, nothing
+// scheduled or picked.
+CPeriodicAudioGroup::CPeriodicAudioGroup()
 {
 	m_visible = false;
-
-	m_timeOfNextEvent = 0.0f;
-	m_nextClipIndex = -1;
-    m_currentClip = NULL;
+	m_isActive = false;
+	m_pause_on_moving = true;
+	m_period = 10.0f;
+	m_periodNoise = 0.0f;
+	m_nextPlay = 0.0f;
+	m_nextChild = -1;
+	m_playing = NULL;
 }
 
+// CPeriodicAudioGroup::Advance(seconds)
+// Reconstructed from 5960 retail XBE @ 0x62540. During a level change the
+// clip it started is stopped. Inactive, the schedule is cleared. Otherwise,
+// with children: the first time it picks a random one to start at; with
+// nothing scheduled it schedules now + period + noise; once that time
+// passes it plays the next child (wrapping to the first), if that child is
+// an AudioClip.
 void CPeriodicAudioGroup::Advance(float nSeconds)
 {
 	CGroup::Advance(nSeconds);
 
-    // Stop this background audio group if we are in the middle of level transition
-    if (m_pause_on_moving && g_bLevelTransition)
-    {
-        if (m_currentClip && m_currentClip->IsKindOf(NODE_CLASS(CAudioClip)))
-        {
-            m_currentClip->Stop();
-        }
-
-        return;
-    }
+	if (m_pause_on_moving && g_bLevelTransition)
+	{
+		if (m_playing != NULL && m_playing->IsKindOf(NODE_CLASS(CAudioClip)))
+			m_playing->Stop();
+		return;
+	}
 
 	if (!m_isActive)
 	{
-		m_timeOfNextEvent = 0.0f;
+		m_nextPlay = 0.0f;
 		return;
 	}
 
-	int nChildCount = m_children.GetLength();
-	if (nChildCount == 0)
+	int count = m_children.GetLength();
+	if (count == 0)
 		return;
 
-	if (m_nextClipIndex < 0)
-		m_nextClipIndex = rand() % nChildCount;
+	if (m_nextChild < 0)
+		m_nextChild = rand() % count;
 
-	if (m_timeOfNextEvent == 0.0f)
+	if (m_nextPlay == 0.0f)
 	{
-		m_timeOfNextEvent = TheseusGetNow() + m_period + rnd(m_periodNoise);
-		TRACE(_T("Next clip will play in %0.2f seconds...\n"), m_timeOfNextEvent - TheseusGetNow());
+		m_nextPlay = TheseusGetNow() + m_period + rnd(m_periodNoise);
 		return;
 	}
 
-	if (TheseusGetNow() > m_timeOfNextEvent)
-	{
-		m_timeOfNextEvent = 0.0f;
+	if (TheseusGetNow() <= m_nextPlay)
+		return;
 
-		if (m_nextClipIndex >= nChildCount)
-			m_nextClipIndex = 0;
-
-		m_currentClip = (CAudioClip*)m_children.GetNode(m_nextClipIndex);
-		m_nextClipIndex += 1;
-
-		if (!m_currentClip->IsKindOf(NODE_CLASS(CAudioClip)))
-		{
-			TRACE(_T("CPeriodicAudioGroup: child %d is not an AudioClip!\n"), m_nextClipIndex-1);
-			return;
-		}
-
-		TRACE(_T("CPeriodicAudioGroup: playing clip %d (%s)\n"), m_nextClipIndex-1, m_currentClip->m_url);
-		m_currentClip->Play();
-	}
+	m_nextPlay = 0.0f;
+	if (m_nextChild >= count)
+		m_nextChild = 0;
+	m_playing = (CAudioClip*)m_children.GetNode(m_nextChild++);
+	if (m_playing->IsKindOf(NODE_CLASS(CAudioClip)))
+		m_playing->Play();
 }
