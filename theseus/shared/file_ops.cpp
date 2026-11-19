@@ -1,11 +1,9 @@
-// file_ops.cpp: file operations, game copying, and copy-destination
-// selection.
-//
-//   CGameCopier       Threaded game-save copier between storage devices
-//   CCopyDestination  Node for selecting the copy destination device
-//   CFile / CFolder   File-system browsing nodes
-//
-// Decompiled from the 5960 retail XBE; see docs/decomp/FileOps.md.
+// file_ops.cpp: the memory screens' file work. CGameCopier copies saves
+// from one device to another on a worker thread, CCopyDestination is the
+// node that lists where they can go, and CFile / CFolder let scripts list
+// a folder. Rebuilt from the 5960 retail XBE (copier 0x3ec90..0x3fd00,
+// File/Folder 0x31800..0x32010, CopyDestination 0x4ce40..0x4d380); see
+// docs/decomp/FileOps.md.
 
 #include "std.h"
 #include "theseus.h"
@@ -16,45 +14,53 @@
 #include "title_collection.h"
 #include "copy_games.h"
 
-extern const TCHAR* g_szCurTitleImage;
-
-// ===== Constants =====
-
+// The metadata files every title and save folder may carry.
 const TCHAR szTitleDataXBX [] = _T("TitleMeta.xbx");
 const TCHAR szTitleImageXBX [] = _T("TitleImage.xbx");
 const TCHAR szSaveDataXBX [] = _T("SaveMeta.xbx");
 const TCHAR szSaveImageXBX [] = _T("SaveImage.xbx");
 
-// ===== CCopyGame =====
-
+// One save queued for copying (0x14 bytes in 5960). copied is set once the
+// save is on the destination and still needs adding to its title list.
 struct CCopyGame
 {
-	TCHAR* m_titleId;
-	TCHAR* m_gameDir;
-	FILETIME m_time;
-	bool m_needToAdd;
+	TCHAR* titleID;
+	TCHAR* folder;
+	FILETIME written;
+	bool copied;
 };
 
-// ===== CGameCopier =====
+static TCHAR* NewString(const TCHAR* s)
+{
+	TCHAR* copy = new TCHAR [_tcslen(s) + 1];
+	_tcscpy(copy, s);
+	return copy;
+}
 
+// =========================================================================
+// CGameCopier
+// =========================================================================
+
+// 5960 builds the copier inline as part of its owner; everything starts
+// empty with no devices picked.
 CGameCopier::CGameCopier()
 {
-	m_thread = NULL;
 	m_progress = 0.0f;
-	m_internalError = false;
-	m_alreadyExists = false;
 	m_error = false;
 	m_done = false;
-	m_totalBlocks = 0;
-	m_copiedBlocks = 0;
-	m_destRoot = NULL;
-	m_srcRoot = NULL;
-	m_copyGames = NULL;
-	m_copyGameCapacity = 0;
-	m_copyGameCount = 0;
-	m_buffer = NULL;
+	m_thread = NULL;
 	m_srcDevUnit = -1;
 	m_destDevUnit = -1;
+	m_srcRoot = NULL;
+	m_destRoot = NULL;
+	m_copyGames = NULL;
+	m_copyGameCount = 0;
+	m_copyGameCapacity = 0;
+	m_buffer = NULL;
+	m_internalError = false;
+	m_alreadyExists = false;
+	m_totalBlocks = 0;
+	m_copiedBlocks = 0;
 }
 
 CGameCopier::~CGameCopier()
@@ -62,21 +68,22 @@ CGameCopier::~CGameCopier()
 	RemoveAll();
 }
 
+// CGameCopier::RemoveAll
+// Reconstructed from 5960 retail XBE @ 0x3ec90: frees both roots, every
+// queued save and the list, zeroes the counts and the block total, frees
+// the copy buffer.
 void CGameCopier::RemoveAll()
 {
 	delete [] m_destRoot;
 	m_destRoot = NULL;
-
 	delete [] m_srcRoot;
 	m_srcRoot = NULL;
 
-	int i;
-	for (i = 0; i < m_copyGameCount; i += 1)
+	for (CCopyGame* g = m_copyGames; g < m_copyGames + m_copyGameCount; g++)
 	{
-		delete [] m_copyGames[i].m_titleId;
-		delete [] m_copyGames[i].m_gameDir;
+		delete [] g->titleID;
+		delete [] g->folder;
 	}
-
 	delete [] m_copyGames;
 	m_copyGames = NULL;
 	m_copyGameCapacity = 0;
@@ -87,448 +94,356 @@ void CGameCopier::RemoveAll()
 	m_buffer = NULL;
 }
 
+// CGameCopier::Finish
+// Reconstructed from 5960 retail XBE @ 0x3ed10. Every save that made it
+// across goes into the destination's title list (an overwritten one is
+// taken out first so it isn't listed twice), then the queue is emptied.
 void CGameCopier::Finish()
 {
-	for (int i = 0; i < m_copyGameCount; i += 1)
+	CTitleArray& dest = g_titles[m_destDevUnit];
+	for (CCopyGame* g = m_copyGames; g < m_copyGames + m_copyGameCount; g++)
 	{
-		if (m_copyGames[i].m_needToAdd)
-		{
-			if (m_alreadyExists)
-			{
-				g_titles[m_destDevUnit].RemoveSavedGame(m_copyGames[i].m_titleId, m_copyGames[i].m_gameDir);
-			}
-
-			g_titles[m_destDevUnit].AddSavedGame(m_copyGames[i].m_titleId, m_copyGames[i].m_gameDir, m_copyGames[i].m_time);
-			m_copyGames[i].m_needToAdd = false;
-		}
+		if (!g->copied)
+			continue;
+		if (m_alreadyExists)
+			dest.RemoveSavedGame(g->titleID, g->folder);
+		dest.AddSavedGame(g->titleID, g->folder, g->written);
+		g->copied = false;
 	}
-
 	RemoveAll();
 }
 
+// 5960 @ 0x3eda0: the thread entry just forwards to ThreadProc.
 DWORD CALLBACK CGameCopier::StartThread(LPVOID pvContext)
 {
-	CGameCopier *pThis = (CGameCopier*)pvContext;
-	return pThis->ThreadProc();
+	return ((CGameCopier*)pvContext)->ThreadProc();
 }
 
-// Copy a single saved-game record from source device to destination,
-// staging the surrounding title directory and metadata files alongside
-// the game data. The order matters: the title meta file (TitleMeta.xbx)
-// is the very last write so a hot-removed memory card mid-copy leaves
-// the destination in a "no game here" state instead of a half-written
-// title with no payload.
+// <root>\<title> and <root>\<title>\<name>.
+static void TitlePath(TCHAR* out, const TCHAR* root, const TCHAR* titleID, const TCHAR* name = NULL)
+{
+	MakePath(out, root, titleID);
+	if (name != NULL)
+		MakePath(out, out, name);
+}
+
+// CGameCopier::CopyGame(n)
+// Reconstructed from 5960 retail XBE @ 0x3edb0. Makes the title folder on
+// the destination; copies TitleImage.xbx if the title is new or its image
+// is empty there, and SaveImage.xbx if the source has one and the
+// destination's is empty. Those two don't count as failures. The save
+// folder is created; if it's already there it's emptied and reused, any
+// other failure stops this save. The folder gets the save's time, then
+// its files are copied. A failed copy deletes what was written (the whole
+// title folder when it was new). On success the queued folder name is
+// replaced with what's on disk and TitleMeta.xbx is copied last, so a
+// memory unit pulled mid copy doesn't end up with a title but no save.
+// See docs/decomp/FileOps.md for the decompile.
 void CGameCopier::CopyGame(int nCopyGame)
 {
-	const TCHAR* szTitleID = m_copyGames[nCopyGame].m_titleId;
-	const TCHAR* szGameDir = m_copyGames[nCopyGame].m_gameDir;
+	CCopyGame& game = m_copyGames[nCopyGame];
+	TCHAR src[MAX_PATH];
+	TCHAR dest[MAX_PATH];
 
-	TRACE(_T("CopyGame(%s, %s)\n"), szTitleID, szGameDir);
-	ASSERT(!m_internalError);
+	TitlePath(dest, m_destRoot, game.titleID);
+	bool newTitle = CreateDirectory(dest);
 
-	TCHAR szSrcPath [MAX_PATH];
-	TCHAR szDestPath [MAX_PATH];
-
-	// Stage 1: ensure the title's destination directory exists.
-	MakePath(szDestPath, m_destRoot, szTitleID);
-	bool bNewTitle = CreateDirectory(szDestPath);
-
-	// Stage 2: copy the title image (TitleImage.xbx). Skip if already
-	// present and non-empty (a previous copy session staged it).
-	MakePath(szDestPath, m_destRoot, szTitleID);
-	MakePath(szDestPath, szDestPath, szTitleImageXBX);
-	if (bNewTitle || GetFileSize(szDestPath) == 0)
+	TitlePath(dest, m_destRoot, game.titleID, szTitleImageXBX);
+	if (newTitle || GetFileSize(dest) == 0)
 	{
-		MakePath(szSrcPath, m_srcRoot, szTitleID);
-		MakePath(szSrcPath, szSrcPath, szTitleImageXBX);
-		CopyFile(szSrcPath, szDestPath);
+		TitlePath(src, m_srcRoot, game.titleID, szTitleImageXBX);
+		CopyFile(src, dest);
 	}
 
-	// Stage 3: copy the title's default save image (SaveImage.xbx) if
-	// the source has one and the destination doesn't.
-	MakePath(szDestPath, m_destRoot, szTitleID);
-	MakePath(szDestPath, szDestPath, szSaveImageXBX);
-	MakePath(szSrcPath, m_srcRoot, szTitleID);
-	MakePath(szSrcPath, szSrcPath, szSaveImageXBX);
-	if (DoesFileExist(szSrcPath) && GetFileSize(szDestPath) == 0)
-	{
-		CopyFile(szSrcPath, szDestPath);
-	}
+	TitlePath(dest, m_destRoot, game.titleID, szSaveImageXBX);
+	TitlePath(src, m_srcRoot, game.titleID, szSaveImageXBX);
+	if (DoesFileExist(src) && GetFileSize(dest) == 0)
+		CopyFile(src, dest);
 
-	// Stages 2 and 3 are best-effort. A missing title image isn't a
-	// reason to abort the actual save copy. Reset the error flags
-	// before the load-bearing work below.
 	m_internalError = false;
 	m_alreadyExists = false;
 
-	// Stage 4: create (or clear) the saved-game directory and stamp it
-	// with the original save's timestamp. ERROR_ALREADY_EXISTS means
-	// the user is overwriting an existing save: delete its contents
-	// and reuse the directory; any other failure is fatal for this game.
-	MakePath(szDestPath, m_destRoot, szTitleID);
-	MakePath(szDestPath, szDestPath, szGameDir);
-	if (!CreateDirectory(szDestPath))
+	TitlePath(dest, m_destRoot, game.titleID, game.folder);
+	if (!CreateDirectory(dest))
 	{
-		if (GetLastError() == ERROR_ALREADY_EXISTS)
-		{
-			m_alreadyExists = true;
-			DeleteDirectory(szDestPath, false);
-		}
-		else
+		if (GetLastError() != ERROR_ALREADY_EXISTS)
 		{
 			m_internalError = true;
 			return;
 		}
+		m_alreadyExists = true;
+		DeleteDirectory(dest, false);
 	}
 
-	TRACE(_T("Creating game in %s\n"), szDestPath);
-
-	HANDLE hFile = TheseusCreateFile(szDestPath, GENERIC_WRITE, 0, NULL,
-		OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-	if (hFile != INVALID_HANDLE_VALUE)
+	HANDLE folder = TheseusCreateFile(dest, GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (folder != INVALID_HANDLE_VALUE)
 	{
-		FILETIME* pTime = &m_copyGames[nCopyGame].m_time;
-		VERIFY(SetFileTime(hFile, pTime, pTime, pTime));
-		VERIFY(CloseHandle(hFile));
+		SetFileTime(folder, &game.written, &game.written, &game.written);
+		CloseHandle(folder);
 	}
-#ifdef _DEBUG
-	else
-	{
-		TRACE(_T("Cannot open directory (%s) to set times (%d)\n"), szDestPath, GetLastError());
-	}
-#endif
 
-	// Stage 5: copy the actual save game file tree. If this fails the
-	// destination directory we just created is partially populated --
-	// roll it back, plus the parent title directory if we created it
-	// fresh in stage 1.
-	MakePath(szSrcPath, m_srcRoot, szTitleID);
-	MakePath(szSrcPath, szSrcPath, szGameDir);
-	if (!CopyDirectory(szSrcPath, szDestPath))
+	TitlePath(src, m_srcRoot, game.titleID, game.folder);
+	if (!CopyDirectory(src, dest))
 	{
-		TRACE(_T("\001The copy didn't complete; removing what we did copy...\n"));
-		if (bNewTitle)
-		{
-			TRACE(_T("it was a new title; deleting: %s %s\n"), m_destRoot, szTitleID);
-			MakePath(szDestPath, m_destRoot, szTitleID);
-		}
-		DeleteDirectory(szDestPath);
+		if (newTitle)
+			TitlePath(dest, m_destRoot, game.titleID);
+		DeleteDirectory(dest);
 		return;
 	}
 
-	// Stage 6: capture the destination's actual basename in case the
-	// filesystem renamed it during creation (FATX truncation, etc) and
-	// keep the in-memory copy table in sync with what's on disk.
-	{
-		TCHAR* pch = _tcsrchr(szDestPath, '\\');
-		ASSERT(pch != NULL);
-		pch += 1;
+	const TCHAR* onDisk = _tcsrchr(dest, '\\') + 1;
+	delete [] game.folder;
+	game.folder = NewString(onDisk);
 
-		delete [] m_copyGames[nCopyGame].m_gameDir;
-		m_copyGames[nCopyGame].m_gameDir = new TCHAR [_tcslen(pch) + 1];
-		_tcscpy(m_copyGames[nCopyGame].m_gameDir, pch);
-	}
-
-	// Stage 7 (last on purpose): copy the title's meta file. If a memory
-	// card is pulled mid-copy *before* this write, the destination is
-	// left looking like "no save here" rather than a half-installed
-	// title we can't clean up.
-	MakePath(szDestPath, m_destRoot, szTitleID);
-	MakePath(szDestPath, szDestPath, szTitleDataXBX);
-	if (bNewTitle || GetFileSize(szDestPath) == 0)
+	TitlePath(dest, m_destRoot, game.titleID, szTitleDataXBX);
+	if (newTitle || GetFileSize(dest) == 0)
 	{
-		MakePath(szSrcPath, m_srcRoot, szTitleID);
-		MakePath(szSrcPath, szSrcPath, szTitleDataXBX);
-		CopyFile(szSrcPath, szDestPath);
+		TitlePath(src, m_srcRoot, game.titleID, szTitleDataXBX);
+		CopyFile(src, dest);
 	}
 }
 
+// CGameCopier::CreateDirectory(path)
+// Reconstructed from 5960 retail XBE @ 0x3f420: narrow to 260 chars,
+// CreateDirectoryA, true when it made one.
 bool CGameCopier::CreateDirectory(const TCHAR* szDir)
 {
-	TRACE(_T("CreateDirectory(%s)\n"), szDir);
-
-	char szDir2 [MAX_PATH];
-	Ansi(szDir2, szDir, MAX_PATH);
-
-	return TheseusCreateDirectory(szDir2, NULL) != FALSE;
+	char narrow[MAX_PATH];
+	Ansi(narrow, szDir, MAX_PATH);
+	return TheseusCreateDirectory(narrow, NULL) != FALSE;
 }
 
+static bool IsDotEntry(const TCHAR* name)
+{
+	return _tcscmp(name, _T(".")) == 0 || _tcscmp(name, _T("..")) == 0;
+}
+
+// CGameCopier::CopyDirectory(src, dest)
+// Reconstructed from 5960 retail XBE @ 0x3f480. Makes dest (an existing
+// one is fine), then copies each entry of src except . and .., recursing
+// into folders. The first failure closes the listing, flags the error and
+// returns false.
 bool CGameCopier::CopyDirectory(const TCHAR* szSrcPath, const TCHAR* szDestPath)
 {
-	TRACE(_T("CopyDirectory(%s, %s)\n"), szSrcPath, szDestPath);
-
 	CreateDirectory(szDestPath);
 
-	TCHAR szBuf [MAX_PATH];
-	MakePath(szBuf, szSrcPath, _T("*.*"));
+	TCHAR from[MAX_PATH];
+	MakePath(from, szSrcPath, _T("*.*"));
+	char pattern[MAX_PATH];
+	Ansi(pattern, from, MAX_PATH);
 
-	WIN32_FIND_DATA fd;
-	char szBufX [MAX_PATH];
-	Ansi(szBufX, szBuf, MAX_PATH);
-	HANDLE h = TheseusFindFirstFile(szBufX, &fd);
-	if (h != INVALID_HANDLE_VALUE)
+	WIN32_FIND_DATA found;
+	HANDLE find = TheseusFindFirstFile(pattern, &found);
+	if (find == INVALID_HANDLE_VALUE)
+		return true;
+
+	do
 	{
-		do
+		TCHAR name[MAX_PATH];
+		Unicode(name, found.cFileName, MAX_PATH);
+		if (IsDotEntry(name))
+			continue;
+
+		TCHAR to[MAX_PATH];
+		MakePath(from, szSrcPath, name);
+		MakePath(to, szDestPath, name);
+
+		bool ok = (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? CopyDirectory(from, to) : CopyFile(from, to);
+		if (!ok)
 		{
-			TCHAR szFileName [MAX_PATH];
-			Unicode(szFileName, fd.cFileName, MAX_PATH);
-
-			if (_tcscmp(szFileName, _T(".")) == 0 || _tcscmp(szFileName, _T("..")) == 0)
-				continue;
-
-			MakePath(szBuf, szSrcPath, szFileName);
-
-			TCHAR szBuf2 [MAX_PATH];
-			MakePath(szBuf2, szDestPath, szFileName);
-
-			if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
-			{
-				if (!CopyDirectory(szBuf, szBuf2))
-				{
-					TRACE(_T("CopyDirectory(%s, %s) failed\n"), szBuf, szBuf2);
-					TheseusFindClose(h);
-					m_internalError = true;
-					return false;
-				}
-			}
-			else
-			{
-				if (!CopyFile(szBuf, szBuf2))
-				{
-					TRACE(_T("CopyFile(%s, %s) failed\n"), szBuf, szBuf2);
-					TheseusFindClose(h);
-					m_internalError = true;
-					return false;
-				}
-			}
+			TheseusFindClose(find);
+			m_internalError = true;
+			return false;
 		}
-		while (TheseusFindNextFile(h, &fd));
-		TheseusFindClose(h);
 	}
+	while (TheseusFindNextFile(find, &found));
 
+	TheseusFindClose(find);
 	return true;
 }
 
+// CGameCopier::CopyFile(src, dest)
+// Reconstructed from 5960 retail XBE @ 0x3f700. Opens src (read, sequential)
+// and creates dest, then moves 16 KB at a time, counting each block toward
+// m_progress. A read or write failure flags the error. When it all went
+// through, dest gets src's three file times. A failed close of dest also
+// counts. Returns whether there was no error.
 bool CGameCopier::CopyFile(const TCHAR* szSrcFile, const TCHAR* szDestFile)
 {
-	TRACE(_T("CopyFile(%s, %s)\n"), szSrcFile, szDestFile);
-
-	HANDLE hSrcFile = TheseusCreateFile(szSrcFile, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-	if (hSrcFile == INVALID_HANDLE_VALUE)
+	HANDLE in = TheseusCreateFile(szSrcFile, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+	if (in == INVALID_HANDLE_VALUE)
 	{
-		TRACE(_T("OpenFile(%s) failed\n"), szSrcFile);
 		m_internalError = true;
 		return false;
 	}
 
-	HANDLE hDestFile = TheseusCreateFile(szDestFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
-	if (hDestFile == INVALID_HANDLE_VALUE)
+	HANDLE out = TheseusCreateFile(szDestFile, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+	if (out == INVALID_HANDLE_VALUE)
 	{
-		CloseHandle(hSrcFile);
-		TRACE(_T("CreateFile(%s) failed\n"), szDestFile);
+		CloseHandle(in);
 		m_internalError = true;
 		return false;
 	}
 
 	for (;;)
 	{
-		DWORD dwRead, dwWrite;
-
-		if (!ReadFile(hSrcFile, m_buffer, BLOCK_SIZE, &dwRead, NULL))
+		DWORD got, put;
+		if (!ReadFile(in, m_buffer, BLOCK_SIZE, &got, NULL))
 		{
-			TRACE(_T("ReadFile(%s) failed (%d)\n"), szSrcFile, GetLastError());
+			m_internalError = true;
+			break;
+		}
+		if (got == 0)
+			break;
+		if (!WriteFile(out, m_buffer, got, &put, NULL))
+		{
 			m_internalError = true;
 			break;
 		}
 
-		if (dwRead == 0)
-			break;
-
-		if (!WriteFile(hDestFile, m_buffer, dwRead, &dwWrite, NULL))
-		{
-			TRACE(_T("WriteFile(%s) failed (%d)\n"), szDestFile, GetLastError());
-			m_internalError = true;
-			break;
-		}
-
-		m_copiedBlocks += 1;
+		m_copiedBlocks++;
 		m_progress = (float)m_copiedBlocks / (float)m_totalBlocks;
-		TRACE(_T("copy progress: %f block %d of %d\n"), m_progress, m_copiedBlocks, m_totalBlocks);
 	}
 
 	if (!m_internalError)
 	{
-		FILETIME create, access, write;
-		GetFileTime(hSrcFile, &create, &access, &write);
-		SetFileTime(hDestFile, &create, &access, &write);
+		FILETIME created, accessed, written;
+		GetFileTime(in, &created, &accessed, &written);
+		SetFileTime(out, &created, &accessed, &written);
 	}
 
-	CloseHandle(hSrcFile);
-
-	if (!CloseHandle(hDestFile))
-	{
-		TRACE(_T("CloseHandle(%s) failed\n"), szDestFile);
+	CloseHandle(in);
+	if (!CloseHandle(out))
 		m_internalError = true;
-	}
 
 	return !m_internalError;
 }
 
+// CGameCopier::DeleteFile(path)
+// Reconstructed from 5960 retail XBE @ 0x3f830: clear the attributes so a
+// read-only file goes too, then delete.
 bool CGameCopier::DeleteFile(const TCHAR* szFile)
 {
-	char szFileA [MAX_PATH];
-	Ansi(szFileA, szFile, MAX_PATH);
-	TheseusSetFileAttributes(szFileA, FILE_ATTRIBUTE_NORMAL);
-	return TheseusDeleteFile(szFileA) != FALSE;
+	char narrow[MAX_PATH];
+	Ansi(narrow, szFile, MAX_PATH);
+	TheseusSetFileAttributes(narrow, FILE_ATTRIBUTE_NORMAL);
+	return TheseusDeleteFile(narrow) != FALSE;
 }
 
-bool CGameCopier::DeleteDirectory(const TCHAR* szDir, bool RemoveSelf /*= true*/)
+// CGameCopier::DeleteDirectory(path, removeSelf)
+// Reconstructed from 5960 retail XBE @ 0x3f8a0. Deletes everything inside
+// (recursing into folders, . and .. skipped); the first failure flags the
+// error and returns false. With removeSelf the emptied folder goes too.
+bool CGameCopier::DeleteDirectory(const TCHAR* szDir, bool RemoveSelf)
 {
-	TCHAR szBuf [MAX_PATH];
-	MakePath(szBuf, szDir, _T("*.*"));
+	TCHAR path[MAX_PATH];
+	MakePath(path, szDir, _T("*.*"));
+	char narrow[MAX_PATH];
+	Ansi(narrow, path, MAX_PATH);
 
-	WIN32_FIND_DATA fd;
-	char szBufX [MAX_PATH];
-	Ansi(szBufX, szBuf, MAX_PATH);
-	HANDLE h = TheseusFindFirstFile(szBufX, &fd);
-	if (h != INVALID_HANDLE_VALUE)
+	WIN32_FIND_DATA found;
+	HANDLE find = TheseusFindFirstFile(narrow, &found);
+	if (find != INVALID_HANDLE_VALUE)
 	{
 		do
 		{
-			TCHAR szFileName [MAX_PATH];
-			Unicode(szFileName, fd.cFileName, MAX_PATH);
-
-			if (_tcscmp(szFileName, _T(".")) == 0 || _tcscmp(szFileName, _T("..")) == 0)
+			TCHAR name[MAX_PATH];
+			Unicode(name, found.cFileName, MAX_PATH);
+			if (IsDotEntry(name))
 				continue;
 
-			MakePath(szBuf, szDir, szFileName);
-
-			if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+			MakePath(path, szDir, name);
+			bool ok = (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? DeleteDirectory(path) : DeleteFile(path);
+			if (!ok)
 			{
-				if (!DeleteDirectory(szBuf))
-				{
-					TheseusFindClose(h);
-					m_internalError = true;
-					return false;
-				}
-			}
-			else
-			{
-				if (!DeleteFile(szBuf))
-				{
-					TheseusFindClose(h);
-					m_internalError = true;
-					return false;
-				}
+				TheseusFindClose(find);
+				m_internalError = true;
+				return false;
 			}
 		}
-		while (TheseusFindNextFile(h, &fd));
-		TheseusFindClose(h);
+		while (TheseusFindNextFile(find, &found));
+		TheseusFindClose(find);
 	}
 
 	if (!RemoveSelf)
-	{
 		return true;
-	}
 
-	char szDirA [MAX_PATH];
-	Ansi(szDirA, szDir, MAX_PATH);
-	return TheseusRemoveDirectory(szDirA) != FALSE;
+	Ansi(narrow, szDir, MAX_PATH);
+	return TheseusRemoveDirectory(narrow) != FALSE;
 }
 
+// CGameCopier::ThreadProc
+// Reconstructed from 5960 retail XBE @ 0x3fae0:
+//     while (cur < count) { CopyGame(cur); if (internalError) break;
+//                           games[cur].copied = 1; cur++; }
+//     done = 1; free(buffer); thread = 0; error = internalError; return 1;
 DWORD CGameCopier::ThreadProc()
 {
-	ASSERT(m_buffer != NULL);
-
-	while (m_copyGameCur < m_copyGameCount)
+	for (; m_copyGameCur < m_copyGameCount; m_copyGameCur++)
 	{
 		CopyGame(m_copyGameCur);
 		if (m_internalError)
 			break;
-
-		m_copyGames[m_copyGameCur].m_needToAdd = true;
-		m_copyGameCur += 1;
+		m_copyGames[m_copyGameCur].copied = true;
 	}
 
 	m_done = true;
-
 	delete [] m_buffer;
 	m_buffer = NULL;
-
 	m_thread = NULL;
 	m_error = m_internalError;
-
-	TRACE(_T("CGameCopier::ThreadProc terminating; error=%d\n"), m_error);
-
 	return 1;
+}
+
+// SetSource / SetDestination(device)
+// Reconstructed from 5960 retail XBE @ 0x3fb40 / 0x3fba0: remember the
+// device and keep a copy of its user data root.
+static void ReplaceString(TCHAR*& field, const TCHAR* value)
+{
+	delete [] field;
+	field = NewString(value);
 }
 
 void CGameCopier::SetSource(int nDevUnit)
 {
 	m_srcDevUnit = nDevUnit;
-
-	const TCHAR* szRoot = g_titles[nDevUnit].GetUData();
-
-	TRACE(_T("SetSource(%s)\n"), szRoot);
-	delete [] m_srcRoot;
-	m_srcRoot = new TCHAR [_tcslen(szRoot) + 1];
-	_tcscpy(m_srcRoot, szRoot);
-
-	ASSERT(m_totalBlocks == 0);
-	ASSERT(m_copyGameCount == 0);
+	ReplaceString(m_srcRoot, g_titles[nDevUnit].GetUData());
 }
 
 void CGameCopier::SetDestination(int nDevUnit)
 {
 	m_destDevUnit = nDevUnit;
-
-	const TCHAR* szRoot = g_titles[nDevUnit].GetUData();
-
-	TRACE(_T("SetDestination(%s)\n"), szRoot);
-	delete [] m_destRoot;
-	m_destRoot = new TCHAR [_tcslen(szRoot) + 1];
-	_tcscpy(m_destRoot, szRoot);
-
-	ASSERT(m_totalBlocks == 0);
-	ASSERT(m_copyGameCount == 0);
+	ReplaceString(m_destRoot, g_titles[nDevUnit].GetUData());
 }
 
+// CGameCopier::AddGame(title, folder, time, blocks)
+// Reconstructed from 5960 retail XBE @ 0x3fc00: queue grows 10 at a time;
+// the save's blocks add to the total progress is measured against.
 void CGameCopier::AddGame(const TCHAR* szTitleID, const TCHAR* szGameDir, FILETIME saveTime, int nBlocks)
 {
-	TRACE(_T("CGameCopier::AddGame: %s %s %d blocks\n"), szTitleID, szGameDir, nBlocks);
-
 	if (m_copyGameCount == m_copyGameCapacity)
 	{
 		m_copyGameCapacity += 10;
-		CCopyGame* rgCopyGame = new CCopyGame [m_copyGameCapacity];
-		CopyMemory(rgCopyGame, m_copyGames, m_copyGameCount * sizeof (CCopyGame));
+		CCopyGame* grown = new CCopyGame [m_copyGameCapacity];
+		CopyMemory(grown, m_copyGames, m_copyGameCount * sizeof (CCopyGame));
 		delete [] m_copyGames;
-		m_copyGames = rgCopyGame;
+		m_copyGames = grown;
 	}
 
-	m_copyGames[m_copyGameCount].m_titleId = new TCHAR [_tcslen(szTitleID) + 1];
-	_tcscpy(m_copyGames[m_copyGameCount].m_titleId, szTitleID);
-
-	m_copyGames[m_copyGameCount].m_gameDir = new TCHAR [_tcslen(szGameDir) + 1];
-	_tcscpy(m_copyGames[m_copyGameCount].m_gameDir, szGameDir);
-
-	m_copyGames[m_copyGameCount].m_time = saveTime;
-
-	m_copyGames[m_copyGameCount].m_needToAdd = false;
-
-	m_copyGameCount += 1;
-
+	CCopyGame& g = m_copyGames[m_copyGameCount++];
+	g.titleID = NewString(szTitleID);
+	g.folder = NewString(szGameDir);
+	g.written = saveTime;
+	g.copied = false;
 	m_totalBlocks += nBlocks;
 }
 
+// CGameCopier::Start
+// Reconstructed from 5960 retail XBE @ 0x3fd00. Resets progress and flags,
+// makes sure there's a 16 KB buffer and starts the copy thread; if no
+// thread can be made the copy runs right here.
 void CGameCopier::Start()
 {
-	ASSERT(m_srcDevUnit >= 0 && m_srcDevUnit <= 8);
-	ASSERT(m_destDevUnit >= 0 && m_destDevUnit <= 8);
-	ASSERT(m_srcDevUnit != m_destDevUnit);
-
-	TRACE(_T("Start game copy: %d blocks\n"), m_totalBlocks);
-
 	m_progress = 0.0f;
 	m_internalError = false;
 	m_error = false;
@@ -540,18 +455,15 @@ void CGameCopier::Start()
 		m_buffer = new BYTE [BLOCK_SIZE];
 
 	m_thread = CreateThread(NULL, 0, StartThread, this, 0, 0);
-
-	if (m_thread)
-	{
+	if (m_thread != NULL)
 		CloseHandle(m_thread);
-	}
 	else
-	{
 		StartThread(this);
-	}
 }
 
-// ===== CCopyDestination =====
+// =========================================================================
+// CCopyDestination
+// =========================================================================
 
 class CCopyDestination : public CNode
 {
@@ -560,9 +472,12 @@ public:
 	CCopyDestination();
 	~CCopyDestination();
 
-	void Render();
 	void Advance(float nSeconds);
+	void Render();
 	bool OnSetProperty(const PRD* pprd, const void* pvValue);
+
+	void selectUp();
+	void selectDown();
 
 	CNode* m_pod;
 	CNode* m_podIcon;
@@ -580,23 +495,18 @@ public:
 	bool m_isActive;
 	int m_select;
 
-	float m_nScroll;
-	int m_nScrollTo;
-	XTIME m_nScrollTime;
+	float m_scroll;          // current list offset
+	int m_scrollTarget;      // row the list is easing toward
+	XTIME m_scrollStart;     // 0 when not easing
 
-	void selectUp();
-	void selectDown();
-
-	int m_rgDevUnit [9];
-	int m_nDevUnitCount;
+	int m_units[9];          // devices listed, hard drive first
+	int m_unitCount;
 
 	DECLARE_NODE_PROPS();
 	DECLARE_NODE_FUNCTIONS();
 
 protected:
-
-	const TCHAR* GetTitleID2(int nTitle);
-	CStrObject* GetTitleID(int nTitle);
+	void Pick(int row);
 };
 
 IMPLEMENT_NODE("CopyDestination", CCopyDestination, CNode)
@@ -624,228 +534,185 @@ START_NODE_FUN(CCopyDestination, CNode)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-
-CCopyDestination::CCopyDestination() :
-	m_pod(NULL),
-	m_panelMU(NULL),
-	m_panelMUHilite(NULL),
-	m_panelText(NULL),
-	m_panelTextHilite(NULL),
-	m_console(NULL),
-	m_memoryUnit(NULL),
-	m_curDevUnit(-1),
-	m_selDevUnit(-1),
-	m_sourceDevUnit(-1),
-	m_spacing(0.4f),
-	m_isActive(false),
-	m_select(-1)
+// CCopyDestination::CCopyDestination
+// Reconstructed from 5960 retail XBE @ 0x4ce40: node pointers null,
+// devices and selection -1, spacing 0.4, inactive, nothing listed.
+CCopyDestination::CCopyDestination()
 {
-	m_nScroll = 0.0f;
-	m_nScrollTo = 0;
-	m_nScrollTime = 0.0f;
-	m_nDevUnitCount = 0;
+	m_pod = NULL;
+	m_podIcon = NULL;
+	m_panelMU = NULL;
+	m_panelMUHilite = NULL;
+	m_panelText = NULL;
+	m_panelTextHilite = NULL;
+	m_console = NULL;
+	m_memoryUnit = NULL;
+	m_curDevUnit = -1;
+	m_selDevUnit = -1;
+	m_sourceDevUnit = -1;
+	m_spacing = 0.4f;
+	m_isActive = false;
+	m_select = -1;
+	m_scroll = 0.0f;
+	m_scrollTarget = 0;
+	m_scrollStart = 0.0f;
+	m_unitCount = 0;
 }
 
+// Reconstructed from 5960 retail XBE @ 0x4cee0: releases the seven nodes
+// the script handed it.
 CCopyDestination::~CCopyDestination()
 {
-	if (m_pod != NULL)
-		m_pod->Release();
-
-	if (m_panelMU != NULL)
-		m_panelMU->Release();
-
-	if (m_panelMUHilite != NULL)
-		m_panelMUHilite->Release();
-
-	if (m_panelText != NULL)
-		m_panelText->Release();
-
-	if (m_panelTextHilite != NULL)
-		m_panelTextHilite->Release();
-
-	if (m_console != NULL)
-		m_console->Release();
-
-	if (m_memoryUnit != NULL)
-		m_memoryUnit->Release();
+	CNode* held[] = { m_pod, m_panelMU, m_panelMUHilite, m_panelText, m_panelTextHilite, m_console, m_memoryUnit };
+	for (int i = 0; i < (int)countof(held); i++)
+	{
+		if (held[i] != NULL)
+			held[i]->Release();
+	}
 }
 
+// CCopyDestination::Render
+// Reconstructed from 5960 retail XBE @ 0x4cf80. One pod per listed device,
+// stacked downward by spacing from the scroll offset. Before each pod is
+// drawn selDevUnit is set to that device and UpdateMemUnitText runs so
+// the script can fill in its label. The current device gets the
+// highlighted panel and text; the hard drive shows the console model,
+// anything else the memory unit.
 void CCopyDestination::Render()
 {
 	if (m_pod == NULL)
 		return;
 
-	float y = m_nScroll;
-	int i;
-	for (i = 0; i < m_nDevUnitCount; i += 1)
+	float y = m_scroll;
+	for (int i = 0; i < m_unitCount; i++, y -= m_spacing)
 	{
-		D3DXMATRIX mat;
-		D3DXMatrixTranslation(&mat, 0.0f, y, 0.0f);
+		D3DXMATRIX offset;
+		D3DXMatrixTranslation(&offset, 0.0f, y, 0.0f);
 		TheseusPushWorld();
-		TheseusMultWorld(&mat);
+		TheseusMultWorld(&offset);
 		TheseusUpdateWorld();
+
 		m_pod->Render();
 
-		// update the text rendered under each MU
-		m_selDevUnit = m_rgDevUnit[i];
+		m_selDevUnit = m_units[i];
 		CallFunction(this, _T("UpdateMemUnitText"));
 
-		if (m_rgDevUnit[i] == m_curDevUnit)
-		{
-			if(m_selDevUnit == 8)
-			{
-				m_panelMUHilite->Render();
-				m_panelTextHilite->Render();
-				m_console->Render();
-			}
-			else
-			{
-				m_panelMUHilite->Render();
-				m_panelTextHilite->Render();
-				m_memoryUnit->Render();
-			}
-		}
-		else
-		{
-			if(m_selDevUnit == 8)
-			{
-				m_panelMU->Render();
-				m_panelText->Render();
-				m_console->Render();
-			}
-			else
-			{
-				m_panelMU->Render();
-				m_panelText->Render();
-				m_memoryUnit->Render();
-			}
-		}
+		bool current = m_units[i] == m_curDevUnit;
+		(current ? m_panelMUHilite : m_panelMU)->Render();
+		(current ? m_panelTextHilite : m_panelText)->Render();
+		(m_selDevUnit == Dev0 ? m_console : m_memoryUnit)->Render();
 
 		TheseusPopWorld();
-
-		y -= m_spacing;
 	}
 }
 
+// CCopyDestination::Advance
+// Reconstructed from 5960 retail XBE @ 0x4d110. While active it rebuilds
+// the device list every frame: the hard drive, then memory units 0..7,
+// leaving out the source and any unit that isn't mounted. If the current
+// device moved rows the selection jumps with it; otherwise the list eases
+// toward the selected row over a quarter second. When the selected device
+// changes the script hears OnCurDevUnitChange, after
+// OnDestinationUnitRemoved if the old one was pulled.
 void CCopyDestination::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
-	bool fCurDevUnitRemoved = false;
 
 	if (!m_isActive)
 		return;
 
-	int nDevUnitIndex = -1;
-
-	// Look for memory units...
-	m_nDevUnitCount = 0;
-	for (int i = 0; i < 9; i += 1)
+	bool curRemoved = false;
+	int curRow = -1;
+	m_unitCount = 0;
+	for (int i = 0; i < 9; i++)
 	{
-		int devUnit = (i == 0) ? 8 : (i - 1);
-
-		// Ignore the source unit
-		if (devUnit == m_sourceDevUnit)
+		int unit = (i == 0) ? Dev0 : i - 1;
+		if (unit == m_sourceDevUnit)
 			continue;
 
-		// Ignore missing units
-		if (devUnit != 8 && !g_titles[devUnit].IsValid())
+		if (unit != Dev0 && !g_titles[unit].IsValid())
 		{
-			if(devUnit == m_curDevUnit)
-			{
-				fCurDevUnitRemoved = true;
-			}
+			if (unit == m_curDevUnit)
+				curRemoved = true;
 			continue;
 		}
 
-		m_rgDevUnit[m_nDevUnitCount] = devUnit;
-
-		if (devUnit == m_curDevUnit)
-			nDevUnitIndex = m_nDevUnitCount;
-
-		m_nDevUnitCount += 1;
+		if (unit == m_curDevUnit)
+			curRow = m_unitCount;
+		m_units[m_unitCount++] = unit;
 	}
 
-	if (nDevUnitIndex != -1 && m_select != nDevUnitIndex)
+	if (curRow != -1 && curRow != m_select)
 	{
-		// The current unit switched positions; scroll immediately
-		m_select = nDevUnitIndex;
-		m_nScrollTo = m_select;
-		m_nScroll = m_spacing * m_select;
+		m_select = curRow;
+		m_scrollTarget = curRow;
+		m_scroll = m_spacing * curRow;
 	}
 
 	if (m_select < 0)
 		m_select = 0;
-	if (m_select > m_nDevUnitCount - 1)
-		m_select = m_nDevUnitCount - 1;
+	if (m_select > m_unitCount - 1)
+		m_select = m_unitCount - 1;
 
-	if (m_nScrollTo != m_select)
+	if (m_scrollTarget != m_select)
 	{
-		m_nScrollTo = m_select;
-		m_nScrollTime = TheseusGetNow();
+		m_scrollTarget = m_select;
+		m_scrollStart = TheseusGetNow();
 	}
-	else if (m_nScrollTime != 0.0f)
+	else if (m_scrollStart != 0.0f)
 	{
-		float t = (float) (TheseusGetNow() - m_nScrollTime) / 0.25f;
+		float t = (float)(TheseusGetNow() - m_scrollStart) * 4.0f;
 		if (t >= 1.0f)
 		{
-			m_nScrollTime = 0.0f;
 			t = 1.0f;
+			m_scrollStart = 0.0f;
 		}
-
-		float t1 = 1.0f - t;
-		m_nScroll = t1 * m_nScroll + t * (m_spacing * m_nScrollTo);
+		m_scroll = (1.0f - t) * m_scroll + t * (m_spacing * m_scrollTarget);
 	}
 
-	int curDevUnit = -1;
-	if (m_select != -1)
-		curDevUnit = m_rgDevUnit[m_select];
+	int unit = (m_select == -1) ? -1 : m_units[m_select];
+	if (unit == m_curDevUnit)
+		return;
 
-	if (curDevUnit != m_curDevUnit)
-	{
-		m_curDevUnit = curDevUnit;
-
-		if(fCurDevUnitRemoved)
-		{
-			CallFunction(this, _T("OnDestinationUnitRemoved"));
-		}
-		CallFunction(this, _T("OnCurDevUnitChange"));
-	}
+	m_curDevUnit = unit;
+	if (curRemoved)
+		CallFunction(this, _T("OnDestinationUnitRemoved"));
+	CallFunction(this, _T("OnCurDevUnitChange"));
 }
 
+// 5960 shares the plain CNode answer here (0x4d340: return true).
 bool CCopyDestination::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
 	return CNode::OnSetProperty(pprd, pvValue);
 }
 
+// Moves the selection to row when there's somewhere to move.
+void CCopyDestination::Pick(int row)
+{
+	if (m_unitCount < 2 || row < 0 || row >= m_unitCount)
+		return;
+	m_select = row;
+	m_curDevUnit = m_units[row];
+	CallFunction(this, _T("OnCurDevUnitChange"));
+}
+
+// CCopyDestination::selectUp / selectDown   [script fns 'selectUp' / 'selectDown']
+// Reconstructed from 5960 retail XBE @ 0x4d350 / 0x4d380:
+//     if (count > 1 && 0 <= select -/+ 1 < count) { select = it;
+//         curDevUnit = units[select]; CallFunction("OnCurDevUnitChange"); }
 void CCopyDestination::selectUp()
 {
-	if (m_nDevUnitCount < 2)
-		return;
-
-	int nSel = m_select - 1;
-	if (nSel >= 0 && nSel < m_nDevUnitCount)
-	{
-		m_select = nSel;
-		m_curDevUnit = m_rgDevUnit[nSel];
-		CallFunction(this, _T("OnCurDevUnitChange"));
-	}
+	Pick(m_select - 1);
 }
 
 void CCopyDestination::selectDown()
 {
-	if (m_nDevUnitCount < 2)
-		return;
-
-	int nSel = m_select + 1;
-	if (nSel >= 0 && nSel < m_nDevUnitCount)
-	{
-		m_select = nSel;
-		m_curDevUnit = m_rgDevUnit[nSel];
-		CallFunction(this, _T("OnCurDevUnitChange"));
-	}
+	Pick(m_select + 1);
 }
 
-// ===== CFile =====
+// =========================================================================
+// CFile
+// =========================================================================
 
 class CFile : public CNode
 {
@@ -882,15 +749,20 @@ START_NODE_FUN(CFile, CNode)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-CFile::CFile() :
-	m_name(NULL),
-	m_type(NULL),
-	m_path(NULL),
-	m_length(-1),
-	m_date(NULL)
+// CFile::CFile
+// Reconstructed from 5960 retail XBE @ 0x31800: no strings, no date,
+// length -1 until a folder listing fills it in.
+CFile::CFile()
 {
+	m_name = NULL;
+	m_type = NULL;
+	m_path = NULL;
+	m_length = -1;
+	m_date = NULL;
 }
 
+// Reconstructed from 5960 retail XBE @ 0x318e0: frees the three strings
+// and deletes the date.
 CFile::~CFile()
 {
 	delete [] m_name;
@@ -921,7 +793,9 @@ CStrObject* CFile::readText()
 	return pText;
 }
 
-// ===== CFolder =====
+// =========================================================================
+// CFolder
+// =========================================================================
 
 class CFolder : public CNode
 {
@@ -936,7 +810,6 @@ public:
 	CNodeArray m_subFolders;
 
 	bool OnSetProperty(const PRD* pprd, const void* pvValue);
-
 	void Refresh(const TCHAR* szPath);
 
 	void sortByName();
@@ -966,10 +839,12 @@ START_NODE_FUN(CFolder, CNode)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-CFolder::CFolder() :
-	m_path(NULL),
-	m_name(NULL)
+// Reconstructed from 5960 retail XBE @ 0x31a50 / 0x31ab0: path and name
+// start empty; the destructor frees them (the arrays release themselves).
+CFolder::CFolder()
 {
+	m_path = NULL;
+	m_name = NULL;
 }
 
 CFolder::~CFolder()
@@ -978,154 +853,133 @@ CFolder::~CFolder()
 	delete [] m_name;
 }
 
+// CFolder::OnSetProperty
+// Reconstructed from 5960 retail XBE @ 0x31b30: setting path lists that
+// folder; the value is stored either way.
 bool CFolder::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
 	if (PTR2INT(pprd->pbOffset) == offsetof(m_path))
-	{
-		const TCHAR* szPath = *((const TCHAR**)pvValue);
-		Refresh(szPath);
-	}
-
+		Refresh(*(const TCHAR**)pvValue);
 	return true;
 }
 
-void CFolder::Refresh(const TCHAR* szPath)
+// <dir>\<name> in a fresh string.
+static TCHAR* JoinPath(const TCHAR* dir, const TCHAR* name)
 {
-	TCHAR szWild [MAX_PATH];
-	WIN32_FIND_DATA fd;
-	HANDLE h;
-
-	lstrcpyn(szWild, szPath, MAX_PATH - sizeof("\\*.*"));
-	_tcscat(szWild, _T("\\*.*"));
-
-	char szWildA [MAX_PATH];
-	Ansi(szWildA, szWild, MAX_PATH);
-	h = TheseusFindFirstFile(szWildA, &fd);
-
-	if (h == INVALID_HANDLE_VALUE)
-	{
-		TRACE(_T("\001Cannot read directory: \"%s\" (%d)\n"), szPath, GetLastError());
-		return;
-	}
-
-	// Cache the trailing path component as the folder's display name.
-	const TCHAR* pchName = _tcsrchr(szPath, '\\');
-	pchName = (pchName == NULL) ? _T("") : pchName + 1;
-
-	delete [] m_name;
-	m_name = new TCHAR [_tcslen(pchName) + 1];
-	_tcscpy(m_name, pchName);
-
-
-	do
-	{
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM)
-			continue;
-
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)
-			continue;
-
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY)
-			continue;
-
-		TCHAR szFileName [MAX_PATH];
-		Unicode(szFileName, fd.cFileName, countof(szFileName));
-
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-		{
-			CFolder* pFolder = new CFolder;
-			m_subFolders.AddNode(pFolder);
-
-			pFolder->m_path = new TCHAR [_tcslen(szPath) + 1 + _tcslen(szFileName) + 1];
-			_stprintf(pFolder->m_path, _T("%s\\%s"), szPath, szFileName);
-
-			pFolder->m_name = new TCHAR [_tcslen(szFileName) + 1];
-			_tcscpy(pFolder->m_name, szFileName);
-		}
-		else
-		{
-			CFile* pFile = new CFile;
-			m_files.AddNode(pFile);
-
-			pFile->m_date = new CDateObject;
-			pFile->m_date->m_time = fd.ftLastWriteTime;
-
-			const TCHAR* pch = _tcsrchr(szFileName, '.');
-
-			int cchName = _tcslen(szFileName);
-			if (pch != NULL)
-				cchName -= _tcslen(pch);
-			pFile->m_name = new TCHAR [cchName + 1];
-			CopyChars(pFile->m_name, szFileName, cchName);
-			pFile->m_name[cchName] = 0;
-
-			if (pch != NULL)
-				pch += 1;
-			else
-				pch = _T("");
-			pFile->m_type = new TCHAR [_tcslen(pch) + 1];
-			_tcscpy(pFile->m_type, pch);
-			_tcslwr(pFile->m_type);
-
-			pFile->m_path = new TCHAR [_tcslen(szPath) + 1 + _tcslen(szFileName) + 1];
-			_stprintf(pFile->m_path, _T("%s\\%s"), szPath, szFileName);
-
-			pFile->m_length = fd.nFileSizeLow;
-		}
-	}
-	while (TheseusFindNextFile(h, &fd));
-
-	TheseusFindClose(h);
+	TCHAR* joined = new TCHAR [_tcslen(dir) + 1 + _tcslen(name) + 1];
+	_stprintf(joined, _T("%s\\%s"), dir, name);
+	return joined;
 }
 
-static int __cdecl CmpName(const void* p1, const void* p2)
+// CFolder::Refresh(path)
+// Reconstructed from 5960 retail XBE @ 0x31b50. Lists <path>\*.* (the path
+// is cut to 255 chars). If that works, the folder's name becomes the part
+// after the last '\'. Hidden, system and temporary entries are skipped.
+// Each subfolder becomes a Folder with its path and name; each file a
+// File with its write time as a Date, name without the extension, the
+// extension lowercased as type, full path, and size.
+void CFolder::Refresh(const TCHAR* szPath)
 {
-	const CFile* pFile1 = *(CFile**)p1;
-	const CFile* pFile2 = *(CFile**)p2;
+	TCHAR pattern[MAX_PATH];
+	lstrcpyn(pattern, szPath, 255);
+	_tcscat(pattern, _T("\\*.*"));
+	char narrow[MAX_PATH];
+	Ansi(narrow, pattern, MAX_PATH);
 
-	return _tcsicmp(pFile1->m_name, pFile2->m_name);
+	WIN32_FIND_DATA found;
+	HANDLE find = TheseusFindFirstFile(narrow, &found);
+	if (find == INVALID_HANDLE_VALUE)
+		return;
+
+	const TCHAR* last = _tcsrchr(szPath, '\\');
+	delete [] m_name;
+	m_name = NewString(last != NULL ? last + 1 : _T(""));
+
+	const DWORD skip = FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_TEMPORARY;
+	do
+	{
+		if (found.dwFileAttributes & skip)
+			continue;
+
+		TCHAR entry[MAX_PATH];
+		Unicode(entry, found.cFileName, countof(entry));
+
+		if (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+		{
+			CFolder* sub = new CFolder;
+			m_subFolders.AddNode(sub);
+			sub->m_path = JoinPath(szPath, entry);
+			sub->m_name = NewString(entry);
+			continue;
+		}
+
+		CFile* file = new CFile;
+		m_files.AddNode(file);
+
+		file->m_date = new CDateObject;
+		file->m_date->m_time = found.ftLastWriteTime;
+
+		const TCHAR* dot = _tcsrchr(entry, '.');
+		int stem = (int)_tcslen(entry) - (dot != NULL ? (int)_tcslen(dot) : 0);
+		file->m_name = new TCHAR [stem + 1];
+		CopyChars(file->m_name, entry, stem);
+		file->m_name[stem] = 0;
+
+		file->m_type = NewString(dot != NULL ? dot + 1 : _T(""));
+		_tcslwr(file->m_type);
+
+		file->m_path = JoinPath(szPath, entry);
+		file->m_length = found.nFileSizeLow;
+	}
+	while (TheseusFindNextFile(find, &found));
+
+	TheseusFindClose(find);
+}
+
+// CFolder::sortByName / Type / Date / Length   [script fns]
+// Reconstructed from 5960 retail XBE @ 0x31f30..0x32010: qsort the files
+// by name or type ignoring case, by write time, or by size.
+static CFile* FileAt(const void* p)
+{
+	return *(CFile* const*)p;
+}
+
+static int __cdecl ByName(const void* a, const void* b)
+{
+	return _tcsicmp(FileAt(a)->m_name, FileAt(b)->m_name);
+}
+
+static int __cdecl ByType(const void* a, const void* b)
+{
+	return _tcsicmp(FileAt(a)->m_type, FileAt(b)->m_type);
+}
+
+static int __cdecl ByDate(const void* a, const void* b)
+{
+	return CompareFileTime(&FileAt(a)->m_date->m_time, &FileAt(b)->m_date->m_time);
+}
+
+static int __cdecl ByLength(const void* a, const void* b)
+{
+	return FileAt(a)->m_length - FileAt(b)->m_length;
 }
 
 void CFolder::sortByName()
 {
-	m_files.Sort(&CmpName);
-}
-
-static int __cdecl CmpType(const void* p1, const void* p2)
-{
-	const CFile* pFile1 = *(CFile**)p1;
-	const CFile* pFile2 = *(CFile**)p2;
-
-	return _tcsicmp(pFile1->m_type, pFile2->m_type);
+	m_files.Sort(ByName);
 }
 
 void CFolder::sortByType()
 {
-	m_files.Sort(CmpType);
-}
-
-static int __cdecl CmpDate(const void* p1, const void* p2)
-{
-	const CFile* pFile1 = *(CFile**)p1;
-	const CFile* pFile2 = *(CFile**)p2;
-
-	return CompareFileTime(&pFile1->m_date->m_time, &pFile2->m_date->m_time);
+	m_files.Sort(ByType);
 }
 
 void CFolder::sortByDate()
 {
-	m_files.Sort(CmpDate);
-}
-
-static int __cdecl CmpLength(const void* p1, const void* p2)
-{
-	const CFile* pFile1 = *(CFile**)p1;
-	const CFile* pFile2 = *(CFile**)p2;
-
-	return pFile1->m_length - pFile2->m_length;
+	m_files.Sort(ByDate);
 }
 
 void CFolder::sortByLength()
 {
-	m_files.Sort(CmpLength);
+	m_files.Sort(ByLength);
 }
