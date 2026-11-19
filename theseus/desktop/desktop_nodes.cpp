@@ -3444,6 +3444,14 @@ static std::string WatchLine(bool played, long long posSeconds, long long runSec
 	return played ? "Watched" : "";
 }
 
+// Row prefix: a check once watched, a chevron while part watched.
+static std::string WatchMark(bool played, long long posSeconds, long long runSeconds)
+{
+	(void)runSeconds;
+	if (posSeconds > 0) return "\xC2\xBB ";
+	return played ? "\xE2\x88\x9A " : "";
+}
+
 static void AppendLine(std::string& body, const std::string& line)
 {
 	if (line.empty()) return;
@@ -3705,6 +3713,7 @@ public:
 		const PlexItem& it = items[i];
 		std::string s = it.title;
 		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		if (!IsFolderType(it.type)) s = Mark(it) + s;
 		return new CStrObject(_T(s.c_str()));
 	}
 
@@ -3875,7 +3884,7 @@ public:
 		if (showKey.empty()) return new CStrObject;
 		Plex_Cache_GetSeasons(showKey, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
-		return new CStrObject(_T(seasons[i].title.c_str()));
+		return new CStrObject(_T((Mark(seasons[i]) + seasons[i].title).c_str()));
 	}
 
 	void DrillIntoSeason(int i)
@@ -3889,6 +3898,8 @@ public:
 		std::vector<PlexEpisode> dummy;
 		(void)Plex_Cache_GetEpisodes(seasons[i].ratingKey, dummy);
 	}
+
+	static std::string Mark(const PlexDetails& d) { return WatchMark(d.Played(), d.offsetMs / 1000, d.durationMs / 1000); }
 
 	static std::string LeftLine(const PlexDetails& d)
 	{
@@ -3924,7 +3935,7 @@ public:
 		if (seasonKey.empty()) return new CStrObject;
 		Plex_Cache_GetEpisodes(seasonKey, eps);
 		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		return new CStrObject(_T(EpisodeLabel(eps[i].index, eps[i].title).c_str()));
+		return new CStrObject(_T((Mark(eps[i]) + EpisodeLabel(eps[i].index, eps[i].title)).c_str()));
 	}
 
 	void PlayEpisode(int i)
@@ -4119,6 +4130,7 @@ public:
 		const JellyfinItem& it = items[i];
 		std::string s = it.name;
 		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		if (!it.isFolder || it.type == "Series") s = Mark(it) + s;
 		return new CStrObject(_T(s.c_str()));
 	}
 
@@ -4255,7 +4267,7 @@ public:
 		if (showId.empty()) return new CStrObject;
 		Jellyfin_Cache_GetSeasons(showId, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
-		return new CStrObject(_T(seasons[i].name.c_str()));
+		return new CStrObject(_T((Mark(seasons[i]) + seasons[i].name).c_str()));
 	}
 
 	void DrillIntoSeason(int i)
@@ -4293,6 +4305,7 @@ public:
 	}
 
 	static long long Secs(long long ticks) { return ticks / 10000000; }
+	static std::string Mark(const JellyfinDetails& d) { return WatchMark(d.played, Secs(d.posTicks), Secs(d.runTicks)); }
 
 	std::string EpisodeLabel(const std::string& index, const std::string& title)
 	{
@@ -4322,7 +4335,7 @@ public:
 		if (seasonId.empty()) return new CStrObject;
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
 		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		return new CStrObject(_T(EpisodeLabel(eps[i].index, eps[i].name).c_str()));
+		return new CStrObject(_T((Mark(eps[i]) + EpisodeLabel(eps[i].index, eps[i].name)).c_str()));
 	}
 
 	void PlayEpisode(int i)
