@@ -439,6 +439,10 @@ static std::string GameSource(const VirtualGame& vg)
     }
     if (strncmp(vg.launch, "xcloud://", 9) == 0) return "xCloud";
     if (strncmp(vg.launch, "xhome://", 8) == 0)  return "Remote Play";
+    // Heroic launches Epic and GOG games; Lutris runs through its own command.
+    if (strncasecmp(vg.launch, "heroic://launch/legendary/", 26) == 0) return "Epic";
+    if (strncasecmp(vg.launch, "heroic://launch/gog/", 20) == 0)       return "GOG";
+    if (strstr(vg.launch, "lutris:rungameid/"))                        return "Lutris";
     static const struct { const char* scheme; const char* name; } kStores[] = {
         { "steam://", "Steam" }, { "com.epicgames.launcher://", "Epic" }, { "heroic://", "Heroic" },
         { "goggalaxy://", "GOG" }, { "itch://", "itch.io" }, { "uplay://", "Ubisoft" }, { "origin2://", "EA" },
