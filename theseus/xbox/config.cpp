@@ -1137,10 +1137,9 @@ void CConfig::ToggleNoisyCamera()
 }
 
 // CConfig::GetEthernetLinkStatus()   [script fn 'GetEthernetLinkStatus', FND 0x00180318, sig 2]
-// 5960 @ 0x0003b9d0 is XNetGetEthernetLinkStatus() & 1, the cable's link
-// bit. Theseus answers whether XNet has started looking for an address.
+// Reconstructed from 5960 retail XBE @ 0x0003b9d0: whether the cable is
+// plugged in and live (XNET_ETHERNET_LINK_ACTIVE).
 int CConfig::GetEthernetLinkStatus()
 {
-	XNADDR xna;
-	return XNetGetTitleXnAddr(&xna) != 0 ? 1 : 0;
+	return (XNetGetEthernetLinkStatus() & XNET_ETHERNET_LINK_ACTIVE) ? 1 : 0;
 }
