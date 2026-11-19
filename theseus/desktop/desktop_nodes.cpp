@@ -3382,6 +3382,15 @@ END_NODE_FUN()
 
 #include "plex_client.h"
 
+// "S2E05 · Title" for an episode row. No number, just the title.
+static std::string EpisodeCode(const std::string& season, const std::string& episode)
+{
+	if (episode.empty()) return "";
+	char buf[32];
+	snprintf(buf, sizeof(buf), "S%sE%02d", season.empty() ? "?" : season.c_str(), atoi(episode.c_str()));
+	return buf;
+}
+
 class CPlexLibrary : public CNode
 {
 public:
@@ -3517,7 +3526,7 @@ public:
 			const PlexItem& it = items[i];
 			s = it.type;
 			for (auto& c : s) c = (char)toupper((unsigned char)c);
-			if (!it.year.empty()) { s += "  \xE2\x80\xA2  "; s += it.year; }
+			if (!it.year.empty()) { s += "  \xC2\xB7  "; s += it.year; }
 			return new CStrObject(_T(s.c_str()));
 		}
 		if (view == 2) {
@@ -3739,7 +3748,7 @@ public:
 		if (i < 0 || i >= (int)items.size()) return;
 		const PlexItem& it = items[i];
 		std::string sub = "Plex";
-		if (!it.year.empty()) { sub += "  •  "; sub += it.year; }
+		if (!it.year.empty()) { sub += "  \xC2\xB7  "; sub += it.year; }
 		PlayRatingKey(it.ratingKey, it.title, sub);
 	}
 
@@ -3805,6 +3814,17 @@ public:
 		(void)Plex_Cache_GetEpisodes(seasons[i].ratingKey, dummy);
 	}
 
+	std::string EpisodeLabel(const std::string& index, const std::string& title)
+	{
+		std::vector<PlexSeason> seasons;
+		Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
+		std::string season;
+		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size())
+			season = seasons[m_currentSeason].index;
+		std::string code = EpisodeCode(season, index);
+		return code.empty() ? title : code + " \xC2\xB7 " + title;
+	}
+
 	int GetEpisodeCount()
 	{
 		std::vector<PlexEpisode> eps;
@@ -3821,11 +3841,7 @@ public:
 		if (seasonKey.empty()) return new CStrObject;
 		Plex_Cache_GetEpisodes(seasonKey, eps);
 		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		const PlexEpisode& e = eps[i];
-		std::string s;
-		if (!e.index.empty()) { s += e.index; s += ". "; }
-		s += e.title;
-		return new CStrObject(_T(s.c_str()));
+		return new CStrObject(_T(EpisodeLabel(eps[i].index, eps[i].title).c_str()));
 	}
 
 	void PlayEpisode(int i)
@@ -3844,9 +3860,8 @@ public:
 		if (m_currentShow >= 0 && m_currentShow < (int)items.size())
 			sub = items[m_currentShow].title;
 		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size()) {
-			sub += "  •  S";
-			sub += seasons[m_currentSeason].index;
-			if (!e.index.empty()) { sub += "E"; sub += e.index; }
+			std::string code = EpisodeCode(seasons[m_currentSeason].index, e.index);
+			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
 		}
 		PlayRatingKey(e.ratingKey, e.title, sub);
 	}
@@ -4125,7 +4140,7 @@ public:
 		if (it.isFolder) return;
 		m_playAudio = (it.type == "Audio");
 		std::string sub = "Jellyfin";
-		if (!it.year.empty()) { sub += "  \xE2\x80\xA2  "; sub += it.year; }
+		if (!it.year.empty()) { sub += "  \xC2\xB7  "; sub += it.year; }
 		PlayRatingKey(it.id, it.name, sub);
 	}
 
@@ -4194,6 +4209,18 @@ public:
 		return ArtOrLogo(seasons[i].id, showId);
 	}
 
+	std::string EpisodeLabel(const std::string& index, const std::string& title)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (!showId.empty()) Jellyfin_Cache_GetSeasons(showId, seasons);
+		std::string season;
+		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size())
+			season = seasons[m_currentSeason].index;
+		std::string code = EpisodeCode(season, index);
+		return code.empty() ? title : code + " \xC2\xB7 " + title;
+	}
+
 	int GetEpisodeCount()
 	{
 		std::vector<JellyfinEpisode> eps;
@@ -4210,11 +4237,7 @@ public:
 		if (seasonId.empty()) return new CStrObject;
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
 		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		const JellyfinEpisode& e = eps[i];
-		std::string s;
-		if (!e.index.empty()) { s += e.index; s += ". "; }
-		s += e.name;
-		return new CStrObject(_T(s.c_str()));
+		return new CStrObject(_T(EpisodeLabel(eps[i].index, eps[i].name).c_str()));
 	}
 
 	void PlayEpisode(int i)
@@ -4234,9 +4257,8 @@ public:
 		if (m_currentShow >= 0 && m_currentShow < (int)items.size())
 			sub = items[m_currentShow].name;
 		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size()) {
-			sub += "  \xE2\x80\xA2  S";
-			sub += seasons[m_currentSeason].index;
-			if (!e.index.empty()) { sub += "E"; sub += e.index; }
+			std::string code = EpisodeCode(seasons[m_currentSeason].index, e.index);
+			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
 		}
 		PlayRatingKey(e.id, e.name, sub);
 	}
@@ -4274,7 +4296,7 @@ public:
 			std::string t = it.type;
 			for (auto& c : t) c = (char)toupper((unsigned char)c);
 			s = t;
-			if (!it.year.empty()) { s += "  \xE2\x80\xA2  "; s += it.year; }
+			if (!it.year.empty()) { s += "  \xC2\xB7  "; s += it.year; }
 			return new CStrObject(_T(s.c_str()));
 		}
 		if (view == 2) {
