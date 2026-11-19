@@ -6,7 +6,7 @@
 #include "dashapp.h"
 #include "node.h"
 #include "runner.h"
-#include "titlecollection.h"
+#include "title_collection.h"
 #include "discmanager.h"
 #include "network.h"
 

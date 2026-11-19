@@ -10,11 +10,7 @@
 
 #include "std.h"
 #include "theseus.h"
-#ifdef _XBOX
 #include "title_collection.h"
-#else
-#include "titlecollection.h"
-#endif
 #include "node.h"
 #include "runner.h"
 #include "locale_node.h"
