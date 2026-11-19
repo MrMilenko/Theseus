@@ -50,7 +50,7 @@ function BindActiveList()
 function GetActiveTitle(absIdx)
 {
 	if (nJfView == 0)
-		return theJellyfinLibrary.GetName(absIdx);
+		return theJellyfinLibrary.GetLibraryRow(absIdx);
 	if (nJfView == 1)
 		return theJellyfinLibrary.GetItemTitle(absIdx);
 	if (nJfView == 2)

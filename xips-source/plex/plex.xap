@@ -50,7 +50,7 @@ function BindActiveList()
 function GetActiveTitle(absIdx)
 {
 	if (nPlexView == 0)
-		return thePlexLibrary.GetName(absIdx);
+		return thePlexLibrary.GetLibraryRow(absIdx);
 	if (nPlexView == 1)
 		return thePlexLibrary.GetItemTitle(absIdx);
 	if (nPlexView == 2)

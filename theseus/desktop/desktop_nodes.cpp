@@ -3516,6 +3516,16 @@ public:
 		return new CStrObject(_T(libs[i].title.c_str()));
 	}
 
+	// Library row: "Movies  \xC2\xB7  12".
+	CStrObject* GetLibraryRow(int i)
+	{
+		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		char buf[32];
+		snprintf(buf, sizeof(buf), "  \xC2\xB7  %d", (int)Plex_Cache_GetItems(libs[i].sectionKey).size());
+		return new CStrObject(_T((libs[i].title + buf).c_str()));
+	}
+
 	CStrObject* GetMeta(int i)
 	{
 		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
@@ -4004,6 +4014,7 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_IV(GetFolderDepth)
 	NODE_FUN_IV(LeaveFolder)
 	NODE_FUN_SV(GetListTitle)
+	NODE_FUN_SI(GetLibraryRow)
 END_NODE_FUN()
 
 
@@ -4048,6 +4059,16 @@ public:
 		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
 		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
 		return new CStrObject(_T(libs[i].name.c_str()));
+	}
+
+	// Library row: "Movies  \xC2\xB7  12".
+	CStrObject* GetLibraryRow(int i)
+	{
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		char buf[32];
+		snprintf(buf, sizeof(buf), "  \xC2\xB7  %d", (int)Jellyfin_Cache_GetItems(libs[i].id).size());
+		return new CStrObject(_T((libs[i].name + buf).c_str()));
 	}
 
 	CStrObject* GetMeta(int i)
@@ -4552,6 +4573,7 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_IV(GetFolderDepth)
 	NODE_FUN_IV(LeaveFolder)
 	NODE_FUN_SV(GetListTitle)
+	NODE_FUN_SI(GetLibraryRow)
 END_NODE_FUN()
 
 
