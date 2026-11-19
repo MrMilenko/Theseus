@@ -16,20 +16,23 @@ bool ResetScreenSaver();
 extern bool g_desktopRestartRequested;
 #endif
 
+// 0x2c bytes in 5960; recoveryProgress is the only property.
 class CRecovery : public CNode
 {
 	DECLARE_NODE(CRecovery, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CRecovery();
 	~CRecovery();
+
 	void StartRecovery();
 	void FinishRecovery();
-	float m_recoveryProgress;
+
+	float m_recoveryProgress;	// +0x1c
 
 protected:
-	void Advance(float nSeconds);
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
+	void Advance(float dt);
 
 private:
 	bool m_bDone;           // +0x20
@@ -62,9 +65,7 @@ CRecovery::CRecovery()
 	m_nLastPercent = 0;
 }
 
-CRecovery::~CRecovery()
-{
-}
+CRecovery::~CRecovery() {}
 
 // CRecovery::StartRecovery()   [script fn 'StartRecovery', FND 0x00180390, sig 1]
 // 5960 (@ 0x0003bb20) clears done, sets running, syncs the last percentage
@@ -97,9 +98,9 @@ void CRecovery::FinishRecovery()
 // stops it and calls OnRecoveryComplete; otherwise a new percentage calls
 // OnRecoveryProgressChanged, updates recoveryProgress (percent / 100) and
 // keeps the screen saver off.
-void CRecovery::Advance(float nSeconds)
+void CRecovery::Advance(float dt)
 {
-	CNode::Advance(nSeconds);
+	CNode::Advance(dt);
 	if (!m_bRunning)
 		return;
 

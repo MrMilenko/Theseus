@@ -18,20 +18,19 @@
 class CTimeSensor : public CTimeDepNode
 {
 	DECLARE_NODE(CTimeSensor, CTimeDepNode)
+	DECLARE_NODE_PROPS()
 public:
 	CTimeSensor();
 
+	bool OnSetProperty(const PRD* prop, const void* value);
+	void Advance(float dt);
+	void OnIsActiveChanged();
+
 	float m_cycleInterval;
-	bool  m_enabled;
+	bool m_enabled;
 	XTIME m_cycleTime;
 	float m_fraction_changed;
 	XTIME m_time;
-
-	void Advance(float nSeconds);
-	void OnIsActiveChanged();
-	bool OnSetProperty(const PRD* pprd, const void* pvValue);
-
-	DECLARE_NODE_PROPS()
 };
 
 IMPLEMENT_NODE("TimeSensor", CTimeSensor, CTimeDepNode)
@@ -58,12 +57,12 @@ CTimeSensor::CTimeSensor()
 //     if (prd->offset == 0x48) { time = (double)*(float*)value; return 0; }
 //     return 1;
 // Script hands numbers over as floats; time is a double, so it's widened here.
-bool CTimeSensor::OnSetProperty(const PRD* pprd, const void* pvValue)
+bool CTimeSensor::OnSetProperty(const PRD* prop, const void* value)
 {
-	if (PTR2INT(pprd->pbOffset) != offsetof(m_time))
+	if (PTR2INT(prop->pbOffset) != offsetof(m_time))
 		return true;
 
-	m_time = *(const float*)pvValue;
+	m_time = *(const float*)value;
 	return false;
 }
 
@@ -80,10 +79,10 @@ bool CTimeSensor::OnSetProperty(const PRD* pprd, const void* pvValue)
 //     if (fraction_changed == 0.0 && startTime < now) fraction_changed = 1.0;
 //     CallFunction(this, L"fraction_changed", 0, 0);
 // The 1.0 case lets a cycle end land on its last frame instead of wrapping.
-void CTimeSensor::Advance(float nSeconds)
+void CTimeSensor::Advance(float dt)
 {
 	XTIME now = TheseusGetNow();
-	CTimeDepNode::Advance(nSeconds);
+	CTimeDepNode::Advance(dt);
 
 	if (!m_isActive)
 		return;
@@ -159,12 +158,12 @@ CPositionInterpolator::~CPositionInterpolator()
 //         D3DXVec3CatmullRom(&out, &v[i-1], &v[i], &v[i+1], &v[i+2], frac);
 //     else out = v[i] + (v[i+1] - v[i]) * frac;
 // Catmull-Rom needs a key on each side, so the end spans fall back to a lerp.
-D3DXVECTOR3 CPositionInterpolator::Interpolate(float key)
+D3DXVECTOR3 CPositionInterpolator::Interpolate(float t)
 {
 	const D3DXVECTOR3* v = m_keyValue.m_value;
 	int last = m_keyValue.m_nSize - 1;
 
-	float span = key * (float)last;
+	float span = t * (float)last;
 	float whole = floorf(span);
 	int i = (int)whole;
 	float frac = span - whole;
@@ -223,12 +222,12 @@ void COrientationInterpolator::OnLoad()
 //     if (i < 0) return v[0];
 //     if (count - 1 <= i) return v[count - 1];
 //     D3DXQuaternionSlerp(&out, &v[i], &v[i+1], k - floor(k));
-D3DXQUATERNION COrientationInterpolator::Interpolate(float key)
+D3DXQUATERNION COrientationInterpolator::Interpolate(float t)
 {
 	const D3DXQUATERNION* q = (const D3DXQUATERNION*)m_keyValue.m_value;
 	int last = m_keyValue.m_nSize - 1;
 
-	float span = key * (float)last;
+	float span = t * (float)last;
 	float whole = floorf(span);
 	int i = (int)whole;
 
@@ -299,10 +298,10 @@ void CViewpoint::OnLoad()
 // BindViewpoint(pNode)
 // Reconstructed from 5960 retail XBE @ 0x0004f880. Ghidra decompile:
 //     if (node && node->GetNodeClass() is or derives from CViewpoint) Bind();
-void BindViewpoint(CNode* pViewpointNode)
+void BindViewpoint(CNode* viewpoint)
 {
-	if (pViewpointNode != NULL && pViewpointNode->IsKindOf(NODE_CLASS(CViewpoint)))
-		((CViewpoint*)pViewpointNode)->Bind();
+	if (viewpoint != NULL && viewpoint->IsKindOf(NODE_CLASS(CViewpoint)))
+		((CViewpoint*)viewpoint)->Bind();
 }
 
 // CViewpoint::Bind()
@@ -340,13 +339,13 @@ void CViewpoint::Bind()
 //     if (prd->offset == 0x1c) { if (*(bool*)value) Bind(); }
 //     else if (prd->offset == 0x20) g_bProjectionDirty = 1;
 //     return 1;
-bool CViewpoint::OnSetProperty(const PRD* pprd, const void* pvValue)
+bool CViewpoint::OnSetProperty(const PRD* prop, const void* value)
 {
-	int field = PTR2INT(pprd->pbOffset);
+	int field = PTR2INT(prop->pbOffset);
 
 	if (field == offsetof(m_isBound))
 	{
-		if (*(const bool*)pvValue)
+		if (*(const bool*)value)
 			Bind();
 	}
 	else if (field == offsetof(m_fieldOfView))
@@ -431,13 +430,13 @@ void CNavigationInfo::Bind()
 //     case 0x20: case 0x38: g_bProjectionDirty = 1; break; }
 //     return 1;
 // Avatar size and visibility limit feed the near and far planes.
-bool CNavigationInfo::OnSetProperty(const PRD* pprd, const void* pvValue)
+bool CNavigationInfo::OnSetProperty(const PRD* prop, const void* value)
 {
-	int field = PTR2INT(pprd->pbOffset);
+	int field = PTR2INT(prop->pbOffset);
 
 	if (field == offsetof(m_isBound))
 	{
-		if (*(const bool*)pvValue)
+		if (*(const bool*)value)
 			Bind();
 	}
 	else if (field == offsetof(m_avatarSize) || field == offsetof(m_visibilityLimit))

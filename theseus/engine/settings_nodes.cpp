@@ -13,31 +13,30 @@
 
 // ===== Settings ============================================================
 
+// 0x30 bytes in 5960: file 0x1c, section 0x20, then the open settings file.
 class CSettings : public CNode
 {
 	DECLARE_NODE(CSettings, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CSettings();
 	~CSettings();
 
-	CObject* Dot(CObject* pObject);
-
-	TCHAR* m_file;
-	TCHAR* m_section;
-
-	void SetValue(const TCHAR* szName, const TCHAR* szValue);
-	CStrObject* GetValue(const TCHAR* szName);
+	CObject* Dot(CObject* member);
+	CStrObject* GetValue(const TCHAR* name);
+	void SetValue(const TCHAR* name, const TCHAR* value);
 	// Theseus: drops the cached file and reads it again, for when native
 	// code (the title scanner) rewrote it underneath.
 	void Reload();
 
-protected:
-	CSettingsFile m_sfile;
+	TCHAR* m_file;
+	TCHAR* m_section;
 
+protected:
 	bool OpenCurrent();
 
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
+	CSettingsFile m_sfile;
 };
 
 // What settings.<name> evaluates to: reading it fetches the value,
@@ -48,9 +47,9 @@ public:
 	CSetting();
 	~CSetting();
 
-	void Assign(CObject* pObject);
-	CStrObject* ToStr();
 	CObject* Deref();
+	void Assign(CObject* newValue);
+	CStrObject* ToStr();
 
 	CSettings* m_pSettings;
 	TCHAR* m_textName;
@@ -93,13 +92,13 @@ CSettings::~CSettings()
 // Reconstructed from 5960 retail XBE @ 0x00041950. Anything the node itself
 // answers comes first; any other name (a type 4 variable) becomes a
 // CSetting carrying a copy of the name.
-CObject* CSettings::Dot(CObject* pObj)
+CObject* CSettings::Dot(CObject* member)
 {
-	CObject* own = CNode::Dot(pObj);
-	if (own != NULL || pObj->m_obj != objVariable)
+	CObject* own = CNode::Dot(member);
+	if (own != NULL || member->m_obj != objVariable)
 		return own;
 
-	const TCHAR* name = ((CVarObject*)pObj)->m_text;
+	const TCHAR* name = ((CVarObject*)member)->m_text;
 	CSetting* setting = new CSetting;
 	setting->m_pSettings = this;
 	setting->m_textName = new TCHAR[_tcslen(name) + 1];
@@ -128,22 +127,22 @@ void CSettings::Reload()
 // CSettings::SetValue(name, value)   [script fn 'SetValue', FND 0x00182028, sig 13]
 // Reconstructed from 5960 retail XBE @ 0x000419e0: reopen if needed, set
 // the value in `section`, and save when it changed.
-void CSettings::SetValue(const TCHAR* szName, const TCHAR* szValue)
+void CSettings::SetValue(const TCHAR* name, const TCHAR* value)
 {
 	OpenCurrent();
-	m_sfile.SetValue(m_section, szName, szValue);
+	m_sfile.SetValue(m_section, name, value);
 }
 
 // CSettings::GetValue(name)   [script fn 'GetValue', FND 0x00182010, sig 5]
 // Reconstructed from 5960 retail XBE @ 0x00041a50: reopen if needed (an
 // empty string if that fails), then the value from `section` read into
 // 1024 characters.
-CStrObject* CSettings::GetValue(const TCHAR* szName)
+CStrObject* CSettings::GetValue(const TCHAR* name)
 {
 	if (!OpenCurrent())
 		return new CStrObject(_T(""));
 	TCHAR value[1024];
-	m_sfile.GetValue(m_section, szName, value, countof(value));
+	m_sfile.GetValue(m_section, name, value, countof(value));
 	return new CStrObject(value);
 }
 
@@ -162,9 +161,9 @@ CSetting::~CSetting()
 // CSetting::Assign(value)
 // Reconstructed from 5960 retail XBE @ 0x00041b80:
 //     s = value->Deref()->ToStr(); settings->SetValue(name, s->text or "");
-void CSetting::Assign(CObject* pObject)
+void CSetting::Assign(CObject* newValue)
 {
-	CStrObject* text = pObject->Deref()->ToStr();
+	CStrObject* text = newValue->Deref()->ToStr();
 	m_pSettings->SetValue(m_textName, text->GetSz());
 }
 
@@ -186,35 +185,35 @@ CObject* CSetting::Deref()
 
 // ===== ScreenSaver =========================================================
 
+// Three idle stages: delay starts the saver, delay2 and delay3 fire later
+// hooks. The newest ScreenSaver is the one input resets.
 class CScreenSaver : public CNode
 {
 	DECLARE_NODE(CScreenSaver, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CScreenSaver();
 	~CScreenSaver();
 
-	void StartAfter(float nTime);
-	void SetDelay2(float nTime);
-	void SetDelay3(float nTime);
+	void Advance(float dt);
+	bool OnSetProperty(const PRD* prop, const void* value);
 
-	bool  m_enabled;
-	bool  m_isActive;
-	bool  m_isActive2;
-	bool  m_isActive3;
+	void reset();
+	void StartAfter(float secs);
+	void SetDelay2(float secs);
+	void SetDelay3(float secs);
+
+	static CScreenSaver* c_pTheScreenSaver;
+
+	bool m_enabled;
+	bool m_isActive;
+	bool m_isActive2;
+	bool m_isActive3;
 	float m_delay;
 	float m_delay2;
 	float m_delay3;
-
-	void reset();
-	void Advance(float nSeconds);
-
 	XTIME m_timeOfLastEvent;
-
-	static CScreenSaver* c_pTheScreenSaver;
-	bool OnSetProperty(const PRD* pprd, const void* pvValue);
-
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
 };
 
 IMPLEMENT_NODE("ScreenSaver", CScreenSaver, CNode)
@@ -267,9 +266,9 @@ CScreenSaver::~CScreenSaver()
 		c_pTheScreenSaver = NULL;
 }
 
-void CScreenSaver::StartAfter(float nTime) { m_delay = nTime; }
-void CScreenSaver::SetDelay2(float nTime)  { m_delay2 = nTime; }
-void CScreenSaver::SetDelay3(float nTime)  { m_delay3 = nTime; }
+void CScreenSaver::StartAfter(float secs) { m_delay = secs; }
+void CScreenSaver::SetDelay2(float secs)  { m_delay2 = secs; }
+void CScreenSaver::SetDelay3(float secs)  { m_delay3 = secs; }
 
 // CScreenSaver::Advance(dt)
 // Reconstructed from 5960 retail XBE @ 0x000401b0. Disabled while active
@@ -277,9 +276,9 @@ void CScreenSaver::SetDelay3(float nTime)  { m_delay3 = nTime; }
 // delay2 and delay3, when above 0, each fire once (OnDelay2, OnDelay3)
 // after that long idle, enabled or not. 5960 does the sums in float;
 // Theseus keeps the double clock.
-void CScreenSaver::Advance(float nSeconds)
+void CScreenSaver::Advance(float dt)
 {
-	CNode::Advance(nSeconds);
+	CNode::Advance(dt);
 	XTIME now = TheseusGetNow();
 
 	if (!m_enabled)
@@ -326,11 +325,11 @@ void CScreenSaver::reset()
 // CScreenSaver::OnSetProperty(prd, value)
 // Reconstructed from 5960 retail XBE @ 0x000402d0: turning `enabled` on
 // resets first; the new value is stored either way.
-bool CScreenSaver::OnSetProperty(const PRD* pprd, const void* pvValue)
+bool CScreenSaver::OnSetProperty(const PRD* prop, const void* value)
 {
-	if (PTR2INT(pprd->pbOffset) != offsetof(m_enabled))
+	if (PTR2INT(prop->pbOffset) != offsetof(m_enabled))
 		return true;
-	bool on = *(const bool*)pvValue;
+	bool on = *(const bool*)value;
 	if (on)
 		reset();
 	m_enabled = on;
