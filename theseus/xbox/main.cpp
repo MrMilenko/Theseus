@@ -1,7 +1,9 @@
-// main.cpp: Xbox entry point. Sets up D3D, audio, network, the scene
-// graph, and the main loop; defines the dashboard globals declared in
-// theseus.h. Owns the boot path, the Advance / Draw cycle, and the
-// recovery / panic hook. Decompiled from the 5960 retail XBE.
+// main.cpp: the Xbox entry point, boot path and frame loop, plus the
+// dashboard globals theseus.h declares. Launch data, render states, Draw,
+// Advance, cleanup and the memory unit format are rebuilt from the 5960
+// retail XBE (0x2c520..0x2dd20); see docs/decomp/AppShell.md. Boot timing,
+// skins, Config.ini video modes, widgets, FTP, Discord and the panic
+// screen are Theseus's.
 
 #include "std.h"
 #include <xlaunch.h>
@@ -214,32 +216,38 @@ D3DXMATRIX g_matIdentity(
 UINT g_uMesh;
 UINT g_uMeshRef;
 
+// Alert(format, ...)
+// 5960 @ 0x0002c520 formats into a 512 character buffer and drops it
+// (retail has no debug output). Theseus sends the text to Trace.
 extern "C" void Alert(const TCHAR *szMsg, ...)
 {
+	TCHAR szText[512];
 	va_list args;
 	va_start(args, szMsg);
-
-	TCHAR szBuffer[512];
-	_vsntprintf(szBuffer, countof(szBuffer), szMsg, args);
-	Trace(_T("\007%s\n"), szBuffer);
+	_vsntprintf(szText, countof(szText), szMsg, args);
 	va_end(args);
+	Trace(_T("\007%s\n"), szText);
 }
 
 #ifdef _UNICODE
+// Widen or narrow at most nMaxChars characters, stopping after the
+// terminator. The narrow side keeps only each character's low byte.
 void Unicode(TCHAR *wsz, const char *sz, int nMaxChars)
 {
-	while (nMaxChars-- > 0)
+	for (int i = 0; i < nMaxChars; i++)
 	{
-		if ((*wsz++ = (unsigned char)*sz++) == 0)
+		wsz[i] = (unsigned char)sz[i];
+		if (sz[i] == 0)
 			return;
 	}
 }
 
 void Ansi(char *sz, const TCHAR *wsz, int nMaxChars)
 {
-	while (nMaxChars-- > 0)
+	for (int i = 0; i < nMaxChars; i++)
 	{
-		if ((*sz++ = (char)*wsz++) == 0)
+		sz[i] = (char)wsz[i];
+		if (sz[i] == 0)
 			return;
 	}
 }
@@ -247,6 +255,12 @@ void Ansi(char *sz, const TCHAR *wsz, int nMaxChars)
 
 extern "C" PLAUNCH_DATA_PAGE *LaunchDataPage;
 
+// Theseus_Init()
+// Reconstructed from the 5960 app constructor @ 0x0002c570: starts the
+// frame clock from GetTickCount and makes the root class. When the kernel
+// handed over launch data meant for the dash (LDT_LAUNCH_DASHBOARD), the
+// title id, reason, context and both parameters are kept and the page is
+// freed so nothing reads it twice. Then the main thread id is noted.
 static void Theseus_Init()
 {
 	g_dwStartTick = g_dwFrameTick = GetTickCount();
@@ -254,22 +268,19 @@ static void Theseus_Init()
 
 	g_pClass = new CClass;
 
-	// Retrieve the launch data, if any
-	if (*LaunchDataPage && (*LaunchDataPage)->Header.dwLaunchDataType == LDT_LAUNCH_DASHBOARD)
+	PLAUNCH_DATA_PAGE pPage = *LaunchDataPage;
+	if (pPage != NULL && pPage->Header.dwLaunchDataType == LDT_LAUNCH_DASHBOARD)
 	{
-		PLD_LAUNCH_DASHBOARD pLaunchDashboard =
-			(PLD_LAUNCH_DASHBOARD)((*LaunchDataPage)->LaunchData);
-
+		PLD_LAUNCH_DASHBOARD pDash = (PLD_LAUNCH_DASHBOARD)pPage->LaunchData;
 		g_bHasLaunchData = true;
-		g_dwTitleID = (*LaunchDataPage)->Header.dwTitleId;
-		g_dwLaunchReason = pLaunchDashboard->dwReason;
-		g_dwLaunchContext = pLaunchDashboard->dwContext;
-		g_dwLaunchParameter1 = pLaunchDashboard->dwParameter1;
-		g_dwLaunchParameter2 = pLaunchDashboard->dwParameter2;
+		g_dwTitleID = pPage->Header.dwTitleId;
+		g_dwLaunchReason = pDash->dwReason;
+		g_dwLaunchContext = pDash->dwContext;
+		g_dwLaunchParameter1 = pDash->dwParameter1;
+		g_dwLaunchParameter2 = pDash->dwParameter2;
 
-		PLAUNCH_DATA_PAGE pTemp = *LaunchDataPage;
 		*LaunchDataPage = NULL;
-		MmFreeContiguousMemory(pTemp);
+		MmFreeContiguousMemory(pPage);
 	}
 
 	g_dwMainThreadId = GetCurrentThreadId();
@@ -305,68 +316,87 @@ DWORD theseus_rgdwRenderStateCache[256];
 bool theseus_rgbRenderStateCache[256];
 float g_transitionMotionBlur;
 
+// XboxInitRenderState()
+// Reconstructed from 5960 retail XBE @ 0x0002c660: sets the startup render
+// states one at a time (z from the app's z-buffer flag, solid Gouraud fill,
+// z writes, no alpha test, one/zero blend, CCW culling, LESSEQUAL), then
+// the motion blur factor to 1. Theseus sets the full list below, in order.
 void XboxInitRenderState()
 {
-	float fZero = 0.0f;
-	float fOne = 1.0f;
+	const float fZero = 0.0f;
+	const float fOne = 1.0f;
+	const DWORD dwZero = *(const DWORD *)&fZero;
+	const DWORD dwOne = *(const DWORD *)&fOne;
 
-	TheseusSetRenderState(D3DRS_ZENABLE, TheseusGetZBuffer() ? D3DZB_TRUE : D3DZB_FALSE);
-	TheseusSetRenderState(D3DRS_FILLMODE, D3DFILL_SOLID);
-	TheseusSetRenderState(D3DRS_SHADEMODE, D3DSHADE_GOURAUD);
-	TheseusSetRenderState(D3DRS_ZWRITEENABLE, TRUE);
-	TheseusSetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-	TheseusSetRenderState(D3DRS_SRCBLEND, D3DBLEND_ONE);
-	TheseusSetRenderState(D3DRS_DESTBLEND, D3DBLEND_ZERO);
-	TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
-	TheseusSetRenderState(D3DRS_ZFUNC, D3DCMP_LESSEQUAL);
-	TheseusSetRenderState(D3DRS_ALPHAREF, 0);
-	TheseusSetRenderState(D3DRS_ALPHAFUNC, D3DCMP_ALWAYS);
-	TheseusSetRenderState(D3DRS_DITHERENABLE, TRUE);
-	TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-	TheseusSetRenderState(D3DRS_FOGENABLE, FALSE);
-	TheseusSetRenderState(D3DRS_SPECULARENABLE, FALSE);
-	TheseusSetRenderState(D3DRS_FOGCOLOR, 0);
-	TheseusSetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE);
-	TheseusSetRenderState(D3DRS_FOGDENSITY, *(LPDWORD)&fOne);
-	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, FALSE);
-	TheseusSetRenderState(D3DRS_ZBIAS, 0);
-	TheseusSetRenderState(D3DRS_RANGEFOGENABLE, FALSE);
-	TheseusSetRenderState(D3DRS_STENCILENABLE, FALSE);
-	TheseusSetRenderState(D3DRS_STENCILFAIL, D3DSTENCILOP_KEEP);
-	TheseusSetRenderState(D3DRS_STENCILZFAIL, D3DSTENCILOP_KEEP);
-	TheseusSetRenderState(D3DRS_STENCILPASS, D3DSTENCILOP_KEEP);
-	TheseusSetRenderState(D3DRS_STENCILFUNC, D3DCMP_ALWAYS);
-	TheseusSetRenderState(D3DRS_STENCILREF, 0);
-	TheseusSetRenderState(D3DRS_STENCILMASK, 0xffffffff);
-	TheseusSetRenderState(D3DRS_STENCILWRITEMASK, 0xffffffff);
-	TheseusSetRenderState(D3DRS_WRAP0, 0);
-	TheseusSetRenderState(D3DRS_WRAP1, 0);
-	TheseusSetRenderState(D3DRS_WRAP2, 0);
-	TheseusSetRenderState(D3DRS_WRAP3, 0);
-	TheseusSetRenderState(D3DRS_LIGHTING, TRUE);
-	TheseusSetRenderState(D3DRS_AMBIENT, 0);
-	TheseusSetRenderState(D3DRS_COLORVERTEX, TRUE);
-	TheseusSetRenderState(D3DRS_LOCALVIEWER, TRUE);
-	TheseusSetRenderState(D3DRS_NORMALIZENORMALS, FALSE);
-	TheseusSetRenderState(D3DRS_DIFFUSEMATERIALSOURCE, D3DMCS_COLOR1);
-	TheseusSetRenderState(D3DRS_SPECULARMATERIALSOURCE, D3DMCS_COLOR2);
-	TheseusSetRenderState(D3DRS_AMBIENTMATERIALSOURCE, D3DMCS_COLOR2);
-	TheseusSetRenderState(D3DRS_EMISSIVEMATERIALSOURCE, D3DMCS_MATERIAL);
-	TheseusSetRenderState(D3DRS_VERTEXBLEND, D3DVBF_DISABLE);
-	TheseusSetRenderState(D3DRS_POINTSIZE, *(LPDWORD)&fOne);
-	TheseusSetRenderState(D3DRS_POINTSIZE_MIN, *(LPDWORD)&fOne);
-	TheseusSetRenderState(D3DRS_POINTSPRITEENABLE, FALSE);
-	TheseusSetRenderState(D3DRS_POINTSCALEENABLE, FALSE);
-	TheseusSetRenderState(D3DRS_POINTSCALE_A, *(LPDWORD)&fOne);
-	TheseusSetRenderState(D3DRS_POINTSCALE_B, *(LPDWORD)&fZero);
-	TheseusSetRenderState(D3DRS_POINTSCALE_C, *(LPDWORD)&fZero);
-	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, TRUE);
-	TheseusSetRenderState(D3DRS_MULTISAMPLEMASK, 0xffffffff);
-	TheseusSetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+	const struct { D3DRENDERSTATETYPE state; DWORD value; } states[] =
+	{
+		{ D3DRS_ZENABLE,                  TheseusGetZBuffer() ? D3DZB_TRUE : D3DZB_FALSE },
+		{ D3DRS_FILLMODE,                 D3DFILL_SOLID },
+		{ D3DRS_SHADEMODE,                D3DSHADE_GOURAUD },
+		{ D3DRS_ZWRITEENABLE,             TRUE },
+		{ D3DRS_ALPHATESTENABLE,          FALSE },
+		{ D3DRS_SRCBLEND,                 D3DBLEND_ONE },
+		{ D3DRS_DESTBLEND,                D3DBLEND_ZERO },
+		{ D3DRS_CULLMODE,                 D3DCULL_CCW },
+		{ D3DRS_ZFUNC,                    D3DCMP_LESSEQUAL },
+		{ D3DRS_ALPHAREF,                 0 },
+		{ D3DRS_ALPHAFUNC,                D3DCMP_ALWAYS },
+		{ D3DRS_DITHERENABLE,             TRUE },
+		{ D3DRS_ALPHABLENDENABLE,         TRUE },
+		{ D3DRS_FOGENABLE,                FALSE },
+		{ D3DRS_SPECULARENABLE,           FALSE },
+		{ D3DRS_FOGCOLOR,                 0 },
+		{ D3DRS_FOGTABLEMODE,             D3DFOG_NONE },
+		{ D3DRS_FOGDENSITY,               dwOne },
+		{ D3DRS_EDGEANTIALIAS,            FALSE },
+		{ D3DRS_ZBIAS,                    0 },
+		{ D3DRS_RANGEFOGENABLE,           FALSE },
+		{ D3DRS_STENCILENABLE,            FALSE },
+		{ D3DRS_STENCILFAIL,              D3DSTENCILOP_KEEP },
+		{ D3DRS_STENCILZFAIL,             D3DSTENCILOP_KEEP },
+		{ D3DRS_STENCILPASS,              D3DSTENCILOP_KEEP },
+		{ D3DRS_STENCILFUNC,              D3DCMP_ALWAYS },
+		{ D3DRS_STENCILREF,               0 },
+		{ D3DRS_STENCILMASK,              0xffffffff },
+		{ D3DRS_STENCILWRITEMASK,         0xffffffff },
+		{ D3DRS_WRAP0,                    0 },
+		{ D3DRS_WRAP1,                    0 },
+		{ D3DRS_WRAP2,                    0 },
+		{ D3DRS_WRAP3,                    0 },
+		{ D3DRS_LIGHTING,                 TRUE },
+		{ D3DRS_AMBIENT,                  0 },
+		{ D3DRS_COLORVERTEX,              TRUE },
+		{ D3DRS_LOCALVIEWER,              TRUE },
+		{ D3DRS_NORMALIZENORMALS,         FALSE },
+		{ D3DRS_DIFFUSEMATERIALSOURCE,    D3DMCS_COLOR1 },
+		{ D3DRS_SPECULARMATERIALSOURCE,   D3DMCS_COLOR2 },
+		{ D3DRS_AMBIENTMATERIALSOURCE,    D3DMCS_COLOR2 },
+		{ D3DRS_EMISSIVEMATERIALSOURCE,   D3DMCS_MATERIAL },
+		{ D3DRS_VERTEXBLEND,              D3DVBF_DISABLE },
+		{ D3DRS_POINTSIZE,                dwOne },
+		{ D3DRS_POINTSIZE_MIN,            dwOne },
+		{ D3DRS_POINTSPRITEENABLE,        FALSE },
+		{ D3DRS_POINTSCALEENABLE,         FALSE },
+		{ D3DRS_POINTSCALE_A,             dwOne },
+		{ D3DRS_POINTSCALE_B,             dwZero },
+		{ D3DRS_POINTSCALE_C,             dwZero },
+		{ D3DRS_MULTISAMPLEANTIALIAS,     TRUE },
+		{ D3DRS_MULTISAMPLEMASK,          0xffffffff },
+		{ D3DRS_COLORWRITEENABLE,         D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA },
+	};
+
+	for (int i = 0; i < (int)countof(states); i++)
+		TheseusSetRenderState(states[i].state, states[i].value);
 
 	g_transitionMotionBlur = 1.0f;
 }
 
+// InitD3D()
+// 5960 @ 0x0002ccf0 sizes the back buffer by AV pack (640 or 720 wide, 576
+// high on PAL-I), 4x gaussian supersampling, vsync, interlaced unless an
+// HDTV pack allows 480p, and creates the device. Theseus reads its modes
+// from Q:\System\Config.ini, defaults to no multisampling and immediate
+// present, and adds its widgets and overlay once the device exists.
 bool InitD3D()
 {
 #ifdef THESEUS_PUSHBUFFER_KB
@@ -430,7 +460,11 @@ bool InitD3D()
 		XSetValue(XC_VIDEO_FLAGS, REG_DWORD, &videoFlags, sizeof(videoFlags));
 	}
 
-	if (isPAL)
+	// Composite, S-Video, RF and SCART can't carry a progressive signal, so
+	// Config.ini's 480p and 720p only count on an HDTV or VGA pack. 5960 only
+	// goes progressive on the HDTV pack (0x0002ccf0).
+	DWORD dwPack = XGetAVPack();
+	if (isPAL || (dwPack != XC_AV_PACK_HDTV && dwPack != XC_AV_PACK_VGA))
 	{
 		bEnable480p = false;
 		bEnable720p = false;
@@ -555,12 +589,7 @@ bool InitD3D()
 void ReleaseD3D()
 {
 	RELEASENULL(g_worldStack);
-
-	if (g_pD3D != NULL)
-	{
-		g_pD3D->Release();
-		g_pD3D = NULL;
-	}
+	RELEASENULL(g_pD3D);
 }
 
 struct COLORVERTEX
@@ -569,241 +598,203 @@ struct COLORVERTEX
 	DWORD color;
 };
 
+// Rebuild the projection when something marked it dirty: the field of
+// view from the bound viewpoint (90 degrees without one), near at half the
+// avatar size and far at the visibility limit (0.1 and 1000 without them).
+static void UpdateProjection()
+{
+	if (!g_bProjectionDirty)
+		return;
+	g_bProjectionDirty = false;
+
+	float fieldOfView = D3DX_PI / 2.0f;
+	float nNear = 0.1f;
+	float nFar = 1000.0f;
+
+	if (g_pNavigationInfo != NULL)
+	{
+		nNear = g_pNavigationInfo->m_avatarSize.x / 2.0f;
+		if (g_pNavigationInfo->m_visibilityLimit != 0.0f)
+			nFar = g_pNavigationInfo->m_visibilityLimit;
+	}
+	if (g_pViewpoint != NULL)
+		fieldOfView = g_pViewpoint->m_fieldOfView;
+
+	D3DXMatrixPerspectiveFovLH(&g_matProjection, fieldOfView, g_nViewWidth / g_nViewHeight, nNear, nFar);
+	TheseusSetTransform(D3DTS_PROJECTION, &g_matProjection);
+}
+
+// Motion blur: instead of clearing, lay a black quad of alpha blurAlpha
+// over the last frame so it fades out. The quad is built once.
+static void FadeLastFrame(float blurAlpha)
+{
+	static LPDIRECT3DVERTEXBUFFER8 s_pQuad;
+	if (s_pQuad == NULL)
+	{
+		VERIFYHR(TheseusGetD3DDev()->CreateVertexBuffer(4 * sizeof(COLORVERTEX), D3DUSAGE_WRITEONLY, D3DFVF_XYZ | D3DFVF_DIFFUSE, D3DPOOL_MANAGED, &s_pQuad));
+
+		COLORVERTEX *verts;
+		VERIFYHR(s_pQuad->Lock(0, 4 * sizeof(COLORVERTEX), (BYTE **)&verts, 0));
+		float halfW = (float)TheseusGetViewWidth() / 2.0f;
+		float halfH = (float)TheseusGetViewHeight() / 2.0f;
+		const float corners[4][2] = { { halfW, -halfH }, { -halfW, -halfH }, { halfW, halfH }, { -halfW, halfH } };
+		for (int i = 0; i < 4; i++)
+		{
+			verts[i].dvX = corners[i][0];
+			verts[i].dvY = corners[i][1];
+			verts[i].dvZ = 0.0f;
+			verts[i].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, blurAlpha);
+		}
+		VERIFYHR(s_pQuad->Unlock());
+	}
+
+	D3DXMATRIX matOrtho, matSavedProjection, matSavedWorld, matSavedView;
+	TheseusGetTransform(D3DTS_PROJECTION, &matSavedProjection);
+	TheseusGetTransform(D3DTS_WORLD, &matSavedWorld);
+	TheseusGetTransform(D3DTS_VIEW, &matSavedView);
+
+	D3DXMatrixOrthoLH(&matOrtho, TheseusGetViewWidth(), TheseusGetViewHeight(), -10000.0f, 10000.0f);
+	TheseusSetTransform(D3DTS_PROJECTION, &matOrtho);
+	TheseusSetTransform(D3DTS_WORLD, &g_matIdentity);
+	TheseusSetTransform(D3DTS_VIEW, &g_matIdentity);
+
+	TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+	TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+	TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+	TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+	TheseusSetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
+	TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
+	TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+	TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+	TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+	TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+
+	TheseusSetStreamSource(0, s_pQuad, sizeof(COLORVERTEX));
+	TheseusSetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE);
+	VERIFYHR(TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
+
+	TheseusSetTransform(D3DTS_PROJECTION, &matSavedProjection);
+	TheseusSetTransform(D3DTS_WORLD, &matSavedWorld);
+	TheseusSetTransform(D3DTS_VIEW, &matSavedView);
+}
+
+static float Clamp01(float v)
+{
+	return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+// Theseus: the headlight and the scene's lights. A navigation info with
+// its headlight on (or none at all) gets a dim white directional light
+// down the view; the scene adds its own and the summed ambient is clamped.
+static void SetupLights()
+{
+	static int s_nLastLights = -1;
+	int nLights = 0;
+	D3DCOLORVALUE ambient = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+	if (g_pNavigationInfo == NULL || g_pNavigationInfo->m_headlight)
+	{
+		TheseusSetTransform(D3DTS_WORLD, &g_matIdentity);
+
+		D3DLIGHT8 light;
+		ZeroMemory(&light, sizeof(light));
+		light.Type = D3DLIGHT_DIRECTIONAL;
+		light.Diffuse.r = light.Diffuse.g = light.Diffuse.b = 0.5f;
+		light.Specular.r = light.Specular.g = light.Specular.b = 0.75f;
+		light.Ambient.r = light.Ambient.g = light.Ambient.b = 0.2f;
+
+		ambient.r += light.Ambient.r;
+		ambient.g += light.Ambient.g;
+		ambient.b += light.Ambient.b;
+
+		D3DXVECTOR3 dir(0.0f, 0.0f, -1.0f);
+		D3DXVec3TransformNormal(&dir, &dir, &g_matPosition);
+		light.Direction = dir;
+
+		TheseusSetLight(nLights, &light);
+		TheseusLightEnable(nLights, true);
+		nLights++;
+	}
+
+	g_pObject->SetLight(nLights, ambient);
+
+	TheseusSetRenderState(D3DRS_AMBIENT, D3DCOLOR_COLORVALUE(Clamp01(ambient.r), Clamp01(ambient.g), Clamp01(ambient.b), 1.0f));
+
+	for (int i = nLights; i < s_nLastLights; i++)
+		TheseusLightEnable(i, false);
+
+	TheseusSetRenderState(D3DRS_LIGHTING, nLights > 0);
+	s_nLastLights = nLights;
+}
+
+// Draw()
+// Reconstructed from 5960 retail XBE @ 0x0002d0e0. Projection if dirty;
+// then the background: a clear to the sky color (dark blue without a
+// Background node) plus its backdrop, or, while a transition blurs (factor
+// under 1, past the first two frames, black sky, no backdrop), a fade of
+// the last frame instead. Then a default material (grey, created once),
+// the scene drawn from an identity world, and Present. Theseus adds the
+// lights, wireframe, its frame profiler, widgets and the overlay.
 void Draw()
 {
 	Frame_PhaseBegin(FP_SCENE_SETUP);
 
-	// Setup projection transform...
-	if (g_bProjectionDirty)
-	{
-		g_bProjectionDirty = false;
-
-		float nNear = 0.1f;
-		float nFar = 1000.0f;
-		float fieldOfView = D3DX_PI / 2.0f;
-
-		if (g_pNavigationInfo != NULL)
-		{
-			nNear = g_pNavigationInfo->m_avatarSize.x / 2.0f;
-			if (g_pNavigationInfo->m_visibilityLimit != 0.0f)
-				nFar = g_pNavigationInfo->m_visibilityLimit;
-		}
-
-		if (g_pViewpoint != NULL)
-		{
-			fieldOfView = g_pViewpoint->m_fieldOfView;
-		}
-		float aspect = g_nViewWidth / g_nViewHeight;
-
-		D3DXMatrixPerspectiveFovLH(&g_matProjection, fieldOfView, aspect, nNear, nFar);
-		TheseusSetTransform(D3DTS_PROJECTION, &g_matProjection);
-	}
+	UpdateProjection();
 
 	g_uMesh = 0;
 	g_uMeshRef = 0;
 
 	TheseusBeginScene();
-
 	TheseusSetRenderState(D3DRS_FILLMODE, g_bWireframe ? D3DFILL_WIREFRAME : D3DFILL_SOLID);
 
-	const float blurAlpha = g_transitionMotionBlur; // bigger number -> less blur
+	// A bigger factor means less blur.
+	const float blurAlpha = g_transitionMotionBlur;
 
-	D3DCOLOR color;
+	D3DCOLOR sky = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.3f, 1.0f);
 	bool bBackdrop = false;
-	if (g_pBackground == NULL)
-		color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.3f, 1.0f);
-	else
-		color = D3DCOLOR_COLORVALUE(g_pBackground->m_skyColor.x, g_pBackground->m_skyColor.y, g_pBackground->m_skyColor.z, 1.0f);
-
-	if (g_pBackground != NULL && g_pBackground->m_backdrop != NULL)
-		bBackdrop = true;
-
-	static int nBeenHere;
-	if (blurAlpha >= 1.0f || nBeenHere++ < 2 || color != D3DCOLOR_XRGB(0, 0, 0) || bBackdrop)
+	if (g_pBackground != NULL)
 	{
-		TheseusClear(color); // NOTE: Clears back and Z buffers (if Z buffer is enabled)
+		sky = D3DCOLOR_COLORVALUE(g_pBackground->m_skyColor.x, g_pBackground->m_skyColor.y, g_pBackground->m_skyColor.z, 1.0f);
+		bBackdrop = g_pBackground->m_backdrop != NULL;
+	}
 
+	static int s_nFrames;
+	if (blurAlpha >= 1.0f || s_nFrames++ < 2 || sky != D3DCOLOR_XRGB(0, 0, 0) || bBackdrop)
+	{
+		TheseusClear(sky);
 		if (bBackdrop)
 			g_pBackground->RenderBackdrop();
 	}
 	else
 	{
-		static LPDIRECT3DVERTEXBUFFER8 m_pVB;
-		if (m_pVB == NULL)
-		{
-			VERIFYHR(TheseusGetD3DDev()->CreateVertexBuffer(4 * sizeof(COLORVERTEX), D3DUSAGE_WRITEONLY, D3DFVF_XYZ | D3DFVF_DIFFUSE, D3DPOOL_MANAGED, &m_pVB));
-
-			COLORVERTEX *verts;
-			VERIFYHR(m_pVB->Lock(0, 4 * sizeof(COLORVERTEX), (BYTE **)&verts, 0));
-
-			verts[0].dvX = (float)TheseusGetViewWidth() / 2.0f;
-			verts[0].dvY = -(float)TheseusGetViewHeight() / 2.0f;
-			verts[0].dvZ = 0.0f;
-			verts[0].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, blurAlpha);
-
-			verts[1].dvX = -(float)TheseusGetViewWidth() / 2.0f;
-			verts[1].dvY = -(float)TheseusGetViewHeight() / 2.0f;
-			verts[1].dvZ = 0.0f;
-			verts[1].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, blurAlpha);
-
-			verts[2].dvX = (float)TheseusGetViewWidth() / 2.0f;
-			verts[2].dvY = (float)TheseusGetViewHeight() / 2.0f;
-			verts[2].dvZ = 0.0f;
-			verts[2].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, blurAlpha);
-
-			verts[3].dvX = -(float)TheseusGetViewWidth() / 2.0f;
-			verts[3].dvY = (float)TheseusGetViewHeight() / 2.0f;
-			verts[3].dvZ = 0.0f;
-			verts[3].color = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.0f, blurAlpha);
-
-			VERIFYHR(m_pVB->Unlock());
-		}
-
-		D3DXMATRIX matProjection, matProjectionSave, matWorldSave, matViewSave;
-
-		TheseusGetTransform(D3DTS_PROJECTION, &matProjectionSave);
-		TheseusGetTransform(D3DTS_WORLD, &matWorldSave);
-		TheseusGetTransform(D3DTS_VIEW, &matViewSave);
-
-		D3DXMatrixOrthoLH(&matProjection, TheseusGetViewWidth(), TheseusGetViewHeight(), -10000.0f, 10000.0f);
-		TheseusSetTransform(D3DTS_PROJECTION, &matProjection);
-		TheseusSetTransform(D3DTS_WORLD, &g_matIdentity);
-		TheseusSetTransform(D3DTS_VIEW, &g_matIdentity);
-
-		TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-		TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-		TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-		TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-		TheseusSetTextureStageState(0, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE);
-		TheseusSetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0);
-		TheseusSetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-		TheseusSetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-		TheseusSetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-
-		TheseusSetStreamSource(0, m_pVB, sizeof(COLORVERTEX));
-		TheseusSetVertexShader(D3DFVF_XYZ | D3DFVF_DIFFUSE);
-		VERIFYHR(TheseusGetD3DDev()->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2));
-
-		TheseusSetTransform(D3DTS_PROJECTION, &matProjectionSave);
-		TheseusSetTransform(D3DTS_WORLD, &matWorldSave);
-		TheseusSetTransform(D3DTS_VIEW, &matViewSave);
+		FadeLastFrame(blurAlpha);
 	}
 
-	// Setup lights...
+	SetupLights();
+
+	static D3DMATERIAL8 s_material;
+	if (s_material.Diffuse.r == 0.0f)
 	{
-		static int nLastLight = -1;
-		int nLight = 0;
-		D3DCOLORVALUE ambient;
-		ambient.r = 0.0f;
-		ambient.g = 0.0f;
-		ambient.b = 0.0f;
-
-		// Headlight...
-		if (g_pNavigationInfo == NULL || g_pNavigationInfo->m_headlight)
-		{
-			TheseusSetTransform(D3DTS_WORLD, &g_matIdentity);
-
-			D3DLIGHT8 d3dLight;
-			ZeroMemory(&d3dLight, sizeof(d3dLight));
-
-			d3dLight.Type = D3DLIGHT_DIRECTIONAL;
-
-			d3dLight.Diffuse.r = 0.5f;
-			d3dLight.Diffuse.g = 0.5f;
-			d3dLight.Diffuse.b = 0.5f;
-
-			d3dLight.Specular.r = 0.75f;
-			d3dLight.Specular.g = 0.75f;
-			d3dLight.Specular.b = 0.75f;
-
-			d3dLight.Ambient.r = 0.2f;
-			d3dLight.Ambient.g = 0.2f;
-			d3dLight.Ambient.b = 0.2f;
-
-			ambient.r += d3dLight.Ambient.r;
-			ambient.g += d3dLight.Ambient.g;
-			ambient.b += d3dLight.Ambient.b;
-
-			D3DXVECTOR3 dir(0.0f, 0.0f, -1.0f);
-			D3DXVec3TransformNormal(&dir, &dir, &g_matPosition);
-			d3dLight.Direction = dir;
-
-			TheseusSetLight(nLight, &d3dLight);
-			TheseusLightEnable(nLight, true);
-			nLight += 1;
-		}
-
-		g_pObject->SetLight(nLight, ambient);
-
-		if (ambient.r < 0.0f)
-			ambient.r = 0.0f;
-		else if (ambient.r > 1.0f)
-			ambient.r = 1.0f;
-		if (ambient.g < 0.0f)
-			ambient.g = 0.0f;
-		else if (ambient.g > 1.0f)
-			ambient.g = 1.0f;
-		if (ambient.b < 0.0f)
-			ambient.b = 0.0f;
-		else if (ambient.b > 1.0f)
-			ambient.b = 1.0f;
-
-		TheseusSetRenderState(D3DRS_AMBIENT, D3DCOLOR_COLORVALUE(ambient.r, ambient.g, ambient.b, 1.0f));
-
-		// Turn off lights we are not using...
-		for (int i = nLight; i < nLastLight; i += 1)
-			TheseusLightEnable(i, false);
-
-		TheseusSetRenderState(D3DRS_LIGHTING, nLight > 0);
-		nLastLight = nLight;
+		D3DCOLORVALUE grey = { 0.5f, 0.5f, 0.5f, 1.0f };
+		s_material.Diffuse = s_material.Ambient = s_material.Specular = s_material.Emissive = grey;
+		s_material.Power = 0.0f;
 	}
-
-	{
-		static D3DMATERIAL8 mat;
-		if (mat.Diffuse.r == 0.0f)
-		{
-			mat.Diffuse.r = 0.5f;
-			mat.Diffuse.g = 0.5f;
-			mat.Diffuse.b = 0.5f;
-			mat.Diffuse.a = 1.0f;
-
-			mat.Ambient.r = 0.5f;
-			mat.Ambient.g = 0.5f;
-			mat.Ambient.b = 0.5f;
-			mat.Ambient.a = 1.0f;
-
-			mat.Specular.r = 0.5f;
-			mat.Specular.g = 0.5f;
-			mat.Specular.b = 0.5f;
-			mat.Specular.a = 1.0f;
-
-			mat.Emissive.r = 0.5f;
-			mat.Emissive.g = 0.5f;
-			mat.Emissive.b = 0.5f;
-			mat.Emissive.a = 1.0f;
-
-			mat.Power = 0.0f;
-		}
-
-		TheseusSetMaterial(&mat);
-	}
+	TheseusSetMaterial(&s_material);
 
 	Frame_PhaseEnd(FP_SCENE_SETUP);
-	// Draw the world...
+
 	Frame_PhaseBegin(FP_SCENE_TREE);
-	{
-		TheseusPushWorld();
-		TheseusIdentityWorld();
-		TheseusUpdateWorld();
-		g_pObject->Render();
-		TheseusPopWorld();
-	}
+	TheseusPushWorld();
+	TheseusIdentityWorld();
+	TheseusUpdateWorld();
+	g_pObject->Render();
+	TheseusPopWorld();
 	Frame_PhaseEnd(FP_SCENE_TREE);
 
 	Frame_PhaseBegin(FP_SCENE_END);
 	TheseusEndScene();
 	Frame_PhaseEnd(FP_SCENE_END);
+
 	Frame_PhaseBegin(FP_WIDGETS);
 	TheseusSetRenderState(D3DRS_SWATHWIDTH, D3DSWATH_OFF);
 	Frame_PhaseBegin(FP_WIDGET_TICK);
@@ -811,10 +802,12 @@ void Draw()
 	Frame_PhaseEnd(FP_WIDGET_TICK);
 	DrawWidgets();
 	Frame_PhaseEnd(FP_WIDGETS);
+
 	Frame_PhaseBegin(FP_OVERLAY);
 	UpdateCubeOverlay();
 	DrawCubeOverlay();
 	Frame_PhaseEnd(FP_OVERLAY);
+
 	Frame_PhaseBegin(FP_PRESENT);
 	TheseusPresent();
 	Frame_PhaseEnd(FP_PRESENT);
@@ -833,20 +826,22 @@ static char szConfigPath[255];
 #define ARRAYSIZE(a) (sizeof(a) / sizeof((a)[0]))
 #endif
 
+// XboxFormatMemoryUnit(port, slot)
+// Reconstructed from 5960 retail XBE @ 0x0002dcc0: create the unit's device
+// object (its name in a 32 byte ANSI buffer), format it as FAT, close the
+// object. Fails only if the device object can't be made.
 bool XboxFormatMemoryUnit(UINT nDevicePort, UINT nMemoryUnit)
 {
-	ANSI_STRING st;
-	char pszMU[MAX_MUNAME];
-	st.Length = 0;
-	st.MaximumLength = sizeof(pszMU) - 1;
-	st.Buffer = pszMU;
+	char szDevice[MAX_MUNAME];
+	ANSI_STRING device;
+	device.Length = 0;
+	device.MaximumLength = sizeof(szDevice) - 1;
+	device.Buffer = szDevice;
 
-	if (MU_CreateDeviceObject(nDevicePort, nMemoryUnit, &st) != NO_ERROR)
+	if (MU_CreateDeviceObject(nDevicePort, nMemoryUnit, &device) != NO_ERROR)
 		return false;
 
-	if (!XapiFormatFATVolume(&st))
-		TRACE(_T("XApiFormatFATVolume failed: %d\n"), GetLastError());
-
+	XapiFormatFATVolume(&device);
 	MU_CloseDeviceObject(nDevicePort, nMemoryUnit);
 	return true;
 }
@@ -974,6 +969,12 @@ static void InitDiscord()
 	SendDiscordRelayFromConfig(titleIdHex);
 }
 
+// Xbox_Init()
+// 5960 @ 0x0002dd20 clears 480p on PAL, sets a 1 MB file cache, links its
+// drives, makes C:\TDATA\fffe0000\music, waits for device enumeration and
+// clears the temp audio files. Theseus links its own drive set (Q: is its
+// data dir, F: to N: the extra partitions), uses a 16 MB cache, and brings
+// up the skin, the network and Discord here.
 static void Xbox_Init()
 {
 	XI_GetProgramPath(szSystemPath);
@@ -1060,6 +1061,12 @@ static void Xbox_Init()
 
 
 
+// InitApp()
+// 5960 @ 0x0002d7e0: CD-ROM and disc type, Xbox_Init, version lock and the
+// online redirect, InitD3D, LoadXIP, Class_Init, materials, then load and
+// create the startup scene and call its initialize. Theseus keeps that
+// order without the online steps, opens DirectSound up front, and shows
+// the panic screen instead of stopping when a step fails.
 bool InitApp()
 {
 	BootBanner();
@@ -1130,13 +1137,17 @@ bool InitApp()
 	return true;
 }
 
+// CleanupApp()
+// 5960 @ 0x0002d930 shuts XOnline down, frees the matrix stack, the scene
+// and its class, then Class_Exit, the XIP sections, Text_Exit, DirectSound
+// and the app dir. Theseus releases D3D first, drops Locale too, has no
+// XOnline session to end and lets DSoundManager close the sound side.
 void CleanupApp()
 {
 	ReleaseD3D();
 
 	delete g_pObject;
 	g_pObject = NULL;
-
 	delete g_pClass;
 	g_pClass = NULL;
 
@@ -1154,6 +1165,12 @@ void CleanupApp()
 #endif
 }
 
+// Advance()
+// Reconstructed from the frame loop in 5960 XApp @ 0x0002da00: the clock is
+// GetTickCount in seconds, the step is the change since last frame (never
+// zero: 5960 uses one millisecond's worth), then the camera, every lerper
+// and the scene advance. Theseus also feeds its background loader; 5960
+// polls the keyboard and runs its deferred deletes here.
 void Advance()
 {
 	XTIME now = (float)GetTickCount() / 1000.0f;
@@ -1163,7 +1180,6 @@ void Advance()
 	g_now = now;
 
 	theCamera.Advance(nDelta);
-
 	CLerper::AdvanceAll();
 	g_pObject->Advance(nDelta);
 
@@ -1204,25 +1220,23 @@ void Theseus()
 	CleanupApp();
 }
 
+// GetStartupClassFile(out)
+// 5960 @ 0x0002dbc0 starts from y:\default.xap with y:/default.xap as the
+// current dir and keeps the app dir. Theseus runs from Q:, so the scene is
+// Q:\Xips\default.xap, and it also records its font and XIP dirs.
 void GetStartupClassFile(TCHAR *szFileToLoad)
 {
-	TCHAR szAppDir[MAX_PATH];
-	TCHAR szFontDir[MAX_PATH];
-	TCHAR szXipDir[MAX_PATH];
 	_tcscpy(szFileToLoad, _T("Q:\\Xips\\default.xap"));
-	_tcscpy(szAppDir, _T("Q:\\"));
-	_tcscpy(szFontDir, _T("Q:\\Fonts\\"));
-	_tcscpy(szXipDir, _T("Q:\\Xips\\"));
 	_tcscpy(g_szCurDir, _T("Q:/Xips/default.xap"));
 
-	g_szAppDir = new TCHAR[_tcslen(szAppDir) + 1];
-	_tcscpy(g_szAppDir, szAppDir);
+	g_szAppDir = new TCHAR[_tcslen(_T("Q:\\")) + 1];
+	_tcscpy(g_szAppDir, _T("Q:\\"));
 
-	g_sFontDir = new TCHAR[_tcslen(szFontDir) + 1];
-	_tcscpy(g_sFontDir, szFontDir);
+	g_sFontDir = new TCHAR[_tcslen(_T("Q:\\Fonts\\")) + 1];
+	_tcscpy(g_sFontDir, _T("Q:\\Fonts\\"));
 
-	g_sXipDir = new TCHAR[_tcslen(szXipDir) + 1];
-	_tcscpy(g_sXipDir, szXipDir);
+	g_sXipDir = new TCHAR[_tcslen(_T("Q:\\Xips\\")) + 1];
+	_tcscpy(g_sXipDir, _T("Q:\\Xips\\"));
 }
 
 LONG XdashUnhandledExceptionFilter(LPEXCEPTION_POINTERS pEx)
@@ -1239,6 +1253,10 @@ LONG XdashUnhandledExceptionFilter(LPEXCEPTION_POINTERS pEx)
 	__asm { hlt }
 }
 
+// main()
+// 5960 @ 0x0002dc80 installs its crash handler unless the hardware says
+// it's a debug kit, then runs the app. Theseus decides that at build time
+// (DEVKIT) and its handler is the panic screen above.
 int __cdecl main(int /*argc*/, char * /*argv*/[])
 {
 #ifndef DEVKIT

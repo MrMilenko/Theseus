@@ -441,13 +441,14 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Materials | [Materials.md](Materials.md) | 25 functions |
 | File Operations | [FileOps.md](FileOps.md) | 7 functions |
 | File Utilities | [FileUtil.md](FileUtil.md) | 10 functions: paths, URL resolving, block counts |
-| Disc | (no doc yet, narrative TODO) | 1 function |
+| Disc | [Disc.md](Disc.md) | 8 functions |
 | HUD & Picture | [HudNode.md](HudNode.md) | 9 functions |
 | Keyboard | [Keyboard.md](Keyboard.md) | 22 functions |
 | Locale | [Locale.md](Locale.md) | 20 functions: translation table, Translator node, date/time/number formats, time zones |
-| NtIoSvc | [NtIoSvc.md](NtIoSvc.md) | 1 function |
+| NtIoSvc | [NtIoSvc.md](NtIoSvc.md) | 5 functions |
 | Scene Groups | [SceneGroups.md](SceneGroups.md) | 6 functions |
 | Settings | [Settings.md](Settings.md) | 28 functions: settings file, Settings and ScreenSaver nodes |
+| Config | [Config.md](Config.md) | 50 functions |
 | Screen & Recovery | [Screen.md](Screen.md) | 9 functions |
 | Shape Render | [ShapeRender.md](ShapeRender.md) | not yet started |
 | Text | [Text.md](Text.md) | 2 functions |
@@ -457,10 +458,10 @@ The seed and first expansion cover the application shell, script VM, scene graph
 | Save Games | (no doc yet, narrative TODO) | 29 functions |
 | Live Accounts | (no doc yet, narrative TODO) | 13 verified Theseus mappings + 2 binary-only anchors (bulk delete, single-user delete) |
 | Input | [Input.md](Input.md) | 9 functions |
-| Memory Monitor | (no doc yet, narrative TODO) | 12 functions |
+| Memory Monitor | [MemoryMonitor.md](MemoryMonitor.md) | 22 functions |
 | Music Collection | (no doc yet, narrative TODO) | 5 verified Theseus mappings (FormatSoundtrackSongTime, GetUpdateString + 3 stubs: AddSoundtrack, ClearCopyList, DeleteSoundtrack) + 3 binary-only anchors (global ::DeleteSoundtrack, ::DeleteAllSoundtracks, ThreadProc); more labeling pending |
 | Render | (no doc yet, narrative TODO) | 1 function |
-| App Shell | (no doc yet, narrative TODO) | 9 functions |
+| App Shell | [AppShell.md](AppShell.md) | 13 functions |
 | Asset Loader | [AssetLoader.md](AssetLoader.md) | 30 functions |
 | DVD Playback | (reference-only, no doc) | 1 function |
 | Original WMA Pump | (reference-only, folded into AudioSystem.md) | 1 function |

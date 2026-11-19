@@ -1,7 +1,7 @@
-// dsound_manager.cpp: DirectSound initialization and buffer
-// management. Singleton owns the DirectSound device and worker
-// thread; provides buffer creation, lock / unlock, and notify
-// operations. Xbox-only; desktop has its own SDL audio backend.
+// dsound_manager.cpp: the Xbox DirectSound device, its work thread and
+// the buffer helpers the audio code uses. Init and buffer creation are
+// rebuilt from the 5960 retail XBE (0x626b0, 0x62750); the singleton,
+// cleanup and the lock / notify helpers are Theseus's.
 
 #include "std.h"
 #include "theseus.h"
@@ -14,19 +14,20 @@ extern "C" extern DWORD g_dwDirectSoundOverrideSpeakerConfig;
 #define DISC_VIDEO 4
 extern int g_nDiscType;
 
-DSoundManager* DSoundManager::pinstance = 0;
+DSoundManager* DSoundManager::pinstance = NULL;
 
 DSoundManager* DSoundManager::Instance()
 {
-	if (pinstance == 0)
-	{
+	if (pinstance == NULL)
 		pinstance = new DSoundManager;
-	}
 	return pinstance;
 }
 
-DSoundManager::DSoundManager() : m_directSound(NULL), m_hDirectSoundThread(NULL), m_bShutdown(false)
+DSoundManager::DSoundManager()
 {
+	m_directSound = NULL;
+	m_hDirectSoundThread = NULL;
+	m_bShutdown = false;
 }
 
 DSoundManager::~DSoundManager()
@@ -34,126 +35,126 @@ DSoundManager::~DSoundManager()
 	Cleanup();
 }
 
-static DWORD WINAPI DirectSoundThreadProc(LPVOID pvParameter)
+// The DirectSound work thread. 5960 (0x00062680, not split out by the
+// decompiler) is:
+//     while (g_pDirectSound != NULL) { DirectSoundDoWork(); Sleep(100); }
+// Theseus stops on its own shutdown flag, set before the device goes away.
+static DWORD WINAPI DirectSoundWorker(LPVOID pvParameter)
 {
-	DSoundManager *pThis = static_cast<DSoundManager*>(pvParameter);
-
-	while (!pThis->m_bShutdown)
+	DSoundManager* pManager = (DSoundManager*)pvParameter;
+	while (!pManager->m_bShutdown)
 	{
 		DirectSoundDoWork();
 		Sleep(100);
 	}
-
 	return 0;
 }
 
+// DSoundManager::Initialize()
+// Reconstructed from 5960 retail XBE @ 0x00062750:
+//     if (g_BootType == DISC_VIDEO) return false;
+//     g_dwDirectSoundOverrideSpeakerConfig = (XGetAudioFlags() basic == MONO);
+//     if (DirectSoundCreate(0, &g_pDirectSound, 0) < 0) return false;
+//     for (bin = 0; bin < 31; bin++) SetMixBinHeadroom(bin, 0);
+//     return (g_hThread = CreateThread(0, 0, worker, 0, 0, &id)) != 0;
+// The DVD player owns the audio hardware, so a movie disc gets no DirectSound.
+// Theseus zeroes only the I3DL2 bin's headroom and returns an HRESULT.
 HRESULT DSoundManager::Initialize()
 {
-	HRESULT hr = S_OK;
-
 	if (m_directSound != NULL)
 		return S_FALSE;
 
-	if (DISC_VIDEO == g_nDiscType)
+	if (g_nDiscType == DISC_VIDEO)
 		return E_FAIL;
 
-	// Configure speaker output based on AV pack
-	DWORD dwSpeakerConfig = XAudioGetSpeakerConfig();
-
-	if (DSSPEAKER_MONO == DSSPEAKER_BASIC(dwSpeakerConfig))
+	// Mono stays mono; everything else mixes as stereo and lets the
+	// hardware encoder handle surround.
+	if (DSSPEAKER_BASIC(XAudioGetSpeakerConfig()) == DSSPEAKER_MONO)
 		g_dwDirectSoundOverrideSpeakerConfig = DSSPEAKER_COMBINED(DSSPEAKER_MONO, 0);
 	else
 		g_dwDirectSoundOverrideSpeakerConfig = DSSPEAKER_COMBINED(DSSPEAKER_STEREO, 0);
 
-	hr = DirectSoundCreate(NULL, &m_directSound, NULL);
+	HRESULT hr = DirectSoundCreate(NULL, &m_directSound, NULL);
 	if (FAILED(hr))
 	{
-		LogComError(hr, "DSound_Init: DirectSoundCreate");
+		LogComError(hr, "DirectSoundCreate");
 		return hr;
 	}
 
-	if (FAILED(hr = m_directSound->SetMixBinHeadroom(DSMIXBIN_I3DL2, 0)))
-	{
-		LogComError(hr, "DSound_Init: SetMixBinHeadroom");
-	}
+	hr = m_directSound->SetMixBinHeadroom(DSMIXBIN_I3DL2, 0);
+	if (FAILED(hr))
+		LogComError(hr, "SetMixBinHeadroom");
 
-	// Spawn the DirectSoundDoWork polling thread
 	DWORD dwThreadId;
-	m_hDirectSoundThread = CreateThread(NULL, 0, DirectSoundThreadProc, this, 0, &dwThreadId);
-	if (!m_hDirectSoundThread)
+	m_hDirectSoundThread = CreateThread(NULL, 0, DirectSoundWorker, this, 0, &dwThreadId);
+	if (m_hDirectSoundThread == NULL)
 	{
 		hr = HRESULT_FROM_WIN32(GetLastError());
-		LogComError(hr, "DSound_Init: failed to create DirectSound worker thread");
-		return hr;
+		LogComError(hr, "CreateThread");
 	}
-
 	return hr;
 }
 
+// Theseus: shut the worker down and drop the device.
 HRESULT DSoundManager::Cleanup()
 {
 	m_bShutdown = true;
-
-	if (m_directSound != NULL)
-	{
-		m_directSound->Release();
-		m_directSound = NULL;
-	}
-
+	RELEASENULL(m_directSound);
 	if (m_hDirectSoundThread != NULL)
 	{
 		CloseHandle(m_hDirectSoundThread);
 		m_hDirectSoundThread = NULL;
 	}
-
 	return S_OK;
 }
 
+// DSoundManager::DSoundCreateSoundBuffer(format, bytes, flags, out)
+// Reconstructed from 5960 retail XBE @ 0x000626b0:
+//     if (!g_pDirectSound && !DSound_Init()) return NULL;
+//     DSBUFFERDESC desc = { 0x18, flags, bytes, format };
+//     if (CreateSoundBuffer(&desc, &buf, 0) >= 0) buf->SetHeadroom(1200);
+//     return buf;
+// Theseus hands back the HRESULT and the buffer through pDirectBuf.
 HRESULT DSoundManager::DSoundCreateSoundBuffer(IN WAVEFORMATEX* pwfx, IN int nByteCount, IN DWORD dwFlags, OUT LPDIRECTSOUNDBUFFER* pDirectBuf)
 {
-	HRESULT hr = S_OK;
 	*pDirectBuf = NULL;
 
 	if (m_directSound == NULL)
-		hr = Initialize();
+	{
+		HRESULT hrInit = Initialize();
+		if (FAILED(hrInit))
+			return hrInit;
+	}
 
-	if (FAILED(hr))
-		return hr;
+	DSBUFFERDESC desc;
+	ZeroMemory(&desc, sizeof(desc));
+	desc.dwSize = sizeof(desc);
+	desc.dwFlags = dwFlags;
+	desc.dwBufferBytes = nByteCount;
+	desc.lpwfxFormat = pwfx;
 
-	LPDIRECTSOUNDBUFFER lpDirectSoundBuffer = NULL;
-	DSBUFFERDESC dsbd;
-	ZeroMemory(&dsbd, sizeof(DSBUFFERDESC));
-	dsbd.dwSize = sizeof(DSBUFFERDESC);
-	dsbd.dwFlags = dwFlags;
-	dsbd.dwBufferBytes = nByteCount;
-	dsbd.lpwfxFormat = pwfx;
-
-	hr = m_directSound->CreateSoundBuffer(&dsbd, &lpDirectSoundBuffer, NULL);
-
+	LPDIRECTSOUNDBUFFER pBuffer = NULL;
+	HRESULT hr = m_directSound->CreateSoundBuffer(&desc, &pBuffer, NULL);
 	if (SUCCEEDED(hr))
-		lpDirectSoundBuffer->SetHeadroom(1200);
+		pBuffer->SetHeadroom(1200);
 
-	*pDirectBuf = lpDirectSoundBuffer;
+	*pDirectBuf = pBuffer;
 	return hr;
 }
 
+// Theseus: copy data into a buffer.
 HRESULT DSoundManager::DSoundSetSoundBufferData(LPDIRECTSOUNDBUFFER pDirectSoundBuffer, UINT nByteOffset, UINT nByteCount, const void* pvData)
 {
-	LPVOID pbBuffer;
-	DWORD dwBufferLength;
-
-	ASSERT(pDirectSoundBuffer != NULL);
-
-	HRESULT hr = pDirectSoundBuffer->Lock(nByteOffset, nByteCount, &pbBuffer, &dwBufferLength, NULL, NULL, 0L);
+	LPVOID pvLocked;
+	DWORD dwLocked;
+	HRESULT hr = pDirectSoundBuffer->Lock(nByteOffset, nByteCount, &pvLocked, &dwLocked, NULL, NULL, 0);
 	if (FAILED(hr))
 		return hr;
-
-	CopyMemory(pbBuffer, pvData, nByteCount);
-
-	hr = pDirectSoundBuffer->Unlock(pbBuffer, dwBufferLength, NULL, 0);
-	return hr;
+	memcpy(pvLocked, pvData, nByteCount);
+	return pDirectSoundBuffer->Unlock(pvLocked, dwLocked, NULL, 0);
 }
 
+// Theseus: position notifications.
 HRESULT DSoundManager::DSoundSetSoundBufferNotify(LPDIRECTSOUNDBUFFER pDirectSoundBuffer, int nPositionCount, DSBPOSITIONNOTIFY* positions)
 {
 	return pDirectSoundBuffer->SetNotificationPositions(nPositionCount, positions);

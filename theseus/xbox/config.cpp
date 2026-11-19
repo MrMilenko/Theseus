@@ -1,7 +1,8 @@
-// config.cpp: CConfig XAP node. Reads / writes the dashboard's
-// system config (timezone, language, av mode, parental ratings,
-// audio mode) through the Xbox EEPROM via XConfig. Decompiled from
-// the 5960 retail XBE.
+// config.cpp: the Xbox Config node. Language, video, audio, time zone,
+// parental controls, launch data and the other EEPROM settings are
+// rebuilt from the 5960 retail XBE (0x3a430..0x3b9e0); see
+// docs/decomp/Config.md. Skins, network, power, the SMBus readings, the
+// encoder / revision / modchip probes and XBE title ids are Theseus's.
 
 #include "std.h"
 #include "theseus.h"
@@ -24,7 +25,7 @@ extern void Material_Init(bool bReloadSkinXBX);
 
 void InitSkin();
 
-// Cached AV info in Direct3D. Must be cleared before toggling widescreen.
+// D3D caches the AV mode here; zero it so a Reset picks up a new one.
 extern "C"
 {
 	extern DWORD D3D__AvInfo;
@@ -118,270 +119,228 @@ END_NODE_FUN()
 CConfig::CConfig() { }
 CConfig::~CConfig() { }
 
-// =========================================================================
-// EEPROM helpers: read / write Xbox configuration values.
-// =========================================================================
-
-static DWORD QueryVideoFlags()
+// Every EEPROM setting below is a whole DWORD read and written back. 5960
+// ignores the results of XQueryValue / XSetValue throughout.
+static DWORD ReadSetting(DWORD dwIndex)
 {
-	DWORD dwFlags, dwType;
-	VERIFY(!XQueryValue(XC_VIDEO_FLAGS, &dwType, &dwFlags, 4, NULL));
-	return dwFlags;
+	DWORD dwType, dwValue;
+	XQueryValue(dwIndex, &dwType, &dwValue, sizeof(dwValue), NULL);
+	return dwValue;
 }
 
-static void SetVideoFlags(DWORD dwFlags)
+static void WriteSetting(DWORD dwIndex, DWORD dwValue)
 {
-	VERIFY(!XSetValue(XC_VIDEO_FLAGS, REG_DWORD, (DWORD *)&dwFlags, 4));
+	XSetValue(dwIndex, REG_DWORD, &dwValue, sizeof(dwValue));
 }
 
-static DWORD QueryAudioFlags()
+static void WriteSettingBit(DWORD dwIndex, DWORD dwBit, bool bSet)
 {
-	DWORD dwFlags, dwType;
-	VERIFY(!XQueryValue(XC_AUDIO_FLAGS, &dwType, &dwFlags, 4, NULL));
-	return dwFlags;
+	DWORD dwValue = ReadSetting(dwIndex);
+	if (bSet)
+		dwValue |= dwBit;
+	else
+		dwValue &= ~dwBit;
+	WriteSetting(dwIndex, dwValue);
 }
 
-static void SetAudioFlags(DWORD dwFlags)
+// Theseus starts the misc flags at zero when the read fails.
+static DWORD ReadMiscFlags()
 {
-	VERIFY(!XSetValue(XC_AUDIO_FLAGS, REG_DWORD, (DWORD *)&dwFlags, 4));
+	DWORD dwType, dwValue = 0;
+	XQueryValue(XC_MISC_FLAGS, &dwType, &dwValue, sizeof(dwValue), NULL);
+	return dwValue;
 }
 
-static DWORD QueryMiscFlags()
-{
-	DWORD dwType, value = 0;
-	XQueryValue(XC_MISC_FLAGS, &dwType, &value, sizeof(value), NULL);
-	return value;
-}
-
-static void SetMiscFlags(DWORD value)
-{
-	XSetValue(XC_MISC_FLAGS, REG_DWORD, (DWORD *)&value, sizeof(value));
-}
-
-// =========================================================================
-// Language
-// =========================================================================
-
+// CConfig::GetLanguage()   [script fn 'GetLanguage', FND 0x0017fe08, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x0003a610:
+//     XQueryValue(XC_LANGUAGE, ..); max = GetFontVersion() ? 9 : 6;
+//     if (lang == 0 || lang > max) lang = 1; return lang;
+// An unset or unknown language reads as English. Theseus caps it at 6.
 int CConfig::GetLanguage()
 {
-	DWORD nLanguage, dwType;
-	VERIFY(!XQueryValue(XC_LANGUAGE, &dwType, &nLanguage, 4, NULL));
-
-	if (nLanguage == 0 || nLanguage > 6)
-	{
-		TRACE(_T("\001Invalid language, default to English\n"));
-		nLanguage = 1;
-	}
-
-	return (int)nLanguage;
+	DWORD dwLanguage = ReadSetting(XC_LANGUAGE);
+	if (dwLanguage == 0 || dwLanguage > 6)
+		dwLanguage = 1;
+	return (int)dwLanguage;
 }
 
+// CConfig::SetLanguage(n)   [script fn 'SetLanguage', FND 0x0017fe20, sig 14]
+// Reconstructed from 5960 retail XBE @ 0x0003a660: XSetValue(XC_LANGUAGE, n).
 void CConfig::SetLanguage(int nLanguage)
 {
-	VERIFY(!XSetValue(XC_LANGUAGE, REG_DWORD, (DWORD *)&nLanguage, 4));
+	WriteSetting(XC_LANGUAGE, (DWORD)nLanguage);
 }
 
-// =========================================================================
-// AV pack / region identification
-// =========================================================================
-
+// CConfig::GetAVPackType()   [script fn 'GetAVPackType', FND 0x00180018, sig 8]
+// CConfig::GetAVRegion()     [script fn 'GetAVRegion', FND 0x00180030, sig 8]
+// CConfig::GetGameRegion()   [script fn 'GetGameRegion', FND 0x00180048, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x0003a680, 0x0003a740, 0x0003a7e0:
+// XGetAVPack(), XGetVideoStandard() and the game region, each switched to
+// its name; an unknown value gives a string object with no text.
 CStrObject *CConfig::GetAVPackType()
 {
-	const TCHAR *sz = NULL;
+	const TCHAR *szName = NULL;
 	switch (XGetAVPack())
 	{
-	case XC_AV_PACK_STANDARD: sz = _T("STANDARD"); break;
-	case XC_AV_PACK_SVIDEO:   sz = _T("SVIDEO");   break;
-	case XC_AV_PACK_RFU:      sz = _T("RFU");      break;
-	case XC_AV_PACK_SCART:    sz = _T("SCART");    break;
-	case XC_AV_PACK_HDTV:     sz = _T("HDTV");     break;
-	case XC_AV_PACK_VGA:      sz = _T("VGA");      break;
+	case XC_AV_PACK_SCART:    szName = _T("SCART");    break;
+	case XC_AV_PACK_HDTV:     szName = _T("HDTV");     break;
+	case XC_AV_PACK_VGA:      szName = _T("VGA");      break;
+	case XC_AV_PACK_RFU:      szName = _T("RFU");      break;
+	case XC_AV_PACK_SVIDEO:   szName = _T("SVIDEO");   break;
+	case XC_AV_PACK_STANDARD: szName = _T("STANDARD"); break;
 	}
-	return new CStrObject(sz);
+	return new CStrObject(szName);
 }
 
 CStrObject *CConfig::GetAVRegion()
 {
-	const TCHAR *sz = NULL;
+	const TCHAR *szName = NULL;
 	switch (XGetVideoStandard())
 	{
-	case XC_VIDEO_STANDARD_NTSC_M: sz = _T("NTSC_M"); break;
-	case XC_VIDEO_STANDARD_NTSC_J: sz = _T("NTSC_J"); break;
-	case XC_VIDEO_STANDARD_PAL_I:  sz = _T("PAL_I");  break;
-	case XC_VIDEO_STANDARD_PAL_M:  sz = _T("PAL_M");  break;
+	case XC_VIDEO_STANDARD_NTSC_M: szName = _T("NTSC_M"); break;
+	case XC_VIDEO_STANDARD_NTSC_J: szName = _T("NTSC_J"); break;
+	case XC_VIDEO_STANDARD_PAL_I:  szName = _T("PAL_I");  break;
+	case XC_VIDEO_STANDARD_PAL_M:  szName = _T("PAL_M");  break;
 	}
-	return new CStrObject(sz);
+	return new CStrObject(szName);
 }
 
 CStrObject *CConfig::GetGameRegion()
 {
-	const TCHAR *sz = NULL;
+	const TCHAR *szName = NULL;
 	switch (g_nCurRegion)
 	{
-	case XC_GAME_REGION_NA:           sz = _T("NA");           break;
-	case XC_GAME_REGION_JAPAN:        sz = _T("JAPAN");        break;
-	case XC_GAME_REGION_RESTOFWORLD:  sz = _T("RESTOFWORLD");  break;
+	case XC_GAME_REGION_NA:          szName = _T("NA");          break;
+	case XC_GAME_REGION_JAPAN:       szName = _T("JAPAN");       break;
+	case XC_GAME_REGION_RESTOFWORLD: szName = _T("RESTOFWORLD"); break;
 	}
-	return new CStrObject(sz);
+	return new CStrObject(szName);
 }
 
-// =========================================================================
-// Video mode: normal / letterbox / widescreen.
-// =========================================================================
+// The D3D present flags changed: drop the cached AV mode and reset.
+static void ResetDisplay()
+{
+	D3D__AvInfo = 0;
+	TheseusGetD3DDev()->Reset(&g_pp);
+	TheseusInvalidateStateCache();
+}
 
+// CConfig::GetVideoMode()   [script fn 'GetVideoMode', FND 0x001800f0, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x0003a860:
+//     if (flags & AV_FLAGS_LETTERBOX) return 1; return (flags >> 15) & 2;
+// 0 normal, 1 letterbox, 2 widescreen; letterbox wins if both are set.
 int CConfig::GetVideoMode()
 {
-	DWORD dwFlags = QueryVideoFlags();
-	if (dwFlags & AV_FLAGS_LETTERBOX)  return 1;
-	if (dwFlags & AV_FLAGS_WIDESCREEN) return 2;
-	return 0;
+	DWORD dwFlags = ReadSetting(XC_VIDEO_FLAGS);
+	if (dwFlags & AV_FLAGS_LETTERBOX)
+		return 1;
+	return (dwFlags & AV_FLAGS_WIDESCREEN) ? 2 : 0;
 }
 
+// CConfig::SetVideoMode(mode)   [FND 0x00180108]
+// Reconstructed from 5960 retail XBE @ 0x0003a8a0. Stores letterbox (1) or
+// widescreen (2), clearing the other. Going in or out of widescreen flips
+// the widescreen present flag and resets the device; the projection is
+// rebuilt either way. Theseus also invalidates its render state cache.
 void CConfig::SetVideoMode(int nVideoMode)
 {
-	DWORD dwFlags = QueryVideoFlags();
-	dwFlags &= ~(AV_FLAGS_WIDESCREEN | AV_FLAGS_LETTERBOX);
-
+	DWORD dwFlags = ReadSetting(XC_VIDEO_FLAGS) & ~(AV_FLAGS_WIDESCREEN | AV_FLAGS_LETTERBOX);
 	if (nVideoMode == 1)
 		dwFlags |= AV_FLAGS_LETTERBOX;
 	else if (nVideoMode == 2)
 		dwFlags |= AV_FLAGS_WIDESCREEN;
+	WriteSetting(XC_VIDEO_FLAGS, dwFlags);
 
-	SetVideoFlags(dwFlags);
-
-	bool bWideScreen = nVideoMode == 2;
-	if (g_bStretchWidescreen != bWideScreen)
+	bool bWide = (nVideoMode == 2);
+	if (bWide != g_bStretchWidescreen)
 	{
-		if (bWideScreen)
+		if (bWide)
 			g_pp.Flags |= D3DPRESENTFLAG_WIDESCREEN;
 		else
 			g_pp.Flags &= ~D3DPRESENTFLAG_WIDESCREEN;
-
-		g_bStretchWidescreen = bWideScreen;
-		D3D__AvInfo = 0;
-		TheseusGetD3DDev()->Reset(&g_pp);
-		TheseusInvalidateStateCache();
+		g_bStretchWidescreen = bWide;
+		ResetDisplay();
 	}
 
 	g_bProjectionDirty = true;
 }
 
-// =========================================================================
-// HDTV resolution support
-// =========================================================================
+// Get/Set 480p, 720p, 1080i and PAL60   [FND 0x0017ff58..0x00180000]
+// Reconstructed from 5960 retail XBE @ 0x0003a950..0x0003ab60: one bit each
+// of XC_VIDEO_FLAGS (0x80000, 0x20000, 0x40000, 0x400000).
+int CConfig::Get480Support()   { return (ReadSetting(XC_VIDEO_FLAGS) & AV_FLAGS_HDTV_480p) != 0; }
+int CConfig::Get720Support()   { return (ReadSetting(XC_VIDEO_FLAGS) & AV_FLAGS_HDTV_720p) != 0; }
+int CConfig::Get1080Support()  { return (ReadSetting(XC_VIDEO_FLAGS) & AV_FLAGS_HDTV_1080i) != 0; }
+int CConfig::GetPAL60Support() { return (ReadSetting(XC_VIDEO_FLAGS) & AV_FLAGS_60Hz) != 0; }
 
-int CConfig::Get480Support()  { return (QueryVideoFlags() & AV_FLAGS_HDTV_480p) != 0; }
-int CConfig::Get720Support()  { return (QueryVideoFlags() & AV_FLAGS_HDTV_720p) != 0; }
-int CConfig::Get1080Support() { return (QueryVideoFlags() & AV_FLAGS_HDTV_1080i) != 0; }
-int CConfig::GetPAL60Support(){ return (QueryVideoFlags() & AV_FLAGS_60Hz) != 0; }
+void CConfig::Set720Support(int bEnable)   { WriteSettingBit(XC_VIDEO_FLAGS, AV_FLAGS_HDTV_720p, bEnable != 0); }
+void CConfig::Set1080Support(int bEnable)  { WriteSettingBit(XC_VIDEO_FLAGS, AV_FLAGS_HDTV_1080i, bEnable != 0); }
+void CConfig::SetPAL60Support(int bEnable) { WriteSettingBit(XC_VIDEO_FLAGS, AV_FLAGS_60Hz, bEnable != 0); }
 
+// CConfig::Set480Support(on)   [FND 0x0017ff70]
+// Reconstructed from 5960 retail XBE @ 0x0003a980. Stores the bit. While a
+// DVD plays on an HDTV pack with 480p Macrovision support, the display also
+// switches between progressive and interlaced on the spot when the setting
+// disagrees with it.
 void CConfig::Set480Support(int bEnable)
 {
-	DWORD dwFlags = QueryVideoFlags();
-	if (bEnable) dwFlags |= AV_FLAGS_HDTV_480p;
-	else         dwFlags &= ~AV_FLAGS_HDTV_480p;
-	SetVideoFlags(dwFlags);
+	WriteSettingBit(XC_VIDEO_FLAGS, AV_FLAGS_HDTV_480p, bEnable != 0);
 
-	// If playing a video disc on HDTV and Macrovision is active, update the D3D present flags
-	if (g_nDiscType == DISC_VIDEO && XGetAVPack() == XC_AV_PACK_HDTV && (XBOX_480P_MACROVISION_ENABLED & XboxHardwareInfo->Flags))
-	{
-		bool bUpdate = false;
-		if ((g_pp.Flags & D3DPRESENTFLAG_PROGRESSIVE) && !bEnable)
-		{
-			g_pp.Flags &= ~D3DPRESENTFLAG_PROGRESSIVE;
-			g_pp.Flags |= D3DPRESENTFLAG_INTERLACED;
-			bUpdate = true;
-		}
-		else if (!(g_pp.Flags & D3DPRESENTFLAG_PROGRESSIVE) && bEnable)
-		{
-			g_pp.Flags |= D3DPRESENTFLAG_PROGRESSIVE;
-			g_pp.Flags &= ~D3DPRESENTFLAG_INTERLACED;
-			bUpdate = true;
-		}
+	if (g_nDiscType != DISC_VIDEO || XGetAVPack() != XC_AV_PACK_HDTV ||
+	    !(XboxHardwareInfo->Flags & XBOX_480P_MACROVISION_ENABLED))
+		return;
 
-		if (bUpdate)
-		{
-			D3D__AvInfo = 0;
-			TheseusGetD3DDev()->Reset(&g_pp);
-			TheseusInvalidateStateCache();
-		}
-	}
+	bool bProgressive = (g_pp.Flags & D3DPRESENTFLAG_PROGRESSIVE) != 0;
+	if (bProgressive == (bEnable != 0))
+		return;
+
+	if (bEnable)
+		g_pp.Flags = (g_pp.Flags & ~D3DPRESENTFLAG_INTERLACED) | D3DPRESENTFLAG_PROGRESSIVE;
+	else
+		g_pp.Flags = (g_pp.Flags & ~D3DPRESENTFLAG_PROGRESSIVE) | D3DPRESENTFLAG_INTERLACED;
+	ResetDisplay();
 }
 
-void CConfig::Set720Support(int bEnable)
-{
-	DWORD dwFlags = QueryVideoFlags();
-	if (bEnable) dwFlags |= AV_FLAGS_HDTV_720p;
-	else         dwFlags &= ~AV_FLAGS_HDTV_720p;
-	SetVideoFlags(dwFlags);
-}
-
-void CConfig::Set1080Support(int bEnable)
-{
-	DWORD dwFlags = QueryVideoFlags();
-	if (bEnable) dwFlags |= AV_FLAGS_HDTV_1080i;
-	else         dwFlags &= ~AV_FLAGS_HDTV_1080i;
-	SetVideoFlags(dwFlags);
-}
-
-void CConfig::SetPAL60Support(int bEnable)
-{
-	DWORD dwFlags = QueryVideoFlags();
-	if (bEnable) dwFlags |= AV_FLAGS_60Hz;
-	else         dwFlags &= ~AV_FLAGS_60Hz;
-	SetVideoFlags(dwFlags);
-}
-
-// =========================================================================
-// Audio mode
-// =========================================================================
-
+// CConfig::GetAudioMode()   [script fn 'GetAudioMode', FND 0x00180120, sig 2]
+// CConfig::SetAudioMode(n)  [script fn 'SetAudioMode', FND 0x00180138, sig 14]
+// Reconstructed from 5960 retail XBE @ 0x0003abb0 and 0x0003abf0. Script
+// numbers modes 0 mono, 1 stereo, 2 surround; the low word of the audio
+// flags holds the speaker setup, the high word the encodings, which Set
+// leaves alone. Any other speaker value reads as surround; any other mode
+// writes nothing new.
 int CConfig::GetAudioMode()
 {
-	switch (DSSPEAKER_BASIC(QueryAudioFlags()))
+	switch (DSSPEAKER_BASIC(ReadSetting(XC_AUDIO_FLAGS)))
 	{
-	case DSSPEAKER_MONO:    return 0;
-	case DSSPEAKER_STEREO:  return 1;
-	default:                return 2;
+	case DSSPEAKER_MONO:   return 0;
+	case DSSPEAKER_STEREO: return 1;
 	}
+	return 2;
 }
 
 void CConfig::SetAudioMode(int nAudioMode)
 {
-	DWORD dwFlags = QueryAudioFlags();
-	switch (nAudioMode)
-	{
-	case 0: dwFlags = DSSPEAKER_COMBINED(DSSPEAKER_MONO, dwFlags);      break;
-	case 1: dwFlags = DSSPEAKER_COMBINED(DSSPEAKER_STEREO, dwFlags);    break;
-	case 2: dwFlags = DSSPEAKER_COMBINED(DSSPEAKER_SURROUND, dwFlags);  break;
-	}
-	SetAudioFlags(dwFlags);
+	DWORD dwFlags = ReadSetting(XC_AUDIO_FLAGS);
+	if (nAudioMode == 0)
+		dwFlags = DSSPEAKER_COMBINED(DSSPEAKER_MONO, dwFlags);
+	else if (nAudioMode == 1)
+		dwFlags = DSSPEAKER_COMBINED(DSSPEAKER_STEREO, dwFlags);
+	else if (nAudioMode == 2)
+		dwFlags = DSSPEAKER_COMBINED(DSSPEAKER_SURROUND, dwFlags);
+	WriteSetting(XC_AUDIO_FLAGS, dwFlags);
 }
 
-int CConfig::GetDolbyDigitalSupport() { return (QueryAudioFlags() & DSSPEAKER_ENABLE_AC3) != 0; }
+// Dolby Digital and DTS   [FND 0x00180150..0x00180198]
+// Reconstructed from 5960 retail XBE @ 0x0003ac60..0x0003ad10: bits 0x10000
+// and 0x20000 of XC_AUDIO_FLAGS.
+int CConfig::GetDolbyDigitalSupport() { return (ReadSetting(XC_AUDIO_FLAGS) & DSSPEAKER_ENABLE_AC3) != 0; }
+int CConfig::GetDTSSupport()          { return (ReadSetting(XC_AUDIO_FLAGS) & DSSPEAKER_ENABLE_DTS) != 0; }
+void CConfig::SetDolbyDigitalSupport(int bEnable) { WriteSettingBit(XC_AUDIO_FLAGS, DSSPEAKER_ENABLE_AC3, bEnable != 0); }
+void CConfig::SetDTSSupport(int bEnable)          { WriteSettingBit(XC_AUDIO_FLAGS, DSSPEAKER_ENABLE_DTS, bEnable != 0); }
 
-void CConfig::SetDolbyDigitalSupport(int bEnable)
-{
-	DWORD dwFlags = QueryAudioFlags();
-	if (bEnable) dwFlags |= DSSPEAKER_ENABLE_AC3;
-	else         dwFlags &= ~DSSPEAKER_ENABLE_AC3;
-	SetAudioFlags(dwFlags);
-}
-
-int CConfig::GetDTSSupport() { return (QueryAudioFlags() & DSSPEAKER_ENABLE_DTS) != 0; }
-
-void CConfig::SetDTSSupport(int bEnable)
-{
-	DWORD dwFlags = QueryAudioFlags();
-	if (bEnable) dwFlags |= DSSPEAKER_ENABLE_DTS;
-	else         dwFlags &= ~DSSPEAKER_ENABLE_DTS;
-	SetAudioFlags(dwFlags);
-}
-
-// =========================================================================
-// Auto power-off
-// =========================================================================
-
+// CConfig::GetAutoOff / SetAutoOff   [FND 0x00180060, 0x00180078]
+// Reconstructed from 5960 retail XBE @ 0x0003ad60 and 0x0003ad70: straight
+// through to XAutoPowerDownGet / XAutoPowerDownSet.
 int CConfig::GetAutoOff()
 {
 	BOOL bAutoOff;
@@ -389,7 +348,10 @@ int CConfig::GetAutoOff()
 	return bAutoOff;
 }
 
-void CConfig::SetAutoOff(int bAutoOff) { XAutoPowerDownSet(bAutoOff); }
+void CConfig::SetAutoOff(int bAutoOff)
+{
+	XAutoPowerDownSet(bAutoOff);
+}
 
 // =========================================================================
 // Skin
@@ -463,32 +425,36 @@ int CConfig::GetInternalTemp()
 	return (int)val;
 }
 
-// =========================================================================
-// Timezone / DST
-// =========================================================================
 
 extern int GetTimeZoneIndex(const TIME_ZONE_INFORMATION *tzinfo);
 extern bool GetTimeZoneInfo(int index, TIME_ZONE_INFORMATION *tzinfo);
 
+// CConfig::GetTimeZone()   [script fn 'GetTimeZone', FND 0x001801e0, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x0003ae80:
+//     if (XapipQueryTimeZoneInformation(&tz, 0) == 0 && tz.StandardName[0])
+//         return max(GetTimeZoneIndex(&tz), 0);
+//     return region == NA ? 11 : region == JAPAN ? 60 : 25;
+// With no zone set yet, the default is Eastern, Tokyo or London by region.
 int CConfig::GetTimeZone()
 {
 	TIME_ZONE_INFORMATION tzinfo;
-	if ((XapipQueryTimeZoneInformation(&tzinfo, NULL) != ERROR_SUCCESS) ||
-		(L'\0' == tzinfo.StandardName[0]))
+	if (XapipQueryTimeZoneInformation(&tzinfo, NULL) == ERROR_SUCCESS && tzinfo.StandardName[0] != 0)
 	{
-		// No valid timezone; return a default based on game region.
-		switch (XGetGameRegion())
-		{
-		case XC_GAME_REGION_NA:    return NA_DEFAULT_TIMEZONE;
-		case XC_GAME_REGION_JAPAN: return JAPAN_DEFAULT_TIMEZONE;
-		default:                   return ROW_DEFAULT_TIMEZONE;
-		}
+		int nIndex = GetTimeZoneIndex(&tzinfo);
+		return nIndex < 0 ? 0 : nIndex;
 	}
 
-	int index = GetTimeZoneIndex(&tzinfo);
-	return (index < 0) ? 0 : index;
+	switch (XGetGameRegion())
+	{
+	case XC_GAME_REGION_NA:    return NA_DEFAULT_TIMEZONE;
+	case XC_GAME_REGION_JAPAN: return JAPAN_DEFAULT_TIMEZONE;
+	}
+	return ROW_DEFAULT_TIMEZONE;
 }
 
+// CConfig::SetTimeZone(n)   [script fn 'SetTimeZone', FND 0x001801f8, sig 14]
+// Reconstructed from 5960 retail XBE @ 0x0003af30:
+//     if (GetTimeZoneInfo(n, &tz)) XapipSetTimeZoneInformation(&tz);
 void CConfig::SetTimeZone(int nTimeZone)
 {
 	TIME_ZONE_INFORMATION tzinfo;
@@ -496,165 +462,169 @@ void CConfig::SetTimeZone(int nTimeZone)
 		XapipSetTimeZoneInformation(&tzinfo);
 }
 
+// CConfig::GetDSTAllowed()   [script fn 'GetDSTAllowed', FND 0x00180210, sig 2]
+// CConfig::GetDST()          [script fn 'GetDST', FND 0x00180228, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x0003af80 and 0x0003afe0: a zone
+// allows daylight time when both its standard and daylight dates name a
+// month; GetDST also needs the console's use-DST answer.
 int CConfig::GetDSTAllowed()
 {
 	TIME_ZONE_INFORMATION tzinfo;
 	if (XapipQueryTimeZoneInformation(&tzinfo, NULL) != ERROR_SUCCESS)
 		return 0;
-	return (tzinfo.StandardDate.wMonth && tzinfo.DaylightDate.wMonth);
+	return tzinfo.StandardDate.wMonth != 0 && tzinfo.DaylightDate.wMonth != 0;
 }
 
 int CConfig::GetDST()
 {
 	TIME_ZONE_INFORMATION tzinfo;
-	BOOL fUseDST;
-	if (XapipQueryTimeZoneInformation(&tzinfo, &fUseDST) != ERROR_SUCCESS)
+	BOOL bUseDST;
+	if (XapipQueryTimeZoneInformation(&tzinfo, &bUseDST) != ERROR_SUCCESS)
 		return 0;
-	return (tzinfo.StandardDate.wMonth && tzinfo.DaylightDate.wMonth && fUseDST);
+	return tzinfo.StandardDate.wMonth != 0 && tzinfo.DaylightDate.wMonth != 0 && bUseDST;
 }
 
+// CConfig::SetDST(on)   [script fn 'SetDST', FND 0x00180240, sig 14]
+// Reconstructed from 5960 retail XBE @ 0x0003b050: if the misc flags read,
+// clear (on) or set (off) XC_MISC_FLAG_DONT_USE_DST and write them back.
 void CConfig::SetDST(int bObserveDST)
 {
-#if DBG
+	DWORD dwType, dwSize, dwFlags;
+	if (XQueryValue(XC_MISC_FLAGS, &dwType, &dwFlags, sizeof(dwFlags), &dwSize) != ERROR_SUCCESS)
+		return;
 	if (bObserveDST)
-		ASSERT(GetDSTAllowed());
-#endif
-
-	ULONG type, size;
-	DWORD flags;
-	if (XQueryValue(XC_MISC_FLAGS, &type, &flags, sizeof(flags), &size) == ERROR_SUCCESS)
-	{
-		if (bObserveDST)
-			flags &= ~XC_MISC_FLAG_DONT_USE_DST;
-		else
-			flags |= XC_MISC_FLAG_DONT_USE_DST;
-		XSetValue(XC_MISC_FLAGS, REG_DWORD, &flags, sizeof(flags));
-	}
+		dwFlags &= ~XC_MISC_FLAG_DONT_USE_DST;
+	else
+		dwFlags |= XC_MISC_FLAG_DONT_USE_DST;
+	XSetValue(XC_MISC_FLAGS, REG_DWORD, &dwFlags, sizeof(dwFlags));
 }
 
-// =========================================================================
-// Parental controls
-// =========================================================================
-
+// EncodePassword(text)
+// Reconstructed from 5960 retail XBE @ 0x0003b0a0. A pass code is typed on
+// the pad, one nibble per press:
+//     u 1  d 2  l 3  r 4  a 5  b 6  x 7  y 8  B 9  W 10  L 11  R 12
+// (d-pad, A B X Y, black, white, triggers). Anything else adds a zero nibble.
 static DWORD EncodePassword(const TCHAR *szPassword)
 {
-	DWORD dw = 0;
-	for (const TCHAR *pch = szPassword; *pch != 0; pch += 1)
+	static const TCHAR keys[] = _T("udlrabxyBWLR");
+	DWORD dwCode = 0;
+	for (; *szPassword != 0; szPassword++)
 	{
-		dw <<= 4;
-		switch (*pch)
-		{
-		case 'u': dw += 1;  break;  // up
-		case 'd': dw += 2;  break;  // down
-		case 'l': dw += 3;  break;  // left
-		case 'r': dw += 4;  break;  // right
-		case 'a': dw += 5;  break;  // A
-		case 'b': dw += 6;  break;  // B
-		case 'x': dw += 7;  break;  // X
-		case 'y': dw += 8;  break;  // Y
-		case 'B': dw += 9;  break;  // black
-		case 'W': dw += 10; break;  // white
-		case 'L': dw += 11; break;  // L trigger
-		case 'R': dw += 12; break;  // R trigger
-		default:  ASSERT(FALSE);
-		}
+		const TCHAR *pKey = _tcschr(keys, *szPassword);
+		dwCode = dwCode * 16 + (pKey != NULL ? (DWORD)(pKey - keys) + 1 : 0);
 	}
-	return dw;
+	return dwCode;
 }
 
+// CConfig::CheckParentPassword(text)   [script fn 'CheckParentPassword', FND 0x001801b0, sig 25]
+// CConfig::SetParentPassword(text)     [script fn 'SetParentPassword', FND 0x001801c8, sig 12]
+// Reconstructed from 5960 retail XBE @ 0x0003b1b0 and 0x0003b1f0: the
+// encoded code against, or into, XC_PARENTAL_CONTROL_PASSWORD.
 int CConfig::CheckParentPassword(const TCHAR *szCheckPassword)
 {
-	DWORD dwCheck = EncodePassword(szCheckPassword);
-	DWORD dwStored, dwType;
-	VERIFY(!XQueryValue(XC_PARENTAL_CONTROL_PASSWORD, &dwType, &dwStored, 4, NULL));
-	return dwStored == dwCheck;
+	return ReadSetting(XC_PARENTAL_CONTROL_PASSWORD) == EncodePassword(szCheckPassword);
 }
 
 void CConfig::SetParentPassword(const TCHAR *szNewPassword)
 {
-	DWORD dw = EncodePassword(szNewPassword);
-	VERIFY(!XSetValue(XC_PARENTAL_CONTROL_PASSWORD, REG_DWORD, &dw, 4));
+	WriteSetting(XC_PARENTAL_CONTROL_PASSWORD, EncodePassword(szNewPassword));
 }
 
+// Game and movie ratings   [FND 0x0017fe38..0x0017fe80]
+// Reconstructed from 5960 retail XBE @ 0x0003b210..0x0003b2a0. The EEPROM
+// keeps them upside down: script's game level n is stored as 6 - n, movie
+// level n as 7 - n; an unreadable value counts as stored 0. Theseus CHECKs
+// the range both ways, since scripts write these straight into the EEPROM.
 int CConfig::GetGamePCFlags()
 {
-	DWORD dwFlags = 0, dwType;
-	VERIFY(!XQueryValue(XC_PARENTAL_CONTROL_GAMES, &dwType, &dwFlags, 4, NULL));
-	if (!CHECK(dwFlags <= 6))
-		dwFlags = 0;
-	return (int)(6 - dwFlags); // stored inverted in EEPROM
+	DWORD dwType, dwStored = 0;
+	XQueryValue(XC_PARENTAL_CONTROL_GAMES, &dwType, &dwStored, sizeof(dwStored), NULL);
+	if (!CHECK(dwStored <= 6))
+		dwStored = 0;
+	return 6 - (int)dwStored;
 }
 
 void CConfig::SetGamePCFlags(int nFlags)
 {
-	// Scripts call this and the value goes straight into EEPROM.
 	if (!CHECK(nFlags >= 0 && nFlags <= 6))
 		return;
-	nFlags = 6 - nFlags;
-	VERIFY(!XSetValue(XC_PARENTAL_CONTROL_GAMES, REG_DWORD, (DWORD *)&nFlags, 4));
+	WriteSetting(XC_PARENTAL_CONTROL_GAMES, (DWORD)(6 - nFlags));
 }
 
 int CConfig::GetMoviePCFlags()
 {
-	DWORD dwFlags = 0, dwType;
-	VERIFY(!XQueryValue(XC_PARENTAL_CONTROL_MOVIES, &dwType, &dwFlags, 4, NULL));
-	if (!CHECK(dwFlags <= 7))
-		dwFlags = 0;
-	return (int)(7 - dwFlags);
+	DWORD dwType, dwStored = 0;
+	XQueryValue(XC_PARENTAL_CONTROL_MOVIES, &dwType, &dwStored, sizeof(dwStored), NULL);
+	if (!CHECK(dwStored <= 7))
+		dwStored = 0;
+	return 7 - (int)dwStored;
 }
 
 void CConfig::SetMoviePCFlags(int nFlags)
 {
 	if (!CHECK(nFlags >= 0 && nFlags <= 7))
 		return;
-	nFlags = 7 - nFlags;
-	VERIFY(!XSetValue(XC_PARENTAL_CONTROL_MOVIES, REG_DWORD, (DWORD *)&nFlags, 4));
+	WriteSetting(XC_PARENTAL_CONTROL_MOVIES, (DWORD)(7 - nFlags));
 }
 
-// =========================================================================
-// Launch data
-// =========================================================================
-
+// CConfig::GetLaunchReason()   [script fn 'GetLaunchReason', FND 0x0017fe98, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x0003b2d0: with launch data, the
+// reason as a name (jump table @ 0x0003b3ac); otherwise, or for a reason
+// it doesn't name, an empty string. Theseus also names the online menu,
+// account signup and network settings by this XDK's older numbering.
 CStrObject *CConfig::GetLaunchReason()
 {
-	const TCHAR *sz = NULL;
+	const TCHAR *szReason = _T("");
 	if (g_bHasLaunchData)
 	{
 		switch (g_dwLaunchReason)
 		{
-		case XLD_LAUNCH_DASHBOARD_ERROR:                  sz = _T("Error");                    break;
-		case XLD_LAUNCH_DASHBOARD_MEMORY:                 sz = _T("Memory");                   break;
-		case XLD_LAUNCH_DASHBOARD_SETTINGS:               sz = _T("Settings");                 break;
-		case XLD_LAUNCH_DASHBOARD_MUSIC:                  sz = _T("Music");                    break;
-		case XLD_LAUNCH_DASHBOARD_ONLINE_MENU:            sz = _T("FromOnlineDash");           break;
-		case XLD_LAUNCH_DASHBOARD_NEW_ACCOUNT_SIGNUP:     sz = _T("NewAccountInternal");       break;
-		case XLD_LAUNCH_DASHBOARD_NETWORK_CONFIGURATION:  sz = _T("NetworkSettingsInternal");  break;
-		default:
-			TRACE(_T("[LaunchReason] Unknown launch reason: %lu\n"), g_dwLaunchReason);
-			break;
+		case XLD_LAUNCH_DASHBOARD_ERROR:                 szReason = _T("Error");                   break;
+		case XLD_LAUNCH_DASHBOARD_MEMORY:                szReason = _T("Memory");                  break;
+		case XLD_LAUNCH_DASHBOARD_SETTINGS:              szReason = _T("Settings");                break;
+		case XLD_LAUNCH_DASHBOARD_MUSIC:                 szReason = _T("Music");                   break;
+		case XLD_LAUNCH_DASHBOARD_ONLINE_MENU:           szReason = _T("FromOnlineDash");          break;
+		case XLD_LAUNCH_DASHBOARD_NEW_ACCOUNT_SIGNUP:    szReason = _T("NewAccountInternal");      break;
+		case XLD_LAUNCH_DASHBOARD_NETWORK_CONFIGURATION: szReason = _T("NetworkSettingsInternal"); break;
+		case 12: szReason = _T("FromOnlineDash");            break;
+		case 13: szReason = _T("FriendsInternal");           break;
+		case 14: szReason = _T("VoiceChatInternal");         break;
+		case 15: szReason = _T("MessagesInternal");          break;
+		case 16: szReason = _T("AccountManagementInternal"); break;
+		case 17: szReason = _T("NewAccountInternal");        break;
+		case 18: szReason = _T("AccountRecoveryInternal");   break;
+		case 19: szReason = _T("NetworkSettingsInternal");   break;
 		}
 	}
-	return new CStrObject(sz ? sz : _T(""));
+	return new CStrObject(szReason);
 }
 
-int CConfig::GetLaunchContext()    { return g_bHasLaunchData ? g_dwLaunchContext : 0; }
-int CConfig::GetLaunchParameter1() { return g_bHasLaunchData ? g_dwLaunchParameter1 : 0; }
-int CConfig::GetLaunchParameter2() { return g_bHasLaunchData ? g_dwLaunchParameter2 : 0; }
+// GetLaunchContext / GetLaunchParameter1 / GetLaunchParameter2   [FND 0x0017feb0..0x0017fee0]
+// Reconstructed from 5960 retail XBE @ 0x0003b400..0x0003b440: the launch
+// data's field, or 0 with none. GetTitleID is the same for the title id.
+int CConfig::GetLaunchContext()    { return g_bHasLaunchData ? (int)g_dwLaunchContext : 0; }
+int CConfig::GetLaunchParameter1() { return g_bHasLaunchData ? (int)g_dwLaunchParameter1 : 0; }
+int CConfig::GetLaunchParameter2() { return g_bHasLaunchData ? (int)g_dwLaunchParameter2 : 0; }
 DWORD CConfig::GetTitleID()        { return g_bHasLaunchData ? g_dwTitleID : 0; }
 
+// CConfig::CanDriveBeCleanup(drive)   [script fn 'CanDriveBeCleanup', FND 0x0017fef8, sig 3]
+// Reconstructed from 5960 retail XBE @ 0x0003b460: true for the drives a
+// game may ask the dash to clean up, any case. 5960 takes F to M, T and U;
+// Theseus takes H to O, T and U, keeping the big F and G partitions out.
 int CConfig::CanDriveBeCleanup(int Drive)
 {
-	switch (toupper(Drive))
-	{
-	case 'T': case 'U':
-	case 'H': case 'I': case 'J': case 'K':
-	case 'L': case 'M': case 'N': case 'O':
-		return true;
-	default:
-		return false;
-	}
+	int letter = toupper(Drive);
+	return letter == 'T' || letter == 'U' || (letter >= 'H' && letter <= 'O');
 }
 
+// CConfig::BackToLauncher()   [script fn 'BackToLauncher', FND 0x0017ff10, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0003b4b0:
+//     PersistDisplay();
+//     if (reason == SETTINGS && (param1 & (CLOCK | TIMEZONE | LANGUAGE))) HalReturnToFirmware(reboot);
+//     LD_FROM_DASHBOARD fd = {0}; fd.dwContext = GetLaunchContext();
+//     XWriteTitleInfoAndReboot("default.xbe", "\\Device\\CdRom0", LDT_FROM_DASHBOARD, GetTitleID(), &fd);
+// A game that sent the player to set the clock, zone or language gets a
+// clean reboot; otherwise it's relaunched from the disc with its context.
 void CConfig::BackToLauncher()
 {
 	TheseusGetD3DDev()->PersistDisplay();
@@ -662,14 +632,13 @@ void CConfig::BackToLauncher()
 	if (CheckForcedSettings(XLD_SETTINGS_CLOCK | XLD_SETTINGS_TIMEZONE | XLD_SETTINGS_LANGUAGE))
 	{
 		HalReturnToFirmware(HalRebootRoutine);
+		return;
 	}
-	else
-	{
-		LD_FROM_DASHBOARD fd;
-		ZeroMemory(&fd, sizeof(fd));
-		fd.dwContext = GetLaunchContext();
-		XWriteTitleInfoAndReboot("default.xbe", "\\Device\\CdRom0", LDT_FROM_DASHBOARD, GetTitleID(), (PLAUNCH_DATA)&fd);
-	}
+
+	LD_FROM_DASHBOARD fd;
+	ZeroMemory(&fd, sizeof(fd));
+	fd.dwContext = GetLaunchContext();
+	XWriteTitleInfoAndReboot("default.xbe", "\\Device\\CdRom0", LDT_FROM_DASHBOARD, GetTitleID(), (PLAUNCH_DATA)&fd);
 }
 
 // =========================================================================
@@ -699,61 +668,81 @@ CStrObject *CConfig::GetXBETitleID(const TCHAR *path)
 	return new CStrObject(buffer);
 }
 
-// =========================================================================
-// NT device path file check
-// =========================================================================
 
+// CConfig::NtFileExists(path)   [script fn 'NtFileExists', FND 0x00180300, sig 25]
+// 5960 @ 0x0003b910 opens the raw NT path (NtOpenFile, read access) and
+// answers whether that worked. Theseus maps the hard disk partitions it
+// knows to their drive letters and asks for the file's attributes instead.
+// Paths it doesn't know go through unchanged.
 int CConfig::NtFileExists(const TCHAR* FileName)
 {
+	static const struct { const TCHAR *szDevice; TCHAR chDrive; } partitions[] =
+	{
+		{ _T("\\Device\\Harddisk0\\Partition2"), 'C' },
+		{ _T("\\Device\\Harddisk0\\Partition1"), 'E' },
+		{ _T("\\Device\\Harddisk0\\Partition6"), 'F' },
+		{ _T("\\Device\\Harddisk0\\Partition7"), 'G' },
+		{ _T("\\Device\\Harddisk0\\Partition8"), 'H' },
+		{ _T("\\Device\\Harddisk0\\Partition9"), 'I' },
+	};
+
+	TCHAR szPath[MAX_PATH];
+	_tcsncpy(szPath, FileName, MAX_PATH);
+
+	for (int i = 0; i < (int)countof(partitions); i++)
+	{
+		size_t cch = _tcslen(partitions[i].szDevice);
+		if (_tcsnicmp(FileName, partitions[i].szDevice, cch) == 0)
+		{
+			_stprintf(szPath, _T("%c:%s"), partitions[i].chDrive, FileName + cch);
+			break;
+		}
+	}
+
+	char szAnsi[MAX_PATH];
+	Ansi(szAnsi, szPath, MAX_PATH);
 	WIN32_FILE_ATTRIBUTE_DATA fad;
-	TCHAR remappedPath[MAX_PATH];
-
-	_tcsncpy(remappedPath, FileName, MAX_PATH);
-
-	// Convert NT device paths to DOS drive letters
-	if (_tcsnicmp(FileName, _T("\\Device\\Harddisk0\\Partition2"), _tcslen(_T("\\Device\\Harddisk0\\Partition2"))) == 0)
-		_stprintf(remappedPath, _T("C:\%s"), FileName + _tcslen(_T("\\Device\\Harddisk0\\Partition2")));
-	else if (_tcsnicmp(FileName, _T("\\Device\\Harddisk0\\Partition1"), _tcslen(_T("\\Device\\Harddisk0\\Partition1"))) == 0)
-		_stprintf(remappedPath, _T("E:\%s"), FileName + _tcslen(_T("\\Device\\Harddisk0\\Partition1")));
-	else if (_tcsnicmp(FileName, _T("\\Device\\Harddisk0\\Partition6"), _tcslen(_T("\\Device\\Harddisk0\\Partition6"))) == 0)
-		_stprintf(remappedPath, _T("F:\%s"), FileName + _tcslen(_T("\\Device\\Harddisk0\\Partition6")));
-	else if (_tcsnicmp(FileName, _T("\\Device\\Harddisk0\\Partition7"), _tcslen(_T("\\Device\\Harddisk0\\Partition7"))) == 0)
-		_stprintf(remappedPath, _T("G:\%s"), FileName + _tcslen(_T("\\Device\\Harddisk0\\Partition7")));
-	else if (_tcsnicmp(FileName, _T("\\Device\\Harddisk0\\Partition8"), _tcslen(_T("\\Device\\Harddisk0\\Partition8"))) == 0)
-		_stprintf(remappedPath, _T("H:\%s"), FileName + _tcslen(_T("\\Device\\Harddisk0\\Partition8")));
-	else if (_tcsnicmp(FileName, _T("\\Device\\Harddisk0\\Partition9"), _tcslen(_T("\\Device\\Harddisk0\\Partition9"))) == 0)
-		_stprintf(remappedPath, _T("I:\%s"), FileName + _tcslen(_T("\\Device\\Harddisk0\\Partition9")));
-
-	CHAR szFile[MAX_PATH];
-	Ansi(szFile, remappedPath, MAX_PATH);
-
-	return (GetFileAttributesEx(szFile, GetFileExInfoStandard, &fad) > 0) ? 1 : 0;
+	return GetFileAttributesEx(szAnsi, GetFileExInfoStandard, &fad) ? 1 : 0;
 }
 
-int CConfig::FileExists(const TCHAR* FileName) { return NtFileExists(FileName); }
+// CConfig::FileExists(path)   [script fn 'FileExists', FND 0x001802e8, sig 25]
+// 5960 @ 0x0003b900 is DoesFileExist(path). Theseus routes it through
+// NtFileExists so either kind of path works.
+int CConfig::FileExists(const TCHAR* FileName)
+{
+	return NtFileExists(FileName);
+}
 
-// =========================================================================
-// System info
-// =========================================================================
-
+// CConfig::GetRecoveryKey()   [script fn 'GetRecoveryKey', FND 0x001802a0, sig 8]
+// 5960 @ 0x0003b6b0 derives a four press pad code (letters "AXYUDLR") from
+// an HMAC of the console's hard disk key. Theseus returns it empty: a
+// parental lock recovery code means nothing on modified hardware.
 CStrObject *CConfig::GetRecoveryKey()
 {
-	// Parental lock recovery codes aren't meaningful on modified hardware.
 	return new CStrObject(_T(""));
+}
+
+// CConfig::GetROMVersion()     [script fn 'GetROMVersion', FND 0x001802b8, sig 8]
+// CConfig::GetXdashVersion()   [script fn 'GetXdashVersion', FND 0x001802d0, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x0003b7b0 and 0x0003b860: both
+// print "%d.%02d.%d.%02d", the kernel's version (QFE without its top bit)
+// and the dash's own 1, 0, 5960, 1.
+static CStrObject *FormatVersion(int major, int minor, int build, int qfe)
+{
+	TCHAR szVersion[64];
+	_sntprintf(szVersion, countof(szVersion), _T("%d.%02d.%d.%02d"), major, minor, build, qfe);
+	szVersion[countof(szVersion) - 1] = 0;
+	return new CStrObject(szVersion);
 }
 
 CStrObject *CConfig::GetROMVersion()
 {
-	TCHAR buf[64];
-	_sntprintf(buf, countof(buf), _T("%d.%02d.%d.%02d"),
-		XboxKrnlVersion->Major, XboxKrnlVersion->Minor,
-		XboxKrnlVersion->Build, (XboxKrnlVersion->Qfe & 0x7FFF));
-	return new CStrObject(buf);
+	return FormatVersion(XboxKrnlVersion->Major, XboxKrnlVersion->Minor, XboxKrnlVersion->Build, XboxKrnlVersion->Qfe & 0x7FFF);
 }
 
 CStrObject *CConfig::GetXdashVersion()
 {
-	return new CStrObject(_T("1.00.5960.01"));
+	return FormatVersion(1, 0, 5960, 1);
 }
 
 CStrObject *CConfig::GetXboxIP()
@@ -1043,38 +1032,48 @@ CStrObject *CConfig::GetMODCHIPVersion()
 	return new CStrObject(result);
 }
 
-// =========================================================================
-// LiveToday / legal info / misc flags
-// =========================================================================
 
+// Live today, the accepted legal notice and daylight time all live in
+// XC_MISC_FLAGS: bit 2 is "don't show Live today" (so read inverted), bit 3
+// "legal notice accepted".
+// CConfig::GetLiveToday / SetLiveToday            [FND 0x00180090, 0x001800a8]
+// CConfig::GetAcceptedLegalInfo / SetAccepted...  [FND 0x001800c0, 0x001800d8]
+// Reconstructed from 5960 retail XBE @ 0x0003ad80..0x0003ae30.
 int CConfig::GetLiveToday()
 {
-	// Bit 2 is "disabled" flag, inverted
-	return (~(QueryMiscFlags() >> 2)) & 1;
+	return (ReadMiscFlags() & 4) == 0;
 }
 
 void CConfig::SetLiveToday(int bEnable)
 {
-	DWORD value = QueryMiscFlags();
-	if (bEnable) value &= ~4;
-	else         value |= 4;
-	SetMiscFlags(value);
+	DWORD dwFlags = ReadMiscFlags();
+	if (bEnable)
+		dwFlags &= ~4;
+	else
+		dwFlags |= 4;
+	WriteSetting(XC_MISC_FLAGS, dwFlags);
 }
 
 int CConfig::GetAcceptedLegalInfo()
 {
-	// Bit 3 is "accepted legal info" flag
-	return (QueryMiscFlags() >> 3) & 1;
+	return (ReadMiscFlags() & 8) != 0;
 }
 
 void CConfig::SetAcceptedLegalInfo(int nValue)
 {
-	DWORD value = QueryMiscFlags();
-	if (nValue) value |= 8;
-	else        value &= ~8;
-	SetMiscFlags(value);
+	DWORD dwFlags = ReadMiscFlags();
+	if (nValue)
+		dwFlags |= 8;
+	else
+		dwFlags &= ~8;
+	WriteSetting(XC_MISC_FLAGS, dwFlags);
 }
 
+// CConfig::BackToLauncher2()   [script fn 'BackToLauncher2', FND 0x0017ff28, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0003b550: reboots into
+// settings_adoc.xip as title 0xFFFE0000 with 'ADOC' as the launch context.
+// 5960 asks the object manager where the dash itself lives and launches
+// from there; Theseus names the C partition outright.
 void CConfig::BackToLauncher2()
 {
 	TheseusGetD3DDev()->PersistDisplay();
@@ -1082,47 +1081,54 @@ void CConfig::BackToLauncher2()
 	LD_FROM_DASHBOARD fd;
 	ZeroMemory(&fd, sizeof(fd));
 	fd.dwContext = 'CODA';
-	XWriteTitleInfoAndReboot("settings_adoc.xip",
-		"\\Device\\Harddisk0\\Partition2",
-		LDT_FROM_DASHBOARD, 0xfffe0000, (PLAUNCH_DATA)&fd);
+	XWriteTitleInfoAndReboot("settings_adoc.xip", "\\Device\\Harddisk0\\Partition2",
+	                         LDT_FROM_DASHBOARD, 0xfffe0000, (PLAUNCH_DATA)&fd);
 }
 
+// CConfig::GoToXOnlineDash()
+// 5960 @ 0x0003b640 reboots into C:\XODash\xonlinedash.xbe with reason 0x0C.
+// Theseus has no online dashboard to go to, so it only logs the call.
 void CConfig::GoToXOnlineDash()
 {
 	OutputDebugString(_T("[Config] GoToXOnlineDash() called\n"));
 }
 
+// CConfig::GetFontVersion()   [script fn 'GetFontVersion', FND 0x0017fdf0, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x0003a520: opens the font file
+// (5960: "%sfonts\Xbox.xtf", then "%sXbox.xtf" under the app dir), reads its
+// first DWORD and takes the top byte as a digit; cached after the first
+// call. Theseus reads the system fonts, C:\Fonts\xbox_<language>.xtf then
+// C:\Fonts\xbox.xtf, wants all four bytes, and calls a missing font 0.
 int CConfig::GetFontVersion()
 {
-	static int cachedVersion = -1;
-	if (cachedVersion != -1)
-		return cachedVersion;
+	static int nVersion = -1;
+	if (nVersion != -1)
+		return nVersion;
 
 	char szPath[MAX_PATH];
-	DWORD dwRead, dwData = 0;
-
 	_snprintf(szPath, MAX_PATH, "C:\\Fonts\\xbox_%d.xtf", GetLanguage());
-	HANDLE hFile = CreateFileA(szPath, GENERIC_READ, FILE_SHARE_READ, NULL,
-		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	HANDLE hFont = CreateFileA(szPath, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFont == INVALID_HANDLE_VALUE)
+		hFont = CreateFileA("C:\\Fonts\\xbox.xtf", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
-	if (hFile == INVALID_HANDLE_VALUE)
-		hFile = CreateFileA("C:\\Fonts\\xbox.xtf", GENERIC_READ,
-			FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-
-	if (hFile != INVALID_HANDLE_VALUE)
+	nVersion = 0;
+	if (hFont != INVALID_HANDLE_VALUE)
 	{
-		if (ReadFile(hFile, &dwData, sizeof(dwData), &dwRead, NULL) && dwRead == 4)
-			cachedVersion = (int)((dwData >> 24) - '0');
-		CloseHandle(hFile);
+		DWORD dwHeader = 0, dwRead = 0;
+		if (ReadFile(hFont, &dwHeader, sizeof(dwHeader), &dwRead, NULL) && dwRead == sizeof(dwHeader))
+			nVersion = (int)(dwHeader >> 24) - '0';
+		CloseHandle(hFont);
 	}
-
-	if (cachedVersion == -1)
-		cachedVersion = 0;
-	return cachedVersion;
+	if (nVersion == -1)
+		nVersion = 0;
+	return nVersion;
 }
 
 extern bool g_bMovingScreen;
 
+// CConfig::ToggleNoisyCamera()
+// 5960 @ 0x0003b9e0 flips the camera drift by creating or deleting
+// T:\NoisyCamera. Theseus keeps it in the skin's settings instead.
 void CConfig::ToggleNoisyCamera()
 {
 	g_bMovingScreen = !g_bMovingScreen;
@@ -1130,9 +1136,10 @@ void CConfig::ToggleNoisyCamera()
 		g_pSkinSettings->SetValue(_T("Camera"), _T("Noisy"), g_bMovingScreen ? _T("true") : _T("false"));
 }
 
+// CConfig::GetEthernetLinkStatus()   [script fn 'GetEthernetLinkStatus', FND 0x00180318, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x0003b9d0: whether the cable is
+// plugged in and live (XNET_ETHERNET_LINK_ACTIVE).
 int CConfig::GetEthernetLinkStatus()
 {
-	XNADDR xna;
-	DWORD dwState = XNetGetTitleXnAddr(&xna);
-	return (dwState != 0) ? 1 : 0;
+	return (XNetGetEthernetLinkStatus() & XNET_ETHERNET_LINK_ACTIVE) ? 1 : 0;
 }

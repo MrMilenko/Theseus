@@ -1,8 +1,9 @@
-// title_collection.cpp: CTitleArray, the title-and-saved-game scanner.
-// Walks installed title directories, parses TitleMeta.xbx /
-// TitleImage.xbx / SaveMeta.xbx / SaveImage.xbx, supports background
-// scanning with critical-section locking. Decompiled from the 5960
-// retail XBE; see docs/decomp/TitleCollection.md.
+// title_collection.cpp: CTitleArray, the list of title folders and their
+// saves on one device (U:\ style root on a memory unit, e:\udata on the
+// hard drive). Rebuilt function by function from the 5960 retail XBE
+// (0x41dd0..0x44240); see docs/decomp/TitleCollection.md. Theseus keeps a
+// slimmer CTitle than 5960 (no Live account or content lists; those live in
+// the save grid) and reads the hard drive from e:\ instead of c:\.
 
 #include "std.h"
 #include "theseus.h"
@@ -13,29 +14,32 @@
 #include "title_collection.h"
 #include "locale_node.h"
 
-
-
 CTitleArray g_titles [9];
 
+// TitleArray_Init()
+// 5960 @ 0x41dd0 is the array constructor run over all nine slots at
+// startup; the hard drive slot then gets its root. Memory units get theirs
+// from the memory monitor as they're mounted.
 void TitleArray_Init()
 {
-	g_titles[8].SetRoot('c', false);
-	// NOTE: Memory units will be set as they are mounted...
+	g_titles[Dev0].SetRoot('c', false);
 }
 
+// CTitleArray::CTitleArray
+// Reconstructed from 5960 retail XBE @ 0x41dd0:
+//     InitializeCriticalSection(&lock); root = {0, ':', '\\', 0};
+//     count = capacity = list = 0; dirty = 1;
 CTitleArray::CTitleArray()
 {
-    InitializeCriticalSection(&m_rootLock);
-
+	InitializeCriticalSection(&m_lock);
 	m_root[0] = 0;
 	m_root[1] = ':';
 	m_root[2] = '\\';
 	m_root[3] = 0;
-
 	m_dirty = true;
-	m_titleCount = 0;
-	m_titleCapacity = 0;
-	m_titles = NULL;
+	m_count = 0;
+	m_capacity = 0;
+	m_list = NULL;
 }
 
 CTitleArray::~CTitleArray()
@@ -43,485 +47,465 @@ CTitleArray::~CTitleArray()
 	DeleteAll(false);
 }
 
-void CTitleArray::DeleteAll(bool bUpdate /* = true */)
+// CTitleArray::DeleteAll(bUpdate)
+// Reconstructed from 5960 retail XBE @ 0x41e40:
+//     for each title: free(id); free(name); delete[] saves;
+//     free(list); list = count = capacity = 0; dirty = 1; if (bUpdate) Update();
+void CTitleArray::DeleteAll(bool bUpdate)
 {
-	for (int i = 0; i < m_titleCount; i += 1)
+	for (CTitle* t = m_list; t < m_list + m_count; t++)
 	{
-		delete [] m_titles[i].m_id;
-		delete [] m_titles[i].m_name;
-		delete [] m_titles[i].m_saves;
+		delete [] t->m_titleID;
+		delete [] t->m_displayName;
+		delete [] t->m_saveList;
 	}
-
-	delete [] m_titles;
-	m_titles = NULL;
-
-	m_titleCount = 0;
-	m_titleCapacity = 0;
+	delete [] m_list;
+	m_list = NULL;
+	m_count = 0;
+	m_capacity = 0;
 	m_dirty = true;
 
-    if (bUpdate)
-    {
-        Update();
-    }
+	if (bUpdate)
+		Update();
 }
 
-void CTitleArray::SetRoot(TCHAR chNewRoot, bool bUpdate /* = true */)
+// CTitleArray::SetRoot(drive, bUpdate)
+// Inlined into its callers in 5960: swap the drive letter under the lock
+// (the scan thread reads it), then drop the list.
+void CTitleArray::SetRoot(TCHAR chNewRoot, bool bUpdate)
 {
-    EnterCriticalSection(&m_rootLock);
+	EnterCriticalSection(&m_lock);
 	m_root[0] = chNewRoot;
-    LeaveCriticalSection(&m_rootLock);
+	LeaveCriticalSection(&m_lock);
 	DeleteAll(bUpdate);
 }
 
-static int __cdecl SortTitleCompare(const void *elem1, const void *elem2)
+// Titles sort by display name, ignoring case.
+static int __cdecl CompareTitleNames(const void* a, const void* b)
 {
-	const CTitle* pTitle1 = (const CTitle*)elem1;
-	const CTitle* pTitle2 = (const CTitle*)elem2;
-	return _tcsicmp(pTitle1->m_name, pTitle2->m_name);
+	return _tcsicmp(((const CTitle*)a)->m_displayName, ((const CTitle*)b)->m_displayName);
 }
 
+// Saves sort newest first.
+static int __cdecl CompareSaveTimes(const void* a, const void* b)
+{
+	return CompareFileTime(&((const CSave*)b)->m_written, &((const CSave*)a)->m_written);
+}
+
+static TCHAR* DupString(const TCHAR* s)
+{
+	int n = (int)_tcslen(s) + 1;
+	TCHAR* copy = new TCHAR [n];
+	CopyChars(copy, s, n);
+	return copy;
+}
+
+// CTitleArray::AddTitle(id)
+// Reconstructed from 5960 retail XBE @ 0x41f20. Reads TitleName out of
+// <udata>\<id>\TitleMeta.xbx (64 chars); if the file or the key is missing
+// the title shows as the translated "Broken Game" and is flagged broken.
+// The list grows 50 entries at a time. Counts start at -1 (not scanned).
+// Theseus reads the name from the current language's section.
 void CTitleArray::AddTitle(const TCHAR* szTitleID)
 {
-	TCHAR szXbxFile[MAX_PATH];
-    TCHAR szTranslate[MAX_TRANSLATE_LEN];
-	MakePath(szXbxFile, GetUData(), szTitleID);
-	MakePath(szXbxFile, szXbxFile, szTitleDataXBX);
+	TCHAR metaPath[MAX_PATH];
+	MakePath(metaPath, GetUData(), szTitleID);
+	MakePath(metaPath, metaPath, szTitleDataXBX);
 
-	TCHAR szTitleName[64];
+	TCHAR lang[MAX_LANGUAGE_CODE_LEN];
+	GetLanguageCode(lang);
 
-    TCHAR szLanguageCode[MAX_LANGUAGE_CODE_LEN];
-    GetLanguageCode(szLanguageCode);
-
-	CSettingsFile settings;
+	TCHAR name[64];
 	bool broken = false;
-	if (!settings.Open(szXbxFile) || !settings.GetValue(szLanguageCode, _T("TitleName"), szTitleName, countof(szTitleName)))
+	CSettingsFile meta;
+	if (!meta.Open(metaPath) || !meta.GetValue(lang, _T("TitleName"), name, countof(name)))
 	{
-		_tcscpy(szTitleName, Translate(_T("Broken Game"), szTranslate));
+		TCHAR translated[MAX_TRANSLATE_LEN];
+		_tcscpy(name, Translate(_T("Broken Game"), translated));
 		broken = true;
 	}
 
-	if (m_titleCount == m_titleCapacity)
+	if (m_count == m_capacity)
 	{
-		m_titleCapacity += 50;
-
-		CTitle* rgtitle = new CTitle [m_titleCapacity];
-		CopyMemory(rgtitle, m_titles, m_titleCount * sizeof (CTitle));
-		delete [] m_titles;
-		m_titles = rgtitle;
+		m_capacity += 50;
+		CTitle* grown = new CTitle [m_capacity];
+		CopyMemory(grown, m_list, m_count * sizeof (CTitle));
+		delete [] m_list;
+		m_list = grown;
 	}
 
-	int cch = _tcslen(szTitleID) + 1;
-	m_titles[m_titleCount].m_id = new TCHAR [cch];
-	CopyChars(m_titles[m_titleCount].m_id, szTitleID, cch);
-
-	cch = _tcslen(szTitleName) + 1;
-	m_titles[m_titleCount].m_name = new TCHAR [cch];
-	CopyChars(m_titles[m_titleCount].m_name, szTitleName, cch);
-
-	m_titles[m_titleCount].m_savedGameCount = -1;
-	m_titles[m_titleCount].m_savedGameBlocks = -1; // 'unknown'
-	m_titles[m_titleCount].m_totalBlocks = -1; // 'unknown'
-	m_titles[m_titleCount].m_saves = NULL;
-	m_titles[m_titleCount].m_broken = broken;
-
-	m_titleCount += 1;
+	CTitle& t = m_list[m_count++];
+	t.m_titleID = DupString(szTitleID);
+	t.m_displayName = DupString(name);
+	t.m_saveCount = -1;
+	t.m_saveList = NULL;
+	t.m_saveBlocks = -1;
+	t.m_blocks = -1;
+	t.m_broken = broken;
 }
 
+// Scans one title's saves into a fresh array sized to fit.
+static CSave* ScanSavesToFit(const TCHAR* root, const TCHAR* titleID, HANDLE cancel, int* count)
+{
+	CSave* scratch = new CSave [MAX_SAVED_GAMES];
+	*count = ScanSavedGames(root, titleID, scratch, cancel);
+	if (*count < 0)
+	{
+		// Cancelled: stays unscanned (-1) with no list.
+		delete [] scratch;
+		return NULL;
+	}
+	CSave* saves = new CSave [*count];
+	CopyMemory(saves, scratch, *count * sizeof (CSave));
+	delete [] scratch;
+	return saves;
+}
+
+// CTitleArray::Update()
+// Reconstructed from 5960 retail XBE @ 0x42230. With no root it just marks
+// itself clean. Otherwise it lists <udata>\*.* and adds every folder as a
+// title. A failed listing marks it clean unless the device is gone
+// (ERROR_DEVICE_NOT_CONNECTED, 0x48f), so it's tried again; losing the
+// device mid listing drops everything. Then the titles sort by name and
+// each one's saves are scanned. All of it runs under the root lock.
+// 5960 also loads Live accounts and content lists here; Theseus doesn't,
+// and skips the fffe0000 dashboard folder.
 void CTitleArray::Update()
 {
-    EnterCriticalSection(&m_rootLock);
+	EnterCriticalSection(&m_lock);
 
 	if (m_root[0] == 0)
 	{
-        LeaveCriticalSection(&m_rootLock);
+		LeaveCriticalSection(&m_lock);
 		m_dirty = false;
 		return;
 	}
 
-	TCHAR szFileName [MAX_PATH];
-	WIN32_FIND_DATA fd;
+	TCHAR path[MAX_PATH];
+	MakePath(path, GetUData(), _T("*.*"));
+	FSCHAR pattern[MAX_PATH];
+	Ansi(pattern, path, countof(pattern));
 
-    MakePath(szFileName, GetUData(), _T("*.*"));
-    FSCHAR szBuf [MAX_PATH];
-    Ansi(szBuf, szFileName, countof (szBuf));
-    HANDLE hFind = TheseusFindFirstFile(szBuf, &fd);
+	WIN32_FIND_DATA found;
+	HANDLE find = TheseusFindFirstFile(pattern, &found);
+	if (find == INVALID_HANDLE_VALUE)
+	{
+		if (GetLastError() != ERROR_DEVICE_NOT_CONNECTED)
+			m_dirty = false;
+		LeaveCriticalSection(&m_lock);
+		return;
+	}
 
-    if (hFind == INVALID_HANDLE_VALUE)
-    {
-        if (ERROR_DEVICE_NOT_CONNECTED != GetLastError())
-        {
-            m_dirty = false;
-        }
-        LeaveCriticalSection(&m_rootLock);
-        return;
-    }
-
-    do
-    {
-		if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+	do
+	{
+		if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
 			continue;
+		Unicode(path, found.cFileName, countof(path));
+		if (_tcsicmp(path, _T("fffe0000")) != 0)
+			AddTitle(path);
+	}
+	while (TheseusFindNextFile(find, &found));
 
-		Unicode(szFileName, fd.cFileName, countof(szFileName));
+	bool unplugged = GetLastError() == ERROR_DEVICE_NOT_CONNECTED;
+	TheseusFindClose(find);
+	if (unplugged)
+	{
+		DeleteAll(false);
+		LeaveCriticalSection(&m_lock);
+		return;
+	}
 
-		// Ignore the Xbox default title...
-		if (_tcsicmp(szFileName, _T("fffe0000")) == 0)
-			continue;
+	qsort(m_list, m_count, sizeof (CTitle), CompareTitleNames);
 
-		AddTitle(szFileName);
-    }
-    while (TheseusFindNextFile(hFind, &fd));
+	for (CTitle* t = m_list; t < m_list + m_count; t++)
+		t->m_saveList = ScanSavesToFit(GetUData(), t->m_titleID, NULL, &t->m_saveCount);
 
-    if (ERROR_DEVICE_NOT_CONNECTED == GetLastError())
-    {
-        TheseusFindClose(hFind);
-        DeleteAll(false);
-        LeaveCriticalSection(&m_rootLock);
-        return;
-    }
-
-	TheseusFindClose(hFind);
-
-	qsort(m_titles, m_titleCount, sizeof (CTitle), SortTitleCompare);
-
-    // Enumerate saved game count
-    for (int i=0; i<m_titleCount; i++)
-    {
-        int nSavedGameCount = 0;
-        CSave* rgsaves = new CSave [MAX_SAVED_GAMES];
-        nSavedGameCount =
-
-        m_titles[i].m_savedGameCount = ScanSavedGames(GetUData(), m_titles[i].m_id, rgsaves, NULL);
-        m_titles[i].m_saves = new CSave [nSavedGameCount];
-        CopyMemory(m_titles[i].m_saves, rgsaves, sizeof (CSave) * nSavedGameCount);
-        delete [] rgsaves;
-    }
-
-    LeaveCriticalSection(&m_rootLock);
+	LeaveCriticalSection(&m_lock);
 	m_dirty = false;
 }
 
+// CTitleArray::GetTitleCount / GetTitleCount2
+// Nothing to show while the list is stale.
 int CTitleArray::GetTitleCount()
 {
-	if (m_dirty)
-        return 0;
-
-	return m_titleCount;
+	return m_dirty ? 0 : m_count;
 }
 
 int CTitleArray::GetTitleCount2()
 {
-	if (m_dirty)
-        return 0;
-
-	return m_titleCount;
+	return m_dirty ? 0 : m_count;
 }
 
 bool CTitleArray::IsBroken(int nTitle)
 {
-	return m_titles[nTitle].m_broken;
+	return m_list[nTitle].m_broken;
 }
 
+// GetTitleID / GetTitleName
+// 5960 inlines this test everywhere: "" unless the list is current and
+// the index is in range.
 const TCHAR* CTitleArray::GetTitleID(int nTitle)
 {
-	const TCHAR* sz = _T("");
-	
-    if (!m_dirty && nTitle >= 0 && nTitle < m_titleCount)
-		sz = m_titles[nTitle].m_id;
-
-	return sz;
+	if (m_dirty || nTitle < 0 || nTitle >= m_count)
+		return _T("");
+	return m_list[nTitle].m_titleID;
 }
 
 const TCHAR* CTitleArray::GetTitleName(int nTitle)
 {
-	const TCHAR* sz = _T("");
-	
-    if (!m_dirty && nTitle >= 0 && nTitle < m_titleCount)
-		sz = m_titles[nTitle].m_name;
-
-	return sz;
+	if (m_dirty || nTitle < 0 || nTitle >= m_count)
+		return _T("");
+	return m_list[nTitle].m_displayName;
 }
+
 const TCHAR* CTitleArray::GetTitleName2(int nTitle)
 {
-	const TCHAR* sz = _T("");
-	
-    if (!m_dirty && nTitle >= 0 && nTitle < m_titleCount)
-		sz = m_titles[nTitle].m_name;
-
-	return sz;
+	return GetTitleName(nTitle);
 }
-int CTitleArray::GetSavedGameCount(int nTitle, HANDLE hCancelEvent /*= NULL*/)
+
+// CTitleArray::GetSavedGameCount(title, cancel)
+// Reconstructed from 5960 retail XBE @ 0x42740:
+//     if (dirty || n out of range) return 0;
+//     if (title.saveCount == -1) { scan into a 4096 entry scratch array,
+//         store the count, copy into an array of exactly that size }
+//     return title.saveCount;
+int CTitleArray::GetSavedGameCount(int nTitle, HANDLE hCancelEvent)
 {
-	int nSavedGameCount = 0;
+	if (m_dirty || nTitle < 0 || nTitle >= m_count)
+		return 0;
 
-	if (!m_dirty && nTitle >= 0 && nTitle < m_titleCount)
-	{
-		nSavedGameCount = m_titles[nTitle].m_savedGameCount;
-
-		if (nSavedGameCount == -1)
-		{
-			CSave* rgsaves = new CSave [MAX_SAVED_GAMES];
-
-			nSavedGameCount = ScanSavedGames(GetUData(), m_titles[nTitle].m_id, rgsaves, hCancelEvent);
-
-			m_titles[nTitle].m_savedGameCount = nSavedGameCount;
-			m_titles[nTitle].m_saves = new CSave [nSavedGameCount];
-			CopyMemory(m_titles[nTitle].m_saves, rgsaves, sizeof (CSave) * nSavedGameCount);
-
-            delete [] rgsaves;
-		}
-	}
-
-	return nSavedGameCount;
+	CTitle& t = m_list[nTitle];
+	if (t.m_saveCount == -1)
+		t.m_saveList = ScanSavesToFit(GetUData(), t.m_titleID, hCancelEvent, &t.m_saveCount);
+	return t.m_saveCount < 0 ? 0 : t.m_saveCount;
 }
 
-bool InitSave(CSave* pSave, const TCHAR* szRoot, const TCHAR* szTitleID, const TCHAR* szSaveDirName, FILETIME saveTime)
+// Fills one save record; false when the folder name won't fit (16 chars
+// with the terminator). The image is unknown until someone asks for it.
+static bool InitSave(CSave* pSave, const TCHAR* szDirName, FILETIME written)
 {
 	ZeroMemory(pSave, sizeof (CSave));
-
-	if (!pSave->SetDirName(szSaveDirName))
-	{
+	if (!pSave->SetDirName(szDirName))
 		return false;
-	}
-
-	pSave->m_fileTime = saveTime;
+	pSave->m_written = written;
 	pSave->m_flags |= SAVEFLAG_UNKIMAGE;
-
 	return true;
 }
 
+// CTitleArray::FindTitle(id)
+// Reconstructed from 5960 retail XBE @ 0x42c20: first title whose id
+// matches ignoring case, else -1.
 int CTitleArray::FindTitle(const TCHAR* szTitleID)
 {
-	int nTitle;
-	for (nTitle = 0; nTitle < m_titleCount; nTitle += 1)
+	for (int i = 0; i < m_count; i++)
 	{
-		if (_tcsicmp(szTitleID, m_titles[nTitle].m_id) == 0)
-			return nTitle;
+		if (_tcsicmp(szTitleID, m_list[i].m_titleID) == 0)
+			return i;
 	}
-
 	return -1;
 }
 
-static int __cdecl SortSaveCompare(const void *elem1, const void *elem2)
-{
-	// Reversed these to go from newest -> oldest
-	const CSave* pSave2 = (const CSave*)elem1;
-	const CSave* pSave1 = (const CSave*)elem2;
-	return CompareFileTime(&pSave1->m_fileTime, &pSave2->m_fileTime);
-}
-
+// CTitleArray::AddSavedGame(id, folder, time)
+// Reconstructed from 5960 retail XBE @ 0x42cb0. Ignored while stale. A
+// title not in the list yet is added with zero saves and the list resorted.
+// The save list grows by one; if the folder name fits it's appended and
+// the saves resorted newest first. Either way the title's sizes are reset
+// so they get counted again.
 void CTitleArray::AddSavedGame(const TCHAR* szTitleID, const TCHAR* szDirName, FILETIME saveTime)
 {
-    if (m_dirty)
-        return;
+	if (m_dirty)
+		return;
 
-	int nTitle = FindTitle(szTitleID);
-	if (nTitle == -1)
+	int n = FindTitle(szTitleID);
+	if (n == -1)
 	{
 		AddTitle(szTitleID);
-
-		m_titles[m_titleCount - 1].m_savedGameCount = 0;
-
-		qsort(m_titles, m_titleCount, sizeof (CTitle), SortTitleCompare);
-
-		// start search over because of sort...
-		nTitle = FindTitle(szTitleID);
+		m_list[m_count - 1].m_saveCount = 0;
+		qsort(m_list, m_count, sizeof (CTitle), CompareTitleNames);
+		n = FindTitle(szTitleID);
 	}
 
-	CTitle* pTitle = &m_titles[nTitle];
+	CTitle& t = m_list[n];
+	if (t.m_saveCount == -1)
+		GetSavedGameCount(n);
 
-	if (pTitle->m_savedGameCount == -1)
-		GetSavedGameCount(nTitle);
+	CSave* grown = new CSave [t.m_saveCount + 1];
+	CopyMemory(grown, t.m_saveList, t.m_saveCount * sizeof (CSave));
+	delete [] t.m_saveList;
+	t.m_saveList = grown;
 
-	CSave* rgsaves = new CSave [pTitle->m_savedGameCount + 1];
-	CopyMemory(rgsaves, pTitle->m_saves, sizeof (CSave) * pTitle->m_savedGameCount);
-	delete [] pTitle->m_saves;
-	pTitle->m_saves = rgsaves;
-	
-	if (InitSave(&pTitle->m_saves[pTitle->m_savedGameCount], GetUData(), pTitle->m_id, szDirName, saveTime))
+	if (InitSave(&t.m_saveList[t.m_saveCount], szDirName, saveTime))
 	{
-		pTitle->m_savedGameCount += 1;
-		qsort(pTitle->m_saves, pTitle->m_savedGameCount, sizeof (CSave), SortSaveCompare);
+		t.m_saveCount++;
+		qsort(t.m_saveList, t.m_saveCount, sizeof (CSave), CompareSaveTimes);
 	}
 
-	pTitle->m_totalBlocks = -1; // recalculate this
-	pTitle->m_savedGameBlocks = -1; // recalculate this
+	t.m_blocks = -1;
+	t.m_saveBlocks = -1;
 }
 
+// CTitleArray::RemoveTitle(n)
+// Reconstructed from 5960 retail XBE @ 0x42e40: free the title's strings
+// and saves, close the gap, one fewer title.
 void CTitleArray::RemoveTitle(int nTitle)
 {
-	CTitle* pTitle = &m_titles[nTitle];
-	delete [] pTitle->m_id;
-	delete [] pTitle->m_name;
-	delete [] pTitle->m_saves;
-
-	MoveMemory(&m_titles[nTitle], &m_titles[nTitle + 1], sizeof (CTitle) * (m_titleCount - nTitle - 1));
-	m_titleCount -= 1;
+	CTitle& t = m_list[nTitle];
+	delete [] t.m_titleID;
+	delete [] t.m_displayName;
+	delete [] t.m_saveList;
+	MoveMemory(&m_list[nTitle], &m_list[nTitle + 1], (m_count - nTitle - 1) * sizeof (CTitle));
+	m_count--;
 }
 
+// CTitleArray::RemoveSavedGame(n, save)
+// Reconstructed from 5960 retail XBE @ 0x42ef0: close the gap, one fewer
+// save, sizes reset to -1.
 void CTitleArray::RemoveSavedGame(int nTitle, int nSavedGame)
 {
-	CTitle* pTitle = &m_titles[nTitle];
-	MoveMemory(&pTitle->m_saves[nSavedGame], &pTitle->m_saves[nSavedGame + 1], sizeof (CSave) * (pTitle->m_savedGameCount - nSavedGame - 1));
-	pTitle->m_savedGameCount -= 1;
-
-	pTitle->m_totalBlocks = -1; // recalculate this
-	pTitle->m_savedGameBlocks = -1; // recalculate this
+	CTitle& t = m_list[nTitle];
+	MoveMemory(&t.m_saveList[nSavedGame], &t.m_saveList[nSavedGame + 1], (t.m_saveCount - nSavedGame - 1) * sizeof (CSave));
+	t.m_saveCount--;
+	t.m_blocks = -1;
+	t.m_saveBlocks = -1;
 }
 
+// CTitleArray::RemoveSavedGame(id, folder)
+// Reconstructed from 5960 retail XBE @ 0x42f40: find the title, then the
+// save by folder name ignoring case, and remove it if both are there.
 void CTitleArray::RemoveSavedGame(const TCHAR* szTitleID, const TCHAR* szDirName)
 {
-    int nTitle = FindTitle(szTitleID);
-    if (nTitle == -1)
-    {
-        return;
-    }
+	int n = FindTitle(szTitleID);
+	if (n == -1)
+		return;
 
-    int i, nSavedGame = -1;
-    CTitle* pTitle = &m_titles[nTitle];
-
-    // Search for the matching saved game
-    for (int i=0; i<pTitle->m_savedGameCount; i++)
-    {
-        if (_tcsicmp(pTitle->m_saves[i].m_dirName, szDirName) == 0)
-        {
-            nSavedGame = i;
-            break;
-        }
-    }
-
-    if (nSavedGame != -1)
-    {
-        RemoveSavedGame(nTitle, nSavedGame);
-    }
+	CTitle& t = m_list[n];
+	for (int i = 0; i < t.m_saveCount; i++)
+	{
+		if (_tcsicmp(t.m_saveList[i].m_folder, szDirName) == 0)
+		{
+			RemoveSavedGame(n, i);
+			return;
+		}
+	}
 }
 
+// GetSavedGameID / GetSavedGameTime
+// Both scan the title first if needed; out of range gives "" or a zero time.
 const TCHAR* CTitleArray::GetSavedGameID(int nTitle, int nSavedGame)
 {
-	int nSavedGameCount = GetSavedGameCount(nTitle);
-	if (nSavedGame < 0 || nSavedGame >= nSavedGameCount)
-	{
+	if (nSavedGame < 0 || nSavedGame >= GetSavedGameCount(nTitle))
 		return _T("");
-	}
-
-	return m_titles[nTitle].m_saves[nSavedGame].GetDirName(); // NOTE: Temporary access!
+	return m_list[nTitle].m_saveList[nSavedGame].GetDirName();
 }
 
 FILETIME CTitleArray::GetSavedGameTime(int nTitle, int nSavedGame)
 {
-	int nSavedGameCount = GetSavedGameCount(nTitle);
-	if (nSavedGame < 0 || nSavedGame >= nSavedGameCount)
+	if (nSavedGame < 0 || nSavedGame >= GetSavedGameCount(nTitle))
 	{
-		static FILETIME filetime;
-		return filetime;
+		FILETIME never = { 0, 0 };
+		return never;
 	}
-
-	return m_titles[nTitle].m_saves[nSavedGame].m_fileTime;
+	return m_list[nTitle].m_saveList[nSavedGame].m_written;
 }
 
+static bool CancelSignaled(HANDLE cancel)
+{
+	return cancel != NULL && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0;
+}
+
+// CTitleArray::GetTitleTotalBlocks(n, cancel)
+// Reconstructed from 5960 retail XBE @ 0x43390. Counted once and cached:
+// the title's udata folder, plus its tdata folder on the hard drive.
+// A cancel during the count leaves it unknown.
 int CTitleArray::GetTitleTotalBlocks(int nTitle, HANDLE hCancelEvent)
 {
-	if (nTitle < 0 || nTitle >= m_titleCount)
+	if (nTitle < 0 || nTitle >= m_count)
 		return 0;
 
-	if (m_titles[nTitle].m_totalBlocks == -1)
+	CTitle& t = m_list[nTitle];
+	if (t.m_blocks == -1)
 	{
-		m_titles[nTitle].m_totalBlocks = ComputeTitleTotalBlocks(GetUData(), m_titles[nTitle].m_id, hCancelEvent);
-		if (m_root[0] == 'c' && m_titles[nTitle].m_totalBlocks >= 0)
-			m_titles[nTitle].m_totalBlocks += ComputeTitleTotalBlocks(GetTData(), m_titles[nTitle].m_id, hCancelEvent);
+		t.m_blocks = ComputeTitleTotalBlocks(GetUData(), t.m_titleID, hCancelEvent);
+		if (m_root[0] == 'c' && t.m_blocks >= 0)
+			t.m_blocks += ComputeTitleTotalBlocks(GetTData(), t.m_titleID, hCancelEvent);
 	}
-
-	return m_titles[nTitle].m_totalBlocks;
+	// A count cut short by cancel is taken again next time.
+	if (CancelSignaled(hCancelEvent))
+		t.m_blocks = -1;
+	return t.m_blocks;
 }
 
-
-
+// ComputeTitleTotalBlocks(root, id, cancel)
+// Reconstructed from 5960 retail XBE @ 0x43460: <root>\<id> counted in
+// 16 KB blocks, subfolders included.
 int ComputeTitleTotalBlocks(const TCHAR* szRoot, const TCHAR* szTitleID, HANDLE hCancelEvent)
 {
-	TCHAR szDir [MAX_PATH];
-	MakePath(szDir, szRoot, szTitleID);
-	return GetDirectoryBlocks(szDir, BLOCK_SIZE, true, hCancelEvent);
+	TCHAR dir[MAX_PATH];
+	MakePath(dir, szRoot, szTitleID);
+	return GetDirectoryBlocks(dir, BLOCK_SIZE, true, hCancelEvent);
 }
 
-bool InitSave(CSave* pSave, const TCHAR* szRoot, const TCHAR* szTitleID, const TCHAR* szSaveDirName, FILETIME saveTime);
-
-int ScanSavedGames(const TCHAR* szRoot, const TCHAR* szTitleID, CSave* rgsaves /*[MAX_SAVED_GAMES]*/, HANDLE hCancelEvent)
+// ScanSavedGames(root, id, out, cancel)
+// Reconstructed from 5960 retail XBE @ 0x434f0. Lists <root>\<id>\*.* and
+// records every folder whose name fits, up to 4096, with its last write
+// time and the image marked unknown. -1 if cancel is signaled before or
+// during the walk; otherwise the saves are sorted newest first.
+int ScanSavedGames(const TCHAR* szRoot, const TCHAR* szTitleID, CSave* rgsaves, HANDLE hCancelEvent)
 {
-    if (hCancelEvent && WaitForSingleObject(hCancelEvent, 0) == WAIT_OBJECT_0)
-    {
-        return -1;
-    }
+	if (CancelSignaled(hCancelEvent))
+		return -1;
 
-	int nSavedGameCount = 0;
-    bool bCancel = false;
+	TCHAR path[MAX_PATH];
+	MakePath(path, szRoot, szTitleID);
+	MakePath(path, path, _T("*.*"));
+	char pattern[MAX_PATH];
+	Ansi(pattern, path, MAX_PATH);
 
-	// scan for saves...
-	HANDLE hFind;
-	WIN32_FIND_DATA fd;
-
+	int count = 0;
+	WIN32_FIND_DATA found;
+	HANDLE find = TheseusFindFirstFile(pattern, &found);
+	if (find != INVALID_HANDLE_VALUE)
 	{
-		TCHAR szTitleDirWild [MAX_PATH];
-		MakePath(szTitleDirWild, szRoot, szTitleID);
-		MakePath(szTitleDirWild, szTitleDirWild, _T("*.*"));
-
-		char szBuf [MAX_PATH];
-		Ansi(szBuf, szTitleDirWild, MAX_PATH);
-		hFind = TheseusFindFirstFile(szBuf, &fd);
-	}
-
-	if (hFind != INVALID_HANDLE_VALUE)
-	{
+		bool cancelled = false;
 		do
 		{
-            if (hCancelEvent && WaitForSingleObject(hCancelEvent, 0) == WAIT_OBJECT_0)
-            {
-                bCancel = true;
-                break;
-            }
-
-			if (nSavedGameCount == MAX_SAVED_GAMES)
+			if (CancelSignaled(hCancelEvent))
 			{
+				cancelled = true;
 				break;
 			}
-
-			if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+			if (count == MAX_SAVED_GAMES)
+				break;
+			if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
 				continue;
 
-			TCHAR szFileName [MAX_PATH];
-			Unicode(szFileName, fd.cFileName, countof(szFileName));
-
-			if (!InitSave(&rgsaves[nSavedGameCount], szRoot, szTitleID, szFileName, fd.ftLastWriteTime))
-				continue;
-
-			nSavedGameCount += 1;
+			Unicode(path, found.cFileName, countof(path));
+			if (InitSave(&rgsaves[count], path, found.ftLastWriteTime))
+				count++;
 		}
-		while (TheseusFindNextFile(hFind, &fd));
-		TheseusFindClose(hFind);
+		while (TheseusFindNextFile(find, &found));
+		TheseusFindClose(find);
+
+		if (cancelled)
+			return -1;
 	}
 
-    if (!bCancel)
-    {
-    	qsort(rgsaves, nSavedGameCount, sizeof (CSave), SortSaveCompare);
-    }
-
-	return bCancel ? -1 : nSavedGameCount;
+	qsort(rgsaves, count, sizeof (CSave), CompareSaveTimes);
+	return count;
 }
 
-
-
+// CTitleArray::GetTData / GetUData
+// Reconstructed from 5960 retail XBE @ 0x43c30: a memory unit's root is
+// its drive; the hard drive keeps title data and user data in two folders.
+// 5960 uses c:\tdata and c:\udata, Theseus the e:\ ones.
 const TCHAR* CTitleArray::GetTData() const
 {
-	if (m_root[0] != 'c')
-		return m_root;
-
-	return _T("e:\\tdata");
+	return m_root[0] == 'c' ? _T("e:\\tdata") : m_root;
 }
 
 const TCHAR* CTitleArray::GetUData() const
 {
-	if (m_root[0] != 'c')
-		return m_root;
-
-	return _T("e:\\udata");
+	return m_root[0] == 'c' ? _T("e:\\udata") : m_root;
 }
 
 bool CTitleArray::IsValid() const
@@ -529,68 +513,68 @@ bool CTitleArray::IsValid() const
 	return m_root[0] != 0;
 }
 
+// CTitleArray::IsDirty
+// Reconstructed from 5960 retail XBE @ 0x43c50: mounted and stale.
 bool CTitleArray::IsDirty() const
 {
-	return (m_root[0] && m_dirty);
+	return m_root[0] != 0 && m_dirty;
 }
 
-void CTitleArray::GetSavedGameImageName(int nTitle, int nSavedGame, TCHAR* szPath/*[MAX_PATH]*/)
+// CTitleArray::GetSavedGameImageName(n, save, out)
+// Reconstructed from 5960 retail XBE @ 0x43d00. The first time a save is
+// asked about, look for <udata>\<id>\<save>\SaveImage.xbx and remember
+// whether it's there. Saves without their own image use the title's
+// <udata>\<id>\SaveImage.xbx, and when that's missing too the Xbox logo.
+void CTitleArray::GetSavedGameImageName(int nTitle, int nSavedGame, TCHAR* szPath)
 {
-	if ((m_titles[nTitle].m_saves[nSavedGame].m_flags & SAVEFLAG_UNKIMAGE) != 0)
-	{
-		m_titles[nTitle].m_saves[nSavedGame].m_flags &= ~SAVEFLAG_UNKIMAGE;
+	DWORD& flags = m_list[nTitle].m_saveList[nSavedGame].m_flags;
 
+	if (flags & SAVEFLAG_UNKIMAGE)
+	{
+		flags &= ~SAVEFLAG_UNKIMAGE;
 		MakePath(szPath, GetUData(), GetTitleID(nTitle));
 		MakePath(szPath, szPath, GetSavedGameID(nTitle, nSavedGame));
 		MakePath(szPath, szPath, szSaveImageXBX);
-
 		if (DoesFileExist(szPath))
 		{
-			m_titles[nTitle].m_saves[nSavedGame].m_flags |= SAVEFLAG_HASIMAGE;
+			flags |= SAVEFLAG_HASIMAGE;
 			return;
 		}
 	}
 
 	MakePath(szPath, GetUData(), GetTitleID(nTitle));
-
-	if ((m_titles[nTitle].m_saves[nSavedGame].m_flags & SAVEFLAG_HASIMAGE) != 0)
-	{
-		// This save has its own image; use it...
+	if (flags & SAVEFLAG_HASIMAGE)
 		MakePath(szPath, szPath, GetSavedGameID(nTitle, nSavedGame));
-	}
-
 	MakePath(szPath, szPath, szSaveImageXBX);
 
-	if (!DoesFileExist(szPath)) //saved game doesn't have any associated images
-	{
+	if (!DoesFileExist(szPath))
 		_tcscpy(szPath, _T("xboxlogo64.xbx"));
-	}
 }
 
+// CTitleArray::IsPublisherExists(publisher)
+// Reconstructed from 5960 retail XBE @ 0x44240: any title id starting with
+// the same four hex digits, ignoring case.
 bool CTitleArray::IsPublisherExists(const TCHAR* szPublisherID) const
 {
-	for (int i=0; i<m_titleCount; i++)
+	for (int i = 0; i < m_count; i++)
 	{
-        if (_tcsnicmp(szPublisherID, m_titles[i].m_id, 4) == 0)
-        {
-            return true;
-        }
+		if (_tcsnicmp(szPublisherID, m_list[i].m_titleID, 4) == 0)
+			return true;
 	}
-
-    return false;
+	return false;
 }
 
+// CSave::SetDirName / GetDirName
+// 5960 inlines this: the name plus its terminator must fit in 16 chars.
 bool CSave::SetDirName(const TCHAR* szDirName)
 {
-	if (_tcslen(szDirName) + 1 > countof (m_dirName))
+	if (_tcslen(szDirName) + 1 > countof(m_folder))
 		return false;
-
-	_tcscpy(m_dirName, szDirName);
+	_tcscpy(m_folder, szDirName);
 	return true;
 }
 
 const TCHAR* CSave::GetDirName()
 {
-	return m_dirName;
+	return m_folder;
 }
-
