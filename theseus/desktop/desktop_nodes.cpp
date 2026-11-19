@@ -672,7 +672,10 @@ void CAudioVisualizer::RenderDynamicTexture(CSurfx* surface)
 
 		for (float t = 0.0f; t <= 1.0f; t += dx)
 		{
-			float amp = (float)pcm[(int)(t * nFrames)] / 32767.0f * m_scale + m_offset;
+			int iFrame = (int)(t * nFrames);
+			if (iFrame >= nFrames)
+				iFrame = nFrames - 1;	// t can land on exactly 1.0
+			float amp = (float)pcm[iFrame] / 32767.0f * m_scale + m_offset;
 			float along = 2.1f * (t - 0.5f);
 			float x = c * along + s * amp;
 			float y = -c * amp + s * along;
@@ -698,7 +701,7 @@ void CAudioVisualizer::RenderDynamicTexture(CSurfx* surface)
 
 		for (float t = 0.0f; t <= 1.0f; t += dx, iFrame++)
 		{
-			float r = (float)pcm[iFrame] / 32767.0f * m_scale + m_offset;
+			float r = (float)pcm[iFrame < 256 ? iFrame : 255] / 32767.0f * m_scale + m_offset;	// past 256 columns, hold the last frame
 			float angle = t * 3.14159265f;
 			float x = r * sinf(angle);
 			float y = r * cosf(angle);
