@@ -34,6 +34,7 @@
 #include "guide.h"
 #include "ui_overlay.h"
 #include "pads.h"
+#include "launchers/steam.h"
 #include <algorithm>
 #include <ctype.h>
 #include <strings.h>
@@ -515,6 +516,15 @@ static void Build()
         if (!g_welcomeDone || g.foldersDone)
             Add("Set Up My Folders", g.foldersDone ? "Done" : "",
                 "Makes Music, Movies, TV Shows and ROMs folders. Fill them when you like.", GA_FOLDERS);
+        // First run: fill the launcher from what's already on this machine.
+        if (!g_welcomeDone) {
+            char roots[4][512];
+            if (Steam_DiscoverInstallRoots(s_steamPath, roots, 4) > 0)
+                Add("Import My Steam Games", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.",
+                    GA_STEAM);
+            for (int e = 0; e < kEmuCount; e++)
+                Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
+        }
         Add("Open My Folders", "", "Shows them in your file manager.", GA_OPENFOLDERS);
         if (const SettingDef* mode = DesktopSettings_Find("StartupMode")) {
             char val[64];
