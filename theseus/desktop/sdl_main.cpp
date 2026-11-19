@@ -1729,6 +1729,8 @@ int main(int argc, char* argv[]) {
         }
 
         Guide_Frame();
+        extern void MediaUI_PadFrame();
+        MediaUI_PadFrame();
 
         if (!g_mediaFullscreen && !g_xcloudFullscreen) {
             FramePhaseScope advance(FP_ADVANCE);

@@ -15,6 +15,11 @@ enum {
 // Pad and keyboard as guide buttons. device becomes 1 for the pad, 0 for
 // the keyboard, and is left alone when nothing is held.
 unsigned Joy_GuideButtons(int* device);
+// The pad alone (and the dev script) as guide buttons, for fullscreen video.
+unsigned Joy_PadButtons();
+// The scene's next poll only records what's held, so a button or key still
+// down when fullscreen video closes doesn't land in the menu underneath.
+void Joy_Rebaseline();
 
 extern bool g_guideRequested;   // set by the Guide button, LT+B or F7
 extern bool g_welcomeDone;      // desktop.ini WelcomeDone

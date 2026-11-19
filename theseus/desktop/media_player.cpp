@@ -407,6 +407,12 @@ void MediaPlayer_Update() {
                 if (ef && ef->reason == MPV_END_FILE_REASON_EOF) {
                     s_state = MP_STOPPED;
                 }
+                // A stream that won't open would otherwise sit on a black
+                // screen forever.
+                if (ef && ef->reason == MPV_END_FILE_REASON_ERROR) {
+                    fprintf(stderr, "[MediaPlayer] couldn't play it: %s\n", mpv_error_string(ef->error));
+                    s_state = MP_STOPPED;
+                }
                 break;
             }
             case MPV_EVENT_FILE_LOADED:
