@@ -626,6 +626,9 @@ void Jellyfin_QueueArtDownload(const std::string& itemId, const std::string& tag
 {
     // The id comes off the server and ends up in a file path.
     if (!Http_IsSafeFileId(itemId)) return;
+    // Already here: queueing would only mark it in flight again.
+    struct stat st;
+    if (stat(ArtHostPath(itemId).c_str(), &st) == 0 && st.st_size > 0) return;
     // Workers erase from the map on other threads, so it is only touched under the lock.
     std::atomic<bool>* flag;
     {

@@ -707,6 +707,9 @@ void Plex_QueueArtDownload(const std::string& ratingKey, const std::string& url)
 {
     // The key comes off the server and ends up in a file path.
     if (!Http_IsSafeFileId(ratingKey) || url.empty()) return;
+    // Already here: queueing would only mark it in flight again.
+    struct stat st;
+    if (stat(Plex_ArtCacheHostPath(ratingKey).c_str(), &st) == 0 && st.st_size > 0) return;
     // Workers erase from the map on other threads, so it is only touched under the lock.
     std::atomic<bool>* flag;
     {
