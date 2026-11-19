@@ -6,6 +6,7 @@
 #include "http_util.h"
 #include "json_util.h"
 #include "client_util.h"
+#include "log_redact.h"
 
 #include <cstdio>
 #include <cstring>
@@ -155,7 +156,7 @@ static void PinAuthWorker()
     int pinId = Json_GetInt(r.body, "id");
     std::string code = Json_GetString(r.body, "code");
     if (pinId == 0 || code.empty()) {
-        fprintf(stderr, "[Plex] pin create returned bad json: %s\n", r.body.c_str());
+        fprintf(stderr, "[Plex] pin create returned bad json: %s\n", Log_RedactSecrets(r.body).c_str());
         s_pinInFlight = false;
         return;
     }

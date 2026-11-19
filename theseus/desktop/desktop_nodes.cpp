@@ -3647,7 +3647,7 @@ public:
 		}
 		if (!MediaPlayer_Open(url.c_str())) {
 			fprintf(stderr, "[Plex] MediaPlayer_Open failed for %s\n",
-				url.c_str());
+				ratingKey.c_str());
 			return;
 		}
 		extern bool g_mediaFullscreen;

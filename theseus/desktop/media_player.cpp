@@ -8,6 +8,7 @@
 // can't lie about the current buffer size.
 
 #include "media_player.h"
+#include "log_redact.h"
 
 #include <mpv/client.h>
 #include <mpv/render.h>
@@ -190,7 +191,7 @@ bool MediaPlayer_Open(const char* path) {
     s_hasVideo = false;
     s_videoWidth  = 0;
     s_videoHeight = 0;
-    fprintf(stderr, "[MediaPlayer] Opening: %s\n", path);
+    fprintf(stderr, "[MediaPlayer] Opening: %s\n", Log_RedactSecrets(path).c_str());
     return true;
 }
 

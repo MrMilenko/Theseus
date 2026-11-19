@@ -5,6 +5,7 @@
 #include "http_util.h"
 #include "json_util.h"
 #include "client_util.h"
+#include "log_redact.h"
 
 #include <cstdio>
 #include <cstring>
@@ -196,7 +197,7 @@ static void QuickConnectWorker()
     std::string code   = Json_GetString(r.body, "Code");
     std::string secret = Json_GetString(r.body, "Secret");
     if (code.empty() || secret.empty()) {
-        fprintf(stderr, "[Jellyfin] QC init bad json: %s\n", r.body.c_str());
+        fprintf(stderr, "[Jellyfin] QC init bad json: %s\n", Log_RedactSecrets(r.body).c_str());
         s_qcInFlight = false;
         return;
     }
@@ -260,7 +261,7 @@ static void QuickConnectWorker()
     }
 
     if (accessToken.empty() || userId.empty()) {
-        fprintf(stderr, "[Jellyfin] auth response missing fields: %s\n", a.body.c_str());
+        fprintf(stderr, "[Jellyfin] auth response missing fields: %s\n", Log_RedactSecrets(a.body).c_str());
     } else {
         strncpy(g_jellyfinToken, accessToken.c_str(), sizeof(g_jellyfinToken) - 1);
         g_jellyfinToken[sizeof(g_jellyfinToken) - 1] = 0;
