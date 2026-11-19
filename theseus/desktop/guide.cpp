@@ -264,10 +264,11 @@ static const char* kSections[SEC_COUNT] = {
 };
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
-            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS, GV_APPS };
+            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS, GV_APPS,
+            GV_COLLECTIONS, GV_GAMECOLL };
 
 // What a game list shows.
-enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH };
+enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH, GL_COLLECTION };
 
 static const View kSectionViews[SEC_COUNT] = {
     GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_LOGS, GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT,
@@ -283,6 +284,7 @@ enum Act {
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
     GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT,
+    GA_COLLECTION, GA_GAMECOLL, GA_INCOLL, GA_NEWCOLL,
     GA_COUNT
 };
 
@@ -326,7 +328,7 @@ static const float kWideKeys[KEY_COUNT - KEY_CHARS][2] = {
     { 0, 1.5f }, { 1.5f, 1.5f }, { 3, 3 }, { 6, 1.5f }, { 7.5f, 1.25f }, { 8.75f, 1.25f },
 };
 
-enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH, ED_GAMEOPT };
+enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH, ED_GAMEOPT, ED_COLLECTION };
 
 struct Editor {
     bool on, secret, shift, symbols;
@@ -361,6 +363,8 @@ static struct Guide {
     int gameList, game;
     char letter;           // GL_LETTER's initial, '#' for digits and the rest
     std::string search;    // GL_SEARCH's text
+    std::string collection;              // GL_COLLECTION's name
+    std::vector<std::string> collNames;  // the game page's Collections rows, kept while it's open
     unsigned gameLayout;   // g_vgames.layout when game was picked
 
     std::vector<HitTarget> targets;
@@ -401,6 +405,7 @@ static void GameListRows(int list, std::vector<int>& out)
     out.clear();
     if (list == GL_FAVORITES) { VGames_MarkList(VGAMES_FAVORITES, out); return; }
     if (list == GL_RECENT)    { VGames_MarkList(VGAMES_RECENT, out); return; }
+    if (list == GL_COLLECTION) { VGames_MarkList((VGAMES_COLLECTION_PREFIX + g.collection).c_str(), out); return; }
     VGames_Load();
     for (int i = 0; i < g_vgames.count; i++) {
         const VirtualGame& vg = g_vgames.games[i];
@@ -459,7 +464,7 @@ static const char* GuideCombo()
     }
 }
 
-static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "" };
+static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "", "" };
 
 // Emulators the guide can look for, each under its path setting.
 static const struct {
@@ -558,8 +563,47 @@ static void Build()
             if (l == GL_ALL) help = help + " " + Shoulders() + " jump a letter.";
             Add(kGameListNames[l], n, help.c_str(), GA_GAMELIST, l);
         }
+        std::vector<std::string> colls;
+        VGames_Collections(colls, false);
+        snprintf(n, sizeof(n), "%d", (int)colls.size());
+        Add("Collections", n, "Your own lists. Add a game to one from its page.", GA_VIEW, GV_COLLECTIONS);
         snprintf(n, sizeof(n), "%d", Playlist_Count());
         Add("Playlists", n, "Made in the Playlist Maker.", GA_VIEW, GV_PLAYLISTS);
+        break;
+    }
+    case GV_COLLECTIONS: {
+        std::vector<std::string> colls;
+        std::vector<int> list;
+        VGames_Collections(colls, false);
+        for (size_t i = 0; i < colls.size(); i++) {
+            VGames_MarkList((VGAMES_COLLECTION_PREFIX + colls[i]).c_str(), list);
+            char n[16];
+            snprintf(n, sizeof(n), "%d", (int)list.size());
+            Add(colls[i].c_str(), n, "Shows in the launcher too while it has games in it.", GA_COLLECTION, (int)i);
+        }
+        if (g.rows.empty())
+            Add("No collections yet", "", "Open a game and pick Collections to start one.");
+        break;
+    }
+    case GV_GAMECOLL: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) { Add("This game moved", "", "Go back and pick it again."); break; }
+        // A collection emptied here keeps its row until you leave, so it can go back in.
+        std::vector<std::string> colls;
+        VGames_Collections(colls, false);
+        for (size_t i = 0; i < colls.size(); i++) {
+            bool have = false;
+            for (size_t k = 0; k < g.collNames.size() && !have; k++)
+                have = strcasecmp(g.collNames[k].c_str(), colls[i].c_str()) == 0;
+            if (!have) g.collNames.push_back(colls[i]);
+        }
+        std::sort(g.collNames.begin(), g.collNames.end(), [](const std::string& a, const std::string& b) {
+            return strcasecmp(a.c_str(), b.c_str()) < 0;
+        });
+        Add("New Collection", g.result[GA_NEWCOLL].c_str(), "Name it and this game goes in.", GA_NEWCOLL);
+        for (size_t i = 0; i < g.collNames.size(); i++)
+            Add(g.collNames[i].c_str(), VGames_InCollection(*vg, g.collNames[i].c_str()) ? "Yes" : "No",
+                "A puts it in or takes it out.", GA_INCOLL, (int)i);
         break;
     }
     case GV_ADDGAME: {
@@ -622,6 +666,12 @@ static void Build()
         Add("Favorite", vg->favorite ? "Yes" : "No", "Starred games get their own spot in the launcher.", GA_FAVORITE);
         Add("Hidden", vg->hidden ? "Yes" : "No", "Hidden games stay out of the launcher until you bring them back.",
             GA_HIDE);
+        {
+            std::string in = vg->collections;
+            for (size_t i = 0; i < in.size(); i++) if (in[i] == ';') in.replace(i, 1, ", ");
+            Add("Collections", in.empty() ? "None" : in.c_str(), "Put it in your own lists, or make a new one.",
+                GA_GAMECOLL);
+        }
         Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
         Add("Time Played", PlayTime(vg->playTime).c_str(),
             "Counted when the game closes. Games another launcher starts for us can't be timed.");
@@ -765,10 +815,13 @@ static const char* ViewTitle()
     case GV_PLAYLISTS: return "Playlists";
     case GV_LETTERS:   return "Find a Game";
     case GV_APPS:      return "Linux Apps";
+    case GV_COLLECTIONS: return "Collections";
+    case GV_GAMECOLL:  return "Collections";
     case GV_GAMES: {
         static char title[32];
         if (g.gameList == GL_SEARCH) snprintf(title, sizeof(title), "Search: %.20s", g.search.c_str());
         else if (g.gameList == GL_LETTER) snprintf(title, sizeof(title), "Games: %c", g.letter);
+        else if (g.gameList == GL_COLLECTION) snprintf(title, sizeof(title), "%.30s", g.collection.c_str());
         else return kGameListNames[g.gameList];
         return title;
     }
@@ -953,6 +1006,23 @@ static void EditDone()
     case ED_SEARCH:
         g.search = Tidy(e.text, false);
         break;
+    case ED_COLLECTION: {
+        std::string name = VGames_CleanCollectionName(Tidy(e.text, false).c_str());
+        VirtualGame* vg = PickedGame();
+        if (name.empty() || !vg) break;
+        // Typing an existing name just joins it, spelled the way it already is.
+        std::vector<std::string> colls;
+        VGames_Collections(colls, false);
+        for (size_t i = 0; i < colls.size(); i++)
+            if (strcasecmp(colls[i].c_str(), name.c_str()) == 0) name = colls[i];
+        if (VGames_SetInCollection(g.game, name.c_str(), true)) {
+            g.collNames.push_back(name);
+            g.result[GA_NEWCOLL] = "Added to " + name;
+        } else {
+            g.result[GA_NEWCOLL] = "In too many already";
+        }
+        break;
+    }
     case ED_GAMEOPT: {
         VirtualGame* vg = PickedGame();
         if (!vg) break;
@@ -1175,6 +1245,9 @@ static void Select()
     case GA_SEARCH:
         EditOpen(ED_SEARCH, 0, "Search by Name", g.search, 60, false);
         break;
+    case GA_NEWCOLL:
+        EditOpen(ED_COLLECTION, 0, "New Collection", "", VGAMES_COLLECTION_NAME_MAX, false);
+        break;
     case GA_PADTOOLS:
         Close();
         g_padModeActive = true;
@@ -1372,6 +1445,31 @@ static void Select()
         g.gameList = r.arg;
         Push(GV_GAMES);
         break;
+    case GA_COLLECTION: {
+        std::vector<std::string> colls;
+        VGames_Collections(colls, false);
+        if (r.arg < 0 || r.arg >= (int)colls.size()) { Refuse(); break; }
+        g.collection = colls[r.arg];
+        g.gameList = GL_COLLECTION;
+        Push(GV_GAMES);
+        break;
+    }
+    case GA_GAMECOLL:
+        g.collNames.clear();
+        g.result[GA_NEWCOLL].clear();
+        Push(GV_GAMECOLL);
+        break;
+    case GA_INCOLL: {
+        VirtualGame* vg = PickedGame();
+        if (!vg || r.arg < 0 || r.arg >= (int)g.collNames.size()) { Refuse(); break; }
+        const char* name = g.collNames[r.arg].c_str();
+        if (!VGames_SetInCollection(g.game, name, !VGames_InCollection(*vg, name))) {
+            g.result[GA_NEWCOLL] = "In too many already";
+            Refuse();
+        }
+        Build();
+        break;
+    }
     case GA_LETTER:
         g.gameList = GL_LETTER;
         g.letter = (char)r.arg;
@@ -1746,7 +1844,7 @@ static void DrawRows(float left, float right, float top)
             ui_style_row(left, y, width, ROW_H, on);
             float ty = y + (ROW_H - 11.0f) * 0.5f;
             float valueW = r.value.empty() ? 0.0f : ui_overlay_text_width(UI_FONT_BOLD, 11.0f, r.value.c_str());
-            float chevron = r.act == GA_VIEW ? 14.0f : 0.0f;
+            float chevron = r.act == GA_VIEW || r.act == GA_GAMECOLL || r.act == GA_COLLECTION ? 14.0f : 0.0f;
             if (valueW > width * 0.45f) valueW = width * 0.45f;
             std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 24 - valueW - chevron - 8);
             unsigned int labelColor = r.act == GA_NONE ? ui_style_color(UI_COLOR_STATUS) : 0xFFFFFFFF;
@@ -1890,7 +1988,7 @@ static void DrawPrompts()
         int act = g.rows[g.cursor].act;
         const char* word = act == GA_NONE ? NULL
                          : act == GA_SETTING || act == GA_CATEGORY ? "Change"
-                         : act == GA_VIEW ? "Open"
+                         : act == GA_VIEW || act == GA_GAMECOLL || act == GA_COLLECTION ? "Open"
                          : act == GA_TEXT || act == GA_NAME || act == GA_JELLYFINURL ? "Edit" : "Select";
         if (word) Prompt(p, &n, UI_BUTTON_A, "ENTER", word, GUIDE_A);
     } else if (!g.inPanel) {

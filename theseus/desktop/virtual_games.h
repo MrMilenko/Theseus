@@ -51,6 +51,8 @@ struct VirtualGame {
     char args[256];
     char workdir[256];
     char env[256];
+    // Collections it's in, split by ';'. Yours, like favorite.
+    char collections[256];
 };
 
 struct VirtualGameDB {
@@ -138,6 +140,8 @@ inline void VGames_Load() {
             strncpy(cur->workdir, val, sizeof(cur->workdir) - 1);
         else if (strcmp(key, "Env") == 0)
             strncpy(cur->env, val, sizeof(cur->env) - 1);
+        else if (strcmp(key, "Collections") == 0)
+            strncpy(cur->collections, val, sizeof(cur->collections) - 1);
     }
     fclose(fp);
     g_vgames.generation++;
@@ -210,6 +214,7 @@ inline void VGames_Save() {
         if (g.args[0]) fprintf(fp, "Args=%s\n", g.args);
         if (g.workdir[0]) fprintf(fp, "WorkDir=%s\n", g.workdir);
         if (g.env[0]) fprintf(fp, "Env=%s\n", g.env);
+        if (g.collections[0]) fprintf(fp, "Collections=%s\n", g.collections);
         fprintf(fp, "\n");
     }
     save.Commit();
@@ -407,7 +412,7 @@ inline int VGames_MakeShortcutContent(int idx, char* buf, int bufSize) {
 
 // Favorites, hidden and last played for live rows (ES-DE, xCloud), which
 // never reach games.ini. Keyed by title id, which both keep stable.
-struct VGameMarks { bool favorite, hidden; long long lastPlayed, playTime; };
+struct VGameMarks { bool favorite, hidden; long long lastPlayed, playTime; std::string collections; };
 #define VGAMES_LIVE_INI AppPath("Configs/games_live.ini")
 
 inline std::map<std::string, VGameMarks>& VGames_LiveMarks() {
@@ -425,7 +430,7 @@ inline std::map<std::string, VGameMarks>& VGames_LiveMarks() {
             char* end = strrchr(line, ']');
             if (!end) { cur = NULL; continue; }
             *end = 0;
-            VGameMarks blank = { false, false, 0, 0 };
+            VGameMarks blank = { false, false, 0, 0, "" };
             cur = &(s_marks[line + 1] = blank);
             continue;
         }
@@ -436,6 +441,7 @@ inline std::map<std::string, VGameMarks>& VGames_LiveMarks() {
         else if (strcmp(line, "Hidden") == 0)     cur->hidden = atoi(eq + 1) != 0;
         else if (strcmp(line, "LastPlayed") == 0) cur->lastPlayed = atoll(eq + 1);
         else if (strcmp(line, "PlayTime") == 0)   cur->playTime = atoll(eq + 1);
+        else if (strcmp(line, "Collections") == 0) cur->collections = eq + 1;
     }
     fclose(fp);
     return s_marks;
@@ -448,12 +454,13 @@ inline void VGames_SaveLiveMarks() {
     std::map<std::string, VGameMarks>& m = VGames_LiveMarks();
     for (std::map<std::string, VGameMarks>::iterator it = m.begin(); it != m.end(); ++it) {
         const VGameMarks& k = it->second;
-        if (!k.favorite && !k.hidden && !k.lastPlayed && !k.playTime) continue;
+        if (!k.favorite && !k.hidden && !k.lastPlayed && !k.playTime && k.collections.empty()) continue;
         fprintf(save.f, "[%s]\n", it->first.c_str());
         if (k.favorite) fprintf(save.f, "Favorite=1\n");
         if (k.hidden) fprintf(save.f, "Hidden=1\n");
         if (k.lastPlayed) fprintf(save.f, "LastPlayed=%lld\n", k.lastPlayed);
         if (k.playTime) fprintf(save.f, "PlayTime=%lld\n", k.playTime);
+        if (!k.collections.empty()) fprintf(save.f, "Collections=%s\n", k.collections.c_str());
         fprintf(save.f, "\n");
     }
     save.Commit();
@@ -470,6 +477,7 @@ inline void VGames_ApplyLiveMarks(int idx) {
     g.hidden = it->second.hidden;
     g.lastPlayed = it->second.lastPlayed;
     g.playTime = it->second.playTime;
+    snprintf(g.collections, sizeof(g.collections), "%s", it->second.collections.c_str());
 }
 
 // Writes the row's marks wherever that row lives.
@@ -478,7 +486,7 @@ inline void VGames_StoreMarks(int idx) {
     VirtualGame& g = g_vgames.games[idx];
     g_vgames.generation++;
     if (!VGames_IsLive(g)) { VGames_Save(); return; }
-    VGameMarks k = { g.favorite, g.hidden, g.lastPlayed, g.playTime };
+    VGameMarks k = { g.favorite, g.hidden, g.lastPlayed, g.playTime, g.collections };
     VGames_LiveMarks()[g.titleID] = k;
     VGames_SaveLiveMarks();
 }
@@ -600,19 +608,112 @@ inline bool VGames_IsShown(const VirtualGame& g) {
     return !g.duplicate;
 }
 
-inline bool VGames_IsMarkList(const char* category) {
-    return category && (strcasecmp(category, VGAMES_FAVORITES) == 0 || strcasecmp(category, VGAMES_RECENT) == 0);
+// The launcher asks for a collection as "Collection:<name>", so one called
+// Games can't be mistaken for the Games category.
+#define VGAMES_COLLECTION_PREFIX "Collection:"
+#define VGAMES_COLLECTION_NAME_MAX 40
+
+inline const char* VGames_CollectionOf(const char* category) {
+    size_t n = strlen(VGAMES_COLLECTION_PREFIX);
+    return category && strncasecmp(category, VGAMES_COLLECTION_PREFIX, n) == 0 ? category + n : NULL;
 }
 
-// Favorites by name, or recently played newest first.
+// Case blind, one name out of the ';' list.
+inline bool VGames_InCollection(const VirtualGame& g, const char* name) {
+    if (!name || !*name) return false;
+    size_t n = strlen(name);
+    for (const char* p = g.collections; *p;) {
+        const char* end = strchr(p, ';');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        if (len == n && strncasecmp(p, name, n) == 0) return true;
+        if (!end) break;
+        p = end + 1;
+    }
+    return false;
+}
+
+// Names can't carry the separator or the brackets games_live.ini keys on.
+inline std::string VGames_CleanCollectionName(const char* in) {
+    std::string out;
+    for (const char* p = in; *p && out.size() < VGAMES_COLLECTION_NAME_MAX; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c == ';' || c == '[' || c == ']' || c == '=') continue;
+        if (c == ' ' && (out.empty() || out[out.size() - 1] == ' ')) continue;
+        out += (char)c;
+    }
+    while (!out.empty() && out[out.size() - 1] == ' ') out.erase(out.size() - 1);
+    return out;
+}
+
+// False when the list is full.
+inline bool VGames_SetInCollection(int idx, const char* name, bool on) {
+    if (idx < 0 || idx >= g_vgames.count || !name || !*name) return false;
+    VirtualGame& g = g_vgames.games[idx];
+    if (VGames_InCollection(g, name) == on) return true;
+    std::string keep;
+    if (on) {
+        keep = g.collections;
+        if (!keep.empty()) keep += ";";
+        keep += name;
+        if (keep.size() >= sizeof(g.collections)) return false;
+    } else {
+        size_t n = strlen(name);
+        for (const char* p = g.collections; *p;) {
+            const char* end = strchr(p, ';');
+            size_t len = end ? (size_t)(end - p) : strlen(p);
+            if (!(len == n && strncasecmp(p, name, n) == 0)) {
+                if (!keep.empty()) keep += ";";
+                keep.append(p, len);
+            }
+            if (!end) break;
+            p = end + 1;
+        }
+    }
+    snprintf(g.collections, sizeof(g.collections), "%s", keep.c_str());
+    VGames_StoreMarks(idx);
+    return true;
+}
+
+// Every collection name A to Z, spelled the way it was first seen. shownOnly
+// leaves out the ones whose games are all hidden.
+inline void VGames_Collections(std::vector<std::string>& out, bool shownOnly) {
+    VGames_Load();
+    out.clear();
+    for (int i = 0; i < g_vgames.count; i++) {
+        const VirtualGame& g = g_vgames.games[i];
+        if (!g.valid || !g.collections[0]) continue;
+        if (shownOnly && !VGames_IsShown(g)) continue;
+        for (const char* p = g.collections; *p;) {
+            const char* end = strchr(p, ';');
+            std::string name = end ? std::string(p, end - p) : std::string(p);
+            bool have = name.empty();
+            for (size_t k = 0; k < out.size() && !have; k++)
+                have = strcasecmp(out[k].c_str(), name.c_str()) == 0;
+            if (!have) out.push_back(name);
+            if (!end) break;
+            p = end + 1;
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) {
+        return strcasecmp(a.c_str(), b.c_str()) < 0;
+    });
+}
+
+inline bool VGames_IsMarkList(const char* category) {
+    return category && (strcasecmp(category, VGAMES_FAVORITES) == 0 || strcasecmp(category, VGAMES_RECENT) == 0 ||
+                        VGames_CollectionOf(category));
+}
+
+// Favorites or a collection by name, or recently played newest first.
 inline void VGames_MarkList(const char* category, std::vector<int>& out) {
     VGames_Load();
     out.clear();
     bool recent = strcasecmp(category, VGAMES_RECENT) == 0;
+    const char* coll = VGames_CollectionOf(category);
     for (int i = 0; i < g_vgames.count; i++) {
         const VirtualGame& g = g_vgames.games[i];
         if (!VGames_IsShown(g)) continue;
-        if (recent ? g.lastPlayed > 0 : g.favorite) out.push_back(i);
+        if (recent ? g.lastPlayed > 0 : coll ? VGames_InCollection(g, coll) : g.favorite) out.push_back(i);
     }
     if (recent) {
         std::sort(out.begin(), out.end(), [](int a, int b) {
