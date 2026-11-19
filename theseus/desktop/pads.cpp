@@ -16,6 +16,8 @@ struct Pad {
     Uint32 held;    // its buttons and directions last frame
 };
 
+bool g_padRumble = true;
+
 static std::vector<Pad> s_pads;
 static SDL_JoystickID s_active = -1;
 static Uint32 s_clock = 0;
@@ -140,6 +142,15 @@ bool Pads_Button(SDL_GameControllerButton button)
     for (size_t i = 0; i < s_pads.size(); i++)
         if (SDL_GameControllerGetButton(s_pads[i].gc, button)) return true;
     return false;
+}
+
+void Pads_Rumble(float strength, Uint32 ms)
+{
+    SDL_GameController* gc = Pads_Active();
+    if (!g_padRumble || !gc) return;
+    float s = strength < 0.0f ? 0.0f : strength > 1.0f ? 1.0f : strength;
+    // The low motor is the heavy one; a touch less of it keeps short ones crisp.
+    SDL_GameControllerRumble(gc, (Uint16)(s * 0.6f * 65535.0f), (Uint16)(s * 65535.0f), ms);
 }
 
 Sint16 Pads_Axis(SDL_GameControllerAxis axis)

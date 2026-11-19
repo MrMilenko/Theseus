@@ -17,3 +17,7 @@ SDL_GameController* Pads_Active();
 // stick or trigger reads off whichever pad pushes it furthest.
 bool   Pads_Button(SDL_GameControllerButton button);
 Sint16 Pads_Axis(SDL_GameControllerAxis axis);
+
+// A short buzz on the active pad, strength 0 to 1. Nothing with Rumble off.
+void Pads_Rumble(float strength, Uint32 ms);
+extern bool g_padRumble;   // desktop.ini Rumble

@@ -28,6 +28,7 @@
 #include "xcloud_client.h"
 #include "guide.h"
 #include "ui_overlay.h"
+#include "pads.h"
 #include <algorithm>
 #include <ctype.h>
 #include <strings.h>
@@ -230,6 +231,7 @@ static const char* SettingHelp(const SettingDef& d)
         { "GuideTheme",          "The guide's colors." },
         { "FetchGameArt",        "Box art for games without an icon. Icons you picked are never replaced." },
         { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
+        { "Rumble",              "A short buzz when the guide can't do what you asked." },
     };
     for (size_t i = 0; i < sizeof(kHelp) / sizeof(kHelp[0]); i++)
         if (strcmp(kHelp[i].key, d.key) == 0) return kHelp[i].help;
@@ -240,7 +242,7 @@ static const char* SettingHelp(const SettingDef& d)
     return "Left and right change it.";
 }
 
-static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games" };
+static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games", "Controller" };
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
 
 enum Section { SEC_SETTINGS, SEC_ACCOUNTS, SEC_LIBRARY, SEC_LOGS, SEC_SHORTCUTS, SEC_ABOUT, SEC_TOOLS, SEC_EXIT,
@@ -1013,11 +1015,20 @@ static bool Adjust(int dir)
     return true;
 }
 
+// The pad buzzes when A can't do anything; the keyboard just doesn't.
+static void Refuse()
+{
+    if (g.device == 1) Pads_Rumble(0.35f, 90);
+}
+
 static void Select()
 {
     if (g.cursor < 0 || g.cursor >= (int)g.rows.size()) return;
     const Row r = g.rows[g.cursor];
     switch (r.act) {
+    case GA_NONE:
+        Refuse();
+        break;
     case GA_VIEW:
         Push((View)r.arg);
         break;
@@ -1068,7 +1079,7 @@ static void Select()
         int skipped = 0;
         int added = r.act == GA_STEAM ? TitleMaker_ImportSteam(&skipped) : TitleMaker_ImportRetroArch(&skipped);
         char msg[64];
-        if (added < 0) snprintf(msg, sizeof(msg), "Not found");
+        if (added < 0) { snprintf(msg, sizeof(msg), "Not found"); Refuse(); }
         else snprintf(msg, sizeof(msg), "%d new, %d already in", added, skipped);
         g.result[r.act] = msg;
         Build();
@@ -1077,6 +1088,7 @@ static void Select()
     case GA_ESDE:
         if (!s_esdePath[0]) {
             g.result[GA_ESDE] = "Set its folder first";
+            Refuse();
         } else {
             EsdeVGames_Sync(s_esdePath);
             g.result[GA_ESDE] = "Refreshed";
@@ -1117,8 +1129,8 @@ static void Select()
         break;
     }
     case GA_ADDGAME: {
-        if (g.pickedPath.empty() || g.pickedName.empty()) break;
-        if (VGames_FindByName(g.pickedName.c_str()) >= 0) { g.added = "Already there"; Build(); break; }
+        if (g.pickedPath.empty() || g.pickedName.empty()) { Refuse(); break; }
+        if (VGames_FindByName(g.pickedName.c_str()) >= 0) { g.added = "Already there"; Refuse(); Build(); break; }
         char genID[16];
         snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL));
         std::string launch = "\"" + g.pickedPath + "\"";
@@ -1168,7 +1180,7 @@ static void Select()
     case GA_FAVORITE:
     case GA_HIDE: {
         VirtualGame* vg = PickedGame();
-        if (!vg) break;
+        if (!vg) { Refuse(); break; }
         if (r.act == GA_FAVORITE) VGames_SetFavorite(g.game, !vg->favorite);
         else                      VGames_SetHidden(g.game, !vg->hidden);
         Build();
@@ -1176,7 +1188,7 @@ static void Select()
     }
     case GA_LAUNCH: {
         VirtualGame* vg = PickedGame();
-        if (!vg) break;
+        if (!vg) { Refuse(); break; }
         // The same Xbox-style path the launcher hands over.
         char devicePath[512];
         snprintf(devicePath, sizeof(devicePath), "\\Device\\Harddisk0\\Partition1\\%s\\%s",
@@ -1190,11 +1202,11 @@ static void Select()
         Host_OpenFolder(Plat_UserDataDir());
         break;
     case GA_COPYVERSION:
-        if (SDL_SetClipboardText(VersionLine().c_str()) == 0) g.copied = GA_COPYVERSION;
+        if (SDL_SetClipboardText(VersionLine().c_str()) == 0) g.copied = GA_COPYVERSION; else Refuse();
         Build();
         break;
     case GA_COPYLOG:
-        if (CopyLog()) g.copied = GA_COPYLOG;
+        if (CopyLog()) g.copied = GA_COPYLOG; else Refuse();
         Build();
         break;
     case GA_QUIT: {
