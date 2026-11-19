@@ -2080,6 +2080,26 @@ static void DrawRows(float left, float right, float top)
     for (int i = g.scroll; i < n && i < g.scroll + shown; i++) {
         const Row& r = g.rows[i];
         bool on = g.inPanel && i == g.cursor;
+        if (g.view == GV_ABOUT) {
+            // Credits read as a list, not buttons. A row with no label carries on
+            // the one above, so no line between them.
+            float ty = y + (ROW_H - 11.0f) * 0.5f;
+            float valueW = ui_overlay_text_width(UI_FONT_BOLD, 11.0f, r.value.c_str());
+            if (valueW > width * 0.6f) valueW = width * 0.6f;
+            std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 24 - valueW - 8);
+            ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 4, ty, UI_ALIGN_LEFT, ui_style_color(UI_COLOR_STATUS),
+                            label.c_str());
+            if (!r.value.empty()) {
+                std::string value = Fit(UI_FONT_BOLD, 11.0f, r.value, valueW);
+                ui_overlay_text(UI_FONT_BOLD, 11.0f, right - 4, ty, UI_ALIGN_RIGHT, 0xFFFFFFFF, value.c_str());
+            }
+            bool joined = i + 1 < n && g.rows[i + 1].label.empty();
+            if (!joined && i + 1 < n && i + 1 < g.scroll + shown)
+                ui_overlay_rect(left + 4, y + ROW_H + ROW_GAP * 0.5f, width - 8, 1, 0,
+                                ui_style_color(UI_COLOR_SEPARATOR));
+            y += ROW_H + ROW_GAP;
+            continue;
+        }
         if (r.act == GA_SETTING || r.act == GA_CATEGORY) {
             const SettingDef* d = r.act == GA_SETTING ? &DesktopSettings_Table().defs[r.arg] : NULL;
             const char* badge = d && (d->flags & SF_RESTART) ? "RESTART" : NULL;
@@ -2117,7 +2137,8 @@ static void DrawRows(float left, float right, float top)
                         "MORE");
 
     // The chosen row's help along the bottom.
-    if ((g.inPanel || g.welcome) && g.cursor >= 0 && g.cursor < n && !g.rows[g.cursor].help.empty()) {
+    if ((g.inPanel || g.welcome) && g.view != GV_ABOUT && g.cursor >= 0 && g.cursor < n &&
+        !g.rows[g.cursor].help.empty()) {
         std::string help = Fit(UI_FONT_REGULAR, 10.0f, g.rows[g.cursor].help, width);
         ui_style_text(UI_TEXT_LINE, left, BODY_B + 8, UI_ALIGN_LEFT, help.c_str());
     }
