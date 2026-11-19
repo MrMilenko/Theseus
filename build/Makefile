@@ -878,6 +878,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/launchers/stores.cpp \
 	$(THESEUS_SRC)/desktop/launchers/epic.cpp \
 	$(THESEUS_SRC)/desktop/launchers/gog.cpp \
+	$(THESEUS_SRC)/desktop/launchers/lutris.cpp \
 	$(THESEUS_SRC)/desktop/title_sanitize.cpp \
 	$(THESEUS_SRC)/desktop/udata_synth.cpp \
 	$(THESEUS_SRC)/desktop/desktop_stubs.cpp \
@@ -899,6 +900,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/exe_icon.cpp \
 	$(THESEUS_SRC)/desktop/xdg_apps.cpp \
 	$(THESEUS_SRC)/desktop/store_import.cpp \
+	$(THESEUS_SRC)/desktop/sqlite_read.cpp \
 	$(THESEUS_SRC)/desktop/game_art.cpp \
 	$(THESEUS_SRC)/desktop/playlist.cpp \
 	$(THESEUS_SRC)/desktop/playlist_maker.cpp \

@@ -30,6 +30,10 @@ void Epic_Scan(std::vector<StoreGame>& out);
 bool Gog_Found();
 void Gog_Scan(std::vector<StoreGame>& out);
 
+// Lutris: installed games from its pga.db, native or Flatpak.
+bool Lutris_Found();
+void Lutris_Scan(std::vector<StoreGame>& out);
+
 // Shared by the readers (stores.cpp).
 std::string Store_Home();
 std::string Store_Join(const std::string& dir, const std::string& name);

@@ -156,6 +156,7 @@ static const struct Store {
 } kStores[] = {
     { "Import Epic Games", "Installed games from the Epic launcher and Heroic.", Epic_Found, Epic_Scan },
     { "Import GOG Games", "Installed games from GOG Galaxy, GOG installers and Heroic.", Gog_Found, Gog_Scan },
+    { "Import Lutris Games", "Installed games from your Lutris library, with its cover art.", Lutris_Found, Lutris_Scan },
 };
 static const int kStoreCount = (int)(sizeof(kStores) / sizeof(kStores[0]));
 
