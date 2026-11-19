@@ -10,6 +10,9 @@
 #include "audio_sdl.h"
 #include "imgui.h"
 #include "playlist.h"
+#include "guide.h"
+#include "pads.h"
+#include "ui_overlay.h"
 #include "d3d8_sdl.h"  // for g_bgfxProgBlit / g_bgfxSamplerBlit on bgfx path
 
 #include <string>
@@ -48,10 +51,68 @@ void MediaUI_NoteActivity()
     s_lastActivity = NowSeconds();
 }
 
+// The hints name pad buttons while the pad is what's being used.
+static bool s_hintPad = false;
+
+void MediaUI_NoteKey()
+{
+    s_hintPad = false;
+    MediaUI_NoteActivity();
+}
+
 void MediaUI_ToggleTrackMenu()
 {
     s_trackMenuOpen = !s_trackMenuOpen;
     s_lastActivity = NowSeconds(); // keep OSD up while menu is around
+}
+
+// ============================================================================
+// Server playback reports. Position is kept every frame because it's gone
+// by the time the player has stopped.
+// ============================================================================
+
+static MediaReportFn s_report = NULL;
+static bool   s_reportStarted = false;
+static bool   s_reportPaused = false;
+static double s_reportLast = 0.0;
+static double s_reportPos = 0.0, s_reportDur = 0.0;
+
+static void EndReport()
+{
+    if (s_report && s_reportStarted)
+        s_report(MEDIA_REPORT_STOP, s_reportPos, s_reportDur, false);
+    s_report = NULL;
+    s_reportStarted = false;
+}
+
+void MediaUI_SetReporter(MediaReportFn fn)
+{
+    EndReport();
+    s_report = fn;
+    s_reportPos = s_reportDur = 0.0;
+}
+
+static void ReportFrame()
+{
+    if (!s_report) return;
+    MediaPlayerState st = MediaPlayer_GetState();
+    if (st != MP_PLAYING && st != MP_PAUSED) return;
+    double dur = MediaPlayer_GetDuration();
+    if (dur <= 0.0) return;
+    s_reportPos = MediaPlayer_GetPosition();
+    s_reportDur = dur;
+    bool paused = st == MP_PAUSED;
+    double now = NowSeconds();
+    if (!s_reportStarted) {
+        s_report(MEDIA_REPORT_START, s_reportPos, dur, paused);
+        s_reportStarted = true;
+    } else if (paused != s_reportPaused || now - s_reportLast >= 10.0) {
+        s_report(MEDIA_REPORT_PROGRESS, s_reportPos, dur, paused);
+    } else {
+        return;
+    }
+    s_reportPaused = paused;
+    s_reportLast = now;
 }
 
 // ============================================================================
@@ -67,6 +128,7 @@ static int                    s_queueIdx = -1;
 static void OpenCurrentQueueItem() {
     if (s_queueIdx < 0 || s_queueIdx >= (int)s_queue.size()) return;
     const QueueItem& it = s_queue[s_queueIdx];
+    MediaUI_SetReporter(NULL);
     if (!MediaPlayer_Open(it.path.c_str())) return;
 
     g_mediaFullscreen = true;
@@ -105,6 +167,33 @@ void MediaUI_PlaylistPrev() {
 }
 
 bool MediaUI_PlaylistActive() { return s_queueIdx >= 0 && !s_queue.empty(); }
+
+// The scene is frozen while video is up, so the pad is read here: B or Back
+// stops, A or Start pauses, left and right seek, LB and RB step a playlist.
+void MediaUI_PadFrame()
+{
+    static unsigned s_prev = ~0u;
+    if (!g_mediaFullscreen) { s_prev = ~0u; return; }
+    // Show the title for a moment as playback starts.
+    if (s_prev == ~0u) {
+        MediaUI_NoteActivity();
+        s_hintPad = Joy_LastDevice() == 1;
+    }
+    unsigned pad = Joy_PadButtons();
+    // The A that started playback is usually still held on the first frame.
+    unsigned pressed = (s_prev == ~0u) ? 0 : (pad & ~s_prev);
+    s_prev = pad;
+    if (!pressed) return;
+    MediaUI_NoteActivity();
+    s_hintPad = true;
+    extern void MediaUI_StopFullscreen();
+    if (pressed & (GUIDE_B | GUIDE_BACK)) { MediaUI_StopFullscreen(); return; }
+    if (pressed & (GUIDE_A | GUIDE_START)) MediaPlayer_TogglePause();
+    if (pressed & GUIDE_LEFT)  MediaPlayer_SeekRelative(-10.0);
+    if (pressed & GUIDE_RIGHT) MediaPlayer_SeekRelative(10.0);
+    if (pressed & GUIDE_LB) MediaUI_PlaylistPrev();
+    if (pressed & GUIDE_RB) MediaUI_PlaylistNext();
+}
 
 // 0.0 = hidden, 1.0 = fully visible. Smoothly fades.
 static float OsdAlpha()
@@ -153,12 +242,6 @@ void MediaUI_DrawFullscreenVideo()
     // through outside the aspect-fit rect.
     (void)boundFBO;
 
-    int vw = 0, vh = 0;
-    unsigned int texIdx = MediaPlayer_GetVideoTexture(&vw, &vh);
-    if (!bgfx::isValid(g_bgfxProgBlit) || texIdx == 0 || vw <= 0 || vh <= 0) return;
-    bgfx::TextureHandle vidTex; vidTex.idx = (uint16_t)texIdx;
-    if (!bgfx::isValid(vidTex)) return;
-
     int dw = (ww > 0) ? ww : 1;
     int dh = (wh > 0) ? wh : 1;
 
@@ -169,6 +252,14 @@ void MediaUI_DrawFullscreenVideo()
     if (pw <= 0 || ph <= 0) { pw = dw; ph = dh; }
     bgfx::setViewRect(0, 0, 0, (uint16_t)pw, (uint16_t)ph);
     bgfx::setViewClear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 1.0f, 0);
+    // Black until the first frame decodes, not the menu frozen underneath.
+    bgfx::touch(0);
+
+    int vw = 0, vh = 0;
+    unsigned int texIdx = MediaPlayer_GetVideoTexture(&vw, &vh);
+    if (!bgfx::isValid(g_bgfxProgBlit) || texIdx == 0 || vw <= 0 || vh <= 0) return;
+    bgfx::TextureHandle vidTex; vidTex.idx = (uint16_t)texIdx;
+    if (!bgfx::isValid(vidTex)) return;
 
     float qw, qh;
     Bgfx_AspectFitNDC(vw, vh, dw, dh, qw, qh);
@@ -193,6 +284,66 @@ static void FormatTime(double seconds, char* buf, int sz)
     else       snprintf(buf, sz, "%d:%02d", m, s);
 }
 
+// The transport hints, in the guide's button style: pad buttons or key caps,
+// whichever was used last. Drawn on the guide's overlay, which works in a
+// 640x480 layout scaled to the window's height.
+struct OsdHint { int button[2]; const char* key[2]; const char* word; };
+
+static float HintGlyph(const OsdHint& h, int i, float size, float x, float y, unsigned int color, bool measure)
+{
+    if (!s_hintPad)
+        return measure ? ui_overlay_key_width(h.key[i], size) : ui_overlay_key(h.key[i], size, x, y, color);
+    return measure ? ui_overlay_button_width(h.button[i], size) : ui_overlay_button(h.button[i], size, x, y, color);
+}
+
+static float DrawHint(const OsdHint& h, float size, float x, float y, unsigned int glyph, unsigned int text, bool measure)
+{
+    float w = 0.0f;
+    for (int i = 0; i < 2; i++) {
+        if (i == 1 && (s_hintPad ? h.button[1] < 0 : !h.key[1])) break;
+        if (i == 1) w += 2.0f;
+        w += HintGlyph(h, i, size, x + w, y, glyph, measure);
+    }
+    w += 4.0f;
+    float ts = size * 0.72f;
+    w += measure ? ui_overlay_text_width(UI_FONT_BOLD, ts, h.word)
+                 : ui_overlay_text(UI_FONT_BOLD, ts, x + w, y + size * 0.14f, UI_ALIGN_LEFT, text, h.word);
+    return w;
+}
+
+static void DrawHints(float alpha, float right, float y)
+{
+    static const OsdHint kPad[] = {
+        { { UI_BUTTON_B, -1 }, { "", NULL }, "Stop" },
+        { { UI_BUTTON_A, -1 }, { "", NULL }, "Pause" },
+        { { UI_BUTTON_DPAD_LEFT, UI_BUTTON_DPAD_RIGHT }, { "", NULL }, "Seek" },
+        { { UI_BUTTON_LEFT_SHOULDER, UI_BUTTON_RIGHT_SHOULDER }, { "", NULL }, "Prev/Next" },
+    };
+    static const OsdHint kKeys[] = {
+        { { -1, -1 }, { "ESC", NULL }, "Stop" },
+        { { -1, -1 }, { "SPACE", NULL }, "Pause" },
+        { { -1, -1 }, { "\xE2\x80\xB9", "\xE2\x80\xBA" }, "Seek" },
+        { { -1, -1 }, { "T", NULL }, "Tracks" },
+        { { -1, -1 }, { "[", "]" }, "Prev/Next" },
+    };
+    const OsdHint* hints = s_hintPad ? kPad : kKeys;
+    int n = s_hintPad ? 3 : 4;
+    if (MediaUI_PlaylistActive()) n++;
+
+    ui_overlay_set_device(s_hintPad ? 1 : 0);
+    ui_overlay_set_pad_style(Pads_Style());
+    ui_overlay_set_pad_swap(g_padSwapConfirm);
+    ui_overlay_layer(0);
+    unsigned int a = (unsigned int)(alpha * 255.0f) & 0xFF;
+    unsigned int glyph = 0xFFFFFF00 | a;
+    unsigned int text = 0xD9FFD900 | (unsigned int)(alpha * 230.0f);
+    const float size = 15.0f, gap = 14.0f;
+    float total = 0.0f;
+    for (int i = 0; i < n; i++) total += DrawHint(hints[i], size, 0, 0, glyph, text, true) + (i ? gap : 0.0f);
+    float x = right - total;
+    for (int i = 0; i < n; i++) x += DrawHint(hints[i], size, x, y, glyph, text, false) + gap;
+}
+
 // Pack RGBA float -> ImU32 with alpha multiplier.
 static ImU32 RGBA(float r, float g, float b, float a)
 {
@@ -214,6 +365,7 @@ void MediaUI_RenderOSD()
 
     // Auto-end: when libmpv reports stopped/idle (track finished), advance the
     // playlist queue if active, otherwise bail back to dashboard.
+    ReportFrame();
     MediaPlayerState st = MediaPlayer_GetState();
     if (st == MP_IDLE || st == MP_STOPPED) {
         if (MediaUI_PlaylistActive() && s_queueIdx + 1 < (int)s_queue.size()) {
@@ -308,25 +460,18 @@ void MediaUI_RenderOSD()
         FormatTime(dur, tDur, sizeof(tDur));
 
         ImU32 textCol = RGBA(0.85f, 1.00f, 0.85f, alpha);
-        ImU32 hintCol = RGBA(0.55f, 0.90f, 0.55f, alpha * 0.7f);
 
         ImFont* font = ImGui::GetFont();
         float timeSize = 16.0f;
-        float hintSize = 12.0f;
 
         // Time on left
         char timeStr[64];
         snprintf(timeStr, sizeof(timeStr), "%s / %s", tPos, tDur);
         dl->AddText(font, timeSize, ImVec2(28, y0 + 28), textCol, timeStr);
 
-        // Hint on right
-        const char* hint = MediaUI_PlaylistActive()
-            ? "ESC Stop  SPACE Pause  <-/-> Seek  T Tracks  [/] Prev/Next"
-            : "ESC Stop  SPACE Pause  <-/-> Seek  T Tracks";
-        ImVec2 hintSz = ImGui::CalcTextSize(hint);
-        // CalcTextSize uses default font size; estimate hint width by length.
-        float estHintW = (float)strlen(hint) * 6.5f;
-        dl->AddText(font, hintSize, ImVec2((float)ww - estHintW - 28.0f, y0 + 30), hintCol, hint);
+        // Hints on the right, in layout units: the window is 480 tall there.
+        float toLayout = 480.0f / (float)(wh > 0 ? wh : 1);
+        DrawHints(alpha, ui_overlay_layout_right() - 28.0f * toLayout, (y0 + 24.0f) * toLayout);
 
         // Progress bar, Xbox green track on dim bg.
         float barX = 28.0f;
@@ -406,6 +551,7 @@ void MediaUI_RenderOSD()
 void MediaUI_StopFullscreen()
 {
     if (!g_mediaFullscreen) return;
+    EndReport();
     MediaPlayer_Stop();
     g_mediaFullscreen = false;
     s_queue.clear();
@@ -434,4 +580,6 @@ void MediaUI_StopFullscreen()
         SDL_ShowCursor(SDL_ENABLE);
         s_cursorVisible = true;
     }
+    // Whatever closed the video (Esc, B) is still held as the menu wakes up.
+    Joy_Rebaseline();
 }

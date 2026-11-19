@@ -90,7 +90,7 @@ static struct {
     float shift[8];   // second map's place and scale, then the threads' color
     bool plasmaDrawn;
 
-    int device;
+    int device, padStyle, padSwap;
     float scale, originX, originY;   // last present's layout -> pixels
 
     Vertex vertices[MAX_QUADS * 6];
@@ -315,11 +315,33 @@ void ui_overlay_plasma_thread(unsigned int color)
 
 void ui_overlay_set_device(int device) { ov.device = device; }
 int  ui_overlay_keyboard() { return ov.device == 0; }
+void ui_overlay_set_pad_style(int style)
+{
+    ov.padStyle = style >= 0 && style < UI_PAD_STYLE_COUNT ? style : UI_PAD_XBOX;
+}
 
-static const char* const kPillLabels[2][UI_BUTTON_COUNT] = {
-    { "ENTER", "ESC", "X", "Y", "F7", "BKSP", "Q", "E", "\xE2\x86\x90", "\xE2\x86\x92" },
-    { "A", "B", "X", "Y", "START", "BACK", "LB", "RB", "\xE2\x80\xB9", "\xE2\x80\xBA" },
+void ui_overlay_set_pad_swap(int swap) { ov.padSwap = swap != 0; }
+
+static const char* const kKeyLabels[UI_BUTTON_COUNT] = {
+    "ENTER", "ESC", "X", "Y", "F7", "BKSP", "Q", "E", "\xE2\x80\xB9", "\xE2\x80\xBA",
 };
+// PlayStation's face buttons are symbols, drawn below.
+static const char* const kPadLabels[UI_PAD_STYLE_COUNT][UI_BUTTON_COUNT] = {
+    { "A", "B", "X", "Y", "START", "BACK", "LB", "RB", "\xE2\x80\xB9", "\xE2\x80\xBA" },
+    { "", "", "", "", "OPTIONS", "SHARE", "L1", "R1", "\xE2\x80\xB9", "\xE2\x80\xBA" },
+    { "B", "A", "Y", "X", "+", "\xE2\x88\x92", "L", "R", "\xE2\x80\xB9", "\xE2\x80\xBA" },
+};
+
+// Where on the pad a button is, with confirm and back swapped or not.
+static int Position(int button)
+{
+    return ov.padSwap && (button == UI_BUTTON_A || button == UI_BUTTON_B) ? button ^ 1 : button;
+}
+
+static const char* Label(int button)
+{
+    return ov.device == 1 ? kPadLabels[ov.padStyle][Position(button)] : kKeyLabels[button];
+}
 
 // The pad's face buttons, lit at the top and deep at the bottom.
 static const unsigned int kFaceColors[4][2] = {
@@ -328,6 +350,9 @@ static const unsigned int kFaceColors[4][2] = {
     { 0x8FB4FFFF, 0x2448B8FF },   // X blue
     { 0xFFE680FF, 0xC48A0CFF },   // Y yellow
 };
+
+// Cross, circle, square and triangle.
+static const unsigned int kSymbolColors[4] = { 0x9CC8FFFF, 0xFF8A8AFF, 0xF3A5E4FF, 0x6FE8C2FF };
 
 static float PillTextSize(float size) { return size * 0.52f; }
 
@@ -357,25 +382,72 @@ float ui_overlay_button_width(int button, float size)
 {
     if (button < 0 || button >= UI_BUTTON_COUNT) return 0.0f;
     if (ov.device == 1 && button <= UI_BUTTON_Y) return size;
-    return PillWidth(kPillLabels[ov.device == 1][button], size);
+    return PillWidth(Label(button), size);
+}
+
+// A line of round dots close enough to read as one stroke.
+static void Stroke(float x0, float y0, float x1, float y1, float width, unsigned int color)
+{
+    float dx = x1 - x0, dy = y1 - y0;
+    int steps = (int)ceilf(sqrtf(dx * dx + dy * dy) / (width * 0.25f));
+    if (steps < 1) steps = 1;
+    for (int i = 0; i <= steps; i++) {
+        float t = (float)i / (float)steps;
+        ui_overlay_rect(x0 + dx * t - width * 0.5f, y0 + dy * t - width * 0.5f, width, width, width * 0.5f, color);
+    }
+}
+
+// PlayStation's symbols, centered on cx, cy in a ball d across.
+static void Symbol(int button, float cx, float cy, float d, unsigned int color)
+{
+    float r = d * 0.24f, w = d * 0.1f;
+    switch (button) {
+    case UI_BUTTON_A:
+        Stroke(cx - r, cy - r, cx + r, cy + r, w, color);
+        Stroke(cx - r, cy + r, cx + r, cy - r, w, color);
+        break;
+    case UI_BUTTON_B:
+        ui_overlay_outline(cx - r, cy - r, r * 2.0f, r * 2.0f, r, w, color);
+        break;
+    case UI_BUTTON_X:
+        r *= 0.9f;
+        ui_overlay_outline(cx - r, cy - r, r * 2.0f, r * 2.0f, w * 0.6f, w, color);
+        break;
+    case UI_BUTTON_Y: {
+        // Equilateral, sitting a touch low so it looks centered.
+        float side = r * 2.3f, h = side * 0.866f, top = cy - h * 0.6f, base = cy + h * 0.4f;
+        Stroke(cx, top, cx - side * 0.5f, base, w, color);
+        Stroke(cx - side * 0.5f, base, cx + side * 0.5f, base, w, color);
+        Stroke(cx + side * 0.5f, base, cx, top, w, color);
+        break;
+    }
+    }
 }
 
 float ui_overlay_button(int button, float size, float x, float y, unsigned int color)
 {
     if (button < 0 || button >= UI_BUTTON_COUNT) return 0.0f;
     if (ov.device != 1 || button > UI_BUTTON_Y)
-        return Pill(kPillLabels[ov.device == 1][button], size, x, y, color, ov.device != 1);
+        return Pill(Label(button), size, x, y, color, ov.device != 1);
 
-    // A glossy ball: lit to deep, a sheen on its upper half, its letter in white.
+    // A glossy ball: lit to deep, a sheen on its upper half, its letter in
+    // white. Xbox balls wear their colors; the others are dark.
+    button = Position(button);
     float share = (float)(color & 0xFF) / 255.0f;
     float d = size * 0.96f, inset = (size - d) * 0.5f, letter = size * 0.66f;
-    const char* label = kPillLabels[1][button];
+    const char* label = kPadLabels[ov.padStyle][button];
+    const bool xbox = ov.padStyle == UI_PAD_XBOX;
     ui_overlay_rect(x + inset, y + inset + size * 0.05f, d, d, d * 0.5f, Fade(0x00000060, share));
     ui_overlay_gradient(x + inset, y + inset, d, d, d * 0.5f,
-                        Fade(kFaceColors[button][0], share), Fade(kFaceColors[button][1], share));
+                        Fade(xbox ? kFaceColors[button][0] : 0x5A606BFF, share),
+                        Fade(xbox ? kFaceColors[button][1] : 0x16191FFF, share));
     ui_overlay_gradient(x + inset + d * 0.16f, y + inset + d * 0.06f, d * 0.68f, d * 0.42f, d * 0.21f,
                         Fade(0xFFFFFF70, share), Fade(0xFFFFFF08, share));
     ui_overlay_outline(x + inset, y + inset, d, d, d * 0.5f, 0.75f, Fade(0x00000070, share));
+    if (ov.padStyle == UI_PAD_PLAYSTATION) {
+        Symbol(button, x + size * 0.5f, y + size * 0.5f, d, Fade(kSymbolColors[button], share));
+        return size;
+    }
     AddText(UI_FONT_BOLD, letter, x + size * 0.5f + 0.4f, y + (size - letter) * 0.5f + 0.9f, UI_ALIGN_CENTER,
             Fade(0x00000080, share), label);
     AddText(UI_FONT_BOLD, letter, x + size * 0.5f, y + (size - letter) * 0.5f + 0.3f, UI_ALIGN_CENTER,

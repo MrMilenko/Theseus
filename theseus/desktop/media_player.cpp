@@ -8,6 +8,7 @@
 // can't lie about the current buffer size.
 
 #include "media_player.h"
+#include "log_redact.h"
 
 #include <mpv/client.h>
 #include <mpv/render.h>
@@ -169,12 +170,22 @@ void MediaPlayer_Shutdown() {
 // ============================================================================
 
 bool MediaPlayer_Open(const char* path) {
+    return MediaPlayer_OpenAt(path, 0.0);
+}
+
+bool MediaPlayer_OpenAt(const char* path, double startSeconds) {
     // Re-init if a previous Stop tore mpv down. This is the normal path
     // for any playback after the first one in the session.
     if (!s_mpv) {
         if (!MediaPlayer_Init()) return false;
     }
 
+    // start is a global option, so it's put back once the file loads.
+    if (startSeconds > 0.0) {
+        char start[32];
+        snprintf(start, sizeof(start), "%.0f", startSeconds);
+        mpv_set_property_string(s_mpv, "start", start);
+    }
     const char* cmd[] = { "loadfile", path, NULL };
     mpv_command(s_mpv, cmd);
 
@@ -190,7 +201,7 @@ bool MediaPlayer_Open(const char* path) {
     s_hasVideo = false;
     s_videoWidth  = 0;
     s_videoHeight = 0;
-    fprintf(stderr, "[MediaPlayer] Opening: %s\n", path);
+    fprintf(stderr, "[MediaPlayer] Opening: %s\n", Log_RedactSecrets(path).c_str());
     return true;
 }
 
@@ -406,10 +417,17 @@ void MediaPlayer_Update() {
                 if (ef && ef->reason == MPV_END_FILE_REASON_EOF) {
                     s_state = MP_STOPPED;
                 }
+                // A stream that won't open would otherwise sit on a black
+                // screen forever.
+                if (ef && ef->reason == MPV_END_FILE_REASON_ERROR) {
+                    fprintf(stderr, "[MediaPlayer] couldn't play it: %s\n", mpv_error_string(ef->error));
+                    s_state = MP_STOPPED;
+                }
                 break;
             }
             case MPV_EVENT_FILE_LOADED:
                 s_state = MP_PLAYING;
+                mpv_set_property_string(s_mpv, "start", "none");
                 break;
             default:
                 break;

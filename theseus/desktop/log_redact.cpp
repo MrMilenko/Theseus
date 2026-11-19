@@ -1,8 +1,9 @@
-// log_redact.cpp: home folder and IP address masking for copied logs.
+// log_redact.cpp: sign-in token, home folder and IP address masking for logs.
 
 #include "log_redact.h"
 #include <string.h>
 #include <ctype.h>
+#include <strings.h>
 
 static bool IsHex(char c) { return isxdigit((unsigned char)c) != 0; }
 
@@ -50,8 +51,106 @@ static size_t MatchV6(const char* p, bool* keep)
     return (size_t)(s - p);
 }
 
-std::string Log_Redact(const std::string& in, const char* home)
+static bool EndsWithKey(const std::string& s, size_t end, const char* key)
 {
+    size_t n = strlen(key);
+    if (end < n) return false;
+    for (size_t i = 0; i < n; i++)
+        if (tolower((unsigned char)s[end - n + i]) != key[i]) return false;
+    return true;
+}
+
+// A key that names a secret: anything ending in token, plus api_key / apikey.
+static bool SecretKeyEndsAt(const std::string& s, size_t end)
+{
+    return EndsWithKey(s, end, "token") || EndsWithKey(s, end, "api_key") ||
+           EndsWithKey(s, end, "apikey") || EndsWithKey(s, end, "secret");
+}
+
+std::string Log_RedactSecrets(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size());
+    size_t i = 0;
+    while (i < in.size()) {
+        char c = in[i];
+        size_t v = std::string::npos;
+        // key=value (query strings, Token="..." in auth headers)
+        if (c == '=' && SecretKeyEndsAt(in, i)) v = i + 1;
+        // "key": "value" (JSON)
+        if (c == '"' && i > 0 && SecretKeyEndsAt(in, i)) {
+            size_t j = i + 1;
+            while (j < in.size() && in[j] == ' ') j++;
+            if (j < in.size() && in[j] == ':') {
+                j++;
+                while (j < in.size() && in[j] == ' ') j++;
+                if (j < in.size() && in[j] == '"') v = j;
+            }
+        }
+        if (v == std::string::npos) { out += c; i++; continue; }
+        out.append(in, i, v - i);
+        bool quoted = v < in.size() && in[v] == '"';
+        size_t e = v + (quoted ? 1 : 0);
+        while (e < in.size()) {
+            char d = in[e];
+            if (quoted ? d == '"' : (d == '&' || d == '"' || d == '\'' || d == ',' || isspace((unsigned char)d))) break;
+            e++;
+        }
+        size_t start = v + (quoted ? 1 : 0);
+        if (quoted) out += '"';
+        if (e > start) out += "[redacted]";
+        i = e;
+    }
+    return out;
+}
+
+// Sign-in tokens in URLs and auth headers: api_key=..., X-Plex-Token=...,
+// Token="...". The name stays so a log still says what was sent.
+static const char* const kTokenKeys[] = {
+    "api_key", "apikey", "x-plex-token", "x-emby-token", "access_token",
+    "accesstoken", "token", "refresh_token", "password", "pw",
+};
+
+static bool TokenKeyAt(const std::string& s, size_t i, size_t* keyLen)
+{
+    for (size_t k = 0; k < sizeof(kTokenKeys) / sizeof(kTokenKeys[0]); k++) {
+        size_t n = strlen(kTokenKeys[k]);
+        if (i + n > s.size() || strncasecmp(s.c_str() + i, kTokenKeys[k], n) != 0) continue;
+        // Whole words only, so "devicetoken" or "tokenizer" aren't touched.
+        if (i > 0 && (isalnum((unsigned char)s[i - 1]) || s[i - 1] == '_' || s[i - 1] == '-')) continue;
+        char c = i + n < s.size() ? s[i + n] : 0;
+        if (c == '=' || c == ':' || c == '"') { *keyLen = n; return true; }
+    }
+    return false;
+}
+
+static std::string MaskTokens(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size();) {
+        size_t n;
+        if (!TokenKeyAt(in, i, &n)) { out += in[i++]; continue; }
+        out.append(in, i, n);
+        i += n;
+        // Separator: = or : with optional quotes and spaces around it.
+        size_t j = i;
+        while (j < in.size() && (in[j] == '"' || in[j] == '\\')) j++;
+        if (j >= in.size() || (in[j] != '=' && in[j] != ':')) { continue; }
+        j++;
+        while (j < in.size() && (in[j] == ' ' || in[j] == '"' || in[j] == '\'')) j++;
+        size_t v = j;
+        while (v < in.size() && !strchr("&\"' \t\r\n,;}>)", in[v])) v++;
+        out.append(in, i, j - i);
+        if (v > j) out += "[redacted]";
+        i = v;
+    }
+    return out;
+}
+
+std::string Log_Redact(const std::string& raw, const char* home)
+{
+    std::string in = MaskTokens(Log_RedactSecrets(raw));
     std::string text;
     size_t hl = home ? strlen(home) : 0;
     while (hl > 1 && (home[hl - 1] == '/' || home[hl - 1] == '\\')) hl--;

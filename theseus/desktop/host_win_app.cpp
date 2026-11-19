@@ -497,9 +497,32 @@ void Host_OpenFolder(const char* dir) {
 	ShellExecuteA(NULL, "open", dir, NULL, NULL, SW_SHOWNORMAL);
 }
 
+static HKEY Hive(int hive) {
+	return hive == HOST_REG_MACHINE ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+}
+
 bool Host_RegistryString(const char* subKey, const char* value, char* out, size_t outSize) {
+	return Host_RegistryValue(HOST_REG_USER, subKey, value, out, outSize);
+}
+
+int Host_RegistrySubkeys(int hive, const char* subKey, char (*out)[256], int max) {
 	HKEY hKey;
-	if (RegOpenKeyExA(HKEY_CURRENT_USER, subKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) return false;
+	if (RegOpenKeyExA(Hive(hive), subKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) return 0;
+	int n = 0;
+	for (DWORD i = 0; n < max; i++) {
+		DWORD len = 256;
+		LONG r = RegEnumKeyExA(hKey, i, out[n], &len, NULL, NULL, NULL, NULL);
+		if (r == ERROR_NO_MORE_ITEMS) break;
+		if (r == ERROR_SUCCESS) n++;
+	}
+	RegCloseKey(hKey);
+	return n;
+}
+
+bool Host_RegistryValue(int hive, const char* subKey, const char* value, char* out, size_t outSize) {
+	if (!outSize) return false;
+	HKEY hKey;
+	if (RegOpenKeyExA(Hive(hive), subKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) return false;
 	DWORD size = (DWORD)outSize;
 	DWORD type = 0;
 	bool ok = RegQueryValueExA(hKey, value, NULL, &type, (BYTE*)out, &size) == ERROR_SUCCESS;
@@ -552,6 +575,12 @@ int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio) {
 		}
 	}
 	return count;
+}
+
+// The C runtime's copy and the one CreateProcess hands down, kept the same.
+void Host_SetEnv(const char* name, const char* value) {
+	_putenv_s(name, value ? value : "");
+	SetEnvironmentVariableA(name, value);
 }
 
 const char* Host_Name() { return "Windows"; }

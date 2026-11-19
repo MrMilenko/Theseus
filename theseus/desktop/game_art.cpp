@@ -1,8 +1,9 @@
 // game_art.cpp: box art for games that came in without an icon.
 //
-// Three places to look, no key needed for the first two:
+// Four places to look, no key needed for the first three:
 //   Steam's public CDN by appid, for steam:// launches. Also keeps the bigger
 //     capsule and header art in Configs/art for whatever wants it.
+//   The cover a store importer handed over (GameArt_HintArt).
 //   libretro-thumbnails by system and exact rom name, for RetroArch and ES-DE.
 //   SteamGridDB, only when the user typed their own API key into Settings.
 //
@@ -221,6 +222,7 @@ struct ArtJob {
     int appid = 0;
     std::string system;    // libretro name, empty when it isn't an emulated game
     std::string romStem;
+    std::string artUrl;    // a store's cover
     bool wantIcon = false, wantBig = false, trySgdb = false;
     std::string iconDir, artDir, sgdbKey;
 };
@@ -235,7 +237,7 @@ static struct {
 } s_q;
 
 // Main thread only from here down to the workers.
-struct Hint { std::string system, rom; };
+struct Hint { std::string system, rom, art; };
 static std::map<std::string, Hint> s_hints;
 static std::set<std::string> s_seen;               // queued this run
 static std::map<std::string, unsigned> s_misses;   // titleID -> KeyTag of the SteamGridDB key tried, 0 for none
@@ -255,10 +257,15 @@ static std::string MissFile() { return ArtDir() + "/misses.txt"; }
 void GameArt_Hint(const char* titleID, const char* system, const char* romPath)
 {
     if (!titleID || !*titleID) return;
-    Hint h;
+    Hint& h = s_hints[titleID];
     h.system = system ? system : "";
     h.rom = romPath ? romPath : "";
-    s_hints[titleID] = h;
+}
+
+void GameArt_HintArt(const char* titleID, const char* url)
+{
+    if (!titleID || !*titleID || !url || strncmp(url, "https://", 8) != 0) return;
+    s_hints[titleID].art = url;
 }
 
 const char* GameArt_CachedPath(const char* titleID, const char* kind)
@@ -337,6 +344,17 @@ static bool FromLibretro(const ArtJob& j)
     return false;
 }
 
+static bool FromStore(const ArtJob& j)
+{
+    std::string tmp = j.artDir + "/" + j.titleID + ".store";
+    if (!FetchTo(j.artUrl, tmp)) return false;
+    std::string cover = j.artDir + "/" + j.titleID + ".cover.jpg";
+    Icons_FitFile(tmp.c_str(), cover.c_str(), 600, 90);
+    bool placed = PlaceIcon(j, tmp);
+    remove(tmp.c_str());
+    return placed;
+}
+
 // SteamGridDB: square grids first, they suit the orb. Never webp, stb can't read it.
 static bool FromSteamGridDb(const ArtJob& j)
 {
@@ -381,6 +399,7 @@ static void Worker()
         Plat_MkdirP(j.artDir.c_str());
         bool got = false;
         if (j.appid > 0)                    got = FromSteam(j);
+        if (!got && j.wantIcon && !j.artUrl.empty()) got = FromStore(j);
         if (!got && j.wantIcon && !j.system.empty()) got = FromLibretro(j);
         if (!got && j.wantIcon && j.trySgdb) got = FromSteamGridDb(j);
         if (got) fprintf(stderr, "[art] %s: got art\n", j.name.c_str());
@@ -509,7 +528,8 @@ static void Scan()
             std::string sys, rom, core, stem, ext;
             std::map<std::string, Hint>::iterator h = s_hints.find(j.titleID);
             if (h != s_hints.end()) { sys = h->second.system; rom = h->second.rom; }
-            else RomFromLaunch(g.launch, rom, core);
+            if (h == s_hints.end() || (sys.empty() && rom.empty())) RomFromLaunch(g.launch, rom, core);
+            if (h != s_hints.end() && !missed) j.artUrl = h->second.art;
             SplitRom(rom, stem, ext);
             if (sys.empty() && !ext.empty() && SystemForExt(ext.c_str())) sys = SystemForExt(ext.c_str());
             if (sys.empty() && !core.empty() && SystemForCore(core.c_str())) sys = SystemForCore(core.c_str());
@@ -517,7 +537,7 @@ static void Scan()
             if (lr && !missed) { j.system = lr; j.romStem = stem; }
         }
         j.trySgdb = haveKey && j.wantIcon;
-        if (!j.wantBig && j.system.empty() && !j.trySgdb) continue;
+        if (!j.wantBig && j.system.empty() && j.artUrl.empty() && !j.trySgdb) continue;
 
         j.iconDir = iconDir;
         j.artDir = artDir;

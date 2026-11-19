@@ -19,3 +19,6 @@ IconCompressResult Icons_Compress(int maxDim, int quality);
 // Fit one image (any size, png or jpg) into maxDim on the long side and write
 // it as a jpg at dst. Transparency lands on black. False when src won't decode.
 bool Icons_FitFile(const char* src, const char* dst, int maxDim, int quality);
+
+// Same, for RGBA pixels already in memory.
+bool Icons_FitPixels(const unsigned char* rgba, int w, int h, const char* dst, int maxDim, int quality);

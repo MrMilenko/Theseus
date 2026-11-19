@@ -26,8 +26,17 @@
 #include "plex_client.h"
 #include "jellyfin_client.h"
 #include "xcloud_client.h"
+#include "launchers/xemu.h"
+#include "launchers/pcsx2.h"
+#include "xiso.h"
+#include "exe_icon.h"
+#include "xdg_apps.h"
 #include "guide.h"
 #include "ui_overlay.h"
+#include "pads.h"
+#include "launchers/steam.h"
+#include "settings_backup.h"
+#include "launchers/stores.h"
 #include <algorithm>
 #include <ctype.h>
 #include <strings.h>
@@ -66,6 +75,13 @@ static void RestartWithMode(const char* flag)
     args.push_back((char*)flag);
     args.push_back(NULL);
     execv(g_argv[0], args.data());
+    fprintf(stderr, "[Guide] restart failed: %s\n", strerror(errno));
+}
+
+// Starts this program over the way it was started.
+static void Restart()
+{
+    execv(g_argv[0], g_argv);
     fprintf(stderr, "[Guide] restart failed: %s\n", strerror(errno));
 }
 
@@ -139,8 +155,26 @@ int TitleMaker_ImportRetroArch(int* outSkipped);
 extern int Title_SanitizeName(const char*, char*, size_t);
 extern char s_esdePath[512];
 
+// PC stores with an Import row of their own, shown only when the store is here.
+static const struct Store {
+    const char* label;
+    const char* help;
+    bool (*found)();
+    void (*scan)(std::vector<StoreGame>&);
+} kStores[] = {
+    { "Import Epic Games", "Installed games from the Epic launcher and Heroic.", Epic_Found, Epic_Scan },
+    { "Import GOG Games", "Installed games from GOG Galaxy, GOG installers and Heroic.", Gog_Found, Gog_Scan },
+    { "Import Lutris Games", "Installed games from your Lutris library, with its cover art.", Lutris_Found, Lutris_Scan },
+    { "Import itch.io Games", "Games installed with the itch.io app.", Itch_Found, Itch_Scan },
+};
+static const int kStoreCount = (int)(sizeof(kStores) / sizeof(kStores[0]));
+
 static const char* kCategories[] = { "Games", "Applications", "Homebrew", "Emulators", "Dashboards" };
 static const int   kCategoryCount = (int)(sizeof(kCategories) / sizeof(kCategories[0]));
+
+// What an added file runs with. A disc image needs an emulator in front.
+enum Runner { RUN_SELF, RUN_XEMU, RUN_PCSX2, RUN_COUNT };
+static const char* kRunners[RUN_COUNT] = { "Itself", "xemu", "PCSX2" };
 
 // A file browser entry. macOS apps are folders, but you pick them like files.
 struct BrowseEntry { std::string name; bool dir; };
@@ -230,6 +264,9 @@ static const char* SettingHelp(const SettingDef& d)
         { "GuideTheme",          "The guide's colors." },
         { "FetchGameArt",        "Box art for games without an icon. Icons you picked are never replaced." },
         { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
+        { "Rumble",              "A short buzz when the guide can't do what you asked." },
+        { "ButtonStyle",         "The buttons the guide shows. Match the Pad follows the pad you used last." },
+        { "SwapConfirm",         "Nintendo style: the right face button selects and the bottom one goes back." },
     };
     for (size_t i = 0; i < sizeof(kHelp) / sizeof(kHelp[0]); i++)
         if (strcmp(kHelp[i].key, d.key) == 0) return kHelp[i].help;
@@ -240,7 +277,7 @@ static const char* SettingHelp(const SettingDef& d)
     return "Left and right change it.";
 }
 
-static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games" };
+static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games", "Controller" };
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
 
 enum Section { SEC_SETTINGS, SEC_ACCOUNTS, SEC_LIBRARY, SEC_LOGS, SEC_SHORTCUTS, SEC_ABOUT, SEC_TOOLS, SEC_EXIT,
@@ -250,10 +287,11 @@ static const char* kSections[SEC_COUNT] = {
 };
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
-            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS };
+            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS, GV_APPS,
+            GV_COLLECTIONS, GV_GAMECOLL, GV_BACKUPS, GV_RESTORE };
 
 // What a game list shows.
-enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH };
+enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH, GL_COLLECTION };
 
 static const View kSectionViews[SEC_COUNT] = {
     GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_LOGS, GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT,
@@ -268,15 +306,23 @@ enum Act {
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
+    GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT, GA_STORE,
+    GA_COLLECTION, GA_GAMECOLL, GA_INCOLL, GA_NEWCOLL,
+    GA_BACKUP, GA_BACKUPS, GA_PICKBACKUP, GA_RESTORE, GA_OPENBACKUPS,
     GA_COUNT
 };
 
 enum Window { WIN_TITLEMAKER, WIN_HDD, WIN_PLAYLISTS, WIN_SETTINGS, WIN_INSPECTOR, WIN_XAPEDITOR };
 
+// Actions are the only rows the cursor stops on. Info rows are label and
+// value lines, captions head a block, text rows are wrapped paragraphs.
+enum RowKind { RK_ACTION, RK_INFO, RK_CAPTION, RK_TEXT };
+
 struct Row {
     std::string label, value, help;
     int act;
     int arg;   // view to open, setting index, window...
+    int kind;
 };
 
 // What the pointer can land on.
@@ -311,7 +357,7 @@ static const float kWideKeys[KEY_COUNT - KEY_CHARS][2] = {
     { 0, 1.5f }, { 1.5f, 1.5f }, { 3, 3 }, { 6, 1.5f }, { 7.5f, 1.25f }, { 8.75f, 1.25f },
 };
 
-enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH };
+enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH, ED_GAMEOPT, ED_COLLECTION };
 
 struct Editor {
     bool on, secret, shift, symbols;
@@ -337,13 +383,22 @@ static struct Guide {
 
     int copied;
     std::string result[GA_COUNT];
+    std::string storeResult[kStoreCount];
     std::string browseDir, pickedPath, pickedName, added;
+    std::string found[4];   // what each Find row turned up
+    std::vector<XdgApp> apps;   // the Linux app menu, read when its list opens
     std::vector<BrowseEntry> entries;
     bool browseStale;
-    int category, playlist;
+    int category, playlist, runner;
     int gameList, game;
     char letter;           // GL_LETTER's initial, '#' for digits and the rest
     std::string search;    // GL_SEARCH's text
+    std::string collection;              // GL_COLLECTION's name
+    std::string filter;    // the game list's filter, empty for all
+    int sort;              // All Games' order, a SORT_
+    std::vector<std::string> backups;   // GV_BACKUPS' rows, newest first
+    std::string backup;                 // the one GV_RESTORE offers
+    std::vector<std::string> collNames;  // the game page's Collections rows, kept while it's open
     unsigned gameLayout;   // g_vgames.layout when game was picked
 
     std::vector<HitTarget> targets;
@@ -356,7 +411,41 @@ static void Add(const char* label, const char* value, const char* help, int act 
     Row r;
     r.label = label; r.value = value ? value : ""; r.help = help ? help : "";
     r.act = act; r.arg = arg;
+    r.kind = act == GA_NONE ? RK_INFO : RK_ACTION;
     g.rows.push_back(r);
+}
+
+static void Caption(const char* text)
+{
+    Add(text, NULL, NULL);
+    g.rows.back().kind = RK_CAPTION;
+}
+
+static void Para(const char* text)
+{
+    Add(text, NULL, NULL);
+    g.rows.back().kind = RK_TEXT;
+}
+
+static bool Focusable(int i)
+{
+    return i >= 0 && i < (int)g.rows.size() && g.rows[i].kind == RK_ACTION;
+}
+
+static bool AnyFocusable()
+{
+    for (size_t i = 0; i < g.rows.size(); i++)
+        if (g.rows[i].kind == RK_ACTION) return true;
+    return false;
+}
+
+// The cursor lands on the nearest action, looking the given way first.
+static void SnapCursor(int dir)
+{
+    int n = (int)g.rows.size();
+    if (Focusable(g.cursor)) return;
+    for (int i = g.cursor; i >= 0 && i < n; i += dir) if (Focusable(i)) { g.cursor = i; return; }
+    for (int i = g.cursor; i >= 0 && i < n; i -= dir) if (Focusable(i)) { g.cursor = i; return; }
 }
 
 // What a name files under: A to Z, everything else is '#'.
@@ -378,12 +467,134 @@ static bool NameHas(const char* name, const std::string& part)
     return false;
 }
 
-// The rows of one game list, as DB indices.
+// Where a game comes from, for the game list filter.
+static std::string GameSource(const VirtualGame& vg)
+{
+    if (vg.transient) {
+        // ES-DE rows sit in a folder per system.
+        const char* slash = strchr(vg.group, '/');
+        std::string sys = slash ? std::string(vg.group, slash - vg.group) : std::string(vg.group);
+        return sys.empty() ? "ES-DE" : "ES-DE: " + sys;
+    }
+    if (strncmp(vg.launch, "xcloud://", 9) == 0) return "xCloud";
+    if (strncmp(vg.launch, "xhome://", 8) == 0)  return "Remote Play";
+    // Heroic launches Epic and GOG games; Lutris runs through its own command.
+    if (strncasecmp(vg.launch, "heroic://launch/legendary/", 26) == 0) return "Epic";
+    if (strncasecmp(vg.launch, "heroic://launch/gog/", 20) == 0)       return "GOG";
+    if (strstr(vg.launch, "lutris:rungameid/"))                        return "Lutris";
+    static const struct { const char* scheme; const char* name; } kStores[] = {
+        { "steam://", "Steam" }, { "com.epicgames.launcher://", "Epic" }, { "heroic://", "Heroic" },
+        { "goggalaxy://", "GOG" }, { "itch://", "itch.io" }, { "uplay://", "Ubisoft" }, { "origin2://", "EA" },
+        { "link2ea://", "EA" }, { "battlenet://", "Battle.net" }, { "amazon-games://", "Amazon" },
+        { "lutris:", "Lutris" }, { "retroarch://", "RetroArch" },
+    };
+    for (size_t i = 0; i < sizeof(kStores) / sizeof(kStores[0]); i++)
+        if (strncasecmp(vg.launch, kStores[i].scheme, strlen(kStores[i].scheme)) == 0) return kStores[i].name;
+    // The program's own name, quoted or not, minus its folder.
+    const char* p = vg.launch;
+    while (*p == ' ') p++;
+    std::string exe;
+    if (*p == '"') { const char* q = strchr(p + 1, '"'); exe = q ? std::string(p + 1, q - p - 1) : std::string(p + 1); }
+    else           { const char* q = strchr(p, ' ');      exe = q ? std::string(p, q - p) : std::string(p); }
+    size_t slash = exe.find_last_of("/\\");
+    if (slash != std::string::npos) exe = exe.substr(slash + 1);
+    if (strncasecmp(exe.c_str(), "xemu", 4) == 0 || strstr(vg.launch, "-dvd_path")) return "xemu";
+    if (strncasecmp(exe.c_str(), "pcsx2", 5) == 0) return "PCSX2";
+    if (strncasecmp(exe.c_str(), "retroarch", 9) == 0) return "RetroArch";
+    if (strstr(vg.launch, "://")) return "Other Launchers";
+    return "Programs";
+}
+
+// All Games' orders. Y steps through them.
+enum { SORT_NAME, SORT_TIME, SORT_LAST, SORT_COUNT };
+static const char* const kSorts[SORT_COUNT] = { "A to Z", "Time Played", "Last Played" };
+
+// The two filters that aren't a source.
+static const char kMostPlayed[] = "Most Played", kNeverPlayed[] = "Never Played";
+
+static bool PassesFilter(const VirtualGame& vg)
+{
+    if (g.filter.empty()) return true;
+    if (g.filter == kMostPlayed) return vg.playTime > 0;
+    if (g.filter == kNeverPlayed) return !vg.playTime && !vg.lastPlayed;
+    return GameSource(vg) == g.filter;
+}
+
+static void GameListRows(int list, std::vector<int>& out);
+// The filters worth offering on this list: sources it has, A to Z with
+// Programs last, then the play counts. Empty first, for all.
+static void FilterChoices(int list, std::vector<std::string>& out)
+{
+    std::vector<int> rows;
+    GameListRows(list, rows);
+    out.clear();
+    bool programs = false, played = false, never = false;
+    for (size_t i = 0; i < rows.size(); i++) {
+        const VirtualGame& vg = g_vgames.games[rows[i]];
+        std::string src = GameSource(vg);
+        if (src == "Programs") programs = true;
+        else if (std::find(out.begin(), out.end(), src) == out.end()) out.push_back(src);
+        if (vg.playTime > 0) played = true;
+        if (!vg.playTime && !vg.lastPlayed) never = true;
+    }
+    std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) {
+        return strcasecmp(a.c_str(), b.c_str()) < 0;
+    });
+    if (programs) out.push_back("Programs");
+    if (played) out.push_back(kMostPlayed);
+    if (never) out.push_back(kNeverPlayed);
+    out.insert(out.begin(), std::string());
+}
+
+// X steps through FilterChoices, back around to all.
+static void CycleFilter()
+{
+    std::vector<std::string> choices;
+    FilterChoices(g.gameList, choices);
+    size_t at = std::find(choices.begin(), choices.end(), g.filter) - choices.begin();
+    g.filter = choices[(at + 1) % choices.size()];
+    if (choices.size() < 2 && g.device == 1) Pads_Rumble(0.35f, 90);
+    g.cursor = g.scroll = 0;
+}
+
+// A game list as the list view shows it, filter and all.
+static void FilteredRows(int list, std::vector<int>& out)
+{
+    GameListRows(list, out);
+    // A to Z already; the others keep it for ties.
+    if (list == GL_ALL && g.sort == SORT_TIME)
+        std::stable_sort(out.begin(), out.end(), [](int a, int b) {
+            return g_vgames.games[a].playTime > g_vgames.games[b].playTime;
+        });
+    else if (list == GL_ALL && g.sort == SORT_LAST)
+        std::stable_sort(out.begin(), out.end(), [](int a, int b) {
+            return g_vgames.games[a].lastPlayed > g_vgames.games[b].lastPlayed;
+        });
+    if (g.filter.empty()) return;
+    std::vector<int> kept;
+    for (size_t i = 0; i < out.size(); i++)
+        if (PassesFilter(g_vgames.games[out[i]])) kept.push_back(out[i]);
+    out.swap(kept);
+    if (g.filter == kMostPlayed)
+        std::stable_sort(out.begin(), out.end(), [](int a, int b) {
+            return g_vgames.games[a].playTime > g_vgames.games[b].playTime;
+        });
+}
+
+// Whichever order the list is in now.
+static int ListSort()
+{
+    if (g.view == GV_GAMES && g.gameList == GL_ALL && g.sort) return g.sort;
+    return g.filter == kMostPlayed ? SORT_TIME : SORT_NAME;
+}
+
+// The rows of one game list, as DB indices, before any filter.
 static void GameListRows(int list, std::vector<int>& out)
 {
     out.clear();
     if (list == GL_FAVORITES) { VGames_MarkList(VGAMES_FAVORITES, out); return; }
     if (list == GL_RECENT)    { VGames_MarkList(VGAMES_RECENT, out); return; }
+    if (list == GL_COLLECTION) { VGames_MarkList((VGAMES_COLLECTION_PREFIX + g.collection).c_str(), out); return; }
     VGames_Load();
     for (int i = 0; i < g_vgames.count; i++) {
         const VirtualGame& vg = g_vgames.games[i];
@@ -423,7 +634,40 @@ static VirtualGame* PickedGame()
     return vg->valid ? vg : NULL;
 }
 
-static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "" };
+// Button names in help text, as this pad prints them.
+static const char* Shoulders()
+{
+    switch (Pads_Style()) {
+    case UI_PAD_PLAYSTATION: return "L1 and R1";
+    case UI_PAD_NINTENDO:    return "L and R";
+    default:                 return "LB and RB";
+    }
+}
+
+static const char* GuideCombo()
+{
+    switch (Pads_Style()) {
+    case UI_PAD_PLAYSTATION: return "PS button, L2+Circle or F7";
+    case UI_PAD_NINTENDO:    return "Home button, ZL+A or F7";
+    default:                 return "Guide button, LT+B or F7";
+    }
+}
+
+static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "", "" };
+
+// Emulators the guide can look for, each under its path setting.
+static const struct {
+    const char* key;
+    const char* findLabel;
+    const char* findHelp;
+    bool (*find)(char* out, size_t outSize);
+} kEmus[] = {
+    { "XemuPath", "Find xemu", "Looks in the usual install folders, RetroBat, scoop, Flatpak and AppImages.",
+      Xemu_Find },
+    { "Pcsx2Path", "Find PCSX2", "Looks in the usual install folders, RetroBat, scoop, Flatpak, Lutris and AppImages.",
+      Pcsx2_Find },
+};
+static const int kEmuCount = (int)(sizeof(kEmus) / sizeof(kEmus[0]));
 
 static void Build()
 {
@@ -439,12 +683,24 @@ static void Build()
             Setting_Display(d, val, sizeof(val));
             bool typed = d.kind == SK_PATH || d.kind == SK_STRING;
             Add(d.label, val, SettingHelp(d), typed ? GA_TEXT : GA_SETTING, i);
+            for (int e = 0; e < kEmuCount; e++)
+                if (strcmp(d.key, kEmus[e].key) == 0)
+                    Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
         }
         break;
     }
     case GV_ABOUT:
-        Add("Version",  ShippedVersion(), "The build you're running.");
+        Caption("This build");
+        Add("Version",  ShippedVersion(), NULL);
         Add("Platform", Host_Name(), NULL);
+        {
+            VGames_Load();
+            long long total = 0;
+            for (int i = 0; i < g_vgames.count; i++)
+                if (g_vgames.games[i].valid) total += g_vgames.games[i].playTime;
+            Add("Time Played", PlayTime(total).c_str(), NULL);
+        }
+        Caption("Made by");
         Add("Created by", "Milenko", NULL);
         Add("UIX Lite references", "BigJx, ImOkRuOk", NULL);
         Add("", "Odb718, Rocky5, TeamUIX", NULL);
@@ -452,16 +708,26 @@ static void Build()
         Add("Original dashboard", "Microsoft", NULL);
         Add("Community", "Xbox-Scene", NULL);
         Add("Guide font", "Noto Sans, SIL OFL 1.1", NULL);
-        Add("And everyone who contributed", "", NULL);
+        Para("And everyone who contributed, tested and sent in a bug.");
         break;
     case GV_WELCOME: {
-        const char* intro = g_welcomeDone ? "A or B starts the dashboard."
+        const char* intro = g_welcomeDone
+            ? (Pads_Style() == UI_PAD_PLAYSTATION ? "Cross or Circle starts the dashboard." : "A or B starts the dashboard.")
             : "Nothing here is required. It's all in the guide later too.";
         Add("Start the Dashboard", "", intro, GA_RESUME);
         Add("Development Mode", "", "Edit the scenes live. Restarts UIX Desktop.", GA_DEVMODE);
         if (!g_welcomeDone || g.foldersDone)
             Add("Set Up My Folders", g.foldersDone ? "Done" : "",
                 "Makes Music, Movies, TV Shows and ROMs folders. Fill them when you like.", GA_FOLDERS);
+        // First run: fill the launcher from what's already on this machine.
+        if (!g_welcomeDone) {
+            char roots[4][512];
+            if (Steam_DiscoverInstallRoots(s_steamPath, roots, 4) > 0)
+                Add("Import My Steam Games", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.",
+                    GA_STEAM);
+            for (int e = 0; e < kEmuCount; e++)
+                Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
+        }
         Add("Open My Folders", "", "Shows them in your file manager.", GA_OPENFOLDERS);
         if (const SettingDef* mode = DesktopSettings_Find("StartupMode")) {
             char val[64];
@@ -472,27 +738,76 @@ static void Build()
         break;
     }
     case GV_LIBRARY: {
+        Caption("Find");
         Add("Search by Name", "", "Type part of a name. \"halo\" finds Halo 2.", GA_SEARCH);
         Add("Find a Game", "", "Pick the first letter, then the game.", GA_VIEW, GV_LETTERS);
-        Add("Add a Game", "", "Pick a program or file and it shows up in the launcher.", GA_VIEW, GV_ADDGAME);
-        Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
-        Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
-        Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
+        Caption("Your lists");
         char n[32];
         std::vector<int> list;
         static const char* kListHelp[] = {
             "Games you starred. They get their own spot in the launcher too.",
             "The last games you started, newest first.",
             "Games kept out of the launcher. Pick one to bring it back.",
-            "Everything in the launcher, A to Z. LB and RB jump a letter.",
+            "Everything in the launcher, A to Z.",
         };
         for (int l = GL_FAVORITES; l <= GL_ALL; l++) {
             GameListRows(l, list);
             snprintf(n, sizeof(n), "%d", (int)list.size());
-            Add(kGameListNames[l], n, kListHelp[l], GA_GAMELIST, l);
+            std::string help = kListHelp[l];
+            if (l == GL_ALL) help = help + " " + Shoulders() + " jump a letter.";
+            Add(kGameListNames[l], n, help.c_str(), GA_GAMELIST, l);
         }
+        std::vector<std::string> colls;
+        VGames_Collections(colls, false);
+        snprintf(n, sizeof(n), "%d", (int)colls.size());
+        Add("Collections", n, "Your own lists. Add a game to one from its page.", GA_VIEW, GV_COLLECTIONS);
         snprintf(n, sizeof(n), "%d", Playlist_Count());
         Add("Playlists", n, "Made in the Playlist Maker.", GA_VIEW, GV_PLAYLISTS);
+        Caption("Add games");
+        Add("Add a Game", "", "Pick a program or file and it shows up in the launcher.", GA_VIEW, GV_ADDGAME);
+        Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
+        Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
+        Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
+        for (int s = 0; s < kStoreCount; s++)
+            if (kStores[s].found())
+                Add(kStores[s].label, g.storeResult[s].c_str(), kStores[s].help, GA_STORE, s);
+        if (strcmp(Host_Name(), "Linux") == 0)
+            Add("Import Linux Apps", "", "Games and apps from your app menu, Flatpak and your Desktop.", GA_APPS);
+        break;
+    }
+    case GV_COLLECTIONS: {
+        std::vector<std::string> colls;
+        std::vector<int> list;
+        VGames_Collections(colls, false);
+        for (size_t i = 0; i < colls.size(); i++) {
+            VGames_MarkList((VGAMES_COLLECTION_PREFIX + colls[i]).c_str(), list);
+            char n[16];
+            snprintf(n, sizeof(n), "%d", (int)list.size());
+            Add(colls[i].c_str(), n, "Shows in the launcher too while it has games in it.", GA_COLLECTION, (int)i);
+        }
+        if (g.rows.empty())
+            Para("No collections yet. Open a game and pick Collections to start one.");
+        break;
+    }
+    case GV_GAMECOLL: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) { Para("This game moved. Go back and pick it again."); break; }
+        // A collection emptied here keeps its row until you leave, so it can go back in.
+        std::vector<std::string> colls;
+        VGames_Collections(colls, false);
+        for (size_t i = 0; i < colls.size(); i++) {
+            bool have = false;
+            for (size_t k = 0; k < g.collNames.size() && !have; k++)
+                have = strcasecmp(g.collNames[k].c_str(), colls[i].c_str()) == 0;
+            if (!have) g.collNames.push_back(colls[i]);
+        }
+        std::sort(g.collNames.begin(), g.collNames.end(), [](const std::string& a, const std::string& b) {
+            return strcasecmp(a.c_str(), b.c_str()) < 0;
+        });
+        Add("New Collection", g.result[GA_NEWCOLL].c_str(), "Name it and this game goes in.", GA_NEWCOLL);
+        for (size_t i = 0; i < g.collNames.size(); i++)
+            Add(g.collNames[i].c_str(), VGames_InCollection(*vg, g.collNames[i].c_str()) ? "Yes" : "No",
+                "A puts it in or takes it out.", GA_INCOLL, (int)i);
         break;
     }
     case GV_ADDGAME: {
@@ -503,6 +818,10 @@ static void Build()
             g.pickedPath.empty() ? "Taken from the file name." : "Taken from the file name. Select it to rename it.",
             g.pickedPath.empty() ? GA_NONE : GA_NAME);
         Add("Category", kCategories[g.category], "Left and right change it.", GA_CATEGORY);
+        Add("Runs With", kRunners[g.runner],
+            g.runner == RUN_SELF ? "Programs, shortcuts and scripts run themselves. Left and right change it."
+                                 : "The emulator is found when the game starts. Left and right change it.",
+            GA_RUNNER);
         Add("Add to Launcher", g.added.c_str(),
             g.pickedPath.empty() ? "Choose a file first." : "Adds it under the category above.", GA_ADDGAME);
         break;
@@ -515,14 +834,17 @@ static void Build()
         break;
     case GV_GAMES: {
         std::vector<int> list;
-        GameListRows(g.gameList, list);
+        FilteredRows(g.gameList, list);
         for (size_t i = 0; i < list.size(); i++) {
             const VirtualGame& vg = g_vgames.games[list[i]];
-            std::string value = g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed) : std::string(vg.category);
+            int sort = ListSort();
+            std::string value = sort == SORT_TIME ? PlayTime(vg.playTime)
+                              : sort == SORT_LAST || g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed)
+                              : std::string(vg.category);
             Add(vg.name, value.c_str(), vg.group[0] ? vg.group : vg.category, GA_GAME, list[i]);
         }
         if (g.rows.empty())
-            Add(g.gameList == GL_HIDDEN ? "Nothing hidden" : g.gameList == GL_SEARCH ? "No matches" : "Nothing here yet", "", NULL);
+            Para(g.gameList == GL_HIDDEN ? "Nothing hidden." : g.gameList == GL_SEARCH ? "No matches. Try fewer letters." : "Nothing here yet.");
         break;
     }
     case GV_LETTERS: {
@@ -541,21 +863,53 @@ static void Build()
             snprintf(n, sizeof(n), "%d", counts[k]);
             Add(label, n, k == 26 ? "Names starting with a number or a symbol." : NULL, GA_LETTER, label[0]);
         }
-        if (g.rows.empty()) Add("No games yet", "", "Add some from the Games & Playlists page.");
+        if (g.rows.empty()) Para("No games yet. Add some from the Games & Playlists page.");
         break;
     }
     case GV_GAME: {
         VirtualGame* vg = PickedGame();
-        if (!vg) { Add("This game moved", "", "Go back and pick it again."); break; }
+        if (!vg) { Para("This game moved. Go back and pick it again."); break; }
         Add("Launch", "", vg->launch, GA_LAUNCH);
+        Caption("Played");
+        Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
+        Add("Time Played", PlayTime(vg->playTime).c_str(), NULL);
+        {
+            std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
+            Add("Category", where.c_str(), NULL);
+        }
+        if (!vg->playTime)
+            Para("Time is counted when a game closes. One that another launcher starts for us can't be timed.");
+        Caption("Organize");
         Add("Favorite", vg->favorite ? "Yes" : "No", "Starred games get their own spot in the launcher.", GA_FAVORITE);
         Add("Hidden", vg->hidden ? "Yes" : "No", "Hidden games stay out of the launcher until you bring them back.",
             GA_HIDE);
-        Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
-        Add("Time Played", PlayTime(vg->playTime).c_str(),
-            "Counted when the game closes. Games another launcher starts for us can't be timed.");
-        std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
-        Add("Category", where.c_str(), NULL);
+        {
+            std::string in = vg->collections;
+            for (size_t i = 0; i < in.size(); i++) if (in[i] == ';') in.replace(i, 1, ", ");
+            Add("Collections", in.empty() ? "None" : in.c_str(), "Put it in your own lists, or make a new one.",
+                GA_GAMECOLL);
+        }
+        // Rows from someone else's library aren't saved, so neither would these be.
+        if (!VGames_IsLive(*vg)) {
+            Caption("Launch options");
+            Add("Arguments", vg->args[0] ? vg->args : "None", "Added after the launch line, like -windowed.",
+                GA_GAMEOPT, 0);
+            Add("Working Folder", vg->workdir[0] ? vg->workdir : "Its own",
+                "Where the game starts. Empty starts it in the program's own folder.", GA_GAMEOPT, 1);
+            Add("Environment", vg->env[0] ? vg->env : "None",
+                "NAME=value, more than one split by ;. Like DXVK_HUD=1;MANGOHUD=1", GA_GAMEOPT, 2);
+        }
+        break;
+    }
+    case GV_APPS: {
+        Add("Add All Games", g.result[GA_APPGAMES].c_str(), "Everything marked as a game, with its icon.", GA_APPGAMES);
+        for (size_t i = 0; i < g.apps.size(); i++) {
+            char clean[128];
+            Title_SanitizeName(g.apps[i].name.c_str(), clean, sizeof(clean));
+            const char* state = VGames_FindByName(clean) >= 0 ? "In Library" : g.apps[i].game ? "Game" : "App";
+            Add(g.apps[i].name.c_str(), state, g.apps[i].exec.c_str(), GA_APP, (int)i);
+        }
+        if (g.apps.empty()) Para("Nothing found. There are no .desktop entries in the app menu folders or on the Desktop.");
         break;
     }
     case GV_PLAYLISTS:
@@ -566,7 +920,7 @@ static void Build()
             snprintf(n, sizeof(n), "%d", (int)pl->items.size());
             Add(pl->name.c_str(), n, "Edit playlists in the Playlist Maker (F6).", GA_PLAYLIST, i);
         }
-        if (g.rows.empty()) Add("No playlists yet", "", "Make one in the Playlist Maker (F6).");
+        if (g.rows.empty()) Para("No playlists yet. Make one in the Playlist Maker (F6).");
         break;
     case GV_PLAYLIST: {
         const Playlist* pl = Playlist_Get(g.playlist);
@@ -574,78 +928,110 @@ static void Build()
             for (size_t i = 0; i < pl->items.size(); i++)
                 Add(pl->items[i].title.empty() ? NameOnly(pl->items[i].path).c_str() : pl->items[i].title.c_str(),
                     "", NULL);
-        if (g.rows.empty()) Add("Empty", "", NULL);
+        if (g.rows.empty()) Para("This playlist is empty.");
         break;
     }
     case GV_ACCOUNTS: {
         std::string help;
+        Caption("Plex");
         if (Plex_HasToken()) {
-            Add("Plex", "Signed in", NULL);
-            Add("Sign Out of Plex", "", NULL, GA_PLEXOUT);
+            Add("Account", "Signed in", NULL);
+            Add("Sign Out", "", NULL, GA_PLEXOUT);
         } else if (Plex_PinAuthInFlight()) {
             std::string code = Plex_GetPinCode();
-            Add("Plex", code.empty() ? "Asking..." : code.c_str(),
+            Add("Code", code.empty() ? "Asking..." : code.c_str(),
                 "On any device go to plex.tv/link and enter the code. A cancels.", GA_PLEX);
         } else {
-            Add("Plex", "Sign In", "Gives you a code to enter at plex.tv/link.", GA_PLEX);
+            Add("Sign In", "", "Gives you a code to enter at plex.tv/link.", GA_PLEX);
         }
 
+        Caption("Jellyfin");
         if (Jellyfin_HasToken()) {
-            help = "Signed in as " + Jellyfin_GetUserName() + ".";
-            Add("Jellyfin", "Signed in", help.c_str());
-            Add("Sign Out of Jellyfin", "", NULL, GA_JELLYFINOUT);
+            std::string who = Jellyfin_GetUserName();
+            Add("Signed in as", who.empty() ? "Yes" : who.c_str(), NULL);
+            Add("Server", Jellyfin_GetServerUrl().c_str(), NULL);
+            Add("Sign Out", "", NULL, GA_JELLYFINOUT);
         } else {
             std::string url = Jellyfin_GetServerUrl();
-            Add("Jellyfin Server", url.empty() ? "Not set" : url.c_str(),
+            Add("Server", url.empty() ? "Not set" : url.c_str(),
                 "Your server's address, like 192.168.1.20:8096.", GA_JELLYFINURL);
             if (!url.empty() && Jellyfin_QuickConnectInFlight()) {
                 std::string code = Jellyfin_GetQuickConnectCode();
-                Add("Jellyfin", code.empty() ? "Asking..." : code.c_str(),
+                Add("Code", code.empty() ? "Asking..." : code.c_str(),
                     "In Jellyfin's web page open your account, then Quick Connect, and enter the code.", GA_JELLYFIN);
             } else if (!url.empty()) {
-                Add("Jellyfin", "Sign In", "Quick Connect gives you a code to approve on the server.", GA_JELLYFIN);
+                Add("Sign In", "", "Quick Connect gives you a code to approve on the server.", GA_JELLYFIN);
             }
         }
 
+        Caption("Xbox");
         if (Xcloud_HasToken()) {
             std::string gt = Xcloud_GetGamertag();
-            Add("Xbox", gt.empty() ? "Signed in" : gt.c_str(), NULL);
-            Add("Sign Out of Xbox", "", NULL, GA_XBOXOUT);
+            Add(gt.empty() ? "Account" : "Gamertag", gt.empty() ? "Signed in" : gt.c_str(), NULL);
+            Add("Sign Out", "", NULL, GA_XBOXOUT);
         } else if (Xcloud_LoginInFlight()) {
             std::string code = Xcloud_GetUserCode();
             help = "Go to " + Xcloud_GetVerificationUri() + " and enter the code. A cancels.";
-            Add("Xbox", code.empty() ? "Asking..." : code.c_str(), help.c_str(), GA_XBOX);
+            Add("Code", code.empty() ? "Asking..." : code.c_str(), help.c_str(), GA_XBOX);
         } else {
-            Add("Xbox", "Sign In", "For cloud gaming and your consoles.", GA_XBOX);
+            Add("Sign In", "", "For cloud gaming and your consoles.", GA_XBOX);
         }
         break;
     }
     case GV_LOGS:
+        Para("Something not right? Copy the version and the log, then paste both into an issue on "
+             "GitHub. The copy hides your home folder, IP addresses and sign-ins.");
+        Caption("Logs");
         Add("Copy Version Info", g.copied == GA_COPYVERSION ? "Copied" : "",
             "Version, platform and renderer, ready to paste.", GA_COPYVERSION);
         Add("Copy Log", g.copied == GA_COPYLOG ? "Copied" : "",
             "This run's log. Your home folder shows as ~ and IP addresses are hidden.", GA_COPYLOG);
         Add("Open Logs Folder", "", "theseus.log is this run, theseus.prev.log the one before.", GA_OPENLOGS);
-        Add("Report a Problem", "", "Paste the version and the log into an issue on GitHub.");
+        Caption("Backups");
+        Add("Back Up My Settings", g.result[GA_BACKUP].c_str(),
+            "Copies your games, settings, icons and playlists into Backups in your user data folder.", GA_BACKUP);
+        Backup_List(Plat_UserDataDir(), g.backups);
+        {
+            char n[16];
+            snprintf(n, sizeof(n), "%d", (int)g.backups.size());
+            Add("Restore a Backup", n, "Puts an earlier backup back. What you have now is backed up first.",
+                GA_BACKUPS);
+        }
+        break;
+    case GV_BACKUPS:
+        for (size_t i = 0; i < g.backups.size(); i++)
+            Add(g.backups[i].c_str(), "", "Pick it to see what restoring does.", GA_PICKBACKUP, (int)i);
+        if (g.rows.empty()) Para("No backups yet. Back Up My Settings makes one.");
+        break;
+    case GV_RESTORE:
+        Add("Restore This Backup", g.result[GA_RESTORE].c_str(),
+            "What you have now is backed up first, then UIX Desktop restarts with this one.", GA_RESTORE);
+        Add("Open Backups Folder", "", "Each backup is a plain folder you can look through.", GA_OPENBACKUPS);
         break;
     case GV_SHORTCUTS:
-        Add("Guide button, LT+B or F7", "Guide", "Opens and closes this guide.");
+        Caption("Anywhere");
+        Add(GuideCombo(), "Guide", NULL);
+        Caption("Tool windows");
         Add("F3",  "Title Maker", NULL);
         Add("F4",  "Settings Window", NULL);
         Add("F5",  "HDD Browser", NULL);
         Add("F6",  "Playlist Maker", NULL);
+        Caption("Window");
         Add("F11", "Fullscreen", NULL);
         Add("F12", "Borderless Window", NULL);
+        Caption("App");
         Add("Ctrl+M", "Mute", NULL);
         Add("Ctrl+R", "Restart Dashboard", NULL);
         Add("Ctrl+Q", "Quit", NULL);
         if (g_startupMode == 2 || g_extractedMode) {
-            Add("F1",  "Inspector", "Development mode.");
-            Add("F2",  "XAP Editor", "Development mode.");
-            Add("F10", "Hide Menu Bar", "Development mode.");
+            Caption("Development mode");
+            Add("F1",  "Inspector", NULL);
+            Add("F2",  "XAP Editor", NULL);
+            Add("F10", "Hide Menu Bar", NULL);
         }
         break;
     case GV_TOOLS:
+        Caption("Tool windows");
         Add("Title Maker", "F3", "Names, icons and categories for the launcher.", GA_WINDOW, WIN_TITLEMAKER);
         Add("Settings Window", "F4", "Every setting, in a desktop window.", GA_WINDOW, WIN_SETTINGS);
         Add("HDD Browser", "F5", "Look through the dashboard's drives.", GA_WINDOW, WIN_HDD);
@@ -653,6 +1039,7 @@ static void Build()
         if (g_padModeEnabled)
             Add("Use the Tools with the Pad", "", "The tool windows' own controller menu.", GA_PADTOOLS);
         if (g_startupMode == 2 || g_extractedMode) {
+            Caption("Development mode");
             Add("Inspector", "F1", "Development mode.", GA_WINDOW, WIN_INSPECTOR);
             Add("XAP Editor", "F2", "Development mode.", GA_WINDOW, WIN_XAPEDITOR);
         }
@@ -664,6 +1051,7 @@ static void Build()
     }
     if (g.cursor >= (int)g.rows.size()) g.cursor = g.rows.empty() ? 0 : (int)g.rows.size() - 1;
     if (g.cursor < 0) g.cursor = 0;
+    SnapCursor(1);
 }
 
 static const char* ViewTitle()
@@ -673,12 +1061,22 @@ static const char* ViewTitle()
     case GV_BROWSE:    return "Choose a File";
     case GV_PLAYLISTS: return "Playlists";
     case GV_LETTERS:   return "Find a Game";
+    case GV_APPS:      return "Linux Apps";
+    case GV_COLLECTIONS: return "Collections";
+    case GV_BACKUPS:   return "Restore a Backup";
+    case GV_RESTORE:   return g.backup.c_str();
+    case GV_GAMECOLL:  return "Collections";
     case GV_GAMES: {
-        static char title[32];
+        static char title[32], full[96];
         if (g.gameList == GL_SEARCH) snprintf(title, sizeof(title), "Search: %.20s", g.search.c_str());
         else if (g.gameList == GL_LETTER) snprintf(title, sizeof(title), "Games: %c", g.letter);
-        else return kGameListNames[g.gameList];
-        return title;
+        else if (g.gameList == GL_COLLECTION) snprintf(title, sizeof(title), "%.30s", g.collection.c_str());
+        else snprintf(title, sizeof(title), "%s", kGameListNames[g.gameList]);
+        snprintf(full, sizeof(full), "%s", title);
+        if (!g.filter.empty()) snprintf(full + strlen(full), sizeof(full) - strlen(full), " (%.40s)", g.filter.c_str());
+        if (g.gameList == GL_ALL && g.sort)
+            snprintf(full + strlen(full), sizeof(full) - strlen(full), " by %s", kSorts[g.sort]);
+        return full;
     }
     case GV_GAME: {
         VirtualGame* vg = PickedGame();
@@ -861,11 +1259,37 @@ static void EditDone()
     case ED_SEARCH:
         g.search = Tidy(e.text, false);
         break;
+    case ED_COLLECTION: {
+        std::string name = VGames_CleanCollectionName(Tidy(e.text, false).c_str());
+        VirtualGame* vg = PickedGame();
+        if (name.empty() || !vg) break;
+        // Typing an existing name just joins it, spelled the way it already is.
+        std::vector<std::string> colls;
+        VGames_Collections(colls, false);
+        for (size_t i = 0; i < colls.size(); i++)
+            if (strcasecmp(colls[i].c_str(), name.c_str()) == 0) name = colls[i];
+        if (VGames_SetInCollection(g.game, name.c_str(), true)) {
+            g.collNames.push_back(name);
+            g.result[GA_NEWCOLL] = "Added to " + name;
+        } else {
+            g.result[GA_NEWCOLL] = "In too many already";
+        }
+        break;
+    }
+    case ED_GAMEOPT: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        char* field = e.arg == 0 ? vg->args : e.arg == 1 ? vg->workdir : vg->env;
+        snprintf(field, sizeof(vg->args), "%s", Tidy(e.text, e.arg == 1).c_str());
+        VGames_Save();
+        break;
+    }
     }
     bool search = e.what == ED_SEARCH && !g.search.empty();
     EditClose();
     if (search) {
         g.gameList = GL_SEARCH;
+        g.filter.clear();
         Push(GV_GAMES);
     }
 }
@@ -1004,30 +1428,66 @@ static bool Adjust(int dir)
         Build();
         return true;
     }
+    if (r.act == GA_RUNNER) {
+        g.runner = (g.runner + (dir < 0 ? RUN_COUNT - 1 : 1)) % RUN_COUNT;
+        Build();
+        return true;
+    }
     if (r.act != GA_SETTING) return false;
     const SettingDef& d = DesktopSettings_Table().defs[r.arg];
     if (!Setting_Cycle(d, dir < 0 ? -1 : 1)) return false;
     if (d.apply) d.apply();
     SaveDesktopSettings();
     Build();
+    // The button still held can mean something else now (SwapConfirm).
+    g.settle = true;
     return true;
+}
+
+// The pad buzzes when A can't do anything; the keyboard just doesn't.
+static void Refuse()
+{
+    if (g.device == 1) Pads_Rumble(0.35f, 90);
 }
 
 static void Select()
 {
-    if (g.cursor < 0 || g.cursor >= (int)g.rows.size()) return;
+    if (!Focusable(g.cursor)) return;
     const Row r = g.rows[g.cursor];
     switch (r.act) {
+    case GA_NONE:
+        Refuse();
+        break;
     case GA_VIEW:
         Push((View)r.arg);
         break;
     case GA_SETTING:
     case GA_CATEGORY:
+    case GA_RUNNER:
         Adjust(1);
         break;
     case GA_TEXT: {
         const SettingDef& d = DesktopSettings_Table().defs[r.arg];
         EditOpen(ED_SETTING, r.arg, d.label, (const char*)d.ptr, (size_t)d.size - 1, (d.flags & SF_SECRET) != 0);
+        break;
+    }
+    case GA_FINDEMU: {
+        char path[512];
+        const SettingDef* d = DesktopSettings_Find(kEmus[r.arg].key);
+        if (d && kEmus[r.arg].find(path, sizeof(path)) && Setting_SetText(*d, path)) {
+            SaveDesktopSettings();
+            g.found[r.arg] = "Found";
+        } else {
+            g.found[r.arg] = "Not found";
+        }
+        Build();
+        break;
+    }
+    case GA_GAMEOPT: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        const char* text = r.arg == 0 ? vg->args : r.arg == 1 ? vg->workdir : vg->env;
+        EditOpen(ED_GAMEOPT, r.arg, r.label.c_str(), text, sizeof(vg->args) - 1, false);
         break;
     }
     case GA_NAME:
@@ -1038,6 +1498,9 @@ static void Select()
         break;
     case GA_SEARCH:
         EditOpen(ED_SEARCH, 0, "Search by Name", g.search, 60, false);
+        break;
+    case GA_NEWCOLL:
+        EditOpen(ED_COLLECTION, 0, "New Collection", "", VGAMES_COLLECTION_NAME_MAX, false);
         break;
     case GA_PADTOOLS:
         Close();
@@ -1068,15 +1531,28 @@ static void Select()
         int skipped = 0;
         int added = r.act == GA_STEAM ? TitleMaker_ImportSteam(&skipped) : TitleMaker_ImportRetroArch(&skipped);
         char msg[64];
-        if (added < 0) snprintf(msg, sizeof(msg), "Not found");
+        if (added < 0) { snprintf(msg, sizeof(msg), "Not found"); Refuse(); }
         else snprintf(msg, sizeof(msg), "%d new, %d already in", added, skipped);
         g.result[r.act] = msg;
+        Build();
+        break;
+    }
+    case GA_STORE: {
+        if (r.arg < 0 || r.arg >= kStoreCount) break;
+        std::vector<StoreGame> list;
+        kStores[r.arg].scan(list);
+        int added = 0, had = 0;
+        StoreGames_Add(list, &added, &had);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%d new, %d already in", added, had);
+        g.storeResult[r.arg] = msg;
         Build();
         break;
     }
     case GA_ESDE:
         if (!s_esdePath[0]) {
             g.result[GA_ESDE] = "Set its folder first";
+            Refuse();
         } else {
             EsdeVGames_Sync(s_esdePath);
             g.result[GA_ESDE] = "Refreshed";
@@ -1112,17 +1588,97 @@ static void Select()
         }
         g.pickedPath = full;
         g.pickedName = NameFromPath(full);
+        g.runner = RUN_SELF;
+        XdgApp entry;
+        if (e.name.size() > 8 && strcasecmp(e.name.c_str() + e.name.size() - 8, ".desktop") == 0 &&
+            XdgApps_Parse(full.c_str(), &entry)) {
+            char clean[128];
+            Title_SanitizeName(entry.name.c_str(), clean, sizeof(clean));
+            if (clean[0]) g.pickedName = clean;
+        }
+        if (Pcsx2_IsDisc(full.c_str())) {
+            // An Xbox disc names itself; anything else is a PS2 guess.
+            XisoTitleInfo xiso = XisoGetTitleInfo(full.c_str());
+            g.runner = xiso.valid ? RUN_XEMU : RUN_PCSX2;
+            char clean[128] = "";
+            if (xiso.valid) Title_SanitizeName(xiso.titleName, clean, sizeof(clean));
+            if (clean[0]) g.pickedName = clean;
+            XisoFreeTitleInfo(&xiso);
+        }
         g.added.clear();
         Back();
         break;
     }
+    case GA_APPS: {
+        std::vector<std::string> dirs;
+        XdgApps_Dirs(dirs);
+        XdgApps_Scan(dirs, g.apps);
+        g.result[GA_APPGAMES].clear();
+        Push(GV_APPS);
+        break;
+    }
+    case GA_APP:
+    case GA_APPGAMES: {
+        int added = 0, had = 0;
+        for (size_t i = 0; i < g.apps.size(); i++) {
+            const XdgApp& app = g.apps[i];
+            if (r.act == GA_APP ? (int)i != r.arg : !app.game) continue;
+            if (XdgApps_Add(app, app.game ? "Games" : "Applications")) added++; else had++;
+        }
+        if (added) { VGames_Save(); UDataSynth_RebuildAll(); }
+        if (r.act == GA_APPGAMES) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "%d new, %d already in", added, had);
+            g.result[GA_APPGAMES] = msg;
+        }
+        Build();
+        break;
+    }
     case GA_ADDGAME: {
-        if (g.pickedPath.empty() || g.pickedName.empty()) break;
-        if (VGames_FindByName(g.pickedName.c_str()) >= 0) { g.added = "Already there"; Build(); break; }
+        if (g.pickedPath.empty() || g.pickedName.empty()) { Refuse(); break; }
+        if (VGames_FindByName(g.pickedName.c_str()) >= 0) { g.added = "Already there"; Refuse(); Build(); break; }
+        // A .desktop shortcut runs its Exec line, not the file.
+        XdgApp entry;
+        if (g.runner == RUN_SELF && XdgApps_Parse(g.pickedPath.c_str(), &entry) &&
+            g.pickedPath.size() > 8 && strcasecmp(g.pickedPath.c_str() + g.pickedPath.size() - 8, ".desktop") == 0) {
+            entry.name = g.pickedName;
+            g.added = XdgApps_Add(entry, kCategories[g.category]) ? "Added" : "Already there";
+            if (g.added == "Added") {
+                VGames_Save();
+                UDataSynth_RebuildAll();
+                g.pickedPath.clear();
+                g.pickedName.clear();
+            }
+            Build();
+            break;
+        }
         char genID[16];
         snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL));
-        std::string launch = "\"" + g.pickedPath + "\"";
-        VGames_Add(g.pickedName.c_str(), genID, launch.c_str(), "E", kCategories[g.category]);
+        char launch[sizeof(VirtualGame::launch)];
+        bool fits = true;
+        XisoTitleInfo xiso = {};
+        if (g.runner == RUN_XEMU) {
+            fits = Xemu_IsoLaunch(g.pickedPath.c_str(), launch, sizeof(launch));
+            xiso = XisoGetTitleInfo(g.pickedPath.c_str());
+            if (xiso.valid) snprintf(genID, sizeof(genID), "%08x", xiso.titleId);
+        } else if (g.runner == RUN_PCSX2) {
+            fits = Pcsx2_DiscLaunch(g.pickedPath.c_str(), launch, sizeof(launch));
+        } else {
+            int n = snprintf(launch, sizeof(launch), "\"%s\"", g.pickedPath.c_str());
+            fits = n > 0 && n < (int)sizeof(launch);
+        }
+        if (!fits) { XisoFreeTitleInfo(&xiso); g.added = "Path too long"; Build(); break; }
+        VGames_Add(g.pickedName.c_str(), genID, launch, "E", kCategories[g.category]);
+        char icon[1024];
+        snprintf(icon, sizeof(icon), "%s/%s.jpg", VGAMES_ICONS, genID);
+        if (xiso.titleImageRGBA) {
+            Host_MakeDir(VGAMES_ICONS);
+            XisoSaveTitleImage(&xiso, icon);
+        } else if (g.runner == RUN_SELF && ExeIcon_IsIconSource(g.pickedPath.c_str())) {
+            Host_MakeDir(VGAMES_ICONS);
+            ExeIcon_Save(g.pickedPath.c_str(), icon);
+        }
+        XisoFreeTitleInfo(&xiso);
         VGames_Save();
         UDataSynth_RebuildAll();
         g.added = "Added";
@@ -1153,11 +1709,39 @@ static void Select()
         break;
     case GA_GAMELIST:
         g.gameList = r.arg;
+        g.filter.clear();
         Push(GV_GAMES);
         break;
+    case GA_COLLECTION: {
+        std::vector<std::string> colls;
+        VGames_Collections(colls, false);
+        if (r.arg < 0 || r.arg >= (int)colls.size()) { Refuse(); break; }
+        g.collection = colls[r.arg];
+        g.gameList = GL_COLLECTION;
+        g.filter.clear();
+        Push(GV_GAMES);
+        break;
+    }
+    case GA_GAMECOLL:
+        g.collNames.clear();
+        g.result[GA_NEWCOLL].clear();
+        Push(GV_GAMECOLL);
+        break;
+    case GA_INCOLL: {
+        VirtualGame* vg = PickedGame();
+        if (!vg || r.arg < 0 || r.arg >= (int)g.collNames.size()) { Refuse(); break; }
+        const char* name = g.collNames[r.arg].c_str();
+        if (!VGames_SetInCollection(g.game, name, !VGames_InCollection(*vg, name))) {
+            g.result[GA_NEWCOLL] = "In too many already";
+            Refuse();
+        }
+        Build();
+        break;
+    }
     case GA_LETTER:
         g.gameList = GL_LETTER;
         g.letter = (char)r.arg;
+        g.filter.clear();
         Push(GV_GAMES);
         break;
     case GA_GAME:
@@ -1168,7 +1752,7 @@ static void Select()
     case GA_FAVORITE:
     case GA_HIDE: {
         VirtualGame* vg = PickedGame();
-        if (!vg) break;
+        if (!vg) { Refuse(); break; }
         if (r.act == GA_FAVORITE) VGames_SetFavorite(g.game, !vg->favorite);
         else                      VGames_SetHidden(g.game, !vg->hidden);
         Build();
@@ -1176,7 +1760,7 @@ static void Select()
     }
     case GA_LAUNCH: {
         VirtualGame* vg = PickedGame();
-        if (!vg) break;
+        if (!vg) { Refuse(); break; }
         // The same Xbox-style path the launcher hands over.
         char devicePath[512];
         snprintf(devicePath, sizeof(devicePath), "\\Device\\Harddisk0\\Partition1\\%s\\%s",
@@ -1189,12 +1773,49 @@ static void Select()
     case GA_OPENLOGS:
         Host_OpenFolder(Plat_UserDataDir());
         break;
+    case GA_BACKUP: {
+        int files = 0;
+        std::string name = Backup_Make(Plat_UserDataDir(), NULL, &files);
+        char msg[64];
+        if (name.empty()) { snprintf(msg, sizeof(msg), "Couldn't save"); Refuse(); }
+        else snprintf(msg, sizeof(msg), "Saved %d files", files);
+        g.result[GA_BACKUP] = msg;
+        Build();
+        break;
+    }
+    case GA_BACKUPS:
+        Push(GV_BACKUPS);
+        break;
+    case GA_PICKBACKUP:
+        if (r.arg < 0 || r.arg >= (int)g.backups.size()) { Refuse(); break; }
+        g.backup = g.backups[r.arg];
+        g.result[GA_RESTORE].clear();
+        Push(GV_RESTORE);
+        break;
+    case GA_RESTORE: {
+        std::string saved;
+        if (!Backup_Restore(Plat_UserDataDir(), g.backup, &saved)) {
+            g.result[GA_RESTORE] = saved.empty() ? "Couldn't back up first" : "Didn't finish";
+            Refuse();
+            Build();
+            break;
+        }
+        fprintf(stderr, "[Guide] restored backup %s, the one before is %s\n", g.backup.c_str(), saved.c_str());
+        // Straight over, before anything in memory gets saved on top of it.
+        Restart();
+        break;
+    }
+    case GA_OPENBACKUPS: {
+        std::string dir = std::string(Plat_UserDataDir()) + "/" BACKUP_DIR;
+        Host_OpenFolder(dir.c_str());
+        break;
+    }
     case GA_COPYVERSION:
-        if (SDL_SetClipboardText(VersionLine().c_str()) == 0) g.copied = GA_COPYVERSION;
+        if (SDL_SetClipboardText(VersionLine().c_str()) == 0) g.copied = GA_COPYVERSION; else Refuse();
         Build();
         break;
     case GA_COPYLOG:
-        if (CopyLog()) g.copied = GA_COPYLOG;
+        if (CopyLog()) g.copied = GA_COPYLOG; else Refuse();
         Build();
         break;
     case GA_QUIT: {
@@ -1210,9 +1831,19 @@ static void MoveCursor(int step)
 {
     int n = (int)g.rows.size();
     if (n == 0) return;
-    g.cursor += step;
-    if (g.cursor < 0) g.cursor = 0;
-    if (g.cursor >= n) g.cursor = n - 1;
+    if (!AnyFocusable()) {
+        // Nothing to pick: up and down just read further. DrawRows clamps.
+        g.scroll += step < 0 ? -1 : 1;
+        if (g.scroll < 0) g.scroll = 0;
+        return;
+    }
+    int dir = step < 0 ? -1 : 1;
+    for (int left = step < 0 ? -step : step; left > 0; left--) {
+        int i = g.cursor + dir;
+        while (i >= 0 && i < n && !Focusable(i)) i += dir;
+        if (i < 0 || i >= n) break;
+        g.cursor = i;
+    }
 }
 
 // In a long game list LB and RB jump to the previous or next letter.
@@ -1237,7 +1868,7 @@ static void LetterStep(int step)
 
 static void PageStep(int step)
 {
-    if (g.view == GV_GAMES && g.gameList == GL_ALL) { LetterStep(step); return; }
+    if (g.view == GV_GAMES && g.gameList == GL_ALL && ListSort() == SORT_NAME) { LetterStep(step); return; }
     if (g.view != GV_PAGE) return;
     g.page = (g.page + step + kPageCount) % kPageCount;
     g.cursor = g.scroll = 0;
@@ -1268,6 +1899,12 @@ static void Handle(unsigned pressed)
     }
     if (pressed & GUIDE_UP)   MoveCursor(-1);
     if (pressed & GUIDE_DOWN) MoveCursor(1);
+    if ((pressed & GUIDE_X) && g.view == GV_GAMES) { CycleFilter(); Build(); }
+    if ((pressed & GUIDE_Y) && g.view == GV_GAMES && g.gameList == GL_ALL) {
+        g.sort = (g.sort + 1) % SORT_COUNT;
+        g.cursor = g.scroll = 0;
+        Build();
+    }
     // Left on a row that doesn't change goes back to the sections.
     if ((pressed & GUIDE_LEFT) && !Adjust(-1) && !g.welcome && g.stack.empty()) g.inPanel = false;
     if (pressed & GUIDE_RIGHT) Adjust(1);
@@ -1503,21 +2140,112 @@ static void DrawSections()
     }
 }
 
+// Words that fit width, in as many lines as it takes.
+static void Wrap(int font, float size, const std::string& text, float width, std::vector<std::string>& out)
+{
+    out.clear();
+    std::string line;
+    size_t i = 0;
+    while (i <= text.size()) {
+        size_t j = text.find(' ', i);
+        if (j == std::string::npos) j = text.size();
+        std::string word = text.substr(i, j - i);
+        std::string tryLine = line.empty() ? word : line + " " + word;
+        if (!line.empty() && ui_overlay_text_width(font, size, tryLine.c_str()) > width) {
+            out.push_back(line);
+            line = word;
+        } else {
+            line = tryLine;
+        }
+        i = j + 1;
+    }
+    if (!line.empty()) out.push_back(line);
+}
+
+static const float TEXT_SIZE = 10.5f, TEXT_LINE = 15.0f, CAPTION_H = 24.0f;
+
+static float RowHeight(const Row& r, float width)
+{
+    if (r.kind == RK_CAPTION) return CAPTION_H;
+    if (r.kind == RK_TEXT) {
+        std::vector<std::string> lines;
+        Wrap(UI_FONT_REGULAR, TEXT_SIZE, r.label, width - 8, lines);
+        return (float)lines.size() * TEXT_LINE + 10.0f;
+    }
+    return ROW_H + ROW_GAP;
+}
+
 static void DrawRows(float left, float right, float top)
 {
     float width = right - left;
-    int shown = (int)((BODY_B - top + ROW_GAP) / (ROW_H + ROW_GAP));
-    if (shown < 1) shown = 1;
+    float room = BODY_B - top + ROW_GAP;
     int n = (int)g.rows.size();
-    if (g.cursor < g.scroll) g.scroll = g.cursor;
-    if (g.cursor >= g.scroll + shown) g.scroll = g.cursor - shown + 1;
-    if (g.scroll > n - shown) g.scroll = n - shown;
+    std::vector<float> h(n);
+    for (int i = 0; i < n; i++) h[i] = RowHeight(g.rows[i], width);
+
+    // The last start that still fills the box, so the end never floats up.
+    int maxStart = n;
+    for (float used = 0; maxStart > 0 && used + h[maxStart - 1] <= room; ) used += h[--maxStart];
+    if (AnyFocusable()) {
+        if (g.cursor < g.scroll) g.scroll = g.cursor;
+        // Keep a block's caption and text with its first action.
+        while (g.scroll > 0 && g.scroll == g.cursor && g.rows[g.scroll - 1].kind != RK_ACTION &&
+               g.rows[g.scroll - 1].kind != RK_INFO)
+            g.scroll--;
+        for (;;) {
+            float used = 0;
+            for (int i = g.scroll; i <= g.cursor && i < n; i++) used += h[i];
+            if (used <= room || g.scroll >= g.cursor) break;
+            g.scroll++;
+        }
+    }
+    if (g.scroll > maxStart) g.scroll = maxStart;
     if (g.scroll < 0) g.scroll = 0;
 
     float y = top;
-    for (int i = g.scroll; i < n && i < g.scroll + shown; i++) {
+    int i = g.scroll;
+    for (; i < n && y + h[i] <= top + room + 0.5f; i++) {
         const Row& r = g.rows[i];
         bool on = g.inPanel && i == g.cursor;
+        if (r.kind == RK_CAPTION) {
+            // A caption without its first row below it would just dangle.
+            if (i + 1 < n && y + h[i] + h[i + 1] > top + room + 0.5f) break;
+            std::string cap = r.label;
+            for (size_t c = 0; c < cap.size(); c++) cap[c] = (char)toupper((unsigned char)cap[c]);
+            ui_overlay_text(UI_FONT_BOLD, 8.5f, left + 4, y + (i == g.scroll ? 5.0f : 11.0f), UI_ALIGN_LEFT,
+                            ui_style_color(UI_COLOR_LABEL), cap.c_str());
+            y += h[i];
+            continue;
+        }
+        if (r.kind == RK_TEXT) {
+            std::vector<std::string> lines;
+            Wrap(UI_FONT_REGULAR, TEXT_SIZE, r.label, width - 8, lines);
+            for (size_t l = 0; l < lines.size(); l++)
+                ui_overlay_text(UI_FONT_REGULAR, TEXT_SIZE, left + 4, y + 4 + l * TEXT_LINE, UI_ALIGN_LEFT,
+                                ui_style_color(UI_COLOR_TEXT), lines[l].c_str());
+            y += h[i];
+            continue;
+        }
+        if (r.kind == RK_INFO) {
+            // A line, not a button. A row with no label carries on the one above.
+            float ty = y + (ROW_H - 11.0f) * 0.5f;
+            float valueW = ui_overlay_text_width(UI_FONT_BOLD, 11.0f, r.value.c_str());
+            if (valueW > width * 0.62f) valueW = width * 0.62f;
+            std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 16 - valueW - 8);
+            ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 4, ty, UI_ALIGN_LEFT, ui_style_color(UI_COLOR_STATUS),
+                            label.c_str());
+            if (!r.value.empty()) {
+                std::string value = Fit(UI_FONT_BOLD, 11.0f, r.value, valueW);
+                ui_overlay_text(UI_FONT_BOLD, 11.0f, right - 4, ty, UI_ALIGN_RIGHT, 0xFFFFFFFF, value.c_str());
+            }
+            bool nextInfo = i + 1 < n && g.rows[i + 1].kind == RK_INFO && y + h[i] + h[i + 1] <= top + room + 0.5f;
+            bool joined = nextInfo && g.rows[i + 1].label.empty();
+            if (nextInfo && !joined)
+                ui_overlay_rect(left + 4, y + ROW_H + ROW_GAP * 0.5f, width - 8, 1, 0,
+                                ui_style_color(UI_COLOR_SEPARATOR));
+            y += h[i];
+            continue;
+        }
         if (r.act == GA_SETTING || r.act == GA_CATEGORY) {
             const SettingDef* d = r.act == GA_SETTING ? &DesktopSettings_Table().defs[r.arg] : NULL;
             const char* badge = d && (d->flags & SF_RESTART) ? "RESTART" : NULL;
@@ -1529,11 +2257,11 @@ static void DrawRows(float left, float right, float top)
             ui_style_row(left, y, width, ROW_H, on);
             float ty = y + (ROW_H - 11.0f) * 0.5f;
             float valueW = r.value.empty() ? 0.0f : ui_overlay_text_width(UI_FONT_BOLD, 11.0f, r.value.c_str());
-            float chevron = r.act == GA_VIEW ? 14.0f : 0.0f;
+            float chevron = r.act == GA_VIEW || r.act == GA_GAMECOLL || r.act == GA_COLLECTION ||
+                            r.act == GA_BACKUPS || r.act == GA_PICKBACKUP ? 14.0f : 0.0f;
             if (valueW > width * 0.45f) valueW = width * 0.45f;
             std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 24 - valueW - chevron - 8);
-            unsigned int labelColor = r.act == GA_NONE ? ui_style_color(UI_COLOR_STATUS) : 0xFFFFFFFF;
-            ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 12, ty, UI_ALIGN_LEFT, labelColor, label.c_str());
+            ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 12, ty, UI_ALIGN_LEFT, 0xFFFFFFFF, label.c_str());
             if (!r.value.empty()) {
                 std::string value = Fit(UI_FONT_BOLD, 11.0f, r.value, valueW);
                 ui_overlay_text(UI_FONT_BOLD, 11.0f, right - 12 - chevron, ty, UI_ALIGN_RIGHT,
@@ -1544,17 +2272,17 @@ static void DrawRows(float left, float right, float top)
                                 "\xE2\x80\xBA");
         }
         AddTarget(left, y, right, y + ROW_H, T_ROW, i);
-        y += ROW_H + ROW_GAP;
+        y += h[i];
     }
     // More above or below.
     if (g.scroll > 0)
         ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, top - 12, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL), "MORE");
-    if (g.scroll + shown < n)
+    if (i < n)
         ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, y - ROW_GAP + 1, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL),
                         "MORE");
 
     // The chosen row's help along the bottom.
-    if ((g.inPanel || g.welcome) && g.cursor >= 0 && g.cursor < n && !g.rows[g.cursor].help.empty()) {
+    if ((g.inPanel || g.welcome) && Focusable(g.cursor) && !g.rows[g.cursor].help.empty()) {
         std::string help = Fit(UI_FONT_REGULAR, 10.0f, g.rows[g.cursor].help, width);
         ui_style_text(UI_TEXT_LINE, left, BODY_B + 8, UI_ALIGN_LEFT, help.c_str());
     }
@@ -1645,7 +2373,7 @@ static void DrawEditor()
 
     ui_style_text(UI_TEXT_LINE, left, BODY_B + 8, UI_ALIGN_LEFT,
                   ui_overlay_keyboard() ? "Type away. Enter saves, Esc cancels."
-                                        : "LB and RB move the cursor.");
+                                        : (std::string(Shoulders()) + " move the cursor.").c_str());
 }
 
 static void Prompt(ui_style_prompt* p, int* n, int button, const char* key, const char* word, unsigned bits)
@@ -1673,11 +2401,17 @@ static void DrawPrompts()
         int act = g.rows[g.cursor].act;
         const char* word = act == GA_NONE ? NULL
                          : act == GA_SETTING || act == GA_CATEGORY ? "Change"
-                         : act == GA_VIEW ? "Open"
+                         : act == GA_VIEW || act == GA_GAMECOLL || act == GA_COLLECTION ||
+                           act == GA_BACKUPS || act == GA_PICKBACKUP ? "Open"
+                         : act == GA_RESTORE ? "Restore"
                          : act == GA_TEXT || act == GA_NAME || act == GA_JELLYFINURL ? "Edit" : "Select";
         if (word) Prompt(p, &n, UI_BUTTON_A, "ENTER", word, GUIDE_A);
     } else if (!g.inPanel) {
         Prompt(p, &n, UI_BUTTON_A, "ENTER", "Open", GUIDE_A);
+    }
+    if (!g.edit.on && g.inPanel && g.view == GV_GAMES) {
+        Prompt(p, &n, UI_BUTTON_X, "F", "Filter", GUIDE_X);
+        if (g.gameList == GL_ALL) Prompt(p, &n, UI_BUTTON_Y, "O", "Sort", GUIDE_Y);
     }
     if (!g.edit.on) {
         bool back = !g.welcome && g.inPanel;
@@ -1696,6 +2430,8 @@ void Guide_Render(int width, int height)
         Hover();
         g.targets.clear();
         ui_overlay_set_device(g.device);
+        ui_overlay_set_pad_style(Pads_Style());
+        ui_overlay_set_pad_swap(g_padSwapConfirm);
         ui_style_theme(g_guideTheme);
         ui_style_clock(SDL_GetTicks());
         ui_overlay_layer(0);
