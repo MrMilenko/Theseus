@@ -16,8 +16,8 @@
 #include "camera.h"
 
 extern class CMeshNode* g_pRenderMeshNode;
-extern D3DXMATRIX g_matPosition;
-extern D3DXMATRIX g_matView;
+extern D3DXMATRIX g_cameraWorld;
+extern D3DXMATRIX g_viewMatrix;
 extern D3DXMATRIX g_matProjection;
 
 
@@ -366,7 +366,7 @@ public:
 
 	D3DXVECTOR3 m_size;
 
-	IDirect3DVertexBuffer8* m_pVB;
+	IDirect3DVertexBuffer8* m_pVerts;
 	IDirect3DIndexBuffer8* m_pIB;
 
 	D3DVERTEX m_vertices [24];
@@ -389,7 +389,7 @@ END_NODE_PROPS()
 //     ~: release vb, then ib (D3D resource release inlined)
 CBox::CBox() :
 	m_size(1.0f, 1.0f, 1.0f),
-	m_pVB(NULL),
+	m_pVerts(NULL),
 	m_pIB(NULL),
 	m_dirty(true)
 {
@@ -397,8 +397,8 @@ CBox::CBox() :
 
 CBox::~CBox()
 {
-	if (m_pVB)
-		m_pVB->Release();
+	if (m_pVerts)
+		m_pVerts->Release();
 	if (m_pIB)
 		m_pIB->Release();
 }
@@ -423,20 +423,20 @@ void CBox::Render()
 
 	BYTE* pDst;
 
-	if (m_pVB == NULL)
+	if (m_pVerts == NULL)
 	{
-		TheseusCreateVertexBuffer(sizeof (m_vertices), D3DUSAGE_DYNAMIC, D3DFVF_VERTEX, D3DPOOL_MANAGED, &m_pVB);
-		if (m_pVB != NULL)
+		TheseusCreateVertexBuffer(sizeof (m_vertices), D3DUSAGE_DYNAMIC, D3DFVF_VERTEX, D3DPOOL_MANAGED, &m_pVerts);
+		if (m_pVerts != NULL)
 		{
-			if (FAILED(m_pVB->Lock(0, sizeof (m_vertices), &pDst, 0)))
+			if (FAILED(m_pVerts->Lock(0, sizeof (m_vertices), &pDst, 0)))
 			{
-				m_pVB->Release();
-				m_pVB = NULL;
+				m_pVerts->Release();
+				m_pVerts = NULL;
 			}
 			else
 			{
 				memcpy(pDst, m_vertices, sizeof (m_vertices));
-				m_pVB->Unlock();
+				m_pVerts->Unlock();
 			}
 		}
 	}
@@ -459,10 +459,10 @@ void CBox::Render()
 		}
 	}
 
-	if (m_pVB == NULL || m_pIB == NULL)
+	if (m_pVerts == NULL || m_pIB == NULL)
 		return;
 
-	TheseusSetStreamSource(0, m_pVB, sizeof (D3DVERTEX));
+	TheseusSetStreamSource(0, m_pVerts, sizeof (D3DVERTEX));
 	TheseusSetIndices(m_pIB, 0);
 	TheseusSetVertexShader(D3DFVF_VERTEX);
 	TheseusDrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 24, 0, 12);
@@ -865,7 +865,7 @@ static void SetLightDirection(DWORD reg, const D3DXMATRIX& worldView)
 void SetReflectShaderFrameValues()
 {
 	D3DXMATRIX worldView, t;
-	D3DXMatrixMultiply(&worldView, TheseusGetWorld(), &g_matView);
+	D3DXMatrixMultiply(&worldView, TheseusGetWorld(), &g_viewMatrix);
 
 	D3DXMatrixTranspose(&t, &worldView);
 	TheseusSetVertexShaderConstant(40, &t, 4);
@@ -896,7 +896,7 @@ void SetFalloffShaderFrameValues()
 	FramePhaseScope world(FP_TREE_WORLD);
 
 	D3DXMATRIX worldView, t;
-	D3DXMatrixMultiply(&worldView, TheseusGetWorld(), &g_matView);
+	D3DXMatrixMultiply(&worldView, TheseusGetWorld(), &g_viewMatrix);
 
 	D3DXMatrixMultiply(&t, &worldView, &g_matProjection);
 	D3DXMatrixTranspose(&t, &t);

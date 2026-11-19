@@ -9,8 +9,8 @@
 #include "shape_render.h"
 #include "interpolator.h"
 
-extern D3DXMATRIX g_matView;
-extern D3DXMATRIX g_matPosition;
+extern D3DXMATRIX g_viewMatrix;
+extern D3DXMATRIX g_cameraWorld;
 extern bool g_bMovingScreen;
 
 
@@ -53,7 +53,7 @@ void CCamera::Reset()
 {
 	m_position = D3DXVECTOR3(0.0f, 0.0f, 20.0f);
 	m_orientation = D3DXQUATERNION(0.0f, 0.0f, 0.0f, 1.0f);
-	m_nDeltaTime = 0.0f;
+	m_travelTime = 0.0f;
 }
 
 // CCamera::UpdateViewMatrix()
@@ -65,9 +65,9 @@ void CCamera::Reset()
 //         QuaternionMultiply(&rot, &wobble, &rot);
 //     }
 //     this->actualPos = pos;
-//     MatrixAffineTransformation(&g_matPosition, 1.0, NULL, &rot, &pos);
-//     MatrixInverse(&g_matView, NULL, &g_matPosition);
-//     g_matView._31.._34 = 0.0 - each;   then copied into the device view.
+//     MatrixAffineTransformation(&g_cameraWorld, 1.0, NULL, &rot, &pos);
+//     MatrixInverse(&g_viewMatrix, NULL, &g_cameraWorld);
+//     g_viewMatrix._31.._34 = 0.0 - each;   then copied into the device view.
 // The wobble is at most one degree each way. Flipping the third row turns
 // the right handed scene camera into D3D's left handed view.
 void CCamera::UpdateViewMatrix()
@@ -89,14 +89,14 @@ void CCamera::UpdateViewMatrix()
 
 	m_actualPosition = eye;
 
-	D3DXMatrixAffineTransformation(&g_matPosition, 1.0f, NULL, &facing, &eye);
-	D3DXMatrixInverse(&g_matView, NULL, &g_matPosition);
-	g_matView._31 = 0.0f - g_matView._31;
-	g_matView._32 = 0.0f - g_matView._32;
-	g_matView._33 = 0.0f - g_matView._33;
-	g_matView._34 = 0.0f - g_matView._34;
+	D3DXMatrixAffineTransformation(&g_cameraWorld, 1.0f, NULL, &facing, &eye);
+	D3DXMatrixInverse(&g_viewMatrix, NULL, &g_cameraWorld);
+	g_viewMatrix._31 = 0.0f - g_viewMatrix._31;
+	g_viewMatrix._32 = 0.0f - g_viewMatrix._32;
+	g_viewMatrix._33 = 0.0f - g_viewMatrix._33;
+	g_viewMatrix._34 = 0.0f - g_viewMatrix._34;
 
-	TheseusSetTransform(D3DTS_VIEW, &g_matView);
+	TheseusSetTransform(D3DTS_VIEW, &g_viewMatrix);
 }
 
 // CCamera::Set(pPosition, pOrientation, nSeconds)
@@ -106,18 +106,18 @@ void CCamera::UpdateViewMatrix()
 //     if (secs <= 0.0) { position = newPos; orientation = newRot; }
 void CCamera::Set(const D3DXVECTOR3* pos, const D3DXQUATERNION* rot, float dt/*=0.0f*/)
 {
-	m_newPosition = *pos;
-	m_newOrientation = *rot;
-	m_oldPosition = m_position;
-	m_oldOrientation = m_orientation;
+	m_toPos = *pos;
+	m_toOrient = *rot;
+	m_fromPos = m_position;
+	m_fromOrient = m_orientation;
 	m_nStartTime = TheseusGetNow();
-	m_nDeltaTime = dt;
+	m_travelTime = dt;
 
 	if (dt > 0.0f)
 		return;
 
-	m_position = m_newPosition;
-	m_orientation = m_newOrientation;
+	m_position = m_toPos;
+	m_orientation = m_toOrient;
 }
 
 // CCamera::Advance(nSeconds)
@@ -132,17 +132,17 @@ void CCamera::Set(const D3DXVECTOR3* pos, const D3DXQUATERNION* rot, float dt/*=
 // It never calls CNode::Advance.
 void CCamera::Advance(float dt)
 {
-	if (m_nDeltaTime > 0.0f)
+	if (m_travelTime > 0.0f)
 	{
-		float f = (float)(TheseusGetNow() - m_nStartTime) / m_nDeltaTime;
+		float f = (float)(TheseusGetNow() - m_nStartTime) / m_travelTime;
 		if (f >= 1.0f)
 		{
 			f = 1.0f;
-			m_nDeltaTime = 0.0f;
+			m_travelTime = 0.0f;
 		}
 
-		D3DXVec3Lerp(&m_position, &m_oldPosition, &m_newPosition, f);
-		D3DXQuaternionSlerp(&m_orientation, &m_oldOrientation, &m_newOrientation, f);
+		D3DXVec3Lerp(&m_position, &m_fromPos, &m_toPos, f);
+		D3DXQuaternionSlerp(&m_orientation, &m_fromOrient, &m_toOrient, f);
 	}
 
 	UpdateViewMatrix();

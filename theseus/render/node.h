@@ -7,7 +7,7 @@
 // factories (sizes are the operator new argument, offsets are the stores):
 //   CObject 0x14: vtbl, m_nRefCount 0x04, m_kind 0x08, m_parent 0x0c, m_pScope 0x10
 //   CNode 0x1c: m_behavior 0x14, m_visible 0x18
-//   CGroup 0x44: m_children 0x1c, m_bboxCenter 0x28, m_bboxSize 0x34, flags 0x40/0x41
+//   CGroup 0x44: m_children 0x1c, m_boundsCenter 0x28, m_boundsSize 0x34, flags 0x40/0x41
 //   CInstance 0x54: m_classDef 0x44, m_vars 0x48
 //   CTimeDepNode 0x30: m_loop 0x1c, m_startTime 0x20, m_stopTime 0x24,
 //     m_isActive 0x28, m_prevStartTime 0x2c
@@ -544,9 +544,9 @@ public:
 	LPDIRECT3DTEXTURE8 GetTextureSurface();
 
 	CNodeArray m_children;
-	D3DXVECTOR3 m_bboxCenter;
-	D3DXVECTOR3 m_bboxSize;
-	bool m_bboxSpecified;
+	D3DXVECTOR3 m_boundsCenter;
+	D3DXVECTOR3 m_boundsSize;
+	bool m_bHasBounds;
 	bool m_bboxDirty;
 };
 

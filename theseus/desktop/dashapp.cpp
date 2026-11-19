@@ -35,7 +35,7 @@ extern void DashInit();
 
 extern void DiscDrive_Init();
 
-extern void BackgroundLoader_Frame();
+extern void AssetLoader_Pump();
 
 extern void Text_Exit();
 
@@ -106,11 +106,11 @@ int               g_nVertPerFrame = 0;
 int               g_nTriPerFrame = 0;
 char*             g_szAppTitle = NULL;
 
-D3DXMATRIX g_matView;
-D3DXMATRIX g_matPosition;
+D3DXMATRIX g_viewMatrix;
+D3DXMATRIX g_cameraWorld;
 D3DXMATRIX g_matProjection;
-D3DRECT g_scissorRect;
-D3DRECT g_scissorRectx2;
+D3DRECT g_clipRect;
+D3DRECT g_clipRect2x;
 
 D3DXMATRIX g_matIdentity(
 	1.0f, 0.0f, 0.0f, 0.0f,
@@ -155,7 +155,7 @@ HRESULT InitAudio()
 // D3D Initialization and Render State
 // ============================================================================
 
-float g_transitionMotionBlur;
+float g_levelBlurAmount;
 
 // =========================================================================
 // D3D call-trace storage + dump (Sweep 2 of project_d3d_call_audit.md)
@@ -402,7 +402,7 @@ void XboxInitRenderState()
 	for (int i = 0; i < (int)countof(states); i++)
 		TheseusSetRenderState(states[i].state, states[i].value);
 
-	g_transitionMotionBlur = 1.0f;
+	g_levelBlurAmount = 1.0f;
 }
 
 // Scissor rectangle covering back buffer iBuffer (-1 is the front buffer).
@@ -467,8 +467,8 @@ bool InitD3D()
 		return false;
 	}
 
-	FullBufferRect(-1, &g_scissorRect);
-	FullBufferRect(0, &g_scissorRectx2);
+	FullBufferRect(-1, &g_clipRect);
+	FullBufferRect(0, &g_clipRect2x);
 
 	XboxInitRenderState();
 
@@ -616,7 +616,7 @@ static void SetupLights()
 		ambient.b += light.Ambient.b;
 
 		D3DXVECTOR3 dir(0.0f, 0.0f, -1.0f);
-		D3DXVec3TransformNormal(&dir, &dir, &g_matPosition);
+		D3DXVec3TransformNormal(&dir, &dir, &g_cameraWorld);
 		light.Direction = dir;
 
 		TheseusSetLight(nLights, &light);
@@ -656,7 +656,7 @@ void Draw()
 	TheseusSetRenderState(D3DRS_FILLMODE, g_bWireframe ? D3DFILL_WIREFRAME : D3DFILL_SOLID);
 
 	// A bigger factor means less blur.
-	const float blurAlpha = g_transitionMotionBlur;
+	const float blurAlpha = g_levelBlurAmount;
 
 	D3DCOLOR sky = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.3f, 1.0f);
 	bool bBackdrop = false;
@@ -819,7 +819,7 @@ void Advance()
 	CLerper::AdvanceAll();
 	g_pObject->Advance(nDelta);
 
-	BackgroundLoader_Frame();
+	AssetLoader_Pump();
 	Debug_Frame();
 }
 

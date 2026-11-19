@@ -28,11 +28,11 @@ public:
 	D3DXVECTOR3 m_skyColor;
 	bool m_isBound;
 	float m_fade;			// seconds SetAlpha takes to get there
-	XTIME m_timeAlphaStart;
-	float m_alphaStart;
-	float m_alphaEnd;
+	XTIME m_fadeStartTime;
+	float m_fadeFrom;
+	float m_fadeTo;
 	float m_alpha;
-	XTIME m_timeToDisappear;
+	XTIME m_hideTime;
 	LPDIRECT3DVERTEXBUFFER8 m_vb;
 };
 

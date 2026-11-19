@@ -24,12 +24,12 @@ public:
 
 	D3DXVECTOR3 m_position;
 	D3DXQUATERNION m_orientation;
-	D3DXVECTOR3 m_oldPosition;		// where the move started
-	D3DXQUATERNION m_oldOrientation;
-	D3DXVECTOR3 m_newPosition;		// where it ends
-	D3DXQUATERNION m_newOrientation;
+	D3DXVECTOR3 m_fromPos;		// where the move started
+	D3DXQUATERNION m_fromOrient;
+	D3DXVECTOR3 m_toPos;		// where it ends
+	D3DXQUATERNION m_toOrient;
 	XTIME m_nStartTime;
-	float m_nDeltaTime;
+	float m_travelTime;
 	D3DXVECTOR3 m_actualPosition;
 };
 

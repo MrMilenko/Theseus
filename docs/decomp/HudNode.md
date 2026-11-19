@@ -46,8 +46,8 @@ destructor (`0x00052b80`) only resets the vtable and runs Group's.
 D3DXMatrixOrthoLH(&ortho, 720.0, 480.0, -10000.0, 10000.0);
 savedProj = g_matProjection /* 0x0017f4e8 */;
 g_matProjection = ortho;  SetTransform(PROJECTION, &g_matProjection);   // 0x00144e30
-savedView = g_matView /* 0x0017f468 */;
-g_matView = g_matIdentity /* 0x00176338 */;  SetTransform(VIEW, ...);    // inline copy to device +0xc60
+savedView = g_viewMatrix /* 0x0017f468 */;
+g_viewMatrix = g_matIdentity /* 0x00176338 */;  SetTransform(VIEW, ...);    // inline copy to device +0xc60
 lighting = rs[LIGHTING] /* 0x0017a218 */;  rs[LIGHTING] = 0;
 worldStack->Push(); worldStack->LoadIdentity();                         // stack 0x0017e7fc, slots 4, 5
 SetTransform(WORLD, worldStack->GetTop()); FUN_0005ca00();              // falloff shader constants
@@ -56,7 +56,7 @@ CGroup::Render();                                                       // 0x000
 worldStack->Pop(); SetTransform(WORLD, worldStack->GetTop()); FUN_0005ca00();
 rs[LIGHTING] = lighting;
 g_matProjection = savedProj; SetTransform(PROJECTION, ...);
-g_matView = savedView;       SetTransform(VIEW, ...);
+g_viewMatrix = savedView;       SetTransform(VIEW, ...);
 ```
 
 The ortho box is a fixed 720x480, so HUD children are laid out in that space no

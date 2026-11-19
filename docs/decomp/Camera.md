@@ -55,9 +55,9 @@ it onto the orientation copy. The constants mean the head drifts at most one deg
 
 It stores the position at 0x84, then
 
-    D3DXMatrixAffineTransformation(&g_matPosition /*0x17f4a8*/, 1.0, NULL, &rot, &pos);
-    D3DXMatrixInverse(&g_matView /*0x17f468*/, NULL, &g_matPosition);
-    g_matView._31.._34 = 0.0 - each;      // SUBSS from a zeroed register
+    D3DXMatrixAffineTransformation(&g_cameraWorld /*0x17f4a8*/, 1.0, NULL, &rot, &pos);
+    D3DXMatrixInverse(&g_viewMatrix /*0x17f468*/, NULL, &g_cameraWorld);
+    g_viewMatrix._31.._34 = 0.0 - each;      // SUBSS from a zeroed register
 
 copies the 16 floats into the device's view transform at `pDevice + 0xc60`, and ORs
 `0xff0200` into the dirty mask at `0x00156080`. Negating the third row is what turns

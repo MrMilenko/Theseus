@@ -23,7 +23,7 @@
 
 // removeVoice of the clip that advanced last (5960 keeps it at 0x17e768).
 bool g_removeVoice = false;
-extern bool g_bLevelTransition;
+extern bool g_bLevelSwitching;
 
 static DWORD LoopFlag(bool loop)
 {
@@ -1072,7 +1072,7 @@ void CAudioClip::Advance(float nSeconds)
 
 	if (m_pause_on_moving && m_sound != NULL && m_volume != 0.0f)
 	{
-		if (g_bLevelTransition)
+		if (g_bLevelSwitching)
 		{
 			if (!m_sound->IsPaused())
 			{
@@ -1337,7 +1337,7 @@ void CPeriodicAudioGroup::Advance(float nSeconds)
 {
 	CGroup::Advance(nSeconds);
 
-	if (m_pause_on_moving && g_bLevelTransition)
+	if (m_pause_on_moving && g_bLevelSwitching)
 	{
 		if (m_playing != NULL && m_playing->IsKindOf(NODE_CLASS(CAudioClip)))
 			m_playing->Stop();

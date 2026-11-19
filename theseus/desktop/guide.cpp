@@ -41,7 +41,7 @@
 #include <vector>
 
 class CLevel;
-extern CLevel* g_pCurLevel;
+extern CLevel* g_pActiveLevel;
 extern bool g_padModeEnabled, g_padModeActive;
 extern bool g_mediaFullscreen, g_xcloudFullscreen;
 extern void* g_pActiveKeyboard_void();
@@ -1305,7 +1305,7 @@ void Guide_Frame()
 
     // First run, or Startup is "Ask": once the dashboard is up, the
     // welcome offers the ways in. Neither waits for the scene to settle.
-    if (!g.startChecked && g_pCurLevel) {
+    if (!g.startChecked && g_pActiveLevel) {
         g.startChecked = true;
         if (!g_welcomeDone || g_startupMode == 0) {
             Open(true);

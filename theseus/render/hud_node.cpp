@@ -10,7 +10,7 @@
 #include "asset_loader.h"
 
 extern D3DXMATRIX g_matIdentity;
-extern D3DXMATRIX g_matView;
+extern D3DXMATRIX g_viewMatrix;
 extern D3DXMATRIX g_matProjection;
 
 
@@ -50,7 +50,7 @@ CHud::~CHud()
 // Reconstructed from 5960 retail XBE @ 0x00052b90. Ghidra decompile:
 //     D3DXMatrixOrthoLH(&ortho, 720.0, 480.0, -10000.0, 10000.0);
 //     savedProj = g_matProjection; g_matProjection = ortho; SetTransform(PROJ);
-//     savedView = g_matView; g_matView = g_matIdentity; SetTransform(VIEW);
+//     savedView = g_viewMatrix; g_viewMatrix = g_matIdentity; SetTransform(VIEW);
 //     lighting = rs[LIGHTING]; rs[LIGHTING] = 0;
 //     worldStack->Push(); worldStack->LoadIdentity(); SetTransform(WORLD, top);
 //     rs[EDGEANTIALIAS] = 0; rs[MULTISAMPLEANTIALIAS] = 1;
@@ -68,9 +68,9 @@ void CHud::Render()
     g_matProjection = ortho;
     TheseusSetTransform(D3DTS_PROJECTION, &g_matProjection);
 
-    D3DXMATRIX savedView = g_matView;
-    g_matView = g_matIdentity;
-    TheseusSetTransform(D3DTS_VIEW, &g_matView);
+    D3DXMATRIX savedView = g_viewMatrix;
+    g_viewMatrix = g_matIdentity;
+    TheseusSetTransform(D3DTS_VIEW, &g_viewMatrix);
 
     DWORD lighting;
     TheseusGetRenderState(D3DRS_LIGHTING, &lighting);
@@ -93,8 +93,8 @@ void CHud::Render()
 
     g_matProjection = savedProjection;
     TheseusSetTransform(D3DTS_PROJECTION, &g_matProjection);
-    g_matView = savedView;
-    TheseusSetTransform(D3DTS_VIEW, &g_matView);
+    g_viewMatrix = savedView;
+    TheseusSetTransform(D3DTS_VIEW, &g_viewMatrix);
 }
 
 
@@ -134,10 +134,10 @@ public:
     float m_endTop;
     float m_startWidth;
     float m_endWidth;
-    float m_startHeight;
+    float m_baseHeight;
     float m_endHeight;
 
-    LPDIRECT3DVERTEXBUFFER8 m_pVB;
+    LPDIRECT3DVERTEXBUFFER8 m_pVerts;
 
     DECLARE_NODE_PROPS()
 };
@@ -185,7 +185,7 @@ CPicture::CPicture()
     m_color = D3DXVECTOR3(1.0f, 1.0f, 1.0f);
     m_alpha = 1.0f;
     m_startFadeTime = 0.0;
-    m_pVB = NULL;
+    m_pVerts = NULL;
 }
 
 // CPicture::~CPicture()
@@ -194,8 +194,8 @@ CPicture::CPicture()
 // Buffer first, then the texture node.
 CPicture::~CPicture()
 {
-    if (m_pVB)
-        m_pVB->Release();
+    if (m_pVerts)
+        m_pVerts->Release();
     if (m_texture)
         m_texture->Release();
 }
@@ -222,11 +222,11 @@ void CPicture::Render()
             return;
     }
 
-    if (!m_pVB)
+    if (!m_pVerts)
     {
-        if (FAILED(TheseusGetD3DDev()->CreateVertexBuffer(4 * sizeof(PictureVertex), D3DUSAGE_WRITEONLY, kPictureFVF, D3DPOOL_MANAGED, &m_pVB)))
-            m_pVB = NULL;
-        if (!m_pVB)
+        if (FAILED(TheseusGetD3DDev()->CreateVertexBuffer(4 * sizeof(PictureVertex), D3DUSAGE_WRITEONLY, kPictureFVF, D3DPOOL_MANAGED, &m_pVerts)))
+            m_pVerts = NULL;
+        if (!m_pVerts)
             return;
     }
 
@@ -323,13 +323,13 @@ void CPicture::Render()
 #endif
 
     BYTE* dst = NULL;
-    if (SUCCEEDED(m_pVB->Lock(0, sizeof(quad), &dst, 0)) && dst)
+    if (SUCCEEDED(m_pVerts->Lock(0, sizeof(quad), &dst, 0)) && dst)
     {
         memcpy(dst, quad, sizeof(quad));
-        m_pVB->Unlock();
+        m_pVerts->Unlock();
 
         LPDIRECT3DDEVICE8 dev = TheseusGetD3DDev();
-        TheseusSetStreamSource(0, m_pVB, sizeof(PictureVertex));
+        TheseusSetStreamSource(0, m_pVerts, sizeof(PictureVertex));
         TheseusSetVertexShader(kPictureFVF);
         dev->DrawPrimitive(D3DPT_TRIANGLESTRIP, 0, 2);
     }
@@ -369,7 +369,7 @@ void CPicture::Advance(float nSeconds)
     m_left = m_startLeft * s + m_endLeft * t;
     m_top = m_startTop * s + m_endTop * t;
     m_width = m_startWidth * s + m_endWidth * t;
-    m_height = m_startHeight * s + m_endHeight * t;
+    m_height = m_baseHeight * s + m_endHeight * t;
 }
 
 // CPicture::OnLoad()
@@ -387,7 +387,7 @@ void CPicture::OnLoad()
     m_endTop = m_top;
     m_startWidth = m_width;
     m_endWidth = m_width;
-    m_startHeight = m_height;
+    m_baseHeight = m_height;
     m_endHeight = m_height;
 
     CNode::OnLoad();
@@ -436,7 +436,7 @@ bool CPicture::OnSetProperty(const PRD *pprd, const void *pvValue)
     else if (field == offsetof(m_width))
         { from = &m_startWidth; to = &m_endWidth; now = m_width; }
     else if (field == offsetof(m_height))
-        { from = &m_startHeight; to = &m_endHeight; now = m_height; }
+        { from = &m_baseHeight; to = &m_endHeight; now = m_height; }
     else
         return true;
 

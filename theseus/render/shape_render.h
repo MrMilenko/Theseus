@@ -90,7 +90,7 @@ public:
 };
 
 // Each animated field keeps a start and end value and the time its move
-// began; Advance blends them and CalcMatrix rebuilds m_matrix.
+// began; Advance blends them and CalcMatrix rebuilds m_xform.
 class CTransform : public CGroup
 {
 	DECLARE_NODE(CTransform, CGroup)
@@ -118,28 +118,28 @@ public:
 	D3DXVECTOR3 m_center;
 	D3DXQUATERNION m_scaleOrientation;
 	D3DXVECTOR3 m_scale;
-	D3DXQUATERNION m_rotationQuat;
+	D3DXQUATERNION m_orientQuat;
 	D3DXVECTOR3 m_translation;
 
 	D3DXVECTOR3 m_centerStart;
 	D3DXQUATERNION m_scaleOrientationStart;
-	D3DXVECTOR3 m_scaleStart;
-	D3DXQUATERNION m_rotationStart;
-	D3DXVECTOR3 m_translationStart;
+	D3DXVECTOR3 m_scaleFrom;
+	D3DXQUATERNION m_turnFrom;
+	D3DXVECTOR3 m_moveFrom;
 
 	D3DXVECTOR3 m_centerEnd;
 	D3DXQUATERNION m_scaleOrientationEnd;
-	D3DXVECTOR3 m_scaleEnd;
-	D3DXQUATERNION m_rotationEnd;
-	D3DXVECTOR3 m_translationEnd;
+	D3DXVECTOR3 m_scaleTo;
+	D3DXQUATERNION m_turnTo;
+	D3DXVECTOR3 m_moveTo;
 
 	float m_alpha;
-	float m_alphaStart;
-	float m_alphaEnd;
+	float m_fadeFrom;
+	float m_fadeTo;
 
 	bool m_moving;
 	BOOL m_dirty;
-	D3DXMATRIX m_matrix;
+	D3DXMATRIX m_xform;
 	float m_fade;
 
 	float m_timeCenterStart;
@@ -147,6 +147,6 @@ public:
 	XTIME m_timeScaleStart;
 	XTIME m_timeRotationStart;
 	XTIME m_timeTranslationStart;
-	XTIME m_timeAlphaStart;
-	XTIME m_timeToDisappear;
+	XTIME m_fadeStartTime;
+	XTIME m_hideTime;
 };

@@ -40,7 +40,7 @@ extern void Class_Exit();
 
 extern void DiscDrive_Init();
 
-extern void BackgroundLoader_Frame();
+extern void AssetLoader_Pump();
 
 extern void Text_Exit();
 
@@ -201,11 +201,11 @@ DWORD g_dwMainThreadId = 0;
 
 
 
-D3DXMATRIX g_matView;
-D3DXMATRIX g_matPosition;
+D3DXMATRIX g_viewMatrix;
+D3DXMATRIX g_cameraWorld;
 D3DXMATRIX g_matProjection;
-D3DRECT g_scissorRect;
-D3DRECT g_scissorRectx2;
+D3DRECT g_clipRect;
+D3DRECT g_clipRect2x;
 
 D3DXMATRIX g_matIdentity(
 	1.0f, 0.0f, 0.0f, 0.0f,
@@ -314,7 +314,7 @@ HRESULT InitAudio()
 }
 DWORD theseus_rgdwRenderStateCache[256];
 bool theseus_rgbRenderStateCache[256];
-float g_transitionMotionBlur;
+float g_levelBlurAmount;
 
 // XboxInitRenderState()
 // Reconstructed from 5960 retail XBE @ 0x0002c660: sets the startup render
@@ -388,7 +388,7 @@ void XboxInitRenderState()
 	for (int i = 0; i < (int)countof(states); i++)
 		TheseusSetRenderState(states[i].state, states[i].value);
 
-	g_transitionMotionBlur = 1.0f;
+	g_levelBlurAmount = 1.0f;
 }
 
 // InitD3D()
@@ -557,19 +557,19 @@ bool InitD3D()
 	pFrontBuffer->GetDesc(&d3dsd);
 	pFrontBuffer->Release();
 
-	g_scissorRect.x1 = 0;
-	g_scissorRect.y1 = 0;
-	g_scissorRect.x2 = d3dsd.Width;
-	g_scissorRect.y2 = d3dsd.Height;
+	g_clipRect.x1 = 0;
+	g_clipRect.y1 = 0;
+	g_clipRect.x2 = d3dsd.Width;
+	g_clipRect.y2 = d3dsd.Height;
 
 	g_pD3DDev->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &pFrontBuffer);
 	pFrontBuffer->GetDesc(&d3dsd);
 	pFrontBuffer->Release();
 
-	g_scissorRectx2.x1 = 0;
-	g_scissorRectx2.y1 = 0;
-	g_scissorRectx2.x2 = d3dsd.Width;
-	g_scissorRectx2.y2 = d3dsd.Height;
+	g_clipRect2x.x1 = 0;
+	g_clipRect2x.y1 = 0;
+	g_clipRect2x.x2 = d3dsd.Width;
+	g_clipRect2x.y2 = d3dsd.Height;
 
 	XboxInitRenderState();
 
@@ -708,7 +708,7 @@ static void SetupLights()
 		ambient.b += light.Ambient.b;
 
 		D3DXVECTOR3 dir(0.0f, 0.0f, -1.0f);
-		D3DXVec3TransformNormal(&dir, &dir, &g_matPosition);
+		D3DXVec3TransformNormal(&dir, &dir, &g_cameraWorld);
 		light.Direction = dir;
 
 		TheseusSetLight(nLights, &light);
@@ -748,7 +748,7 @@ void Draw()
 	TheseusSetRenderState(D3DRS_FILLMODE, g_bWireframe ? D3DFILL_WIREFRAME : D3DFILL_SOLID);
 
 	// A bigger factor means less blur.
-	const float blurAlpha = g_transitionMotionBlur;
+	const float blurAlpha = g_levelBlurAmount;
 
 	D3DCOLOR sky = D3DCOLOR_COLORVALUE(0.0f, 0.0f, 0.3f, 1.0f);
 	bool bBackdrop = false;
@@ -1183,7 +1183,7 @@ void Advance()
 	CLerper::AdvanceAll();
 	g_pObject->Advance(nDelta);
 
-	BackgroundLoader_Frame();
+	AssetLoader_Pump();
 
 #ifdef _DEBUG
 	Debug_Frame();

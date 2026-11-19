@@ -263,12 +263,12 @@ bool CBackgroundLoader::Fetch(const TCHAR* szURL)
 	return GetLastError() == ERROR_IO_PENDING;
 }
 
-// BackgroundLoader_Frame()
+// AssetLoader_Pump()
 // Inlined in the 5960 frame loop (main frame loop @ 0x0002da00, after the
 // lerpers advance and before Draw):
 //     for (p = first; p; p = next) { next = p->next;
 //         if (p->overlapped.Internal != STATUS_PENDING) { p->OnComplete(); delete p; } }
-void BackgroundLoader_Frame()
+void AssetLoader_Pump()
 {
 	CBackgroundLoader* pNext;
 	for (CBackgroundLoader* p = CBackgroundLoader::c_pFirst; p != NULL; p = pNext)
