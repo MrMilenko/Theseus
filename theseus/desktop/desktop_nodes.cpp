@@ -3570,6 +3570,7 @@ public:
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size() || !IsFolderType(items[i].type)) return;
 		m_folders.push_back({ items[i].ratingKey, items[i].title, i });
+		Plex_RetryFetch(items[i].ratingKey);
 		m_currentShow   = -1;
 		m_currentSeason = -1;
 		std::vector<PlexItem> dummy;
@@ -3715,6 +3716,16 @@ public:
 	}
 
 	int GetItemCount() { return (int)CurrentItems().size(); }
+
+	// Title and year without the watch mark, for the header.
+	CStrObject* GetItemName(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		std::string s = items[i].title;
+		if (!items[i].year.empty()) { s += " ("; s += items[i].year; s += ")"; }
+		return new CStrObject(_T(s.c_str()));
+	}
 
 	CStrObject* GetItemTitle(int i)
 	{
@@ -3872,6 +3883,7 @@ public:
 		if (i < 0 || i >= (int)items.size()) return;
 		const PlexItem& it = items[i];
 		if (it.type != "show") return;
+		Plex_RetryFetch(it.ratingKey);
 		m_currentShow   = i;
 		m_currentSeason = -1;
 		std::vector<PlexSeason> dummy;
@@ -3905,6 +3917,7 @@ public:
 		Plex_Cache_GetSeasons(showKey, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return;
 		m_currentSeason = i;
+		Plex_RetryFetch(seasons[i].ratingKey);
 		std::vector<PlexEpisode> dummy;
 		(void)Plex_Cache_GetEpisodes(seasons[i].ratingKey, dummy);
 	}
@@ -3971,6 +3984,54 @@ public:
 	}
 
 	int IsSignedIn() { return Plex_HasToken() ? 1 : 0; }
+
+	// What an empty list says instead: still loading, the server didn't
+	// answer, or there's nothing there. Empty while there are rows.
+	CStrObject* GetStatus(int view)
+	{
+		return new CStrObject(_T(StatusFor(view).c_str()));
+	}
+
+	static std::string Unreachable()
+	{
+		std::string name = Plex_GetActiveServerName();
+		return "Can't reach " + (name.empty() ? std::string("your Plex server") : name);
+	}
+
+	template <typename T>
+	static std::string Pending(bool cached, const std::vector<T>& rows, const std::string& key, const char* none)
+	{
+		if (cached) return rows.empty() ? none : "";
+		return Plex_FetchFailed(key) ? Unreachable() : "Loading...";
+	}
+
+	std::string StatusFor(int view)
+	{
+		if (!Plex_HasToken()) return "Sign in to Plex in Settings";
+		if (!Plex_SyncReady()) return "Loading...";
+		if (view == 0) {
+			if (Plex_GetActiveServerUri().empty()) return Unreachable();
+			return Plex_Cache_GetLibraries().empty() ? "No libraries" : "";
+		}
+		if (view == 1) {
+			if (m_folders.empty()) return CurrentItems().empty() ? "Nothing here" : "";
+			std::vector<PlexItem> kids;
+			bool cached = Plex_Cache_GetChildren(m_folders.back().key, kids);
+			return Pending(cached, kids, m_folders.back().key, "Nothing here");
+		}
+		if (view == 2) {
+			std::string showKey = CurrentShowKey();
+			if (showKey.empty()) return "";
+			std::vector<PlexSeason> seasons;
+			bool cached = Plex_Cache_GetSeasons(showKey, seasons);
+			return Pending(cached, seasons, showKey, "No seasons");
+		}
+		std::string seasonKey = CurrentSeasonKey();
+		if (seasonKey.empty()) return "Loading...";
+		std::vector<PlexEpisode> eps;
+		bool cached = Plex_Cache_GetEpisodes(seasonKey, eps);
+		return Pending(cached, eps, seasonKey, "No episodes");
+	}
 };
 
 IMPLEMENT_NODE("PlexLibrary", CPlexLibrary, CNode)
@@ -4015,6 +4076,8 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_IV(LeaveFolder)
 	NODE_FUN_SV(GetListTitle)
 	NODE_FUN_SI(GetLibraryRow)
+	NODE_FUN_SI(GetStatus)
+	NODE_FUN_SI(GetItemName)
 END_NODE_FUN()
 
 
@@ -4116,6 +4179,7 @@ public:
 		std::vector<JellyfinItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size() || !items[i].isFolder) return;
 		m_folders.push_back({ items[i].id, items[i].name, i });
+		Jellyfin_RetryFetch(items[i].id);
 		m_currentShow   = -1;
 		m_currentSeason = -1;
 		std::vector<JellyfinItem> dummy;
@@ -4143,6 +4207,16 @@ public:
 	}
 
 	int GetItemCount() { return (int)CurrentItems().size(); }
+
+	// Title and year without the watch mark, for the header.
+	CStrObject* GetItemName(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		std::string s = items[i].name;
+		if (!items[i].year.empty()) { s += " ("; s += items[i].year; s += ")"; }
+		return new CStrObject(_T(s.c_str()));
+	}
 
 	CStrObject* GetItemTitle(int i)
 	{
@@ -4266,6 +4340,7 @@ public:
 		if (i < 0 || i >= (int)items.size()) return;
 		const JellyfinItem& it = items[i];
 		if (it.type != "Series") return;
+		Jellyfin_RetryFetch(it.id);
 		m_currentShow   = i;
 		m_currentSeason = -1;
 		std::vector<JellyfinSeason> dummy;
@@ -4299,6 +4374,7 @@ public:
 		Jellyfin_Cache_GetSeasons(showId, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return;
 		m_currentSeason = i;
+		Jellyfin_RetryFetch(seasons[i].id);
 		std::vector<JellyfinEpisode> dummy;
 		(void)Jellyfin_Cache_GetEpisodes(seasons[i].id, dummy);
 	}
@@ -4530,6 +4606,55 @@ public:
 	}
 
 	int IsSignedIn() { return Jellyfin_HasToken() ? 1 : 0; }
+
+	// What an empty list says instead: still loading, the server didn't
+	// answer, or there's nothing there. Empty while there are rows.
+	CStrObject* GetStatus(int view)
+	{
+		return new CStrObject(_T(StatusFor(view).c_str()));
+	}
+
+	static std::string Unreachable()
+	{
+		std::string host = Jellyfin_GetServerUrl();
+		size_t scheme = host.find("://");
+		if (scheme != std::string::npos) host = host.substr(scheme + 3);
+		host = host.substr(0, host.find('/'));
+		return "Can't reach " + (host.empty() ? std::string("the server") : host);
+	}
+
+	template <typename T>
+	static std::string Pending(bool cached, const std::vector<T>& rows, const std::string& id, const char* none)
+	{
+		if (cached) return rows.empty() ? none : "";
+		return Jellyfin_FetchFailed(id) ? Unreachable() : "Loading...";
+	}
+
+	std::string StatusFor(int view)
+	{
+		if (!Jellyfin_HasToken()) return "Sign in to Jellyfin in Settings";
+		if (!Jellyfin_SyncReady()) return "Loading...";
+		if (view == 0) {
+			if (Jellyfin_SyncFailed()) return Unreachable();
+			return Jellyfin_Cache_GetLibraries().empty() ? "No libraries" : "";
+		}
+		if (view == 1) {
+			if (m_folders.empty()) return CurrentItems().empty() ? "Nothing here" : "";
+			std::vector<JellyfinItem> kids;
+			bool cached = Jellyfin_Cache_GetChildren(m_folders.back().id, kids);
+			return Pending(cached, kids, m_folders.back().id, "Nothing here");
+		}
+		if (view == 2) {
+			std::string showId = CurrentShowId();
+			std::vector<JellyfinSeason> seasons;
+			bool cached = Jellyfin_Cache_GetSeasons(showId, seasons);
+			return Pending(cached, seasons, showId, "No seasons");
+		}
+		std::string seasonId = CurrentSeasonId();
+		std::vector<JellyfinEpisode> eps;
+		bool cached = Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		return Pending(cached, eps, seasonId, "No episodes");
+	}
 };
 
 IMPLEMENT_NODE("JellyfinLibrary", CJellyfinLibrary, CNode)
@@ -4574,6 +4699,8 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_IV(LeaveFolder)
 	NODE_FUN_SV(GetListTitle)
 	NODE_FUN_SI(GetLibraryRow)
+	NODE_FUN_SI(GetStatus)
+	NODE_FUN_SI(GetItemName)
 END_NODE_FUN()
 
 

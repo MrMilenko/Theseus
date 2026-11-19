@@ -91,6 +91,9 @@ static std::map<std::string, std::vector<PlexSeason>> s_cacheSeasons;      // sh
 static std::map<std::string, std::vector<PlexEpisode>> s_cacheEpisodes;    // seasonRk -> episodes
 static std::map<std::string, std::vector<PlexItem>>   s_cacheChildren;     // rk -> items inside it
 static std::map<std::string, bool>                    s_childrenBusy;
+// Seasons, episodes and children whose last fetch failed. Asking again
+// doesn't refetch until the scene drills in again.
+static std::map<std::string, bool>                    s_fetchFailed;
 
 
 // ============================================================================
@@ -136,6 +139,7 @@ void Plex_SignOut()
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
     s_cacheChildren.clear();
+    s_fetchFailed.clear();
     s_syncGen++;
     s_syncReady    = false;
     s_syncProgress = 0;
@@ -388,8 +392,10 @@ static void ChildrenWorker(unsigned gen, std::string serverUri, std::string rk)
     if (r.ok()) items = ParseItems(r.body, serverUri);
     else fprintf(stderr, "[Plex] children fetch failed for %s (status %ld)\n", rk.c_str(), r.status);
     std::lock_guard<std::mutex> lk(g_mtx);
-    if (gen == s_syncGen) s_cacheChildren[rk] = std::move(items);
     s_childrenBusy.erase(rk);
+    if (gen != s_syncGen) return;
+    if (r.ok()) s_cacheChildren[rk] = std::move(items);
+    else s_fetchFailed[rk] = true;
 }
 
 bool Plex_Cache_GetChildren(const std::string& ratingKey, std::vector<PlexItem>& out)
@@ -399,7 +405,7 @@ bool Plex_Cache_GetChildren(const std::string& ratingKey, std::vector<PlexItem>&
     std::lock_guard<std::mutex> lk(g_mtx);
     auto it = s_cacheChildren.find(ratingKey);
     if (it != s_cacheChildren.end()) { out = it->second; return true; }
-    if (!uri.empty() && !s_childrenBusy.count(ratingKey)) {
+    if (!uri.empty() && !s_childrenBusy.count(ratingKey) && !s_fetchFailed.count(ratingKey)) {
         s_childrenBusy[ratingKey] = true;
         std::thread(ChildrenWorker, (unsigned)s_syncGen, uri, ratingKey).detach();
     }
@@ -439,7 +445,8 @@ static void SeasonsWorker(std::string serverUri, std::string showRk)
     size_t n = seasons.size();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheSeasons[showRk] = std::move(seasons);
+        if (r.ok()) s_cacheSeasons[showRk] = std::move(seasons);
+        else s_fetchFailed[showRk] = true;
     }
     fprintf(stderr, "[Plex] %zu season(s) under show %s\n", n, showRk.c_str());
     s_seasonsBusy = false;
@@ -483,7 +490,8 @@ static void EpisodesWorker(std::string serverUri, std::string seasonRk)
     size_t n = episodes.size();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheEpisodes[seasonRk] = std::move(episodes);
+        if (r.ok()) s_cacheEpisodes[seasonRk] = std::move(episodes);
+        else s_fetchFailed[seasonRk] = true;
     }
     fprintf(stderr, "[Plex] %zu episode(s) under season %s\n", n, seasonRk.c_str());
     s_episodesBusy = false;
@@ -671,6 +679,18 @@ void Plex_StartSync()
 }
 
 bool        Plex_SyncReady()    { return s_syncReady; }
+
+bool Plex_FetchFailed(const std::string& rk)
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_fetchFailed.count(rk) != 0;
+}
+
+void Plex_RetryFetch(const std::string& rk)
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchFailed.erase(rk);
+}
 int         Plex_SyncProgress() { return s_syncProgress; }
 std::string Plex_SyncPhase()
 {
@@ -702,6 +722,7 @@ bool Plex_Cache_GetSeasons(const std::string& showRatingKey,
             out = it->second;
             return true;
         }
+        if (s_fetchFailed.count(showRatingKey)) return false;
     }
     // Not cached, fire a fetch; SeasonsWorker promotes the result.
     // Same server the library came from, not just the first one listed.
@@ -720,6 +741,7 @@ bool Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
             out = it->second;
             return true;
         }
+        if (s_fetchFailed.count(seasonRatingKey)) return false;
     }
     std::string uri = Plex_GetActiveServerUri();
     if (!uri.empty()) Plex_FetchEpisodes(uri, seasonRatingKey);

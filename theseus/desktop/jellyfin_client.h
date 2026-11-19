@@ -69,9 +69,15 @@ void        Jellyfin_SetServerUrl(const std::string& url);
 std::string Jellyfin_GetUserName();   // empty until token acquired
 
 // Pre-stage cache. Walks libraries + items on sign-in; seasons + episodes
-// stay lazy with permanent in-session caching (same shape as Plex).
+// load in the background on first ask (false until they land) and stay
+// cached for the session, same shape as Plex.
 void        Jellyfin_StartSync();
 bool        Jellyfin_SyncReady();
+bool        Jellyfin_SyncFailed();    // done, but the server never answered
+// Seasons, episodes or folder contents for this id failed to load. A failed
+// id isn't fetched again until RetryFetch.
+bool        Jellyfin_FetchFailed(const std::string& id);
+void        Jellyfin_RetryFetch(const std::string& id);
 std::string Jellyfin_SyncPhase();
 int         Jellyfin_SyncProgress();  // 0..1000 per-mille
 

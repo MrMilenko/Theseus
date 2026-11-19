@@ -93,6 +93,10 @@ std::string Plex_ResolveStreamUrl(const std::string& serverUri,
 // Seasons + episodes stay lazy with permanent in-session caching.
 void        Plex_StartSync();
 bool        Plex_SyncReady();
+// Seasons, episodes or children for this key failed to load. A failed key
+// isn't fetched again until RetryFetch.
+bool        Plex_FetchFailed(const std::string& ratingKey);
+void        Plex_RetryFetch(const std::string& ratingKey);
 std::string Plex_SyncPhase();
 int         Plex_SyncProgress();  // 0..1000 per-mille
 

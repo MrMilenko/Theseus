@@ -130,12 +130,15 @@ static std::thread                                       s_syncThread;
 // Bumped by sign out. A worker from an older generation finishes on its own
 // but publishes nothing, and owns s_syncRunning until it does.
 static std::atomic<unsigned>                             s_syncGen{0};
+static std::atomic<bool>                                 s_syncFailed{false};
+// Seasons, episodes and folder contents whose last fetch failed. Asking
+// again doesn't refetch until the scene drills in again.
+static std::map<std::string, bool>                       s_fetchFailed;
 static std::vector<JellyfinLibrary>                      s_cacheLibs;
 static std::map<std::string, std::vector<JellyfinItem>>  s_cacheItems;
 static std::map<std::string, std::vector<JellyfinSeason>>  s_cacheSeasons;
 static std::map<std::string, std::vector<JellyfinEpisode>> s_cacheEpisodes;
 static std::map<std::string, std::vector<JellyfinItem>>    s_cacheChildren;
-static std::map<std::string, bool>                         s_childrenBusy;
 
 // ---------- Art download queue ----------
 static std::mutex                                  s_artMtx;
@@ -185,6 +188,8 @@ void Jellyfin_SignOut()
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
     s_cacheChildren.clear();
+    s_fetchFailed.clear();
+    s_syncFailed = false;
     s_syncGen++;
     s_syncReady    = false;
     s_syncProgress = 0;
@@ -372,26 +377,26 @@ static JellyfinItem ParseItem(const std::string& obj)
     return it;
 }
 
-static std::vector<JellyfinItem> FetchItemsForLibrary(const std::string& libraryId)
+static bool FetchItemsForLibrary(const std::string& libraryId, std::vector<JellyfinItem>& out)
 {
     char url[1024];
     snprintf(url, sizeof(url),
         "%s/Users/%s/Items?ParentId=%s&Recursive=false&Fields=Overview,ProductionYear,Genres&EnableUserData=true",
         g_jellyfinUrl, g_jellyfinUserId, libraryId.c_str());
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
-    std::vector<JellyfinItem> out;
+    out.clear();
     if (!r.ok()) {
         fprintf(stderr, "[Jellyfin] items fetch failed for %s (status %ld)\n",
                 libraryId.c_str(), r.status);
-        return out;
+        return false;
     }
     size_t arr = Json_FindArray(r.body, "Items");
-    if (arr == std::string::npos) return out;
+    if (arr == std::string::npos) return true;
     for (const auto& obj : Json_SplitArray(r.body, arr)) {
         JellyfinItem it = ParseItem(obj);
         if (!it.id.empty()) out.push_back(it);
     }
-    return out;
+    return true;
 }
 
 
@@ -417,6 +422,9 @@ static void SyncWorker()
     snprintf(url, sizeof(url), "%s/Users/%s/Views", g_jellyfinUrl, g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
     std::vector<JellyfinLibrary> libs;
+    s_syncFailed = !r.ok();
+    if (!r.ok())
+        fprintf(stderr, "[Jellyfin] library list failed (status %ld)\n", r.status);
     if (r.ok()) {
         size_t arr = Json_FindArray(r.body, "Items");
         if (arr != std::string::npos) {
@@ -438,7 +446,7 @@ static void SyncWorker()
         snprintf(phaseBuf, sizeof(phaseBuf),
                  "Loading %s (%d/%d)", lib.name.c_str(), i + 1, libCount);
         SetSyncPhase(gen, phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
-        itemsById[lib.id] = FetchItemsForLibrary(lib.id);
+        FetchItemsForLibrary(lib.id, itemsById[lib.id]);
     }
 
     size_t nLibs = libs.size();
@@ -467,6 +475,19 @@ void Jellyfin_StartSync()
 }
 
 bool        Jellyfin_SyncReady()    { return s_syncReady; }
+bool        Jellyfin_SyncFailed()   { return s_syncReady && s_syncFailed; }
+
+bool Jellyfin_FetchFailed(const std::string& id)
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_fetchFailed.count(id) != 0;
+}
+
+void Jellyfin_RetryFetch(const std::string& id)
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchFailed.erase(id);
+}
 int         Jellyfin_SyncProgress() { return s_syncProgress; }
 std::string Jellyfin_SyncPhase()
 {
@@ -493,16 +514,15 @@ std::vector<JellyfinItem> Jellyfin_Cache_GetItems(const std::string& libraryId)
 // Seasons + episodes (lazy, fetched on first drill)
 // ============================================================================
 
-static std::vector<JellyfinSeason> FetchSeasonsForShow(const std::string& showId)
+static bool FetchSeasonsForShow(const std::string& showId, std::vector<JellyfinSeason>& out)
 {
     char url[1024];
     snprintf(url, sizeof(url), "%s/Shows/%s/Seasons?UserId=%s&EnableUserData=true",
              g_jellyfinUrl, showId.c_str(), g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
-    std::vector<JellyfinSeason> out;
-    if (!r.ok()) return out;
+    if (!r.ok()) return false;
     size_t arr = Json_FindArray(r.body, "Items");
-    if (arr == std::string::npos) return out;
+    if (arr == std::string::npos) return true;
     for (const auto& obj : Json_SplitArray(r.body, arr)) {
         JellyfinSeason s;
         s.id   = Json_GetString(obj, "Id");
@@ -515,21 +535,20 @@ static std::vector<JellyfinSeason> FetchSeasonsForShow(const std::string& showId
         ParseDetails(obj, s);
         if (!s.id.empty()) out.push_back(s);
     }
-    return out;
+    return true;
 }
 
-static std::vector<JellyfinEpisode> FetchEpisodesForSeason(const std::string& seasonId,
-                                                           const std::string& showId)
+static bool FetchEpisodesForSeason(const std::string& seasonId, const std::string& showId,
+                                   std::vector<JellyfinEpisode>& out)
 {
     char url[1024];
     snprintf(url, sizeof(url),
              "%s/Shows/%s/Episodes?seasonId=%s&UserId=%s&Fields=Overview&EnableUserData=true",
              g_jellyfinUrl, showId.c_str(), seasonId.c_str(), g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
-    std::vector<JellyfinEpisode> out;
-    if (!r.ok()) return out;
+    if (!r.ok()) return false;
     size_t arr = Json_FindArray(r.body, "Items");
-    if (arr == std::string::npos) return out;
+    if (arr == std::string::npos) return true;
     for (const auto& obj : Json_SplitArray(r.body, arr)) {
         JellyfinEpisode e;
         e.id       = Json_GetString(obj, "Id");
@@ -544,7 +563,7 @@ static std::vector<JellyfinEpisode> FetchEpisodesForSeason(const std::string& se
         ParseDetails(obj, e);
         if (!e.id.empty()) out.push_back(e);
     }
-    return out;
+    return true;
 }
 
 // Map from seasonId -> parent showId, populated as we fetch seasons. Lets
@@ -552,52 +571,64 @@ static std::vector<JellyfinEpisode> FetchEpisodesForSeason(const std::string& se
 // with the right show id; we never have to plumb it from the caller.
 static std::map<std::string, std::string> s_seasonToShow;
 
+// One background fetch per id at a time; the scene polls the getters.
+static std::map<std::string, bool> s_fetchBusy;
+
+// True when this id needs a fetch started: not cached, not running, not failed.
+static bool ClaimFetch(const std::string& id)
+{
+    if (s_fetchBusy.count(id) || s_fetchFailed.count(id)) return false;
+    s_fetchBusy[id] = true;
+    return true;
+}
+
+static void SeasonsWorker(unsigned gen, std::string showId)
+{
+    std::vector<JellyfinSeason> seasons;
+    bool ok = FetchSeasonsForShow(showId, seasons);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchBusy.erase(showId);
+    if (gen != s_syncGen) return;
+    if (!ok) { s_fetchFailed[showId] = true; return; }
+    for (const auto& se : seasons) s_seasonToShow[se.id] = showId;
+    s_cacheSeasons[showId] = std::move(seasons);
+}
+
 bool Jellyfin_Cache_GetSeasons(const std::string& showId,
                                std::vector<JellyfinSeason>& out)
 {
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        auto it = s_cacheSeasons.find(showId);
-        if (it != s_cacheSeasons.end()) {
-            out = it->second;
-            return true;
-        }
-    }
-    std::vector<JellyfinSeason> fetched = FetchSeasonsForShow(showId);
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheSeasons[showId] = fetched;
-        for (const auto& s : fetched) s_seasonToShow[s.id] = showId;
-        out = fetched;
-    }
-    return true;
+    if (showId.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto it = s_cacheSeasons.find(showId);
+    if (it != s_cacheSeasons.end()) { out = it->second; return true; }
+    if (ClaimFetch(showId))
+        std::thread(SeasonsWorker, (unsigned)s_syncGen, showId).detach();
+    return false;
+}
+
+static void EpisodesWorker(unsigned gen, std::string seasonId, std::string showId)
+{
+    std::vector<JellyfinEpisode> eps;
+    bool ok = FetchEpisodesForSeason(seasonId, showId, eps);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchBusy.erase(seasonId);
+    if (gen != s_syncGen) return;
+    if (!ok) { s_fetchFailed[seasonId] = true; return; }
+    s_cacheEpisodes[seasonId] = std::move(eps);
 }
 
 bool Jellyfin_Cache_GetEpisodes(const std::string& seasonId,
                                 std::vector<JellyfinEpisode>& out)
 {
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        auto it = s_cacheEpisodes.find(seasonId);
-        if (it != s_cacheEpisodes.end()) {
-            out = it->second;
-            return true;
-        }
-    }
-    std::string showId;
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        auto it = s_seasonToShow.find(seasonId);
-        if (it != s_seasonToShow.end()) showId = it->second;
-    }
-    if (showId.empty()) return false;
-    std::vector<JellyfinEpisode> fetched = FetchEpisodesForSeason(seasonId, showId);
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheEpisodes[seasonId] = fetched;
-        out = fetched;
-    }
-    return true;
+    if (seasonId.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto it = s_cacheEpisodes.find(seasonId);
+    if (it != s_cacheEpisodes.end()) { out = it->second; return true; }
+    auto show = s_seasonToShow.find(seasonId);
+    if (show == s_seasonToShow.end()) return false;
+    if (ClaimFetch(seasonId))
+        std::thread(EpisodesWorker, (unsigned)s_syncGen, seasonId, show->second).detach();
+    return false;
 }
 
 
@@ -607,10 +638,13 @@ bool Jellyfin_Cache_GetEpisodes(const std::string& seasonId,
 
 static void ChildrenWorker(unsigned gen, std::string parentId)
 {
-    std::vector<JellyfinItem> items = FetchItemsForLibrary(parentId);
+    std::vector<JellyfinItem> items;
+    bool ok = FetchItemsForLibrary(parentId, items);
     std::lock_guard<std::mutex> lk(g_mtx);
-    if (gen == s_syncGen) s_cacheChildren[parentId] = std::move(items);
-    s_childrenBusy.erase(parentId);
+    s_fetchBusy.erase(parentId);
+    if (gen != s_syncGen) return;
+    if (!ok) { s_fetchFailed[parentId] = true; return; }
+    s_cacheChildren[parentId] = std::move(items);
 }
 
 bool Jellyfin_Cache_GetChildren(const std::string& parentId, std::vector<JellyfinItem>& out)
@@ -619,10 +653,8 @@ bool Jellyfin_Cache_GetChildren(const std::string& parentId, std::vector<Jellyfi
     std::lock_guard<std::mutex> lk(g_mtx);
     auto it = s_cacheChildren.find(parentId);
     if (it != s_cacheChildren.end()) { out = it->second; return true; }
-    if (!s_childrenBusy.count(parentId)) {
-        s_childrenBusy[parentId] = true;
+    if (ClaimFetch(parentId))
         std::thread(ChildrenWorker, (unsigned)s_syncGen, parentId).detach();
-    }
     return false;
 }
 
