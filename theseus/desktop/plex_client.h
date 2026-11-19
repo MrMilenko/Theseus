@@ -132,3 +132,10 @@ void Plex_ReportPlayback(const std::string& ratingKey, int event,
 unsigned Plex_WatchStamp();
 // Scrobbles or unscrobbles it on the server; the cache shows it straight away.
 void Plex_SetPlayed(const std::string& ratingKey, bool played);
+
+// Search across the server, in the background. Results show up as the items
+// of the "uix-search" library at the end of the list.
+enum { PLEX_SEARCH_NONE, PLEX_SEARCH_BUSY, PLEX_SEARCH_DONE, PLEX_SEARCH_FAILED };
+void        Plex_Search(const std::string& term);
+std::string Plex_SearchTerm();
+int         Plex_SearchState();

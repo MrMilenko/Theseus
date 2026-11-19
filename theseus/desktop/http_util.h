@@ -18,6 +18,9 @@ struct HttpResponse {
 std::string Http_GetToString(const std::string& url);
 bool        Http_GetToFile(const std::string& url, const std::string& outPath);
 
+// Percent-encodes everything but letters, digits and -_.~ for a query value.
+std::string Http_UrlEncode(const std::string& s);
+
 // True when a server-supplied id is fine as a bare filename: letters, digits,
 // '-', '_' and inner dots only, 1 to 128 chars, never "." or "..".
 bool        Http_IsSafeFileId(const std::string& id);

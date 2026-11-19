@@ -113,3 +113,10 @@ void Jellyfin_ReportPlayback(const std::string& itemId, int event,
 unsigned Jellyfin_WatchStamp();
 // Marks it watched or not on the server; the cache shows it straight away.
 void Jellyfin_SetPlayed(const std::string& itemId, bool played);
+
+// Search across the libraries, in the background. Results show up as the
+// items of the "uix-search" library at the end of the list.
+enum { JELLYFIN_SEARCH_NONE, JELLYFIN_SEARCH_BUSY, JELLYFIN_SEARCH_DONE, JELLYFIN_SEARCH_FAILED };
+void        Jellyfin_Search(const std::string& term);
+std::string Jellyfin_SearchTerm();
+int         Jellyfin_SearchState();

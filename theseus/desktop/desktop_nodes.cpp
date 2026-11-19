@@ -3540,6 +3540,10 @@ public:
 		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
 		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
 		char buf[32];
+		if (libs[i].type == "search") {
+			std::string term = Plex_SearchTerm();
+			return new CStrObject(_T((term.empty() ? libs[i].title : libs[i].title + "  \xC2\xB7  " + term).c_str()));
+		}
 		snprintf(buf, sizeof(buf), "  \xC2\xB7  %d", (int)Plex_Cache_GetItems(libs[i].sectionKey).size());
 		return new CStrObject(_T((libs[i].title + buf).c_str()));
 	}
@@ -3614,6 +3618,7 @@ public:
 	CStrObject* GetListTitle()
 	{
 		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
+		if (m_libKey == "uix-search") return new CStrObject(_T(("\xE2\x80\x9C" + SearchTerm() + "\xE2\x80\x9D").c_str()));
 		return new CStrObject(_T(m_libName.c_str()));
 	}
 
@@ -3865,6 +3870,18 @@ public:
 
 	// Bumps when a playback report or a mark changes watch state.
 	int GetWatchStamp() { return (int)Plex_WatchStamp(); }
+
+	// The search row at the end of the libraries: the keyboard's text goes
+	// here, and the results open as that library's items.
+	static std::string SearchTerm() { return Plex_SearchTerm(); }
+	void Search(const TCHAR* term)
+	{
+		std::string t = term ? term : "";
+		while (!t.empty() && t.back() == ' ') t.pop_back();
+		while (!t.empty() && t.front() == ' ') t.erase(0, 1);
+		Plex_Search(t);
+	}
+	CStrObject* GetSearchTerm() { return new CStrObject(_T(SearchTerm().c_str())); }
 
 	// RB: watched becomes unwatched and the other way round. The new state,
 	// or -1 when the row can't be marked.
@@ -4121,6 +4138,12 @@ public:
 			return Plex_Cache_GetLibraries().empty() ? "No libraries" : "";
 		}
 		if (view == 1) {
+			if (m_folders.empty() && m_libKey == "uix-search") {
+				int state = Plex_SearchState();
+				if (state == PLEX_SEARCH_BUSY) return "Searching...";
+				if (state == PLEX_SEARCH_FAILED) return Unreachable();
+				return CurrentItems().empty() ? "Nothing found" : "";
+			}
 			if (m_folders.empty()) return CurrentItems().empty() ? "Nothing here" : "";
 			std::vector<PlexItem> kids;
 			bool cached = Plex_Cache_GetChildren(m_folders.back().key, kids);
@@ -4191,6 +4214,8 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_IV(GetWatchStamp)
 	NODE_FUN_III(CanStartOver)
 	NODE_FUN_III(ToggleWatched)
+	NODE_FUN_VS(Search)
+	NODE_FUN_SV(GetSearchTerm)
 END_NODE_FUN()
 
 
@@ -4244,6 +4269,10 @@ public:
 		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
 		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
 		char buf[32];
+		if (libs[i].type == "search") {
+			std::string term = Jellyfin_SearchTerm();
+			return new CStrObject(_T((term.empty() ? libs[i].name : libs[i].name + "  \xC2\xB7  " + term).c_str()));
+		}
 		snprintf(buf, sizeof(buf), "  \xC2\xB7  %d", (int)Jellyfin_Cache_GetItems(libs[i].id).size());
 		return new CStrObject(_T((libs[i].name + buf).c_str()));
 	}
@@ -4319,6 +4348,7 @@ public:
 	CStrObject* GetListTitle()
 	{
 		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
+		if (m_libKey == "uix-search") return new CStrObject(_T(("\xE2\x80\x9C" + SearchTerm() + "\xE2\x80\x9D").c_str()));
 		return new CStrObject(_T(m_libName.c_str()));
 	}
 
@@ -4435,6 +4465,18 @@ public:
 
 	// Bumps when a playback report or a mark changes watch state.
 	int GetWatchStamp() { return (int)Jellyfin_WatchStamp(); }
+
+	// The search row at the end of the libraries: the keyboard's text goes
+	// here, and the results open as that library's items.
+	static std::string SearchTerm() { return Jellyfin_SearchTerm(); }
+	void Search(const TCHAR* term)
+	{
+		std::string t = term ? term : "";
+		while (!t.empty() && t.back() == ' ') t.pop_back();
+		while (!t.empty() && t.front() == ' ') t.erase(0, 1);
+		Jellyfin_Search(t);
+	}
+	CStrObject* GetSearchTerm() { return new CStrObject(_T(SearchTerm().c_str())); }
 
 	// Movies, episodes, tracks and whole series take a watched mark; other
 	// folders don't.
@@ -4848,6 +4890,12 @@ public:
 			return Jellyfin_Cache_GetLibraries().empty() ? "No libraries" : "";
 		}
 		if (view == 1) {
+			if (m_folders.empty() && m_libKey == "uix-search") {
+				int state = Jellyfin_SearchState();
+				if (state == JELLYFIN_SEARCH_BUSY) return "Searching...";
+				if (state == JELLYFIN_SEARCH_FAILED) return Unreachable();
+				return CurrentItems().empty() ? "Nothing found" : "";
+			}
 			if (m_folders.empty()) return CurrentItems().empty() ? "Nothing here" : "";
 			std::vector<JellyfinItem> kids;
 			bool cached = Jellyfin_Cache_GetChildren(m_folders.back().id, kids);
@@ -4916,6 +4964,8 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_IV(GetWatchStamp)
 	NODE_FUN_III(CanStartOver)
 	NODE_FUN_III(ToggleWatched)
+	NODE_FUN_VS(Search)
+	NODE_FUN_SV(GetSearchTerm)
 END_NODE_FUN()
 
 

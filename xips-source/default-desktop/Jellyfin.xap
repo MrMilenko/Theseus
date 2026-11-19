@@ -224,7 +224,20 @@ function GetPosterArt()
 }
 
 
+// The Search row asks for words first; the results open like a library.
 function EnterLibrary()
+{
+	if (theJellyfinLibrary.GetMeta(nJfCursor) == "search")
+	{
+		nJfCursorBackup0 = nJfCursor;
+		ShowKeyboard("SEARCH JELLYFIN", theJellyfinLibrary.GetSearchTerm(), "theJellyfinInline.children[0].JellyfinSearchDone()", "");
+		return;
+	}
+	OpenLibrary();
+}
+
+
+function OpenLibrary()
 {
 	theJellyfinLibrary.SetCurrent(nJfCursor);
 	nJfCursorBackup0 = nJfCursor;
@@ -233,6 +246,16 @@ function EnterLibrary()
 	nJfScroll        = 0;
 	BindActiveList();
 	UpdateJellyfinList();
+}
+
+
+function JellyfinSearchDone()
+{
+	if (strKeyboardEdit == "")
+		return;
+	theJellyfinLibrary.Search(strKeyboardEdit);
+	nJfCursor = nJfCursorBackup0;
+	OpenLibrary();
 }
 
 

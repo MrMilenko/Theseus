@@ -96,6 +96,10 @@ static std::map<std::string, bool>                    s_childrenBusy;
 // Seasons, episodes and children whose last fetch failed. Asking again
 // doesn't refetch until the scene drills in again.
 static std::map<std::string, bool>                    s_fetchFailed;
+// The last search, its results under the "uix-search" library.
+static std::string                                    s_searchTerm;
+static std::atomic<int>                               s_searchState{0};
+static std::atomic<unsigned>                          s_searchSeq{0};
 
 
 // ============================================================================
@@ -145,6 +149,8 @@ void Plex_SignOut()
     s_cacheEpisodes.clear();
     s_cacheChildren.clear();
     s_fetchFailed.clear();
+    s_searchTerm.clear();
+    s_searchState = PLEX_SEARCH_NONE;
     s_syncGen++;
     s_syncReady    = false;
     s_syncProgress = 0;
@@ -694,6 +700,13 @@ static void SyncWorker()
         libs.insert(libs.begin(), OnDeckShelf());
         itemsByKey[OnDeckShelf().sectionKey] = std::move(deck);
     }
+    if (!libs.empty()) {
+        PlexLibrary search;
+        search.sectionKey = "uix-search";
+        search.title      = "Search";
+        search.type       = "search";
+        libs.push_back(search);
+    }
 
     // Publish atomically. Readers see old snapshot or whole new one.
     size_t nLibs = libs.size();
@@ -937,6 +950,60 @@ void Plex_SetPlayed(const std::string& ratingKey, bool played)
         RefreshWatchState(gen, uri, ratingKey);
     });
 }
+
+
+// ============================================================================
+// Search: /hubs/search answers with one hub per kind of thing.
+// ============================================================================
+
+static void SearchWorker(unsigned gen, unsigned seq, std::string uri, std::string term)
+{
+    HttpResponse r = Http_Get(uri + "/hubs/search?limit=20&query=" + Http_UrlEncode(term),
+                              PlexHeaders(true, true));
+    std::vector<PlexItem> found;
+    if (r.ok()) {
+        size_t hubs = Json_FindArray(r.body, "Hub");
+        if (hubs != std::string::npos) {
+            for (const auto& hub : Json_SplitArray(r.body, hubs)) {
+                for (auto& it : ParseItems(hub, uri)) {
+                    const std::string& t = it.type;
+                    if (t == "movie" || t == "show" || t == "episode" || t == "artist" ||
+                        t == "album" || t == "track" || t == "collection")
+                        found.push_back(std::move(it));
+                }
+            }
+        }
+    } else {
+        fprintf(stderr, "[Plex] search failed (status %ld)\n", r.status);
+    }
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen != s_syncGen || seq != s_searchSeq) return;
+    s_cacheItems["uix-search"] = std::move(found);
+    s_searchState = r.ok() ? PLEX_SEARCH_DONE : PLEX_SEARCH_FAILED;
+}
+
+void Plex_Search(const std::string& term)
+{
+    std::string uri = Plex_GetActiveServerUri();
+    if (term.empty() || uri.empty() || !Plex_HasToken()) return;
+    unsigned seq;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        s_searchTerm = term;
+        s_cacheItems.erase("uix-search");
+        s_searchState = PLEX_SEARCH_BUSY;
+        seq = ++s_searchSeq;
+    }
+    std::thread(SearchWorker, (unsigned)s_syncGen, seq, uri, term).detach();
+}
+
+std::string Plex_SearchTerm()
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_searchTerm;
+}
+
+int Plex_SearchState() { return s_searchState; }
 
 
 // ============================================================================

@@ -141,6 +141,10 @@ static std::map<std::string, std::vector<JellyfinItem>>  s_cacheItems;
 static std::map<std::string, std::vector<JellyfinSeason>>  s_cacheSeasons;
 static std::map<std::string, std::vector<JellyfinEpisode>> s_cacheEpisodes;
 static std::map<std::string, std::vector<JellyfinItem>>    s_cacheChildren;
+// The last search, its results under the "uix-search" library.
+static std::string                                       s_searchTerm;
+static std::atomic<int>                                  s_searchState{0};
+static std::atomic<unsigned>                             s_searchSeq{0};
 
 // ---------- Art download queue ----------
 static std::mutex                                  s_artMtx;
@@ -195,6 +199,8 @@ void Jellyfin_SignOut()
     s_cacheChildren.clear();
     s_fetchFailed.clear();
     s_syncFailed = false;
+    s_searchTerm.clear();
+    s_searchState = JELLYFIN_SEARCH_NONE;
     s_syncGen++;
     s_syncReady    = false;
     s_syncProgress = 0;
@@ -482,7 +488,10 @@ static void SyncWorker()
     SetSyncPhase(gen, "Loading Continue Watching", 950);
     std::vector<JellyfinLibrary> shelves;
     FetchShelves(shelves, itemsById);
-    if (!libs.empty()) libs.insert(libs.begin(), shelves.begin(), shelves.end());
+    if (!libs.empty()) {
+        libs.insert(libs.begin(), shelves.begin(), shelves.end());
+        libs.push_back({ "uix-search", "Search", "search" });
+    }
 
     size_t nLibs = libs.size();
     SetSyncPhase(gen, "Jellyfin library ready", 1000);
@@ -851,6 +860,46 @@ void Jellyfin_SetPlayed(const std::string& itemId, bool played)
         RefreshWatchState(gen, itemId);
     });
 }
+
+
+// ============================================================================
+// Search
+// ============================================================================
+
+static void SearchWorker(unsigned gen, unsigned seq, std::string term)
+{
+    std::vector<JellyfinItem> found;
+    bool ok = FetchItemList(std::string(g_jellyfinUrl) + "/Users/" + g_jellyfinUserId +
+        "/Items?searchTerm=" + Http_UrlEncode(term) +
+        "&Recursive=true&IncludeItemTypes=Movie,Series,Episode,Audio,MusicAlbum,BoxSet&Limit=50"
+        "&Fields=Overview,ProductionYear,Genres&EnableUserData=true", found);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen != s_syncGen || seq != s_searchSeq) return;
+    s_cacheItems["uix-search"] = std::move(found);
+    s_searchState = ok ? JELLYFIN_SEARCH_DONE : JELLYFIN_SEARCH_FAILED;
+}
+
+void Jellyfin_Search(const std::string& term)
+{
+    if (term.empty() || !Jellyfin_HasToken()) return;
+    unsigned seq;
+    {
+        std::lock_guard<std::mutex> lk(g_mtx);
+        s_searchTerm = term;
+        s_cacheItems.erase("uix-search");
+        s_searchState = JELLYFIN_SEARCH_BUSY;
+        seq = ++s_searchSeq;
+    }
+    std::thread(SearchWorker, (unsigned)s_syncGen, seq, term).detach();
+}
+
+std::string Jellyfin_SearchTerm()
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_searchTerm;
+}
+
+int Jellyfin_SearchState() { return s_searchState; }
 
 
 // ============================================================================

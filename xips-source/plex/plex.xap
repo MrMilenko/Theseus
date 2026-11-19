@@ -224,7 +224,20 @@ function GetPosterArt()
 }
 
 
+// The Search row asks for words first; the results open like a library.
 function EnterLibrary()
+{
+	if (thePlexLibrary.GetMeta(nPlexCursor) == "search")
+	{
+		nPlexCursorBackup0 = nPlexCursor;
+		ShowKeyboard("SEARCH PLEX", thePlexLibrary.GetSearchTerm(), "thePlexInline.children[0].PlexSearchDone()", "");
+		return;
+	}
+	OpenLibrary();
+}
+
+
+function OpenLibrary()
 {
 	thePlexLibrary.SetCurrent(nPlexCursor);
 	nPlexCursorBackup0 = nPlexCursor;
@@ -233,6 +246,16 @@ function EnterLibrary()
 	nPlexScroll        = 0;
 	BindActiveList();
 	UpdatePlexList();
+}
+
+
+function PlexSearchDone()
+{
+	if (strKeyboardEdit == "")
+		return;
+	thePlexLibrary.Search(strKeyboardEdit);
+	nPlexCursor = nPlexCursorBackup0;
+	OpenLibrary();
 }
 
 

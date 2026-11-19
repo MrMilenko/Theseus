@@ -118,24 +118,6 @@ static std::string HttpGet(const std::string& url)
     return out;
 }
 
-// URL-encode a query string component (alpha/digit/-_. preserved, rest
-// percent-encoded). Sufficient for TMDB query params.
-static std::string UrlEncode(const char* s)
-{
-    static const char* hex = "0123456789ABCDEF";
-    std::string out;
-    for (const char* p = s; *p; p++) {
-        unsigned char c = (unsigned char)*p;
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-            out.push_back((char)c);
-        } else {
-            out.push_back('%');
-            out.push_back(hex[c >> 4]);
-            out.push_back(hex[c & 0xF]);
-        }
-    }
-    return out;
-}
 
 
 // First object in "results": [{...}, ...], or empty.
@@ -211,7 +193,7 @@ static TmdbMovie DoMovieLookup(const std::string& title, int year, const std::st
     std::string url = "https://api.themoviedb.org/3/search/movie?api_key=";
     url += g_tmdbKey;
     url += "&query=";
-    url += UrlEncode(title.c_str());
+    url += Http_UrlEncode(title);
     if (year > 0) {
         char y[16];
         snprintf(y, sizeof(y), "&year=%d", year);
@@ -241,7 +223,7 @@ static TmdbShow DoShowLookup(const std::string& title, const std::string& key)
     std::string url = "https://api.themoviedb.org/3/search/tv?api_key=";
     url += g_tmdbKey;
     url += "&query=";
-    url += UrlEncode(title.c_str());
+    url += Http_UrlEncode(title);
     url += "&include_adult=false";
     body = HttpGet(url);
     (void)key;
