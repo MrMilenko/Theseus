@@ -118,10 +118,6 @@ protected:
     void ProcessMediaKeys();
 };
 
-// The keyboard reads the pad itself while up: nav is off for the duration,
-// so ImGui's key state isn't fed.
-SDL_GameController* Joy_GetController() { return Pads_Active(); }
-
 CJoystick *CJoystick::c_pActivePad = NULL;
 CJoystick *CJoystick::c_pLastActivePad = NULL;
 
@@ -348,60 +344,54 @@ void CJoystick::EnableGlobalInput(int bEnable)
 // ============================================================================
 // Input Polling
 // ============================================================================
-static bool GuideChord(SDL_GameController* gc);
+static bool GuideChord();
 static void DevPadScript(JoySnapshot* out);
 
-// The pad's buttons and sticks as a snapshot. holdB drops the B of LT+B.
-static void ReadPad(SDL_GameController* gc, bool holdB, JoySnapshot* out)
+// Every pad's buttons and sticks as one snapshot. holdB drops the B of LT+B.
+static void ReadPad(bool holdB, JoySnapshot* out)
 {
-    if (gc)
-    {
-        // Face buttons -> analogDown[0..3] = A,B,X,Y
-        out->analogDown[0] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A);
-        out->analogDown[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) && !holdB;
-        out->analogDown[2] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X);
-        out->analogDown[3] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y);
-        // Black(RB), White(LB) -> analogDown[4,5]
-        out->analogDown[4] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
-        out->analogDown[5] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
-        // Triggers -> analogDown[6,7]
-        Sint16 lt = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
-        Sint16 rt = SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
-        out->analogDown[6] = (lt > 8000);
-        out->analogDown[7] = (rt > 8000);
+    // Face buttons -> analogDown[0..3] = A,B,X,Y
+    out->analogDown[0] = Pads_Button(SDL_CONTROLLER_BUTTON_A);
+    out->analogDown[1] = Pads_Button(SDL_CONTROLLER_BUTTON_B) && !holdB;
+    out->analogDown[2] = Pads_Button(SDL_CONTROLLER_BUTTON_X);
+    out->analogDown[3] = Pads_Button(SDL_CONTROLLER_BUTTON_Y);
+    // Black(RB), White(LB) -> analogDown[4,5]
+    out->analogDown[4] = Pads_Button(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+    out->analogDown[5] = Pads_Button(SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+    // Triggers -> analogDown[6,7]
+    out->analogDown[6] = Pads_Axis(SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000;
+    out->analogDown[7] = Pads_Axis(SDL_CONTROLLER_AXIS_TRIGGERRIGHT) > 8000;
 
-        // Digital buttons -> digitalDown[0..7] = DPadU,D,L,R,Start,Back,LThumb,RThumb
-        out->digitalDown[0] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_UP);
-        out->digitalDown[1] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
-        out->digitalDown[2] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
-        out->digitalDown[3] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
-        out->digitalDown[4] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START);
-        out->digitalDown[5] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_BACK);
-        out->digitalDown[6] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_LEFTSTICK);
-        out->digitalDown[7] = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
+    // Digital buttons -> digitalDown[0..7] = DPadU,D,L,R,Start,Back,LThumb,RThumb
+    out->digitalDown[0] = Pads_Button(SDL_CONTROLLER_BUTTON_DPAD_UP);
+    out->digitalDown[1] = Pads_Button(SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+    out->digitalDown[2] = Pads_Button(SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+    out->digitalDown[3] = Pads_Button(SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+    out->digitalDown[4] = Pads_Button(SDL_CONTROLLER_BUTTON_START);
+    out->digitalDown[5] = Pads_Button(SDL_CONTROLLER_BUTTON_BACK);
+    out->digitalDown[6] = Pads_Button(SDL_CONTROLLER_BUTTON_LEFTSTICK);
+    out->digitalDown[7] = Pads_Button(SDL_CONTROLLER_BUTTON_RIGHTSTICK);
 
-        // Thumbsticks (SDL Y is inverted vs Xbox)
-        float lx = (float)SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
-        float ly = (float)(-SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_LEFTY)) / 32767.0f;
-        float rx = (float)SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
-        float ry = (float)(-SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_RIGHTY)) / 32767.0f;
+    // Thumbsticks (SDL Y is inverted vs Xbox)
+    float lx = (float)Pads_Axis(SDL_CONTROLLER_AXIS_LEFTX) / 32767.0f;
+    float ly = (float)(-Pads_Axis(SDL_CONTROLLER_AXIS_LEFTY)) / 32767.0f;
+    float rx = (float)Pads_Axis(SDL_CONTROLLER_AXIS_RIGHTX) / 32767.0f;
+    float ry = (float)(-Pads_Axis(SDL_CONTROLLER_AXIS_RIGHTY)) / 32767.0f;
 
-        // Dead zone
-        if (lx > -0.9f && lx < 0.9f) lx = 0.0f;
-        if (ly > -0.9f && ly < 0.9f) ly = 0.0f;
-        if (rx > -0.9f && rx < 0.9f) rx = 0.0f;
-        if (ry > -0.9f && ry < 0.9f) ry = 0.0f;
+    // Dead zone
+    if (lx > -0.9f && lx < 0.9f) lx = 0.0f;
+    if (ly > -0.9f && ly < 0.9f) ly = 0.0f;
+    if (rx > -0.9f && rx < 0.9f) rx = 0.0f;
+    if (ry > -0.9f && ry < 0.9f) ry = 0.0f;
 
-        out->thumbLX = lx;
-        out->thumbLY = ly;
-        out->thumbRX = rx;
-        out->thumbRY = ry;
-    }
+    out->thumbLX = lx;
+    out->thumbLY = ly;
+    out->thumbRX = rx;
+    out->thumbRY = ry;
 }
 
 void CJoystick::PollSDL(JoySnapshot* out)
 {
-    SDL_GameController* gc = Pads_Active();
     memset(out, 0, sizeof(*out));
 
     // Tools have the pad: leave it zeroed and the dashboard sits still.
@@ -410,9 +400,9 @@ void CJoystick::PollSDL(JoySnapshot* out)
     // So does the guide, while it's open.
     if (Guide_TakesInput()) return;
 
-    const bool guideHoldsB = GuideChord(gc);
+    const bool guideHoldsB = GuideChord();
 
-    ReadPad(gc, guideHoldsB, out);
+    ReadPad(guideHoldsB, out);
 
     // --- Keyboard overlay (OR on top) ---
     extern bool ImGui_WantsKeyboard();
@@ -483,18 +473,20 @@ void CJoystick::PollSDL(JoySnapshot* out)
 
 // Guide button, LT+B or F7 asks for the guide. The B of LT+B never reaches
 // the scene, or it would also back out of whatever is under the guide.
-static bool GuideChord(SDL_GameController* gc)
+static bool GuideChord()
 {
     extern bool g_guideRequested;
     extern SDL_Window* g_pSDLWindow;
     static bool s_guide = false, s_chord = false, s_f7 = false;
     static bool s_holdB = false;
 
-    bool guide = false, chord = false, b = false;
-    if (gc) {
-        guide = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_GUIDE) != 0;
-        b = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) != 0;
-        chord = b && SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000;
+    // Any pad's Guide; LT and B both on the same pad.
+    bool guide = Pads_Button(SDL_CONTROLLER_BUTTON_GUIDE), chord = false;
+    const bool b = Pads_Button(SDL_CONTROLLER_BUTTON_B);
+    for (int i = 0; i < Pads_Count(); i++) {
+        SDL_GameController* gc = Pads_Get(i);
+        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) &&
+            SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000) chord = true;
     }
     extern bool ImGui_WantsKeyboard();
     const bool f7 = SDL_GetKeyboardFocus() == g_pSDLWindow && !ImGui_WantsKeyboard() &&
@@ -641,12 +633,11 @@ unsigned Joy_GuideButtons(int* device)
 {
     extern SDL_Window* g_pSDLWindow;
     extern bool ImGui_WantsKeyboard();
-    SDL_GameController* gc = Pads_Active();
-    const bool holdB = GuideChord(gc);
+    const bool holdB = GuideChord();
 
     JoySnapshot pad;
     memset(&pad, 0, sizeof(pad));
-    ReadPad(gc, holdB, &pad);
+    ReadPad(holdB, &pad);
     DevPadScript(&pad);
     DevEventScript();
     unsigned bits = 0;

@@ -7,6 +7,7 @@
 #include "std.h"
 #include "imgui.h"
 #include "imgui_internal.h"
+#include "pads.h"
 
 extern bool g_padModeActive;
 
@@ -75,12 +76,12 @@ static void Commit(ImGuiIO& io) {
 static bool s_oskUp = false;
 bool OSK_IsActive() { return s_oskUp; }
 
-// Read the pad straight from SDL: ImGui's key state is not fed while we
+// Read the pads straight from SDL: ImGui's key state is not fed while we
 // hold it, so we edge detect ourselves.
 struct PadEdge {
     bool prev[SDL_CONTROLLER_BUTTON_MAX];
-    bool Pressed(SDL_GameController* gc, SDL_GameControllerButton b) {
-        const bool now = gc && SDL_GameControllerGetButton(gc, b);
+    bool Pressed(SDL_GameControllerButton b) {
+        const bool now = Pads_Button(b);
         const bool hit = now && !prev[b];
         prev[b] = now;
         return hit;
@@ -95,25 +96,23 @@ void RenderOnScreenKeyboard() {
     if (!io.WantTextInput) { s_oskUp = false; return; }
     s_oskUp = true;
 
-    // We hold the pad, so the field below keeps focus and stays still.
-    extern SDL_GameController* Joy_GetController();
-    SDL_GameController* gc = Joy_GetController();
+    // We hold the pads, so the field below keeps focus and stays still.
 
-    if (s_pad.Pressed(gc, SDL_CONTROLLER_BUTTON_DPAD_LEFT))  s_col--;
-    if (s_pad.Pressed(gc, SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) s_col++;
-    if (s_pad.Pressed(gc, SDL_CONTROLLER_BUTTON_DPAD_UP))    s_row--;
-    if (s_pad.Pressed(gc, SDL_CONTROLLER_BUTTON_DPAD_DOWN))  s_row++;
+    if (s_pad.Pressed(SDL_CONTROLLER_BUTTON_DPAD_LEFT))  s_col--;
+    if (s_pad.Pressed(SDL_CONTROLLER_BUTTON_DPAD_RIGHT)) s_col++;
+    if (s_pad.Pressed(SDL_CONTROLLER_BUTTON_DPAD_UP))    s_row--;
+    if (s_pad.Pressed(SDL_CONTROLLER_BUTTON_DPAD_DOWN))  s_row++;
     if (s_row < 0) s_row = kRowCount;
     if (s_row > kRowCount) s_row = 0;
     if (s_col < 0) s_col = RowLen(s_row) - 1;
     if (s_col >= RowLen(s_row)) s_col = 0;
 
-    if (s_pad.Pressed(gc, SDL_CONTROLLER_BUTTON_A)) Commit(io);
-    if (s_pad.Pressed(gc, SDL_CONTROLLER_BUTTON_X)) {
+    if (s_pad.Pressed(SDL_CONTROLLER_BUTTON_A)) Commit(io);
+    if (s_pad.Pressed(SDL_CONTROLLER_BUTTON_X)) {
         io.AddKeyEvent(ImGuiKey_Backspace, true);
         io.AddKeyEvent(ImGuiKey_Backspace, false);
     }
-    if (s_pad.Pressed(gc, SDL_CONTROLLER_BUTTON_B)) {   // done, hand the pad back
+    if (s_pad.Pressed(SDL_CONTROLLER_BUTTON_B)) {   // done, hand the pad back
         io.AddKeyEvent(ImGuiKey_Enter, true);
         io.AddKeyEvent(ImGuiKey_Enter, false);
         s_oskUp = false;

@@ -1684,11 +1684,8 @@ int main(int argc, char* argv[]) {
 
             if (g_xcloudClosed) {
                 bool leave = (SDL_GetTicks() - g_xcloudClosedAtMs > kXcloudClosedAutoMs);
-                if (SDL_GameController* gc = Pads_Active()) {
-                    if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A) ||
-                        SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) ||
-                        SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START)) leave = true;
-                }
+                if (Pads_Button(SDL_CONTROLLER_BUTTON_A) || Pads_Button(SDL_CONTROLLER_BUTTON_B) ||
+                    Pads_Button(SDL_CONTROLLER_BUTTON_START)) leave = true;
                 if (leave) { g_xcloudFullscreen = false; g_xcloudClosed = false; }
             } else if (SDL_GameController* gc = Pads_Active()) {
                 // Streaming: the controller belongs to the game. SDL already
@@ -1798,9 +1795,10 @@ int main(int argc, char* argv[]) {
             const Uint8* keys = SDL_GetKeyboardState(NULL);
             bool kbXY = keys[SDL_SCANCODE_X] && keys[SDL_SCANCODE_Y];
             bool padXY = false;
-            if (SDL_GameController* gc = Pads_Active()) {
-                padXY = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X)
-                     && SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y);
+            for (int i = 0; i < Pads_Count(); i++) {
+                SDL_GameController* gc = Pads_Get(i);
+                if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X) &&
+                    SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y)) padXY = true;
             }
             static bool s_prevXY = false;
             bool xy = kbXY || padXY;

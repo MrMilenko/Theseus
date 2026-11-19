@@ -8,5 +8,12 @@ void Pads_Update();                             // once a frame, after the event
 void Pads_Shutdown();
 
 int  Pads_Count();
-// The pad pressed last, NULL with none connected.
+SDL_GameController* Pads_Get(int i);
+// The pad pressed last, NULL with none connected. Things only one player
+// can hold, like a stream, go to this one.
 SDL_GameController* Pads_Active();
+
+// Every pad drives the dashboard: a button counts held on any pad, and a
+// stick or trigger reads off whichever pad pushes it furthest.
+bool   Pads_Button(SDL_GameControllerButton button);
+Sint16 Pads_Axis(SDL_GameControllerAxis axis);

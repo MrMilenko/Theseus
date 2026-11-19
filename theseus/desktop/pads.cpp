@@ -1,7 +1,7 @@
 // pads.cpp: every controller SDL sees, opened as it connects and closed as
-// it leaves, so pads can come and go mid-session. A new press makes a pad
-// the active one; when the active one leaves, the one used most recently
-// takes over.
+// it leaves, so pads can come and go mid-session. All of them drive the
+// dashboard together. A new press makes a pad the active one; when the
+// active one leaves, the one used most recently takes over.
 
 #include "std.h"
 #include <string>
@@ -128,6 +128,28 @@ SDL_GameController* Pads_Active()
 {
     int i = Find(s_active);
     return i < 0 ? NULL : s_pads[i].gc;
+}
+
+SDL_GameController* Pads_Get(int i)
+{
+    return i < 0 || i >= (int)s_pads.size() ? NULL : s_pads[i].gc;
+}
+
+bool Pads_Button(SDL_GameControllerButton button)
+{
+    for (size_t i = 0; i < s_pads.size(); i++)
+        if (SDL_GameControllerGetButton(s_pads[i].gc, button)) return true;
+    return false;
+}
+
+Sint16 Pads_Axis(SDL_GameControllerAxis axis)
+{
+    int best = 0;
+    for (size_t i = 0; i < s_pads.size(); i++) {
+        int v = SDL_GameControllerGetAxis(s_pads[i].gc, axis);
+        if (abs(v) > abs(best)) best = v;
+    }
+    return (Sint16)best;
 }
 
 // Development only: UIX_DEV_PAD="5:plug 6:plug=ps 8:a@2 9:unplug@1" plugs
