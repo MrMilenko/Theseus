@@ -81,8 +81,9 @@ When an update ships new Data (scene archives, fonts, skins), it reaches your co
 The quickest way is the guide (Guide button, LT+B or F7) > **Games & Playlists**:
 
 - **Add a Game** picks a program, shortcut, ROM or disc image. **Runs With** sends Xbox ISOs to xemu and PS2 discs to PCSX2 (Settings > Games has Find rows for both), and a Windows program brings its own icon along.
-- **Import Steam Library**, **Import RetroArch Recent** and **Refresh ES-DE** fill the launcher in one go. On Linux, **Import Linux Apps** reads your app menu, Flatpak and snap shortcuts.
-- **Search by Name**, **Find a Game** by letter, **Favorites**, **Recently Played** and **Hidden Games** get you to anything. Each game's page has favorite and hide toggles, its time played, and **Arguments**, **Working Folder** and **Environment** for that game alone.
+- **Import Steam Library**, **Import RetroArch Recent** and **Refresh ES-DE** fill the launcher in one go, and so do **Import Epic Games**, **Import GOG Games**, **Import Lutris Games** and **Import itch.io Games** when those are installed (Heroic's Epic and GOG games count too). On Linux, **Import Linux Apps** reads your app menu, Flatpak and snap shortcuts.
+- **Search by Name**, **Find a Game** by letter, **Favorites**, **Recently Played** and **Hidden Games** get you to anything. In a game list, X filters by where games come from (or Most Played, Never Played) and Y sorts All Games by name, time played or last played.
+- **Collections** are your own groups: add a game from its page and the collection shows up in the dashboard's launcher next to Favorites. Each game's page also has favorite and hide toggles, its time played, and **Arguments**, **Working Folder** and **Environment** for that game alone.
 
 For hand editing, **Title Maker** (F3) has every entry and the import tabs:
 
@@ -91,7 +92,7 @@ For hand editing, **Title Maker** (F3) has every entry and the import tabs:
 - **RetroArch** finds your install, and **Import Recent Titles** pulls in what you've played lately with the core and box art already sorted. Or pick a ROM and a core by hand.
 - **ES-DE** points at your ES-DE data folder (the one holding `gamelists/`). Your systems and games show up under an ES-DE category, read live on every launch.
 
-Entries from Main, Steam and RetroArch are stored in **`Configs/games.ini`** inside your user data folder, with their icons in `Configs/icons/` and the icon mapping in `Configs/Icons.ini`. Back those up and you've backed up your launcher. ES-DE and Xbox Cloud Gaming entries are never written there; they're rebuilt each launch from their source.
+Entries from Main, Steam and RetroArch are stored in **`Configs/games.ini`** inside your user data folder, with their icons in `Configs/icons/` and the icon mapping in `Configs/Icons.ini`. Guide > Logs & Help > **Back Up My Settings** copies those and your settings into a dated folder under `Backups`, and **Restore a Backup** puts one back. ES-DE and Xbox Cloud Gaming entries are never written there; they're rebuilt each launch from their source.
 
 The Steam, RetroArch and ES-DE tabs can be hidden under Optional Tabs at the top of Main. Hiding a tab keeps its entries. When you launch something, the dashboard fades to black and minimizes so the game gets the screen, and idles while it plays. When the game closes, its time played is added and the dashboard comes back (Settings > Games > Back to UIX When a Game Closes turns that off). Steam games count from when Steam says they're running. A launcher that starts the real game and quits right away isn't followed. Cloud and remote play streams run inside the dashboard window instead.
 
