@@ -174,6 +174,7 @@ bool XdgApps_Parse(const char* file, XdgApp* out) {
 		else if (!strcasecmp(k, "Exec"))       out->exec = val;
 		else if (!strcasecmp(k, "Icon"))       out->icon = val;
 		else if (!strcasecmp(k, "Categories")) categories = val;
+		else if (!strcasecmp(k, "Path"))       out->workdir = val;
 		else if (!strcasecmp(k, "Hidden"))     hidden = !strcasecmp(val.c_str(), "true");
 		else if (!strcasecmp(k, "NoDisplay"))  hidden = hidden || !strcasecmp(val.c_str(), "true");
 		else if (!strcasecmp(k, "Terminal"))   terminal = !strcasecmp(val.c_str(), "true");
@@ -265,7 +266,8 @@ bool XdgApps_Add(const XdgApp& app, const char* category) {
 	static unsigned s_bump = 0;
 	char id[16];
 	snprintf(id, sizeof(id), "%08x", (unsigned)time(NULL) + s_bump++);
-	VGames_Add(clean, id, cmd.c_str(), "E", category);
+	int row = VGames_Add(clean, id, cmd.c_str(), "E", category);
+	if (row >= 0) snprintf(g_vgames.games[row].workdir, sizeof(g_vgames.games[row].workdir), "%s", app.workdir.c_str());
 	std::string icon = XdgApps_IconFile(app.icon);
 	if (!icon.empty()) {
 		char dst[1024];

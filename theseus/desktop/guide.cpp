@@ -277,7 +277,7 @@ enum Act {
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
-    GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES,
+    GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT,
     GA_COUNT
 };
 
@@ -321,7 +321,7 @@ static const float kWideKeys[KEY_COUNT - KEY_CHARS][2] = {
     { 0, 1.5f }, { 1.5f, 1.5f }, { 3, 3 }, { 6, 1.5f }, { 7.5f, 1.25f }, { 8.75f, 1.25f },
 };
 
-enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH };
+enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH, ED_GAMEOPT };
 
 struct Editor {
     bool on, secret, shift, symbols;
@@ -591,6 +591,15 @@ static void Build()
             "Counted when the game closes. Games another launcher starts for us can't be timed.");
         std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
         Add("Category", where.c_str(), NULL);
+        // Rows from someone else's library aren't saved, so neither would these be.
+        if (!VGames_IsLive(*vg)) {
+            Add("Arguments", vg->args[0] ? vg->args : "None", "Added after the launch line, like -windowed.",
+                GA_GAMEOPT, 0);
+            Add("Working Folder", vg->workdir[0] ? vg->workdir : "Its own",
+                "Where the game starts. Empty starts it in the program's own folder.", GA_GAMEOPT, 1);
+            Add("Environment", vg->env[0] ? vg->env : "None",
+                "NAME=value, more than one split by ;. Like DXVK_HUD=1;MANGOHUD=1", GA_GAMEOPT, 2);
+        }
         break;
     }
     case GV_APPS: {
@@ -908,6 +917,14 @@ static void EditDone()
     case ED_SEARCH:
         g.search = Tidy(e.text, false);
         break;
+    case ED_GAMEOPT: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        char* field = e.arg == 0 ? vg->args : e.arg == 1 ? vg->workdir : vg->env;
+        snprintf(field, sizeof(vg->args), "%s", Tidy(e.text, e.arg == 1).c_str());
+        VGames_Save();
+        break;
+    }
     }
     bool search = e.what == ED_SEARCH && !g.search.empty();
     EditClose();
@@ -1093,6 +1110,13 @@ static void Select()
             g.found[r.arg] = "Not found";
         }
         Build();
+        break;
+    }
+    case GA_GAMEOPT: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        const char* text = r.arg == 0 ? vg->args : r.arg == 1 ? vg->workdir : vg->env;
+        EditOpen(ED_GAMEOPT, r.arg, r.label.c_str(), text, sizeof(vg->args) - 1, false);
         break;
     }
     case GA_NAME:

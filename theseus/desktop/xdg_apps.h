@@ -9,6 +9,7 @@
 
 struct XdgApp {
 	std::string name, exec, icon, path;   // path is the .desktop file
+	std::string workdir;                  // its Path, where it wants to start
 	bool game;                            // Categories has Game
 };
 

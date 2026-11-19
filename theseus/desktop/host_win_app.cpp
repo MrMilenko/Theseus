@@ -554,6 +554,12 @@ int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio) {
 	return count;
 }
 
+// The C runtime's copy and the one CreateProcess hands down, kept the same.
+void Host_SetEnv(const char* name, const char* value) {
+	_putenv_s(name, value ? value : "");
+	SetEnvironmentVariableA(name, value);
+}
+
 const char* Host_Name() { return "Windows"; }
 const char* Host_DefaultShaderDir() { return "dx11"; }
 
