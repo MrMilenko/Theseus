@@ -988,15 +988,42 @@ static void SongToDB(const Song& s, DBEntry& e)
     e.album       = s.album;
 }
 
+// Numbers inside names compare as numbers, so "2 - Song" comes before
+// "10 - Song", and case doesn't matter.
+static bool NaturalLess(const std::string& a, const std::string& b)
+{
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        unsigned char ca = (unsigned char)a[i], cb = (unsigned char)b[j];
+        if (isdigit(ca) && isdigit(cb)) {
+            size_t ie = i, je = j;
+            while (ie < a.size() && a[ie] == '0') ie++;
+            while (je < b.size() && b[je] == '0') je++;
+            size_t ia = ie, jb = je;
+            while (ia < a.size() && isdigit((unsigned char)a[ia])) ia++;
+            while (jb < b.size() && isdigit((unsigned char)b[jb])) jb++;
+            if (ia - ie != jb - je) return ia - ie < jb - je;
+            int c = a.compare(ie, ia - ie, b, je, jb - je);
+            if (c != 0) return c < 0;
+            i = ia; j = jb;
+            continue;
+        }
+        int la = tolower(ca), lb = tolower(cb);
+        if (la != lb) return la < lb;
+        i++; j++;
+    }
+    return a.size() - i < b.size() - j;
+}
+
+// Track number from the tags first. Without one, the file name decides,
+// since that's where rippers and stores put the order ("01 - Intro.mp3").
 static void SortSoundtrackSongs(Soundtrack& st)
 {
-    std::sort(st.songs.begin(), st.songs.end(), [](const Song& a, const Song& b) {
+    std::stable_sort(st.songs.begin(), st.songs.end(), [](const Song& a, const Song& b) {
         int an = a.trackNumber > 0 ? a.trackNumber : 0x7fffffff;
         int bn = b.trackNumber > 0 ? b.trackNumber : 0x7fffffff;
         if (an != bn) return an < bn;
-        const std::string& aname = !a.title.empty() ? a.title : a.name;
-        const std::string& bname = !b.title.empty() ? b.title : b.name;
-        return aname < bname;
+        return NaturalLess(a.name, b.name);
     });
 }
 
@@ -1122,7 +1149,7 @@ int DashMusic_Scan(const char* musicRoot)
             const char* nm = slash ? slash + 1 : entries[i].c_str();
             soundtrack.songs.push_back(BuildSong(entries[i], StripExtension(nm)));
         }
-        SortSoundtrackSongs(soundtrack);
+        // A playlist file is already in the order its author wants.
         s_soundtracks.push_back(soundtrack);
     };
 
