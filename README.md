@@ -22,14 +22,15 @@ On macOS, Linux and Windows it goes by **UIX Desktop**: a launcher and media cen
 
 ## What's in it
 
-- **Games grid** for anything you can launch: native PC games, scripts, Steam, RetroArch, [ES-DE](https://es-de.org/) collections, Xbox ISOs through [xemu](https://xemu.app), and your Xbox Cloud Gaming library
+- **Games grid** for anything you can launch: native PC games, scripts, Steam, RetroArch, [ES-DE](https://es-de.org/) collections, Xbox ISOs through [xemu](https://xemu.app), PS2 discs through [PCSX2](https://pcsx2.net), Linux app shortcuts, and your Xbox Cloud Gaming library. Box art, favorites, recently played, time played, and the dashboard comes back when a game closes
+- **The guide**: press the Guide button, LT+B or F7 anywhere for settings, accounts, adding and finding games, logs and help, all from a controller with its own on screen keyboard
 - **Title Maker** (F3) for adding and editing entries by hand, with import tabs for Steam, RetroArch and ES-DE
 - **Media library** for your Movies and TV folders, with posters from [TMDB](https://www.themoviedb.org/), plus [Plex](https://www.plex.tv/) and [Jellyfin](https://jellyfin.org/) servers. Playback runs through libmpv
 - **Music** from your own folders, with a [projectM](https://github.com/projectM-visualizer/projectm) (MilkDrop) visualizer
 - **Xbox Cloud Gaming and remote play**: sign in with your Xbox account and your cloud games and consoles show up in the grid
 - **Skins**: UIX Lite community skins drop in as is, and the Skin Editor helps you make your own
 - **CRT effect** for that living room TV look: scanlines, curvature, phosphor mask, bloom, all tunable
-- **Controllers**: Xbox, PlayStation and other SDL2 gamepads, plus full keyboard control
+- **Controllers**: Xbox, PlayStation, Nintendo and other SDL2 gamepads, any number of them, plugged in or out while it runs, with matching button prompts, rumble, and full keyboard control
 - **Xbox HDD browser** (F5) for xemu qcow2 images and their FATX partitions
 
 ## Get it
@@ -77,16 +78,22 @@ When an update ships new Data (scene archives, fonts, skins), it reaches your co
 
 ### Adding games and apps
 
-Open **Title Maker** with F3 (or Tools > Title Maker).
+The quickest way is the guide (Guide button, LT+B or F7) > **Games & Playlists**:
 
-- **Main** lists every entry, whatever added it. Create one by hand with a name and a launch line: a path to an executable, a script, a `steam://` link, or any shell command. Quote paths with spaces. **Test Launch** tries it without leaving the dashboard. **Add ISO** turns an Xbox ISO into an xemu entry once the xemu path is set (Find checks the usual install spots).
+- **Add a Game** picks a program, shortcut, ROM or disc image. **Runs With** sends Xbox ISOs to xemu and PS2 discs to PCSX2 (Settings > Games has Find rows for both), and a Windows program brings its own icon along.
+- **Import Steam Library**, **Import RetroArch Recent** and **Refresh ES-DE** fill the launcher in one go. On Linux, **Import Linux Apps** reads your app menu, Flatpak and snap shortcuts.
+- **Search by Name**, **Find a Game** by letter, **Favorites**, **Recently Played** and **Hidden Games** get you to anything. Each game's page has favorite and hide toggles, its time played, and **Arguments**, **Working Folder** and **Environment** for that game alone.
+
+For hand editing, **Title Maker** (F3) has every entry and the import tabs:
+
+- **Main** lists every entry, whatever added it. Create one by hand with a name and a launch line: a path to an executable, a script, a `steam://` link, or any shell command. Quote paths with spaces. **Test Launch** tries it without leaving the dashboard. **Add ISO** turns an Xbox ISO into an xemu entry and **Add PS2 Disc** a disc into a PCSX2 one (Find checks the usual install spots, RetroBat, scoop, Flatpak and AppImages). Icons can come from images, `.ico` files or straight out of an `.exe` or `.dll`.
 - **Steam** finds your Steam install, and **Import Steam Library** brings in every installed game with its icon. Add by App ID covers betas and demos.
 - **RetroArch** finds your install, and **Import Recent Titles** pulls in what you've played lately with the core and box art already sorted. Or pick a ROM and a core by hand.
 - **ES-DE** points at your ES-DE data folder (the one holding `gamelists/`). Your systems and games show up under an ES-DE category, read live on every launch.
 
 Entries from Main, Steam and RetroArch are stored in **`Configs/games.ini`** inside your user data folder, with their icons in `Configs/icons/` and the icon mapping in `Configs/Icons.ini`. Back those up and you've backed up your launcher. ES-DE and Xbox Cloud Gaming entries are never written there; they're rebuilt each launch from their source.
 
-The Steam, RetroArch and ES-DE tabs can be hidden under Optional Tabs at the top of Main. Hiding a tab keeps its entries. When you launch something, the dashboard fades to black and minimizes so the game gets the screen; switch back to it when you're done. Cloud and remote play streams run inside the dashboard window instead.
+The Steam, RetroArch and ES-DE tabs can be hidden under Optional Tabs at the top of Main. Hiding a tab keeps its entries. When you launch something, the dashboard fades to black and minimizes so the game gets the screen, and idles while it plays. When the game closes, its time played is added and the dashboard comes back (Settings > Games > Back to UIX When a Game Closes turns that off). Steam games count from when Steam says they're running. A launcher that starts the real game and quits right away isn't followed. Cloud and remote play streams run inside the dashboard window instead.
 
 ### Xbox Cloud Gaming
 
@@ -113,6 +120,9 @@ Skins live in `Data/Skins/<SkinName>/` in your user data folder. Pick one from t
 - **Display**: fullscreen (F11), borderless (F12), resolution, vsync, FPS cap, MSAA, renderer, hardware video decode, and Emulate Xbox Resolution, which frames scenes in the original 720x480 design space
 - **CRT Effect**: Settings > Display, or View > CRT Effect. Four presets or eight sliders
 - **Audio**: master volume, mute (Ctrl+M), and the projectM visualizer. With it on, X + Y (keys or pad) opens and closes the visualizer window
+- **Controller**: rumble, which buttons the prompts show (follow the pad, or force Xbox, PlayStation or Nintendo), and Confirm With the Right Button for Nintendo style A and B
+
+Every setting lives in the guide's Settings pages, and in the Settings window (F4) for mouse and keyboard.
 
 Command line flags: `--fullscreen`, `--4k` (fullscreen plus 2x UI scale), `--scale N`, `--no-toolbar`, `--muted`, `--minimized`, `--dashboard`, `--development`.
 
@@ -173,7 +183,7 @@ On a Mac, Cmd works in place of Ctrl.
 <details>
 <summary><b>Controller in the tool windows</b></summary>
 
-**LT + B** (the same chord as the Xbox overlay) hands the pad to the tool windows. A prompt bar along the bottom shows what each button does right now.
+Guide > Desktop Tools > **Use the Tools with the Pad** hands the pad to the tool windows. A prompt bar along the bottom shows what each button does right now.
 
 | Input | Action |
 |---|---|
@@ -183,7 +193,7 @@ On a Mac, Cmd works in place of Ctrl.
 | Y | Open a text field with the on screen keyboard |
 | Hold X | Move and resize windows |
 
-Turn it off with `PadMode=0` in `Configs/desktop.ini`. The Skin Editor stays mouse and keyboard only.
+The Skin Editor stays mouse and keyboard only.
 
 </details>
 
