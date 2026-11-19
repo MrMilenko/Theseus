@@ -1901,28 +1901,50 @@ static void LoadDesktopIcons()
 	}
 }
 
+// The Memory blade's list on the desktop. Titles and saves come from the
+// desktop's UDATA scan (or an xemu image) instead of the console's device
+// enumeration; there's one device, no copies and no deletes. The layout,
+// scrolling and selection are rebuilt from the 5960 grid (vtable 0x000267b0,
+// 0x47e50..0x49840), see docs/decomp/SavedGameGrid.md.
 class CSavedGameGrid : public CNode
 {
 public:
-	CSavedGameGrid() : m_pod(NULL), m_podRing(NULL), m_podXboxLiveAccountsPanel(NULL),
-	                   m_XboxLiveAccountsIconPanel(NULL), m_iconBumpRing(NULL), m_iconArrow(NULL),
-	                   m_iconCheck(NULL), m_curGridItem(-1), m_podSavePanel(NULL), m_podSoundtrackPanel(NULL),
-	                   m_podHilite(NULL), m_MUheader(NULL), m_MUhiliteHeader(NULL), m_firstMURow(NULL),
-	                   m_header(NULL), m_hiliteHeader(NULL), m_firstRow(NULL), m_secondRow(NULL),
-	                   m_otherRow(NULL), m_renderIcons(false), m_iconsPerRow(4),
-	                   m_scroll(0.0f), m_curTitle(-1), m_curSavedGame(-1), m_smallIcon(NULL), m_SavedIconPanel(NULL),
-	                   m_SoundtrackIconPanel(NULL), m_iconRing(NULL), m_smallIconHilite(NULL),
-	                   m_smallIconSpacing(0.0f), m_iconRowScroll(0), m_moreUp(NULL), m_moreDown(NULL),
-	                   m_detachIcon(false), m_isActive(false), m_curDevUnit(-1),
-	                   m_copyProgress(0.0f), m_freeBlocks(0), m_gameBlocks(0), m_nPrefColumn(0),
-	                   m_deleteUserContent(false), m_enumDone(false),
-	                   m_nScrollTo(0.0f), m_timeScroll(0.0f) {}
+	CSavedGameGrid()
+	{
+		m_pod = m_podRing = m_podXboxLiveAccountsPanel = m_XboxLiveAccountsIconPanel = NULL;
+		m_iconBumpRing = m_iconArrow = m_iconCheck = NULL;
+		m_podSavePanel = m_podSoundtrackPanel = m_podHilite = NULL;
+		m_MUheader = m_MUhiliteHeader = m_firstMURow = NULL;
+		m_header = m_hiliteHeader = m_firstRow = m_secondRow = m_otherRow = NULL;
+		m_smallIcon = m_SavedIconPanel = m_SoundtrackIconPanel = NULL;
+		m_iconRing = m_smallIconHilite = m_moreUp = m_moreDown = NULL;
+
+		m_curTitle = -1;
+		m_curGridItem = -1;
+		m_curSavedGame = -1;
+		m_curDevUnit = -1;
+		m_iconsPerRow = 4;
+		m_renderIcons = false;
+		m_scroll = 0.0f;
+		m_smallIconSpacing = 0.0f;
+		m_iconRowScroll = 0;
+		m_detachIcon = false;
+		m_isActive = false;
+		m_copyProgress = 0.0f;
+		m_freeBlocks = 0;
+		m_gameBlocks = 0;
+		m_nPrefColumn = 0;
+		m_deleteUserContent = false;
+		m_enumDone = false;
+		m_nScrollTo = 0.0f;
+		m_timeScroll = 0.0f;
+	}
 
 	DECLARE_NODE(CSavedGameGrid, CNode)
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS()
 
-	// Properties
+	// Scene pieces the XAP hands over.
 	CNode* m_pod;
 	CNode* m_podRing;
 	CNode* m_podXboxLiveAccountsPanel;
@@ -1946,7 +1968,7 @@ public:
 	int m_iconsPerRow;
 	float m_scroll;
 	int m_curTitle;
-	int m_curSavedGame;  // Alpha compat: save index within a title
+	int m_curSavedGame;		// Theseus: alpha dash scripts read this
 	CNode* m_smallIcon;
 	CNode* m_SavedIconPanel;
 	CNode* m_SoundtrackIconPanel;
@@ -1965,15 +1987,24 @@ public:
 	int m_nPrefColumn;
 	bool m_deleteUserContent;
 	bool m_enumDone;
-	float m_nScrollTo;
-	float m_timeScroll;
+	float m_nScrollTo;		// 5960 +0xd4
+	float m_timeScroll;		// 5960 keeps a double at +0xd8; this one is a float
 
+	// CSavedGameGrid::Advance(dt)
+	// From 5960 @ 0x00047e50: nothing without a device or while hidden; the
+	// title list is refreshed (OnUpdatingTitlesBegin / End around it); and a
+	// running scroll eases toward its target over a quarter second,
+	// scroll = (1 - t) * scroll + t * target. The desktop lists once, on the
+	// calling thread, and sums the game blocks itself; 5960's copy, delete,
+	// device and free space upkeep has no desktop counterpart.
 	void Advance(float dt)
 	{
 		CNode::Advance(dt);
 		if (m_curDevUnit == -1 || !m_isActive)
 			return;
-		if (!m_enumDone) {
+
+		if (!m_enumDone)
+		{
 			m_enumDone = true;
 			CallFunction(this, _T("OnUpdatingTitlesBegin"));
 			EnumerateTitles();
@@ -1983,19 +2014,23 @@ public:
 				m_gameBlocks += (int)((s_titles[i].totalSizeBytes + XBOX_BLOCK_SIZE - 1) / XBOX_BLOCK_SIZE);
 			CallFunction(this, _T("OnUpdatingTitlesEnd"));
 		}
-		// Smooth scroll animation (from Xbox Advance)
-		if (m_timeScroll != 0.0f) {
-			float t = (float)(TheseusGetNow() - m_timeScroll) / 0.25f;
-			if (t >= 1.0f) { m_timeScroll = 0.0f; t = 1.0f; }
-			m_scroll = (1.0f - t) * m_scroll + t * m_nScrollTo;
+
+		if (m_timeScroll == 0.0f)
+			return;
+		float t = (float)(TheseusGetNow() - m_timeScroll) / 0.25f;
+		if (t >= 1.0f)
+		{
+			t = 1.0f;
+			m_timeScroll = 0.0f;
 		}
+		m_scroll = (1.0f - t) * m_scroll + t * m_nScrollTo;
 	}
 
-	// --- Rendering (adapted from Xbox CSavedGameGrid::Render/RenderLoop/RenderIconRow) ---
-
+	// Draws pNode under the current world transform times pMatrix.
 	static void RenderNodeAt(CNode* pNode, D3DXMATRIX* pMatrix)
 	{
-		if (!pNode) return;
+		if (pNode == NULL)
+			return;
 		TheseusPushWorld();
 		TheseusMultWorld(pMatrix);
 		TheseusUpdateWorld();
@@ -2003,232 +2038,283 @@ public:
 		TheseusPopWorld();
 	}
 
-	void RenderIconRow(D3DXMATRIX* pBaseMat, float y, int nTitle, int nFirstSave, int nTotalSaves)
+	// CSavedGameGrid::RenderIconRow(frame, y, title, first, count)
+	// From 5960 @ 0x00048690: up to iconsPerRow icons starting at item first,
+	// smallIconSpacing apart, each through SavedIconPanel with its image set
+	// for the texture lookup, and the ring on the selected one unless its
+	// icon is lifted out. The desktop takes a save's own SaveImage.xbx when
+	// the folder has one, else the title's, and rings with iconRing present
+	// (5960 checks smallIconHilite).
+	void RenderIconRow(D3DXMATRIX* pFrame, float y, int nTitle, int nFirst, int nCount)
 	{
-		if (!m_smallIcon || nTitle < 0 || nTitle >= s_titleCount) return;
-		int nLim = nFirstSave + m_iconsPerRow;
-		if (nLim > nTotalSaves) nLim = nTotalSaves;
+		if (m_smallIcon == NULL || nTitle < 0 || nTitle >= s_titleCount)
+			return;
+
+		int nEnd = nFirst + m_iconsPerRow;
+		if (nEnd > nCount)
+			nEnd = nCount;
+
+		DesktopTitle& title = s_titles[nTitle];
 		float x = 0.0f;
-		for (int i = nFirstSave; i < nLim; i++) {
-			D3DXMATRIX mat2;
-			D3DXMatrixTranslation(&mat2, x, y, 0.0f);
-			D3DXMatrixMultiply(&mat2, pBaseMat, &mat2);
-			// Set title image for icon texture lookup
-			// Try save-specific image first, fall back to title-level SaveImage.xbx
-			static char szImgBuf[512];
-			DesktopTitle& t = s_titles[nTitle];
-			if (i < t.saveCount) {
-				snprintf(szImgBuf, sizeof(szImgBuf), "E:\\UDATA\\%s\\%s\\SaveImage.xbx",
-				         t.titleID, t.saves[i].folderName);
-				// Check if save-specific image exists, fall back to title root
-				char hostPath[512];
-				snprintf(hostPath, sizeof(hostPath), "%s/UDATA/%s/%s/SaveImage.xbx", AppPath_Tree("Library"),
-				         t.titleID, t.saves[i].folderName);
-				struct stat _st;
-				if (stat(hostPath, &_st) != 0) {
-					snprintf(szImgBuf, sizeof(szImgBuf), "E:\\UDATA\\%s\\SaveImage.xbx", t.titleID);
-				}
-			} else {
-				strcpy(szImgBuf, "xboxlogo64.xbx");
+		for (int item = nFirst; item < nEnd; item++, x += m_smallIconSpacing)
+		{
+			D3DXMATRIX at;
+			D3DXMatrixTranslation(&at, x, y, 0.0f);
+			D3DXMatrixMultiply(&at, pFrame, &at);
+
+			static char s_szImage[512];
+			if (item >= title.saveCount)
+			{
+				strcpy(s_szImage, "xboxlogo64.xbx");
 			}
-			g_szCurTitleImage = szImgBuf;
-			RenderNodeAt(m_SavedIconPanel, &mat2);
+			else
+			{
+				char szHost[512];
+				snprintf(szHost, sizeof (szHost), "%s/UDATA/%s/%s/SaveImage.xbx", AppPath_Tree("Library"),
+					title.titleID, title.saves[item].folderName);
+				struct stat st;
+				if (stat(szHost, &st) == 0)
+					snprintf(s_szImage, sizeof (s_szImage), "E:\\UDATA\\%s\\%s\\SaveImage.xbx", title.titleID, title.saves[item].folderName);
+				else
+					snprintf(s_szImage, sizeof (s_szImage), "E:\\UDATA\\%s\\SaveImage.xbx", title.titleID);
+			}
+
+			g_szCurTitleImage = s_szImage;
+			RenderNodeAt(m_SavedIconPanel, &at);
 			g_szCurTitleImage = NULL;
-			// Highlight ring on selected icon
-			if (!m_detachIcon && m_iconRing && nTitle == m_curTitle && i == m_curGridItem)
-				RenderNodeAt(m_iconRing, &mat2);
-			x += m_smallIconSpacing;
+
+			if (!m_detachIcon && m_iconRing != NULL && nTitle == m_curTitle && item == m_curGridItem)
+				RenderNodeAt(m_iconRing, &at);
 		}
 	}
 
-	// RenderLoop: bRender=true draws, bRender=false returns Y offset of curTitle
+	// Places pNode at (x, y, z) in the grid's frame.
+	static void RenderInFrame(CNode* pNode, D3DXMATRIX* pFrame, float x, float y, float z)
+	{
+		D3DXMATRIX at;
+		D3DXMatrixTranslation(&at, x, y, z);
+		D3DXMatrixMultiply(&at, pFrame, &at);
+		RenderNodeAt(pNode, &at);
+	}
+
+	// CSavedGameGrid::RenderLoop(render)
+	// From 5960 @ 0x00048910. The frame is a -1.571 turn about -x times a
+	// 0.05942 scale. From y = scroll each title draws its pod (with the save
+	// panel, and podRing when it's selected with no item), its header (the
+	// highlighted one when selected) and name, then y -= 0.0092, the first
+	// icon row at x -0.3292 (y -= 0.2455), the second at -0.3301 and one more
+	// at -0.3412 (y -= 0.24499 each), and y -= 0.09 before the next title.
+	// Rows only draw while y - 0.25 < 0.5, and the loop stops below -1.25.
+	// Unselected titles draw at half strength. With render off it returns
+	// the selected title's offset from the top. The desktop has no device
+	// row, arrows or soundtrack row, swaps the selection ease for a straight
+	// half, draws the name with the stock text node and takes the pod image
+	// from its own title scan.
 	float RenderLoop(bool bRender)
 	{
-		D3DXMATRIX mat, mat2;
-		D3DXVECTOR3 v(-1.0f, 0.0f, 0.0f);
-		D3DXMatrixRotationAxis(&mat, &v, -1.571f);
-		D3DXMatrixScaling(&mat2, 0.05942f, 0.05942f, 0.05942f);
-		D3DXMatrixMultiply(&mat, &mat, &mat2);
+		const float xPod = -0.3292f, zPod = -0.0271f, zRow = 0.01144f;
+		const float scale = 0.05942f;
 
+		D3DXMATRIX frame, scaleMat;
+		D3DXVECTOR3 axis(-1.0f, 0.0f, 0.0f);
+		D3DXMatrixRotationAxis(&frame, &axis, -1.571f);
+		D3DXMatrixScaling(&scaleMat, scale, scale, scale);
+		D3DXMatrixMultiply(&frame, &frame, &scaleMat);
+
+		const float yLimit = -1.25f;
 		float y = m_scroll;
-		float yLimit = -1.25f;
-		int nTitleCount = s_titleCount;
 
-		for (int nTitle = 0; nTitle < nTitleCount && (!bRender || y > yLimit); nTitle++) {
-			float nEffectAlphaSave = g_nEffectAlpha;
-			int nSaves = (nTitle >= 0 && nTitle < s_titleCount) ? s_titles[nTitle].saveCount : 0;
-			int nRowCount = (nSaves + m_iconsPerRow - 1) / m_iconsPerRow;
-			int nIconRowScroll = (nTitle == m_curTitle) ? m_iconRowScroll : 0;
-			if (nTitle < m_curTitle) {
-				nIconRowScroll = nRowCount - 3;
-				if (nIconRowScroll < 0) nIconRowScroll = 0;
+		for (int nTitle = 0; nTitle < s_titleCount && (!bRender || y > yLimit); nTitle++)
+		{
+			const bool bSelected = (nTitle == m_curTitle);
+			const float alphaSave = g_nEffectAlpha;
+
+			const int nSaves = s_titles[nTitle].saveCount;
+			const int nRows = (nSaves + m_iconsPerRow - 1) / m_iconsPerRow;
+			int nRowScroll = 0;
+			if (bSelected)
+				nRowScroll = m_iconRowScroll;
+			else if (nTitle < m_curTitle)
+				nRowScroll = (nRows - 3 > 0) ? nRows - 3 : 0;	// titles above show their last rows
+
+			if (!bRender)
+			{
+				if (bSelected)
+					return y - m_scroll;
+			}
+			else
+			{
+				g_nEffectAlpha *= bSelected ? 1.0f : 0.5f;
 			}
 
-			if (bRender) {
-				// Dim non-selected titles
-				float sel = (nTitle == m_curTitle) ? 1.0f : 0.0f;
-				g_nEffectAlpha *= 0.5f + 0.5f * sel;
-			} else if (nTitle == m_curTitle) {
-				return y - m_scroll;
-			}
+			const bool bVisible = bRender && y - 0.25f < 0.5f;
 
-			// Render title pod
-			if (bRender && y - 0.25f < 0.5f && m_pod) {
-				static char szPodImg[512];
-				if (nTitle >= 0 && nTitle < s_titleCount && s_titles[nTitle].hasImage) {
-					// imagePath is already host-relative (set in
-					// ProcessTitleEntry). either Library/UDATA/.../TitleImage.xbx
-					// for real Xbox saves or Configs/icons/<TitleID>.{jpg,png}
-					// for synthesized title pods. Pass it through directly
-					// instead of rebuilding an Xbox-style path that only
-					// resolves for the .xbx case.
-					strncpy(szPodImg, s_titles[nTitle].imagePath, sizeof(szPodImg) - 1);
-					szPodImg[sizeof(szPodImg) - 1] = 0;
-				} else {
-					strcpy(szPodImg, "xboxlogo128.xbx");
+			if (bVisible && m_pod != NULL)
+			{
+				static char s_szPodImage[512];
+				if (s_titles[nTitle].hasImage)
+				{
+					// Already host relative: the title's TitleImage.xbx or a Configs/icons picture.
+					strncpy(s_szPodImage, s_titles[nTitle].imagePath, sizeof (s_szPodImage) - 1);
+					s_szPodImage[sizeof (s_szPodImage) - 1] = 0;
 				}
-				g_szCurTitleImage = szPodImg;
-				D3DXMatrixTranslation(&mat2, -0.3292f, y, -0.0271f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-				RenderNodeAt(m_pod, &mat2);
-				if (m_podSavePanel) RenderNodeAt(m_podSavePanel, &mat2);
-				if (nTitle == m_curTitle && m_curGridItem == -1 && m_podHilite)
-					RenderNodeAt(m_podRing, &mat2);
+				else
+				{
+					strcpy(s_szPodImage, "xboxlogo128.xbx");
+				}
+
+				g_szCurTitleImage = s_szPodImage;
+				D3DXMATRIX at;
+				D3DXMatrixTranslation(&at, xPod, y, zPod);
+				D3DXMatrixMultiply(&at, &frame, &at);
+				RenderNodeAt(m_pod, &at);
+				if (m_podSavePanel != NULL)
+					RenderNodeAt(m_podSavePanel, &at);
+				if (bSelected && m_curGridItem == -1 && m_podHilite != NULL)
+					RenderNodeAt(m_podRing, &at);
 				g_szCurTitleImage = NULL;
 			}
 
-			// Render header
-			if (bRender && y - 0.25f < 0.5f) {
-				D3DXMatrixTranslation(&mat2, -0.3292f, y, -0.0271f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-				if (nTitle == m_curTitle)
-					RenderNodeAt(m_hiliteHeader, &mat2);
-				else
-					RenderNodeAt(m_header, &mat2);
-				// Draw title name text
-				if (m_renderIcons && nTitle >= 0 && nTitle < s_titleCount) {
-					D3DXMATRIX mat3;
-					D3DXMatrixScaling(&mat3, 0.06442f, 0.06442f, 0.06442f);
-					D3DXMatrixTranslation(&mat2, -0.3292f - 0.05942f, y + 0.05942f, -0.0271f + (0.6f * 0.05942f));
-					D3DXMatrixMultiply(&mat2, &mat3, &mat2);
+			if (bVisible)
+			{
+				RenderInFrame(bSelected ? m_hiliteHeader : m_header, &frame, xPod, y, zPod);
+
+				if (m_renderIcons)
+				{
 					extern CNode* GetTextNode(const char* szText, float nWidth);
-					RenderNodeAt(GetTextNode(s_titles[nTitle].titleName, -11.2f), &mat2);
+					D3DXMATRIX nameScale, at;
+					D3DXMatrixScaling(&nameScale, 0.06442f, 0.06442f, 0.06442f);
+					D3DXMatrixTranslation(&at, xPod - scale, y + scale, zPod + (0.6f * scale));
+					D3DXMatrixMultiply(&at, &nameScale, &at);
+					RenderNodeAt(GetTextNode(s_titles[nTitle].titleName, -11.2f), &at);
 				}
 			}
 			y -= 0.0092f;
 
-			// Render first icon row
-			if (bRender && y - 0.25f < 0.5f) {
-				D3DXMatrixTranslation(&mat2, -0.3292f, y, 0.01144f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-				RenderNodeAt(m_firstRow, &mat2);
-				RenderIconRow(&mat, y, nTitle, nIconRowScroll * m_iconsPerRow, nSaves);
+			if (bRender && y - 0.25f < 0.5f)
+			{
+				RenderInFrame(m_firstRow, &frame, xPod, y, zRow);
+				RenderIconRow(&frame, y, nTitle, nRowScroll * m_iconsPerRow, nSaves);
 			}
 			y -= 0.2455f;
 
-			// Second row
-			if (nSaves > m_iconsPerRow) {
-				if (bRender && y - 0.25f < 0.5f) {
-					D3DXMatrixTranslation(&mat2, -0.3301f, y, 0.01144f);
-					D3DXMatrixMultiply(&mat2, &mat, &mat2);
-					RenderNodeAt(m_secondRow, &mat2);
-					RenderIconRow(&mat, y, nTitle, (nIconRowScroll + 1) * m_iconsPerRow, nSaves);
+			if (nSaves > m_iconsPerRow)
+			{
+				if (bRender && y - 0.25f < 0.5f)
+				{
+					RenderInFrame(m_secondRow, &frame, -0.3301f, y, zRow);
+					RenderIconRow(&frame, y, nTitle, (nRowScroll + 1) * m_iconsPerRow, nSaves);
 				}
 				y -= 0.24499f;
-				// Third+ rows
-				if (nSaves > m_iconsPerRow * 2) {
-					for (int nRow = 2; nRow < (nRowCount - nIconRowScroll) && nRow < 3 && (!bRender || y > yLimit); nRow++) {
-						if (bRender && y - 0.25f < 0.5f) {
-							D3DXMatrixTranslation(&mat2, -0.3412f, y, 0.01144f);
-							D3DXMatrixMultiply(&mat2, &mat, &mat2);
-							RenderNodeAt(m_otherRow, &mat2);
-							RenderIconRow(&mat, y, nTitle, (nIconRowScroll + nRow) * m_iconsPerRow, nSaves);
-						}
-						y -= 0.24499f;
+
+				// At most three rows show; the third is the only "other" row.
+				if (nSaves > m_iconsPerRow * 2 && nRows - nRowScroll > 2 && (!bRender || y > yLimit))
+				{
+					if (bRender && y - 0.25f < 0.5f)
+					{
+						RenderInFrame(m_otherRow, &frame, -0.3412f, y, zRow);
+						RenderIconRow(&frame, y, nTitle, (nRowScroll + 2) * m_iconsPerRow, nSaves);
 					}
+					y -= 0.24499f;
 				}
 			}
+
 			y -= 0.09f;
-			g_nEffectAlpha = nEffectAlphaSave;
+			g_nEffectAlpha = alphaSave;
 		}
 		return 0.0f;
 	}
 
+	// CSavedGameGrid::Render()
+	// From 5960 @ 0x000488a0: needs the header and the three row pieces, a
+	// device and the blade showing, then runs the loop.
 	void Render()
 	{
-		if (!m_header || !m_firstRow || !m_secondRow || !m_otherRow) return;
-		if (m_curDevUnit == -1 || !m_isActive) return;
+		if (m_header == NULL || m_firstRow == NULL || m_secondRow == NULL || m_otherRow == NULL)
+			return;
+		if (m_curDevUnit == -1 || !m_isActive)
+			return;
 		EnumerateTitles();
-		if (s_titleCount == 0) return;
-		RenderLoop(true);
+		if (s_titleCount > 0)
+			RenderLoop(true);
 	}
 
-	bool OnSetProperty(const PRD* pprd, const void* pvValue)
+	// CSavedGameGrid::OnSetProperty(prop, value)
+	// From 5960 @ 0x00048530: a new curDevUnit lists that device and selects
+	// its first row (none for the memory units), a new curTitle selects it;
+	// both store the value themselves. Everything else is stored as usual.
+	bool OnSetProperty(const PRD* prop, const void* value)
 	{
-		// Match Xbox behavior: only react to specific property changes
-		if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_curDevUnit))
+		intptr_t offset = (intptr_t)prop->pbOffset;
+		if (offset == MEMBER_OFFSET(m_curDevUnit))
 		{
-			m_curDevUnit = *(int*)pvValue;
+			m_curDevUnit = *(const int*)value;
 			EnumerateTitles();
-			if (m_curDevUnit == 8)
-				SelectTitle(0);
-			else
-				SelectTitle(-1);
+			SelectTitle(m_curDevUnit == 8 ? 0 : -1);
 			return false;
 		}
-		else if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_curTitle))
+		if (offset == MEMBER_OFFSET(m_curTitle))
 		{
-			SelectTitle(*(int*)pvValue);
+			SelectTitle(*(const int*)value);
 			return false;
 		}
-		// All other properties: let base class handle
 		return true;
 	}
 
-	void SelectTitle(int idx)
+	// CSavedGameGrid::SelectTitle(n)
+	// From 5960 @ 0x00049410: clamp to the rows, aim the scroll at the row's
+	// offset (RenderLoop with render off) and start the ease. The desktop
+	// rows run past the UDATA titles into its game icon entries, which only
+	// scroll when they're real titles; it always lands on the title itself
+	// (no item, first icon row) instead of 5960's remembered column, and
+	// tells the script with OnSelChange.
+	void SelectTitle(int n)
 	{
 		LoadDesktopIcons();
-		int totalCount = s_titleCount + s_iconCount;
-		if (idx < -1) idx = -1;
-		if (idx >= totalCount) idx = totalCount - 1;
-		m_curTitle = idx;
+		const int nRowsTotal = s_titleCount + s_iconCount;
+		if (n < -1)
+			n = -1;
+		if (n >= nRowsTotal)
+			n = nRowsTotal - 1;
+
+		m_curTitle = n;
 		m_curGridItem = -1;
 		m_iconRowScroll = 0;
-		// Compute scroll target for UDATA titles (icon entries don't render in grid)
+
 		EnumerateTitles();
-		if (idx >= 0 && idx < s_titleCount) {
-			float y = -RenderLoop(false);
-			m_nScrollTo = y;
+		if (n >= 0 && n < s_titleCount)
+		{
+			m_nScrollTo = -RenderLoop(false);
 			m_timeScroll = TheseusGetNow();
 		}
 		CallFunction(this, "OnSelChange");
 	}
 
-	// Navigation
+	// selectUp / selectDown (5960 @ 0x00049590, 0x000495f0) move one title;
+	// selectLeft / selectRight (0x00049680, 0x000497b0) one item along the
+	// row. The desktop stops at the ends and only walks saves, and a sideways
+	// move reports OnSelChange itself.
 	void selectUp()
 	{
 		EnumerateTitles();
-		if (s_titleCount == 0) return;
-		if (m_curTitle > 0) {
+		if (s_titleCount > 0 && m_curTitle > 0)
 			SelectTitle(m_curTitle - 1);
-		}
 	}
 
 	void selectDown()
 	{
 		EnumerateTitles();
-		if (s_titleCount == 0) return;
-		if (m_curTitle < s_titleCount - 1) {
+		if (s_titleCount > 0 && m_curTitle < s_titleCount - 1)
 			SelectTitle(m_curTitle + 1);
-		}
 	}
 
 	void selectLeft()
 	{
 		EnumerateTitles();
-		if (m_curTitle < 0 || m_curTitle >= s_titleCount) return;
-		DesktopTitle& t = s_titles[m_curTitle];
-		if (t.saveCount > 0 && m_curGridItem > 0) {
+		if (m_curTitle < 0 || m_curTitle >= s_titleCount)
+			return;
+		if (s_titles[m_curTitle].saveCount > 0 && m_curGridItem > 0)
+		{
 			m_curGridItem--;
 			CallFunction(this, "OnSelChange");
 		}
@@ -2237,29 +2323,33 @@ public:
 	void selectRight()
 	{
 		EnumerateTitles();
-		if (m_curTitle < 0 || m_curTitle >= s_titleCount) return;
-		DesktopTitle& t = s_titles[m_curTitle];
-		if (t.saveCount > 0 && m_curGridItem < t.saveCount - 1) {
+		if (m_curTitle < 0 || m_curTitle >= s_titleCount)
+			return;
+		if (s_titles[m_curTitle].saveCount > 0 && m_curGridItem < s_titles[m_curTitle].saveCount - 1)
+		{
 			m_curGridItem++;
 			CallFunction(this, "OnSelChange");
 		}
 	}
 
+	// CSavedGameGrid::setSelImage()
+	// From 5960 @ 0x00049840: points the selected-title image at the current
+	// title's picture. The desktop also covers its game icon entries.
 	void setSelImage()
 	{
 		EnumerateTitles();
 		LoadDesktopIcons();
-		static char imgPath[512];
-		if (m_curTitle >= 0 && m_curTitle < s_titleCount && s_titles[m_curTitle].hasImage) {
-			// imagePath was set in ProcessTitleEntry to either the real
-			// TitleImage.xbx or the Configs/icons/<TitleID>.{jpg,png}
-			// fallback. Pass it through directly so synthesized titles
-			// surface their JPG icons here too.
-			strncpy(imgPath, s_titles[m_curTitle].imagePath, sizeof(imgPath) - 1);
-			imgPath[sizeof(imgPath) - 1] = 0;
-			g_szSelTitleImage = imgPath;
-		} else if (m_curTitle >= s_titleCount && m_curTitle < s_titleCount + s_iconCount) {
-			// Desktop icon entry (from Icons.ini via VGames)
+		static char s_szSelImage[512];
+		if (m_curTitle >= 0 && m_curTitle < s_titleCount)
+		{
+			if (!s_titles[m_curTitle].hasImage)
+				return;
+			strncpy(s_szSelImage, s_titles[m_curTitle].imagePath, sizeof (s_szSelImage) - 1);
+			s_szSelImage[sizeof (s_szSelImage) - 1] = 0;
+			g_szSelTitleImage = s_szSelImage;
+		}
+		else if (m_curTitle >= s_titleCount && m_curTitle < s_titleCount + s_iconCount)
+		{
 			g_szSelTitleImage = s_iconEntries[m_curTitle - s_titleCount].iconPath;
 		}
 	}

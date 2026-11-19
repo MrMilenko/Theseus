@@ -799,7 +799,7 @@ void CleanupApp()
 }
 
 // Advance()
-// From the 5960 frame loop in XApp @ 0x0002da00: the step is the change in
+// From the 5960 frame loop @ 0x0002da00: the step is the change in
 // the clock since last frame (one millisecond's worth if it didn't move),
 // then the camera, every lerper and the scene advance. Theseus clocks from
 // launch on a high resolution counter (scripts time things like the screen
