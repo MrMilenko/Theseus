@@ -1302,7 +1302,7 @@ DEF MU_text_musicCollection Transform
                     name "NavType"
                 }
             }
-            geometry DEF MediaHeaderText Text { font "Heading" text "MEDIA" }
+            geometry DEF MediaHeaderText Text { font "Heading" text "MEDIA" width -6 scrollHorizontal true scrollRate 0.1 scrollDelay 1 }
         }
     ]
     //rotation -0.999200 -0.027600 0.027600 -1.572000
