@@ -314,10 +314,15 @@ enum Act {
 
 enum Window { WIN_TITLEMAKER, WIN_HDD, WIN_PLAYLISTS, WIN_SETTINGS, WIN_INSPECTOR, WIN_XAPEDITOR };
 
+// Actions are the only rows the cursor stops on. Info rows are label and
+// value lines, captions head a block, text rows are wrapped paragraphs.
+enum RowKind { RK_ACTION, RK_INFO, RK_CAPTION, RK_TEXT };
+
 struct Row {
     std::string label, value, help;
     int act;
     int arg;   // view to open, setting index, window...
+    int kind;
 };
 
 // What the pointer can land on.
@@ -406,7 +411,41 @@ static void Add(const char* label, const char* value, const char* help, int act 
     Row r;
     r.label = label; r.value = value ? value : ""; r.help = help ? help : "";
     r.act = act; r.arg = arg;
+    r.kind = act == GA_NONE ? RK_INFO : RK_ACTION;
     g.rows.push_back(r);
+}
+
+static void Caption(const char* text)
+{
+    Add(text, NULL, NULL);
+    g.rows.back().kind = RK_CAPTION;
+}
+
+static void Para(const char* text)
+{
+    Add(text, NULL, NULL);
+    g.rows.back().kind = RK_TEXT;
+}
+
+static bool Focusable(int i)
+{
+    return i >= 0 && i < (int)g.rows.size() && g.rows[i].kind == RK_ACTION;
+}
+
+static bool AnyFocusable()
+{
+    for (size_t i = 0; i < g.rows.size(); i++)
+        if (g.rows[i].kind == RK_ACTION) return true;
+    return false;
+}
+
+// The cursor lands on the nearest action, looking the given way first.
+static void SnapCursor(int dir)
+{
+    int n = (int)g.rows.size();
+    if (Focusable(g.cursor)) return;
+    for (int i = g.cursor; i >= 0 && i < n; i += dir) if (Focusable(i)) { g.cursor = i; return; }
+    for (int i = g.cursor; i >= 0 && i < n; i -= dir) if (Focusable(i)) { g.cursor = i; return; }
 }
 
 // What a name files under: A to Z, everything else is '#'.
@@ -651,15 +690,17 @@ static void Build()
         break;
     }
     case GV_ABOUT:
-        Add("Version",  ShippedVersion(), "The build you're running.");
+        Caption("This build");
+        Add("Version",  ShippedVersion(), NULL);
         Add("Platform", Host_Name(), NULL);
         {
             VGames_Load();
             long long total = 0;
             for (int i = 0; i < g_vgames.count; i++)
                 if (g_vgames.games[i].valid) total += g_vgames.games[i].playTime;
-            Add("Time Played", PlayTime(total).c_str(), "Every game together, counted when each one closes.");
+            Add("Time Played", PlayTime(total).c_str(), NULL);
         }
+        Caption("Made by");
         Add("Created by", "Milenko", NULL);
         Add("UIX Lite references", "BigJx, ImOkRuOk", NULL);
         Add("", "Odb718, Rocky5, TeamUIX", NULL);
@@ -667,7 +708,7 @@ static void Build()
         Add("Original dashboard", "Microsoft", NULL);
         Add("Community", "Xbox-Scene", NULL);
         Add("Guide font", "Noto Sans, SIL OFL 1.1", NULL);
-        Add("And everyone who contributed", "", NULL);
+        Para("And everyone who contributed, tested and sent in a bug.");
         break;
     case GV_WELCOME: {
         const char* intro = g_welcomeDone
@@ -697,17 +738,10 @@ static void Build()
         break;
     }
     case GV_LIBRARY: {
+        Caption("Find");
         Add("Search by Name", "", "Type part of a name. \"halo\" finds Halo 2.", GA_SEARCH);
         Add("Find a Game", "", "Pick the first letter, then the game.", GA_VIEW, GV_LETTERS);
-        Add("Add a Game", "", "Pick a program or file and it shows up in the launcher.", GA_VIEW, GV_ADDGAME);
-        Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
-        Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
-        Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
-        for (int s = 0; s < kStoreCount; s++)
-            if (kStores[s].found())
-                Add(kStores[s].label, g.storeResult[s].c_str(), kStores[s].help, GA_STORE, s);
-        if (strcmp(Host_Name(), "Linux") == 0)
-            Add("Import Linux Apps", "", "Games and apps from your app menu, Flatpak and your Desktop.", GA_APPS);
+        Caption("Your lists");
         char n[32];
         std::vector<int> list;
         static const char* kListHelp[] = {
@@ -729,6 +763,16 @@ static void Build()
         Add("Collections", n, "Your own lists. Add a game to one from its page.", GA_VIEW, GV_COLLECTIONS);
         snprintf(n, sizeof(n), "%d", Playlist_Count());
         Add("Playlists", n, "Made in the Playlist Maker.", GA_VIEW, GV_PLAYLISTS);
+        Caption("Add games");
+        Add("Add a Game", "", "Pick a program or file and it shows up in the launcher.", GA_VIEW, GV_ADDGAME);
+        Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
+        Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
+        Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
+        for (int s = 0; s < kStoreCount; s++)
+            if (kStores[s].found())
+                Add(kStores[s].label, g.storeResult[s].c_str(), kStores[s].help, GA_STORE, s);
+        if (strcmp(Host_Name(), "Linux") == 0)
+            Add("Import Linux Apps", "", "Games and apps from your app menu, Flatpak and your Desktop.", GA_APPS);
         break;
     }
     case GV_COLLECTIONS: {
@@ -742,12 +786,12 @@ static void Build()
             Add(colls[i].c_str(), n, "Shows in the launcher too while it has games in it.", GA_COLLECTION, (int)i);
         }
         if (g.rows.empty())
-            Add("No collections yet", "", "Open a game and pick Collections to start one.");
+            Para("No collections yet. Open a game and pick Collections to start one.");
         break;
     }
     case GV_GAMECOLL: {
         VirtualGame* vg = PickedGame();
-        if (!vg) { Add("This game moved", "", "Go back and pick it again."); break; }
+        if (!vg) { Para("This game moved. Go back and pick it again."); break; }
         // A collection emptied here keeps its row until you leave, so it can go back in.
         std::vector<std::string> colls;
         VGames_Collections(colls, false);
@@ -800,7 +844,7 @@ static void Build()
             Add(vg.name, value.c_str(), vg.group[0] ? vg.group : vg.category, GA_GAME, list[i]);
         }
         if (g.rows.empty())
-            Add(g.gameList == GL_HIDDEN ? "Nothing hidden" : g.gameList == GL_SEARCH ? "No matches" : "Nothing here yet", "", NULL);
+            Para(g.gameList == GL_HIDDEN ? "Nothing hidden." : g.gameList == GL_SEARCH ? "No matches. Try fewer letters." : "Nothing here yet.");
         break;
     }
     case GV_LETTERS: {
@@ -819,13 +863,23 @@ static void Build()
             snprintf(n, sizeof(n), "%d", counts[k]);
             Add(label, n, k == 26 ? "Names starting with a number or a symbol." : NULL, GA_LETTER, label[0]);
         }
-        if (g.rows.empty()) Add("No games yet", "", "Add some from the Games & Playlists page.");
+        if (g.rows.empty()) Para("No games yet. Add some from the Games & Playlists page.");
         break;
     }
     case GV_GAME: {
         VirtualGame* vg = PickedGame();
-        if (!vg) { Add("This game moved", "", "Go back and pick it again."); break; }
+        if (!vg) { Para("This game moved. Go back and pick it again."); break; }
         Add("Launch", "", vg->launch, GA_LAUNCH);
+        Caption("Played");
+        Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
+        Add("Time Played", PlayTime(vg->playTime).c_str(), NULL);
+        {
+            std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
+            Add("Category", where.c_str(), NULL);
+        }
+        if (!vg->playTime)
+            Para("Time is counted when a game closes. One that another launcher starts for us can't be timed.");
+        Caption("Organize");
         Add("Favorite", vg->favorite ? "Yes" : "No", "Starred games get their own spot in the launcher.", GA_FAVORITE);
         Add("Hidden", vg->hidden ? "Yes" : "No", "Hidden games stay out of the launcher until you bring them back.",
             GA_HIDE);
@@ -835,13 +889,9 @@ static void Build()
             Add("Collections", in.empty() ? "None" : in.c_str(), "Put it in your own lists, or make a new one.",
                 GA_GAMECOLL);
         }
-        Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
-        Add("Time Played", PlayTime(vg->playTime).c_str(),
-            "Counted when the game closes. Games another launcher starts for us can't be timed.");
-        std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
-        Add("Category", where.c_str(), NULL);
         // Rows from someone else's library aren't saved, so neither would these be.
         if (!VGames_IsLive(*vg)) {
+            Caption("Launch options");
             Add("Arguments", vg->args[0] ? vg->args : "None", "Added after the launch line, like -windowed.",
                 GA_GAMEOPT, 0);
             Add("Working Folder", vg->workdir[0] ? vg->workdir : "Its own",
@@ -859,7 +909,7 @@ static void Build()
             const char* state = VGames_FindByName(clean) >= 0 ? "In Library" : g.apps[i].game ? "Game" : "App";
             Add(g.apps[i].name.c_str(), state, g.apps[i].exec.c_str(), GA_APP, (int)i);
         }
-        if (g.apps.empty()) Add("Nothing found", "", "No .desktop entries in the app menu folders or on the Desktop.");
+        if (g.apps.empty()) Para("Nothing found. There are no .desktop entries in the app menu folders or on the Desktop.");
         break;
     }
     case GV_PLAYLISTS:
@@ -870,7 +920,7 @@ static void Build()
             snprintf(n, sizeof(n), "%d", (int)pl->items.size());
             Add(pl->name.c_str(), n, "Edit playlists in the Playlist Maker (F6).", GA_PLAYLIST, i);
         }
-        if (g.rows.empty()) Add("No playlists yet", "", "Make one in the Playlist Maker (F6).");
+        if (g.rows.empty()) Para("No playlists yet. Make one in the Playlist Maker (F6).");
         break;
     case GV_PLAYLIST: {
         const Playlist* pl = Playlist_Get(g.playlist);
@@ -878,58 +928,66 @@ static void Build()
             for (size_t i = 0; i < pl->items.size(); i++)
                 Add(pl->items[i].title.empty() ? NameOnly(pl->items[i].path).c_str() : pl->items[i].title.c_str(),
                     "", NULL);
-        if (g.rows.empty()) Add("Empty", "", NULL);
+        if (g.rows.empty()) Para("This playlist is empty.");
         break;
     }
     case GV_ACCOUNTS: {
         std::string help;
+        Caption("Plex");
         if (Plex_HasToken()) {
-            Add("Plex", "Signed in", NULL);
-            Add("Sign Out of Plex", "", NULL, GA_PLEXOUT);
+            Add("Account", "Signed in", NULL);
+            Add("Sign Out", "", NULL, GA_PLEXOUT);
         } else if (Plex_PinAuthInFlight()) {
             std::string code = Plex_GetPinCode();
-            Add("Plex", code.empty() ? "Asking..." : code.c_str(),
+            Add("Code", code.empty() ? "Asking..." : code.c_str(),
                 "On any device go to plex.tv/link and enter the code. A cancels.", GA_PLEX);
         } else {
-            Add("Plex", "Sign In", "Gives you a code to enter at plex.tv/link.", GA_PLEX);
+            Add("Sign In", "", "Gives you a code to enter at plex.tv/link.", GA_PLEX);
         }
 
+        Caption("Jellyfin");
         if (Jellyfin_HasToken()) {
-            help = "Signed in as " + Jellyfin_GetUserName() + ".";
-            Add("Jellyfin", "Signed in", help.c_str());
-            Add("Sign Out of Jellyfin", "", NULL, GA_JELLYFINOUT);
+            std::string who = Jellyfin_GetUserName();
+            Add("Signed in as", who.empty() ? "Yes" : who.c_str(), NULL);
+            Add("Server", Jellyfin_GetServerUrl().c_str(), NULL);
+            Add("Sign Out", "", NULL, GA_JELLYFINOUT);
         } else {
             std::string url = Jellyfin_GetServerUrl();
-            Add("Jellyfin Server", url.empty() ? "Not set" : url.c_str(),
+            Add("Server", url.empty() ? "Not set" : url.c_str(),
                 "Your server's address, like 192.168.1.20:8096.", GA_JELLYFINURL);
             if (!url.empty() && Jellyfin_QuickConnectInFlight()) {
                 std::string code = Jellyfin_GetQuickConnectCode();
-                Add("Jellyfin", code.empty() ? "Asking..." : code.c_str(),
+                Add("Code", code.empty() ? "Asking..." : code.c_str(),
                     "In Jellyfin's web page open your account, then Quick Connect, and enter the code.", GA_JELLYFIN);
             } else if (!url.empty()) {
-                Add("Jellyfin", "Sign In", "Quick Connect gives you a code to approve on the server.", GA_JELLYFIN);
+                Add("Sign In", "", "Quick Connect gives you a code to approve on the server.", GA_JELLYFIN);
             }
         }
 
+        Caption("Xbox");
         if (Xcloud_HasToken()) {
             std::string gt = Xcloud_GetGamertag();
-            Add("Xbox", gt.empty() ? "Signed in" : gt.c_str(), NULL);
-            Add("Sign Out of Xbox", "", NULL, GA_XBOXOUT);
+            Add(gt.empty() ? "Account" : "Gamertag", gt.empty() ? "Signed in" : gt.c_str(), NULL);
+            Add("Sign Out", "", NULL, GA_XBOXOUT);
         } else if (Xcloud_LoginInFlight()) {
             std::string code = Xcloud_GetUserCode();
             help = "Go to " + Xcloud_GetVerificationUri() + " and enter the code. A cancels.";
-            Add("Xbox", code.empty() ? "Asking..." : code.c_str(), help.c_str(), GA_XBOX);
+            Add("Code", code.empty() ? "Asking..." : code.c_str(), help.c_str(), GA_XBOX);
         } else {
-            Add("Xbox", "Sign In", "For cloud gaming and your consoles.", GA_XBOX);
+            Add("Sign In", "", "For cloud gaming and your consoles.", GA_XBOX);
         }
         break;
     }
     case GV_LOGS:
+        Para("Something not right? Copy the version and the log, then paste both into an issue on "
+             "GitHub. The copy hides your home folder, IP addresses and sign-ins.");
+        Caption("Logs");
         Add("Copy Version Info", g.copied == GA_COPYVERSION ? "Copied" : "",
             "Version, platform and renderer, ready to paste.", GA_COPYVERSION);
         Add("Copy Log", g.copied == GA_COPYLOG ? "Copied" : "",
             "This run's log. Your home folder shows as ~ and IP addresses are hidden.", GA_COPYLOG);
         Add("Open Logs Folder", "", "theseus.log is this run, theseus.prev.log the one before.", GA_OPENLOGS);
+        Caption("Backups");
         Add("Back Up My Settings", g.result[GA_BACKUP].c_str(),
             "Copies your games, settings, icons and playlists into Backups in your user data folder.", GA_BACKUP);
         Backup_List(Plat_UserDataDir(), g.backups);
@@ -939,12 +997,11 @@ static void Build()
             Add("Restore a Backup", n, "Puts an earlier backup back. What you have now is backed up first.",
                 GA_BACKUPS);
         }
-        Add("Report a Problem", "", "Paste the version and the log into an issue on GitHub.");
         break;
     case GV_BACKUPS:
         for (size_t i = 0; i < g.backups.size(); i++)
             Add(g.backups[i].c_str(), "", "Pick it to see what restoring does.", GA_PICKBACKUP, (int)i);
-        if (g.rows.empty()) Add("No backups yet", "", "Back Up My Settings makes one.");
+        if (g.rows.empty()) Para("No backups yet. Back Up My Settings makes one.");
         break;
     case GV_RESTORE:
         Add("Restore This Backup", g.result[GA_RESTORE].c_str(),
@@ -952,23 +1009,29 @@ static void Build()
         Add("Open Backups Folder", "", "Each backup is a plain folder you can look through.", GA_OPENBACKUPS);
         break;
     case GV_SHORTCUTS:
-        Add(GuideCombo(), "Guide", "Opens and closes this guide.");
+        Caption("Anywhere");
+        Add(GuideCombo(), "Guide", NULL);
+        Caption("Tool windows");
         Add("F3",  "Title Maker", NULL);
         Add("F4",  "Settings Window", NULL);
         Add("F5",  "HDD Browser", NULL);
         Add("F6",  "Playlist Maker", NULL);
+        Caption("Window");
         Add("F11", "Fullscreen", NULL);
         Add("F12", "Borderless Window", NULL);
+        Caption("App");
         Add("Ctrl+M", "Mute", NULL);
         Add("Ctrl+R", "Restart Dashboard", NULL);
         Add("Ctrl+Q", "Quit", NULL);
         if (g_startupMode == 2 || g_extractedMode) {
-            Add("F1",  "Inspector", "Development mode.");
-            Add("F2",  "XAP Editor", "Development mode.");
-            Add("F10", "Hide Menu Bar", "Development mode.");
+            Caption("Development mode");
+            Add("F1",  "Inspector", NULL);
+            Add("F2",  "XAP Editor", NULL);
+            Add("F10", "Hide Menu Bar", NULL);
         }
         break;
     case GV_TOOLS:
+        Caption("Tool windows");
         Add("Title Maker", "F3", "Names, icons and categories for the launcher.", GA_WINDOW, WIN_TITLEMAKER);
         Add("Settings Window", "F4", "Every setting, in a desktop window.", GA_WINDOW, WIN_SETTINGS);
         Add("HDD Browser", "F5", "Look through the dashboard's drives.", GA_WINDOW, WIN_HDD);
@@ -976,6 +1039,7 @@ static void Build()
         if (g_padModeEnabled)
             Add("Use the Tools with the Pad", "", "The tool windows' own controller menu.", GA_PADTOOLS);
         if (g_startupMode == 2 || g_extractedMode) {
+            Caption("Development mode");
             Add("Inspector", "F1", "Development mode.", GA_WINDOW, WIN_INSPECTOR);
             Add("XAP Editor", "F2", "Development mode.", GA_WINDOW, WIN_XAPEDITOR);
         }
@@ -987,6 +1051,7 @@ static void Build()
     }
     if (g.cursor >= (int)g.rows.size()) g.cursor = g.rows.empty() ? 0 : (int)g.rows.size() - 1;
     if (g.cursor < 0) g.cursor = 0;
+    SnapCursor(1);
 }
 
 static const char* ViewTitle()
@@ -1387,7 +1452,7 @@ static void Refuse()
 
 static void Select()
 {
-    if (g.cursor < 0 || g.cursor >= (int)g.rows.size()) return;
+    if (!Focusable(g.cursor)) return;
     const Row r = g.rows[g.cursor];
     switch (r.act) {
     case GA_NONE:
@@ -1766,9 +1831,19 @@ static void MoveCursor(int step)
 {
     int n = (int)g.rows.size();
     if (n == 0) return;
-    g.cursor += step;
-    if (g.cursor < 0) g.cursor = 0;
-    if (g.cursor >= n) g.cursor = n - 1;
+    if (!AnyFocusable()) {
+        // Nothing to pick: up and down just read further. DrawRows clamps.
+        g.scroll += step < 0 ? -1 : 1;
+        if (g.scroll < 0) g.scroll = 0;
+        return;
+    }
+    int dir = step < 0 ? -1 : 1;
+    for (int left = step < 0 ? -step : step; left > 0; left--) {
+        int i = g.cursor + dir;
+        while (i >= 0 && i < n && !Focusable(i)) i += dir;
+        if (i < 0 || i >= n) break;
+        g.cursor = i;
+    }
 }
 
 // In a long game list LB and RB jump to the previous or next letter.
@@ -2065,39 +2140,110 @@ static void DrawSections()
     }
 }
 
+// Words that fit width, in as many lines as it takes.
+static void Wrap(int font, float size, const std::string& text, float width, std::vector<std::string>& out)
+{
+    out.clear();
+    std::string line;
+    size_t i = 0;
+    while (i <= text.size()) {
+        size_t j = text.find(' ', i);
+        if (j == std::string::npos) j = text.size();
+        std::string word = text.substr(i, j - i);
+        std::string tryLine = line.empty() ? word : line + " " + word;
+        if (!line.empty() && ui_overlay_text_width(font, size, tryLine.c_str()) > width) {
+            out.push_back(line);
+            line = word;
+        } else {
+            line = tryLine;
+        }
+        i = j + 1;
+    }
+    if (!line.empty()) out.push_back(line);
+}
+
+static const float TEXT_SIZE = 10.5f, TEXT_LINE = 15.0f, CAPTION_H = 24.0f;
+
+static float RowHeight(const Row& r, float width)
+{
+    if (r.kind == RK_CAPTION) return CAPTION_H;
+    if (r.kind == RK_TEXT) {
+        std::vector<std::string> lines;
+        Wrap(UI_FONT_REGULAR, TEXT_SIZE, r.label, width - 8, lines);
+        return (float)lines.size() * TEXT_LINE + 10.0f;
+    }
+    return ROW_H + ROW_GAP;
+}
+
 static void DrawRows(float left, float right, float top)
 {
     float width = right - left;
-    int shown = (int)((BODY_B - top + ROW_GAP) / (ROW_H + ROW_GAP));
-    if (shown < 1) shown = 1;
+    float room = BODY_B - top + ROW_GAP;
     int n = (int)g.rows.size();
-    if (g.cursor < g.scroll) g.scroll = g.cursor;
-    if (g.cursor >= g.scroll + shown) g.scroll = g.cursor - shown + 1;
-    if (g.scroll > n - shown) g.scroll = n - shown;
+    std::vector<float> h(n);
+    for (int i = 0; i < n; i++) h[i] = RowHeight(g.rows[i], width);
+
+    // The last start that still fills the box, so the end never floats up.
+    int maxStart = n;
+    for (float used = 0; maxStart > 0 && used + h[maxStart - 1] <= room; ) used += h[--maxStart];
+    if (AnyFocusable()) {
+        if (g.cursor < g.scroll) g.scroll = g.cursor;
+        // Keep a block's caption and text with its first action.
+        while (g.scroll > 0 && g.scroll == g.cursor && g.rows[g.scroll - 1].kind != RK_ACTION &&
+               g.rows[g.scroll - 1].kind != RK_INFO)
+            g.scroll--;
+        for (;;) {
+            float used = 0;
+            for (int i = g.scroll; i <= g.cursor && i < n; i++) used += h[i];
+            if (used <= room || g.scroll >= g.cursor) break;
+            g.scroll++;
+        }
+    }
+    if (g.scroll > maxStart) g.scroll = maxStart;
     if (g.scroll < 0) g.scroll = 0;
 
     float y = top;
-    for (int i = g.scroll; i < n && i < g.scroll + shown; i++) {
+    int i = g.scroll;
+    for (; i < n && y + h[i] <= top + room + 0.5f; i++) {
         const Row& r = g.rows[i];
         bool on = g.inPanel && i == g.cursor;
-        if (g.view == GV_ABOUT) {
-            // Credits read as a list, not buttons. A row with no label carries on
-            // the one above, so no line between them.
+        if (r.kind == RK_CAPTION) {
+            // A caption without its first row below it would just dangle.
+            if (i + 1 < n && y + h[i] + h[i + 1] > top + room + 0.5f) break;
+            std::string cap = r.label;
+            for (size_t c = 0; c < cap.size(); c++) cap[c] = (char)toupper((unsigned char)cap[c]);
+            ui_overlay_text(UI_FONT_BOLD, 8.5f, left + 4, y + (i == g.scroll ? 5.0f : 11.0f), UI_ALIGN_LEFT,
+                            ui_style_color(UI_COLOR_LABEL), cap.c_str());
+            y += h[i];
+            continue;
+        }
+        if (r.kind == RK_TEXT) {
+            std::vector<std::string> lines;
+            Wrap(UI_FONT_REGULAR, TEXT_SIZE, r.label, width - 8, lines);
+            for (size_t l = 0; l < lines.size(); l++)
+                ui_overlay_text(UI_FONT_REGULAR, TEXT_SIZE, left + 4, y + 4 + l * TEXT_LINE, UI_ALIGN_LEFT,
+                                ui_style_color(UI_COLOR_TEXT), lines[l].c_str());
+            y += h[i];
+            continue;
+        }
+        if (r.kind == RK_INFO) {
+            // A line, not a button. A row with no label carries on the one above.
             float ty = y + (ROW_H - 11.0f) * 0.5f;
             float valueW = ui_overlay_text_width(UI_FONT_BOLD, 11.0f, r.value.c_str());
-            if (valueW > width * 0.6f) valueW = width * 0.6f;
-            std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 24 - valueW - 8);
+            if (valueW > width * 0.62f) valueW = width * 0.62f;
+            std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 16 - valueW - 8);
             ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 4, ty, UI_ALIGN_LEFT, ui_style_color(UI_COLOR_STATUS),
                             label.c_str());
             if (!r.value.empty()) {
                 std::string value = Fit(UI_FONT_BOLD, 11.0f, r.value, valueW);
                 ui_overlay_text(UI_FONT_BOLD, 11.0f, right - 4, ty, UI_ALIGN_RIGHT, 0xFFFFFFFF, value.c_str());
             }
-            bool joined = i + 1 < n && g.rows[i + 1].label.empty();
-            if (!joined && i + 1 < n && i + 1 < g.scroll + shown)
+            bool nextInfo = i + 1 < n && g.rows[i + 1].kind == RK_INFO && y + h[i] + h[i + 1] <= top + room + 0.5f;
+            bool joined = nextInfo && g.rows[i + 1].label.empty();
+            if (nextInfo && !joined)
                 ui_overlay_rect(left + 4, y + ROW_H + ROW_GAP * 0.5f, width - 8, 1, 0,
                                 ui_style_color(UI_COLOR_SEPARATOR));
-            y += ROW_H + ROW_GAP;
+            y += h[i];
             continue;
         }
         if (r.act == GA_SETTING || r.act == GA_CATEGORY) {
@@ -2115,8 +2261,7 @@ static void DrawRows(float left, float right, float top)
                             r.act == GA_BACKUPS || r.act == GA_PICKBACKUP ? 14.0f : 0.0f;
             if (valueW > width * 0.45f) valueW = width * 0.45f;
             std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 24 - valueW - chevron - 8);
-            unsigned int labelColor = r.act == GA_NONE ? ui_style_color(UI_COLOR_STATUS) : 0xFFFFFFFF;
-            ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 12, ty, UI_ALIGN_LEFT, labelColor, label.c_str());
+            ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 12, ty, UI_ALIGN_LEFT, 0xFFFFFFFF, label.c_str());
             if (!r.value.empty()) {
                 std::string value = Fit(UI_FONT_BOLD, 11.0f, r.value, valueW);
                 ui_overlay_text(UI_FONT_BOLD, 11.0f, right - 12 - chevron, ty, UI_ALIGN_RIGHT,
@@ -2127,18 +2272,17 @@ static void DrawRows(float left, float right, float top)
                                 "\xE2\x80\xBA");
         }
         AddTarget(left, y, right, y + ROW_H, T_ROW, i);
-        y += ROW_H + ROW_GAP;
+        y += h[i];
     }
     // More above or below.
     if (g.scroll > 0)
         ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, top - 12, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL), "MORE");
-    if (g.scroll + shown < n)
+    if (i < n)
         ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, y - ROW_GAP + 1, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL),
                         "MORE");
 
     // The chosen row's help along the bottom.
-    if ((g.inPanel || g.welcome) && g.view != GV_ABOUT && g.cursor >= 0 && g.cursor < n &&
-        !g.rows[g.cursor].help.empty()) {
+    if ((g.inPanel || g.welcome) && Focusable(g.cursor) && !g.rows[g.cursor].help.empty()) {
         std::string help = Fit(UI_FONT_REGULAR, 10.0f, g.rows[g.cursor].help, width);
         ui_style_text(UI_TEXT_LINE, left, BODY_B + 8, UI_ALIGN_LEFT, help.c_str());
     }
