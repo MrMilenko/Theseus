@@ -666,6 +666,7 @@ unsigned Joy_GuideButtons(int* device)
         if (k[SDL_SCANCODE_Q]) keys |= GUIDE_LB;
         if (k[SDL_SCANCODE_E]) keys |= GUIDE_RB;
         if (k[SDL_SCANCODE_F]) keys |= GUIDE_X;   // the game lists' filter
+        if (k[SDL_SCANCODE_O]) keys |= GUIDE_Y;   // and All Games' order
     }
     if (bits) *device = 1;
     else if (keys) *device = 0;

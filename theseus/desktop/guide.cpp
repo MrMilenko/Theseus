@@ -374,6 +374,7 @@ static struct Guide {
     std::string search;    // GL_SEARCH's text
     std::string collection;              // GL_COLLECTION's name
     std::string filter;    // the game list's filter, empty for all
+    int sort;              // All Games' order, a SORT_
     std::vector<std::string> backups;   // GV_BACKUPS' rows, newest first
     std::string backup;                 // the one GV_RESTORE offers
     std::vector<std::string> collNames;  // the game page's Collections rows, kept while it's open
@@ -445,6 +446,10 @@ static std::string GameSource(const VirtualGame& vg)
     return "Programs";
 }
 
+// All Games' orders. Y steps through them.
+enum { SORT_NAME, SORT_TIME, SORT_LAST, SORT_COUNT };
+static const char* const kSorts[SORT_COUNT] = { "A to Z", "Time Played", "Last Played" };
+
 // The two filters that aren't a source.
 static const char kMostPlayed[] = "Most Played", kNeverPlayed[] = "Never Played";
 
@@ -497,6 +502,15 @@ static void CycleFilter()
 static void FilteredRows(int list, std::vector<int>& out)
 {
     GameListRows(list, out);
+    // A to Z already; the others keep it for ties.
+    if (list == GL_ALL && g.sort == SORT_TIME)
+        std::stable_sort(out.begin(), out.end(), [](int a, int b) {
+            return g_vgames.games[a].playTime > g_vgames.games[b].playTime;
+        });
+    else if (list == GL_ALL && g.sort == SORT_LAST)
+        std::stable_sort(out.begin(), out.end(), [](int a, int b) {
+            return g_vgames.games[a].lastPlayed > g_vgames.games[b].lastPlayed;
+        });
     if (g.filter.empty()) return;
     std::vector<int> kept;
     for (size_t i = 0; i < out.size(); i++)
@@ -506,6 +520,13 @@ static void FilteredRows(int list, std::vector<int>& out)
         std::stable_sort(out.begin(), out.end(), [](int a, int b) {
             return g_vgames.games[a].playTime > g_vgames.games[b].playTime;
         });
+}
+
+// Whichever order the list is in now.
+static int ListSort()
+{
+    if (g.view == GV_GAMES && g.gameList == GL_ALL && g.sort) return g.sort;
+    return g.filter == kMostPlayed ? SORT_TIME : SORT_NAME;
 }
 
 // The rows of one game list, as DB indices, before any filter.
@@ -612,6 +633,13 @@ static void Build()
     case GV_ABOUT:
         Add("Version",  ShippedVersion(), "The build you're running.");
         Add("Platform", Host_Name(), NULL);
+        {
+            VGames_Load();
+            long long total = 0;
+            for (int i = 0; i < g_vgames.count; i++)
+                if (g_vgames.games[i].valid) total += g_vgames.games[i].playTime;
+            Add("Time Played", PlayTime(total).c_str(), "Every game together, counted when each one closes.");
+        }
         Add("Created by", "Milenko", NULL);
         Add("UIX Lite references", "BigJx, ImOkRuOk", NULL);
         Add("", "Odb718, Rocky5, TeamUIX", NULL);
@@ -742,8 +770,10 @@ static void Build()
         FilteredRows(g.gameList, list);
         for (size_t i = 0; i < list.size(); i++) {
             const VirtualGame& vg = g_vgames.games[list[i]];
-            std::string value = g.filter == kMostPlayed ? PlayTime(vg.playTime)
-                              : g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed) : std::string(vg.category);
+            int sort = ListSort();
+            std::string value = sort == SORT_TIME ? PlayTime(vg.playTime)
+                              : sort == SORT_LAST || g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed)
+                              : std::string(vg.category);
             Add(vg.name, value.c_str(), vg.group[0] ? vg.group : vg.category, GA_GAME, list[i]);
         }
         if (g.rows.empty())
@@ -954,8 +984,10 @@ static const char* ViewTitle()
         else if (g.gameList == GL_LETTER) snprintf(title, sizeof(title), "Games: %c", g.letter);
         else if (g.gameList == GL_COLLECTION) snprintf(title, sizeof(title), "%.30s", g.collection.c_str());
         else snprintf(title, sizeof(title), "%s", kGameListNames[g.gameList]);
-        if (g.filter.empty()) return title;
-        snprintf(full, sizeof(full), "%s (%.40s)", title, g.filter.c_str());
+        snprintf(full, sizeof(full), "%s", title);
+        if (!g.filter.empty()) snprintf(full + strlen(full), sizeof(full) - strlen(full), " (%.40s)", g.filter.c_str());
+        if (g.gameList == GL_ALL && g.sort)
+            snprintf(full + strlen(full), sizeof(full) - strlen(full), " by %s", kSorts[g.sort]);
         return full;
     }
     case GV_GAME: {
@@ -1726,7 +1758,7 @@ static void LetterStep(int step)
 
 static void PageStep(int step)
 {
-    if (g.view == GV_GAMES && g.gameList == GL_ALL && g.filter != kMostPlayed) { LetterStep(step); return; }
+    if (g.view == GV_GAMES && g.gameList == GL_ALL && ListSort() == SORT_NAME) { LetterStep(step); return; }
     if (g.view != GV_PAGE) return;
     g.page = (g.page + step + kPageCount) % kPageCount;
     g.cursor = g.scroll = 0;
@@ -1758,6 +1790,11 @@ static void Handle(unsigned pressed)
     if (pressed & GUIDE_UP)   MoveCursor(-1);
     if (pressed & GUIDE_DOWN) MoveCursor(1);
     if ((pressed & GUIDE_X) && g.view == GV_GAMES) { CycleFilter(); Build(); }
+    if ((pressed & GUIDE_Y) && g.view == GV_GAMES && g.gameList == GL_ALL) {
+        g.sort = (g.sort + 1) % SORT_COUNT;
+        g.cursor = g.scroll = 0;
+        Build();
+    }
     // Left on a row that doesn't change goes back to the sections.
     if ((pressed & GUIDE_LEFT) && !Adjust(-1) && !g.welcome && g.stack.empty()) g.inPanel = false;
     if (pressed & GUIDE_RIGHT) Adjust(1);
@@ -2172,7 +2209,10 @@ static void DrawPrompts()
     } else if (!g.inPanel) {
         Prompt(p, &n, UI_BUTTON_A, "ENTER", "Open", GUIDE_A);
     }
-    if (!g.edit.on && g.inPanel && g.view == GV_GAMES) Prompt(p, &n, UI_BUTTON_X, "F", "Filter", GUIDE_X);
+    if (!g.edit.on && g.inPanel && g.view == GV_GAMES) {
+        Prompt(p, &n, UI_BUTTON_X, "F", "Filter", GUIDE_X);
+        if (g.gameList == GL_ALL) Prompt(p, &n, UI_BUTTON_Y, "O", "Sort", GUIDE_Y);
+    }
     if (!g.edit.on) {
         bool back = !g.welcome && g.inPanel;
         Prompt(p, &n, UI_BUTTON_B, "ESC", back ? "Back" : "Close", GUIDE_B);
