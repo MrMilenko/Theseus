@@ -35,6 +35,7 @@
 #include "ui_overlay.h"
 #include "pads.h"
 #include "launchers/steam.h"
+#include "settings_backup.h"
 #include <algorithm>
 #include <ctype.h>
 #include <strings.h>
@@ -73,6 +74,13 @@ static void RestartWithMode(const char* flag)
     args.push_back((char*)flag);
     args.push_back(NULL);
     execv(g_argv[0], args.data());
+    fprintf(stderr, "[Guide] restart failed: %s\n", strerror(errno));
+}
+
+// Starts this program over the way it was started.
+static void Restart()
+{
+    execv(g_argv[0], g_argv);
     fprintf(stderr, "[Guide] restart failed: %s\n", strerror(errno));
 }
 
@@ -265,7 +273,7 @@ static const char* kSections[SEC_COUNT] = {
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
             GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS, GV_APPS,
-            GV_COLLECTIONS, GV_GAMECOLL };
+            GV_COLLECTIONS, GV_GAMECOLL, GV_BACKUPS, GV_RESTORE };
 
 // What a game list shows.
 enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH, GL_COLLECTION };
@@ -285,6 +293,7 @@ enum Act {
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
     GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT,
     GA_COLLECTION, GA_GAMECOLL, GA_INCOLL, GA_NEWCOLL,
+    GA_BACKUP, GA_BACKUPS, GA_PICKBACKUP, GA_RESTORE, GA_OPENBACKUPS,
     GA_COUNT
 };
 
@@ -365,6 +374,8 @@ static struct Guide {
     std::string search;    // GL_SEARCH's text
     std::string collection;              // GL_COLLECTION's name
     std::string filter;    // the game list's filter, empty for all
+    std::vector<std::string> backups;   // GV_BACKUPS' rows, newest first
+    std::string backup;                 // the one GV_RESTORE offers
     std::vector<std::string> collNames;  // the game page's Collections rows, kept while it's open
     unsigned gameLayout;   // g_vgames.layout when game was picked
 
@@ -866,7 +877,26 @@ static void Build()
         Add("Copy Log", g.copied == GA_COPYLOG ? "Copied" : "",
             "This run's log. Your home folder shows as ~ and IP addresses are hidden.", GA_COPYLOG);
         Add("Open Logs Folder", "", "theseus.log is this run, theseus.prev.log the one before.", GA_OPENLOGS);
+        Add("Back Up My Settings", g.result[GA_BACKUP].c_str(),
+            "Copies your games, settings, icons and playlists into Backups in your user data folder.", GA_BACKUP);
+        Backup_List(Plat_UserDataDir(), g.backups);
+        {
+            char n[16];
+            snprintf(n, sizeof(n), "%d", (int)g.backups.size());
+            Add("Restore a Backup", n, "Puts an earlier backup back. What you have now is backed up first.",
+                GA_BACKUPS);
+        }
         Add("Report a Problem", "", "Paste the version and the log into an issue on GitHub.");
+        break;
+    case GV_BACKUPS:
+        for (size_t i = 0; i < g.backups.size(); i++)
+            Add(g.backups[i].c_str(), "", "Pick it to see what restoring does.", GA_PICKBACKUP, (int)i);
+        if (g.rows.empty()) Add("No backups yet", "", "Back Up My Settings makes one.");
+        break;
+    case GV_RESTORE:
+        Add("Restore This Backup", g.result[GA_RESTORE].c_str(),
+            "What you have now is backed up first, then UIX Desktop restarts with this one.", GA_RESTORE);
+        Add("Open Backups Folder", "", "Each backup is a plain folder you can look through.", GA_OPENBACKUPS);
         break;
     case GV_SHORTCUTS:
         Add(GuideCombo(), "Guide", "Opens and closes this guide.");
@@ -915,6 +945,8 @@ static const char* ViewTitle()
     case GV_LETTERS:   return "Find a Game";
     case GV_APPS:      return "Linux Apps";
     case GV_COLLECTIONS: return "Collections";
+    case GV_BACKUPS:   return "Restore a Backup";
+    case GV_RESTORE:   return g.backup.c_str();
     case GV_GAMECOLL:  return "Collections";
     case GV_GAMES: {
         static char title[32], full[96];
@@ -1609,6 +1641,43 @@ static void Select()
     case GA_OPENLOGS:
         Host_OpenFolder(Plat_UserDataDir());
         break;
+    case GA_BACKUP: {
+        int files = 0;
+        std::string name = Backup_Make(Plat_UserDataDir(), NULL, &files);
+        char msg[64];
+        if (name.empty()) { snprintf(msg, sizeof(msg), "Couldn't save"); Refuse(); }
+        else snprintf(msg, sizeof(msg), "Saved %d files", files);
+        g.result[GA_BACKUP] = msg;
+        Build();
+        break;
+    }
+    case GA_BACKUPS:
+        Push(GV_BACKUPS);
+        break;
+    case GA_PICKBACKUP:
+        if (r.arg < 0 || r.arg >= (int)g.backups.size()) { Refuse(); break; }
+        g.backup = g.backups[r.arg];
+        g.result[GA_RESTORE].clear();
+        Push(GV_RESTORE);
+        break;
+    case GA_RESTORE: {
+        std::string saved;
+        if (!Backup_Restore(Plat_UserDataDir(), g.backup, &saved)) {
+            g.result[GA_RESTORE] = saved.empty() ? "Couldn't back up first" : "Didn't finish";
+            Refuse();
+            Build();
+            break;
+        }
+        fprintf(stderr, "[Guide] restored backup %s, the one before is %s\n", g.backup.c_str(), saved.c_str());
+        // Straight over, before anything in memory gets saved on top of it.
+        Restart();
+        break;
+    }
+    case GA_OPENBACKUPS: {
+        std::string dir = std::string(Plat_UserDataDir()) + "/" BACKUP_DIR;
+        Host_OpenFolder(dir.c_str());
+        break;
+    }
     case GA_COPYVERSION:
         if (SDL_SetClipboardText(VersionLine().c_str()) == 0) g.copied = GA_COPYVERSION; else Refuse();
         Build();
@@ -1950,7 +2019,8 @@ static void DrawRows(float left, float right, float top)
             ui_style_row(left, y, width, ROW_H, on);
             float ty = y + (ROW_H - 11.0f) * 0.5f;
             float valueW = r.value.empty() ? 0.0f : ui_overlay_text_width(UI_FONT_BOLD, 11.0f, r.value.c_str());
-            float chevron = r.act == GA_VIEW || r.act == GA_GAMECOLL || r.act == GA_COLLECTION ? 14.0f : 0.0f;
+            float chevron = r.act == GA_VIEW || r.act == GA_GAMECOLL || r.act == GA_COLLECTION ||
+                            r.act == GA_BACKUPS || r.act == GA_PICKBACKUP ? 14.0f : 0.0f;
             if (valueW > width * 0.45f) valueW = width * 0.45f;
             std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 24 - valueW - chevron - 8);
             unsigned int labelColor = r.act == GA_NONE ? ui_style_color(UI_COLOR_STATUS) : 0xFFFFFFFF;
@@ -2094,7 +2164,9 @@ static void DrawPrompts()
         int act = g.rows[g.cursor].act;
         const char* word = act == GA_NONE ? NULL
                          : act == GA_SETTING || act == GA_CATEGORY ? "Change"
-                         : act == GA_VIEW || act == GA_GAMECOLL || act == GA_COLLECTION ? "Open"
+                         : act == GA_VIEW || act == GA_GAMECOLL || act == GA_COLLECTION ||
+                           act == GA_BACKUPS || act == GA_PICKBACKUP ? "Open"
+                         : act == GA_RESTORE ? "Restore"
                          : act == GA_TEXT || act == GA_NAME || act == GA_JELLYFINURL ? "Edit" : "Select";
         if (word) Prompt(p, &n, UI_BUTTON_A, "ENTER", word, GUIDE_A);
     } else if (!g.inPanel) {
