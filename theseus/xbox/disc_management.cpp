@@ -1,6 +1,8 @@
-// disc_management.cpp: combined disc detection, tray state, CDiscDrive
-// node, and disc extraction / file-copy / title-reading helpers.
-// Decompiled from the 5960 retail XBE.
+// disc_management.cpp: the DiscDrive node, disc type detection and
+// Theseus's disc extraction helpers. The node and GetDiscType are rebuilt
+// from the 5960 retail XBE (0x39d70..0x3a2b0); see docs/decomp/Disc.md.
+// Tray control, the CD name lookups, the Discord relay and DiscManager
+// are Theseus's.
 
 #include "std.h"
 #include "theseus.h"
@@ -20,32 +22,26 @@
 
 extern CConfig *theConfig;
 
-// =========================================================================
-// Disc type table
-// =========================================================================
-
 int GetDiscType();
 
+// discType strings by DISC_ value (5960 table @ 0x0017453c).
 static const TCHAR *rgszDiscType[] =
-    {
-        _T("none"),
-        _T("unknown"),
-        _T("Title"),
-        _T("Audio"),
-        _T("Video"),
+{
+    _T("none"),
+    _T("unknown"),
+    _T("Title"),
+    _T("Audio"),
+    _T("Video"),
 };
 
 int g_nDiscType;
 
+// Theseus: 5960 does this inline in CXApp::InitApp (0x0002d7e0).
 void DiscDrive_Init()
 {
     g_cdrom.Open(1);
     g_nDiscType = GetDiscType();
 }
-
-// =========================================================================
-// CDiscDrive node
-// =========================================================================
 
 class CDiscDrive : public CNode
 {
@@ -56,9 +52,8 @@ public:
 
     void Advance(float nSeconds);
 
-    TCHAR *m_discType; // none, unknown, Audio, Video, Photo, Title
+    TCHAR *m_discType;
 
-    // Audio CD (CDDA) Information...
     int getTrackCount();
     CStrObject *FormatTotalTime();
     CStrObject *FormatTrackTime(int nTrack);
@@ -82,12 +77,12 @@ public:
 private:
     ULONG m_trayState;
     bool m_bDeferNotification;
+
+    void SetDiscTypeString();
+    void NotifyDiscChange();
 };
 
-// Events:
-//
-//  OnDiscInserted
-//  OnDiscRemoved
+// Script events: OnDiscInserted, OnDiscRemoved.
 
 CNodeArray CDiscDrive::c_drives;
 
@@ -116,24 +111,38 @@ NODE_FUN_SI(getTrackName)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-CDiscDrive::CDiscDrive() : m_locked(false),
-                           m_bDeferNotification(false)
+// Copies the name for m_nDiscType into the discType property.
+void CDiscDrive::SetDiscTypeString()
 {
+    const TCHAR *szName = rgszDiscType[m_nDiscType];
+    m_discType = new TCHAR[_tcslen(szName) + 1];
+    _tcscpy(m_discType, szName);
+}
+
+void CDiscDrive::NotifyDiscChange()
+{
+    CallFunction(this, m_nDiscType != DISC_NONE ? _T("OnDiscInserted") : _T("OnDiscRemoved"));
+}
+
+// CDiscDrive::CDiscDrive()
+// Reconstructed from 5960 retail XBE @ 0x00039d70: joins the drive list
+// (and holds a reference), unlocked, nothing deferred. A dash started with
+// launch data, or on a movie or unreadable disc, takes the boot disc type
+// and the tray as they are. Otherwise it starts at "none" with an empty
+// tray, so the first poll sees the disc and fires OnDiscInserted.
+// A movie disc can't wait for that: playing one reboots, and it would loop.
+CDiscDrive::CDiscDrive()
+{
+    m_locked = false;
+    m_bDeferNotification = false;
+
     c_drives.AddNode(this);
     AddRef();
-
-    //
-    // Mark the disc type to DISC_NONE if it's not a DVD movie (bug 9014)
-    // so that Advance will catch change notification and reboot to title.
-    // For DVD movies, we have to mark as DISC_VIDEO because the way the
-    // dash plays DVD is to reboot. If we let Advance to catch notification
-    // the dash will end up reboot infinitely.
-    //
 
     if (TheseusHasLaunchData() || g_nDiscType == DISC_VIDEO || g_nDiscType == DISC_BAD)
     {
         m_nDiscType = g_nDiscType;
-        HalReadSMCTrayState(&m_trayState, 0);
+        HalReadSMCTrayState(&m_trayState, NULL);
     }
     else
     {
@@ -141,33 +150,33 @@ CDiscDrive::CDiscDrive() : m_locked(false),
         m_trayState = SMC_TRAY_STATE_NO_MEDIA;
     }
 
-    const TCHAR *szDiscType = rgszDiscType[m_nDiscType];
-
-    m_discType = new TCHAR[_tcslen(szDiscType) + 1];
-    _tcscpy(m_discType, szDiscType);
-
-    TRACE(_T("CDiscDrive: %s\n"), szDiscType);
+    SetDiscTypeString();
 }
 
+// CDiscDrive::~CDiscDrive()
+// Reconstructed from 5960 retail XBE @ 0x00039ec0:
+//     c_drives.RemoveNode(this); if (c_drives.count == 0) c_drives.free();
+//     delete m_discType;
 CDiscDrive::~CDiscDrive()
 {
     c_drives.RemoveNode(this);
     if (c_drives.GetLength() == 0)
         c_drives.RemoveAll();
-
     delete[] m_discType;
 }
 
+// CDiscDrive::Advance(dt)
+// Reconstructed from 5960 retail XBE @ 0x00039f20. A change held back while
+// locked fires as soon as the drive unlocks. Every 0.04 s (one clock shared
+// by all drives) the SMC tray state is read; when it moves, the screen saver
+// wakes and the disc is typed again. A new type renames discType and fires
+// OnDiscInserted or OnDiscRemoved, or is deferred while locked.
 void CDiscDrive::Advance(float nSeconds)
 {
-    // Check if we need to reboot
     if (m_bDeferNotification && !m_locked)
     {
         m_bDeferNotification = false;
-        if (m_nDiscType != DISC_NONE)
-            CallFunction(this, _T("OnDiscInserted"));
-        else
-            CallFunction(this, _T("OnDiscRemoved"));
+        NotifyDiscChange();
     }
 
     static XTIME lastPoll = 0.0f;
@@ -175,264 +184,200 @@ void CDiscDrive::Advance(float nSeconds)
         return;
     lastPoll = TheseusGetNow();
 
-    // Poll state of the DVD tray by reading from SMC
-    NTSTATUS Status;
-    ULONG TrayState;
-
-    Status = HalReadSMCTrayState(&TrayState, NULL);
-    if (!NT_SUCCESS(Status))
+    ULONG trayState;
+    if (!NT_SUCCESS(HalReadSMCTrayState(&trayState, NULL)) || trayState == m_trayState)
         return;
+    m_trayState = trayState;
 
-    if (TrayState == m_trayState)
-        return;
-    m_trayState = TrayState;
-
-    // Reset screen saver if tray state changes
     ResetScreenSaver();
 
     g_nDiscType = GetDiscType();
+    if (g_nDiscType == m_nDiscType)
+        return;
 
-    if (m_nDiscType != g_nDiscType)
-    {
-        TRACE(_T("\001Disc type: %s\n"), rgszDiscType[g_nDiscType]);
-        m_nDiscType = g_nDiscType;
+    m_nDiscType = g_nDiscType;
+    delete[] m_discType;
+    SetDiscTypeString();
 
-        delete[] m_discType;
-        m_discType = new TCHAR[_tcslen(rgszDiscType[m_nDiscType]) + 1];
-        _tcscpy(m_discType, rgszDiscType[m_nDiscType]);
-
-        if (!m_locked)
-        {
-            if (m_nDiscType != DISC_NONE)
-                CallFunction(this, _T("OnDiscInserted"));
-            else
-                CallFunction(this, _T("OnDiscRemoved"));
-        }
-        else
-        {
-            m_bDeferNotification = true;
-        }
-    }
+    if (m_locked)
+        m_bDeferNotification = true;
+    else
+        NotifyDiscChange();
 }
 
-// =========================================================================
-// Audio CD helpers
-// =========================================================================
-
+// CDiscDrive::getTrackCount()   [script fn 'getTrackCount', FND 0x0017fd48, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x0003a030:
+//     return g_BootType == DISC_AUDIO ? g_cdrom.GetTrackCount() : 0;
 int CDiscDrive::getTrackCount()
 {
-    if (g_nDiscType == DISC_AUDIO)
-        return g_cdrom.GetTrackCount();
-
-    return 0;
+    return g_nDiscType == DISC_AUDIO ? g_cdrom.GetTrackCount() : 0;
 }
 
+// "mm:ss", or "" when there's nothing to time.
+static CStrObject *FormatMinutesSeconds(bool bHave, int nMinutes, int nSeconds)
+{
+    if (!bHave)
+        return new CStrObject;
+    TCHAR szTime[8];
+    _stprintf(szTime, _T("%02d:%02d"), nMinutes, nSeconds);
+    return new CStrObject(szTime);
+}
+
+// CDiscDrive::FormatTotalTime()   [script fn 'FormatTotalTime', FND 0x0017fd60, sig 8]
+// CDiscDrive::FormatTrackTime(n)  [script fn 'FormatTrackTime', FND 0x0017fd78, sig 4]
+// Reconstructed from 5960 retail XBE @ 0x0003a060 and 0x0003a150: the disc's
+// or track n's length as "%02d:%02d", empty with no disc or a bad track.
+// The frame math is in CNtIoctlCdromService (see docs/decomp/NtIoSvc.md).
 CStrObject *CDiscDrive::FormatTotalTime()
 {
     int nMinutes, nSeconds;
-    if (!g_cdrom.GetTotalLength(&nMinutes, &nSeconds, NULL))
-        return new CStrObject; // empty string
-
-    TCHAR szBuf[8];
-    _stprintf(szBuf, _T("%02d:%02d"), nMinutes, nSeconds);
-    return new CStrObject(szBuf);
+    bool bHave = g_cdrom.GetTotalLength(&nMinutes, &nSeconds, NULL);
+    return FormatMinutesSeconds(bHave, nMinutes, nSeconds);
 }
 
 CStrObject *CDiscDrive::FormatTrackTime(int nTrack)
 {
     int nMinutes, nSeconds;
-    if (!g_cdrom.GetTrackLength(nTrack, &nMinutes, &nSeconds, NULL))
-        return new CStrObject; // empty string
+    bool bHave = g_cdrom.GetTrackLength(nTrack, &nMinutes, &nSeconds, NULL);
+    return FormatMinutesSeconds(bHave, nMinutes, nSeconds);
+}
 
-    TCHAR szBuf[8];
-    _stprintf(szBuf, _T("%02d:%02d"), nMinutes, nSeconds);
-    return new CStrObject(szBuf);
+// Theseus: the CD's names, empty until something fills them in.
+static CStrObject *StrOrEmpty(const TCHAR *sz)
+{
+    return new CStrObject(sz != NULL ? sz : _T(""));
 }
 
 CStrObject *CDiscDrive::getArtist()
 {
-    const TCHAR *szArtist = g_cdrom.GetArtist();
-    if (szArtist == NULL)
-        szArtist = _T("");
-    return new CStrObject(szArtist);
+    return StrOrEmpty(g_cdrom.GetArtist());
 }
 
 CStrObject *CDiscDrive::getTitle()
 {
-    const TCHAR *szTitle = g_cdrom.GetTitle();
-    if (szTitle == NULL)
-        szTitle = _T("");
-    return new CStrObject(szTitle);
+    return StrOrEmpty(g_cdrom.GetTitle());
 }
 
 CStrObject *CDiscDrive::getTrackName(int nTrack)
 {
-    const TCHAR *szTrackName = g_cdrom.GetTrackName(nTrack);
-    if (szTrackName == NULL)
-        szTrackName = _T("");
-    return new CStrObject(szTrackName);
+    return StrOrEmpty(g_cdrom.GetTrackName(nTrack));
 }
 
-// =========================================================================
-// Disc launch
-// =========================================================================
-
+// CDiscDrive::LaunchDisc()   [script fn 'LaunchDisc', FND 0x0017fd90, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x0003a260:
+//     PersistDisplay();
+//     if (g_BootType == DISC_TITLE) HalReturnToFirmware(HalRebootRoutine);
+//     XLaunchNewImage(NULL, NULL);
+// 5960 reboots into a game disc. Theseus launches d:\default.xbe directly
+// instead, after a short settle and the Discord relay with its title ID.
 void CDiscDrive::LaunchDisc()
 {
-    TRACE(_T("[Discord] CDiscDrive::LaunchDisc() triggered\n"));
     TheseusGetD3DDev()->PersistDisplay();
-    ASSERT(g_nDiscType != DISC_AUDIO);
 
-    Sleep(500); // optional delay, since we have CCI's and ISO's loading.
-    OutputDebugString(_T("[Discord] Attempting to read title ID from \\Device\\CdRom0\\\n"));
+    Sleep(500);
 
-    CStrObject *titleIdStr = theConfig->GetXBETitleID(_T("D:"));
-    if (titleIdStr)
+    CStrObject *pTitleId = theConfig->GetXBETitleID(_T("D:"));
+    if (pTitleId != NULL)
     {
-        const TCHAR *szTitleId = titleIdStr->GetSz();
-        char szAnsiTitleId[11]; // 8 hex digits + null terminator
-        Ansi(szAnsiTitleId, szTitleId, sizeof(szAnsiTitleId));
-        // Report TitleID to OutputDebugString
-        TCHAR szDebugMsg[64];
-        _stprintf(szDebugMsg, _T("[Discord] Title ID: %s\n"), szTitleId);
-        OutputDebugString(szDebugMsg);
-
-        OutputDebugString(_T("[Discord] Sending relay...\n"));
-        SendDiscordRelayFromConfig(szAnsiTitleId);
-
-        delete titleIdStr;
+        char szTitleId[11];
+        Ansi(szTitleId, pTitleId->GetSz(), sizeof(szTitleId));
+        SendDiscordRelayFromConfig(szTitleId);
+        delete pTitleId;
     }
-    else
-    {
-        OutputDebugString(_T("[Discord] Discord disabled. Launching normally.\n"));
-    }
-
 
     XLaunchNewImage(g_nDiscType == DISC_TITLE ? "d:\\default.xbe" : NULL, NULL);
 }
 
-// =========================================================================
-// Tray control
-// =========================================================================
-
+// Theseus: the tray, through the SMC's tray register.
 void CDiscDrive::OpenTray()
 {
-    // Tray Open
     HalWriteSMBusValue(0x20, 0x0C, 0, 0x00);
     Sleep(1);
 }
 
 void CDiscDrive::CloseTray()
 {
-    // Tray Close
     HalWriteSMBusValue(0x20, 0x0C, 0, 0x01);
     Sleep(1);
 }
 
-// =========================================================================
-// GetDiscType: detect what kind of media is in the drive.
-// =========================================================================
-
+// The files that mark each disc type, checked in order (5960 table @ 0x000201c8).
 struct DISCTYPECHECK
 {
-    TCHAR *szPath;
-    TCHAR *szDiscType;
+    const TCHAR *szPath;
+    const TCHAR *szDiscType;
     int nDiscType;
 };
 
 static const DISCTYPECHECK rgddc[] =
-    {
-        {_T("CDROM0:\\default.xbe"), _T("Title"), DISC_TITLE},
-        {_T("CDROM0:\\video_ts\\video_ts.ifo"), _T("Video"), DISC_VIDEO},
-        {_T("CDROM0:\\track01.cda"), _T("Audio"), DISC_AUDIO},
+{
+    {_T("CDROM0:\\default.xbe"), _T("Title"), DISC_TITLE},
+    {_T("CDROM0:\\video_ts\\video_ts.ifo"), _T("Video"), DISC_VIDEO},
+    {_T("CDROM0:\\track01.cda"), _T("Audio"), DISC_AUDIO},
 };
 
+// GetDiscType()
+// Reconstructed from 5960 retail XBE @ 0x0003a2b0. Closes the CD service
+// and dismounts \??\CdRom0: so the next look is fresh. If the SMC says the
+// tray is settled (not still detecting): an empty tray is told apart from an
+// unreadable disc by asking the drive (IOCTL_CDROM_CHECK_VERIFY; success or
+// ERROR_UNRECOGNIZED_MEDIA means a bad disc), anything else is no disc.
+// Otherwise an audio TOC makes it Audio, then the marker files decide; a
+// lookup failing with anything but not found gets one retry after 100 ms.
+// Nothing found is a bad disc, unless the tray has settled meanwhile, which
+// means the disc went away. See docs/decomp/Disc.md for the instruction walk.
 int GetDiscType()
 {
-    int nDiscType = DISC_BAD;
-    bool bRetry = true;
-
     if (g_cdrom.IsOpen())
         g_cdrom.Close();
 
-    OBJECT_STRING DeviceName;
-    RtlInitObjectString(&DeviceName, "\\??\\CdRom0:");
-    IoDismountVolumeByName(&DeviceName);
+    OBJECT_STRING cdrom;
+    RtlInitObjectString(&cdrom, "\\??\\CdRom0:");
+    IoDismountVolumeByName(&cdrom);
 
-    NTSTATUS Status;
-    ULONG TrayState;
-    Status = HalReadSMCTrayState(&TrayState, NULL);
-    if (NT_SUCCESS(Status) && TrayState != SMC_TRAY_STATE_MEDIA_DETECT)
+    ULONG trayState;
+    if (NT_SUCCESS(HalReadSMCTrayState(&trayState, NULL)) && trayState != SMC_TRAY_STATE_MEDIA_DETECT)
     {
-        if (TrayState == SMC_TRAY_STATE_NO_MEDIA)
-        {
-            HANDLE hDevice;
+        if (trayState != SMC_TRAY_STATE_NO_MEDIA)
+            return DISC_NONE;
 
-            // At this point, the drive has told the SMC that media could not be
-            // detected.  To decide whether this means that the tray is empty
-            // versus the tray have unrecognized media, we need to send an IOCTL
-            // to the device.
+        HANDLE hDrive = CreateFileA("cdrom0:", GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hDrive == INVALID_HANDLE_VALUE || hDrive == NULL)
+            return DISC_NONE;
 
-            hDevice = CreateFileA("cdrom0:", GENERIC_READ, FILE_SHARE_READ, NULL,
-                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-
-            if (hDevice != INVALID_HANDLE_VALUE && hDevice != NULL)
-            {
-                BOOL fReturn;
-                DWORD cbReturned;
-
-                fReturn = DeviceIoControl(hDevice, IOCTL_CDROM_CHECK_VERIFY,
-                                          NULL, 0, NULL, 0, &cbReturned, NULL);
-
-                // If the device reports back that the unit is ready (which it
-                // shouldn't since the SMC thinks the tray is empty) or if the
-                // media is unrecognized, then the disc is bad.
-                if (fReturn || (GetLastError() == ERROR_UNRECOGNIZED_MEDIA))
-                {
-                    CloseHandle(hDevice);
-                    return DISC_BAD;
-                }
-
-                CloseHandle(hDevice);
-            }
-        }
-
-        return DISC_NONE;
+        DWORD cbReturned;
+        bool bBad = DeviceIoControl(hDrive, IOCTL_CDROM_CHECK_VERIFY, NULL, 0, NULL, 0, &cbReturned, NULL) ||
+                    GetLastError() == ERROR_UNRECOGNIZED_MEDIA;
+        CloseHandle(hDrive);
+        return bBad ? DISC_BAD : DISC_NONE;
     }
 
     g_cdrom.Open(1);
-
     if (g_cdrom.IsOpen())
         return DISC_AUDIO;
 
-    for (int i = 0; i < sizeof(rgddc) / sizeof(DISCTYPECHECK);)
+    bool bMayRetry = true;
+    int i = 0;
+    while (i < (int)countof(rgddc))
     {
         if (DoesFileExist(rgddc[i].szPath))
-        {
-            nDiscType = rgddc[i].nDiscType;
-            break;
-        }
+            return rgddc[i].nDiscType;
 
         DWORD dwError = GetLastError();
-
-        if (dwError != ERROR_FILE_NOT_FOUND && dwError != ERROR_PATH_NOT_FOUND)
+        if (dwError != ERROR_FILE_NOT_FOUND && dwError != ERROR_PATH_NOT_FOUND && bMayRetry)
         {
-            TRACE(_T("\001Error %d on %s\n"), dwError, rgddc[i].szPath);
-
-            if (bRetry)
-            {
-                TRACE(_T("Retrying...\n"));
-                bRetry = false;
-                Sleep(100);
-                continue;
-            }
+            bMayRetry = false;
+            Sleep(100);
+            continue;
         }
 
-        i += 1;
-        bRetry = true;
+        i++;
+        bMayRetry = true;
     }
 
-    return nDiscType;
+    if (NT_SUCCESS(HalReadSMCTrayState(&trayState, NULL)) && trayState != SMC_TRAY_STATE_MEDIA_DETECT)
+        return DISC_NONE;
+    return DISC_BAD;
 }
 
 // =========================================================================

@@ -1,7 +1,5 @@
-// config.h: CConfig XAP node. Exposes the dashboard's system config
-// (language, video / audio mode, parental controls, timezone /
-// DST, network, hardware status, launch context) to scripts.
-// Companion to xbox/config.cpp.
+// config.h: the Xbox Config node, the dash's settings, launch data and
+// hardware readings as script functions. Bodies in xbox/config.cpp.
 
 #pragma once
 #include "node.h"
@@ -117,6 +115,10 @@ public:
     int GetLiveToday();
     void SetLiveToday(int bLiveToday);
 
+    // ForceSetLanguage / ForceSetTimeZone / ForceSetClock   [FND 0x00180258..0x00180288]
+    // Reconstructed from 5960 retail XBE @ 0x0003a430..0x0003a470:
+    //     return reason == XLD_LAUNCH_DASHBOARD_SETTINGS && (param1 & flag);
+    // A game sent the player here to set that one thing.
     int ForceSetLanguage() { return CheckForcedSettings(XLD_SETTINGS_LANGUAGE); }
     int ForceSetTimeZone() { return CheckForcedSettings(XLD_SETTINGS_TIMEZONE); }
     int ForceSetClock()    { return CheckForcedSettings(XLD_SETTINGS_CLOCK); }
@@ -125,9 +127,10 @@ protected:
     DECLARE_NODE_FUNCTIONS()
 
 private:
-    int CheckForcedSettings(int flag)
+    int CheckForcedSettings(int flags)
     {
-        return ((TheseusGetLaunchReason() == XLD_LAUNCH_DASHBOARD_SETTINGS) &&
-                (TheseusGetLaunchParameter1() & flag)) ? 1 : 0;
+        if (TheseusGetLaunchReason() != XLD_LAUNCH_DASHBOARD_SETTINGS)
+            return 0;
+        return (TheseusGetLaunchParameter1() & flags) != 0;
     }
 };

@@ -42,3 +42,8 @@ Every event goes through the binding and `enableGamepad` checks (`enableRemote` 
 Theseus's desktop node reads an SDL pad and the keyboard as one player, adds media keys, has no
 remote or progressive scan combo, accepts pad events even with `enableGamepad` off, and fires
 OnMoveCenter after the button events rather than before them.
+
+The Xbox node (`xbox/input.cpp`) keeps 5960's devices, remote codes and event rules but reads each
+port on its own instead of merging the pads first, records the last port that gave input
+(`LastActivePort`), lets Theseus's overlay take moves and A/B while it captures input (B with the
+left trigger shows or hides it), and has no progressive scan combo or keyboard event.
