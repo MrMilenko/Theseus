@@ -91,6 +91,8 @@ bool Host_PickFile(const char* title, char* out, size_t outSize);
 bool Host_ExePath(char* out, size_t outSize);
 // Show a folder in the OS file manager. Doesn't wait.
 void Host_OpenFolder(const char* dir);
+// Set an environment variable for this process and what it starts. NULL removes it.
+void Host_SetEnv(const char* name, const char* value);
 // A value under HKEY_CURRENT_USER as text (numbers in decimal). Always false off Windows.
 bool Host_RegistryString(const char* subKey, const char* value, char* out, size_t outSize);
 // Audio CD in the first optical drive: track count and per-track lengths

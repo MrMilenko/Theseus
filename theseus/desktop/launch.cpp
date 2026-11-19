@@ -19,6 +19,7 @@
 #include "launchers/launcher.h"
 #include "launchers/steam.h"
 
+#include <string>
 #include <vector>
 
 extern "C" void DashAudio_MuteAll(void);
@@ -136,7 +137,45 @@ static bool DeriveWorkDir(const char* cmd, char* out, size_t outSize)
 // e.g. Title Maker Test Launch) and SpawnLaunchSpec (overlay-driven game
 // launch) call this. Returns true if the OS handed us back a process /
 // shell-exec handle; the parent doesn't wait on the child either way.
-static bool Launch_DoSpawn(const char* expanded, HostProc** proc)
+// A game's own launch options from games.ini, all empty for anything else.
+struct LaunchOpts {
+	char args[256];
+	char workdir[256];
+	char env[256];
+};
+
+// Each NAME=value from a ';' list, set now and put back by EnvRestore.
+struct EnvSaved { std::string name, old; bool had; };
+
+static void EnvApply(const char* list, std::vector<EnvSaved>& saved)
+{
+	std::string all = list ? list : "";
+	size_t at = 0;
+	while (at < all.size()) {
+		size_t end = all.find(';', at);
+		if (end == std::string::npos) end = all.size();
+		std::string pair = all.substr(at, end - at);
+		at = end + 1;
+		size_t eq = pair.find('=');
+		size_t start = pair.find_first_not_of(" \t");
+		if (eq == std::string::npos || start == std::string::npos || start >= eq) continue;
+		std::string name = pair.substr(start, eq - start);
+		while (!name.empty() && (name[name.size() - 1] == ' ' || name[name.size() - 1] == '\t'))
+			name.erase(name.size() - 1);
+		const char* old = getenv(name.c_str());
+		EnvSaved e = { name, old ? old : "", old != NULL };
+		saved.push_back(e);
+		Host_SetEnv(name.c_str(), pair.c_str() + eq + 1);
+	}
+}
+
+static void EnvRestore(const std::vector<EnvSaved>& saved)
+{
+	for (size_t i = saved.size(); i-- > 0;)
+		Host_SetEnv(saved[i].name.c_str(), saved[i].had ? saved[i].old.c_str() : NULL);
+}
+
+static bool Launch_DoSpawn(const char* expanded, const LaunchOpts* opts, HostProc** proc)
 {
 	if (!expanded || !*expanded) return false;
 
@@ -148,12 +187,30 @@ static bool Launch_DoSpawn(const char* expanded, HostProc** proc)
 
 	char workdir[1024];
 	bool haveWorkdir = DeriveWorkDir(spec, workdir, sizeof(workdir));
+	if (opts && opts->workdir[0]) {
+		PathTemplate_Expand(opts->workdir, workdir, sizeof(workdir));
+		haveWorkdir = true;
+	}
+	// A URL goes to whatever handles it, so there's nothing to add arguments to.
+	if (opts && opts->args[0] && !IsUrl(spec)) {
+		char args[1024];
+		PathTemplate_Expand(opts->args, args, sizeof(args));
+		size_t n = strlen(spec);
+		snprintf(spec + n, sizeof(spec) - n, " %s", args);
+	}
+	std::vector<EnvSaved> env;
+	if (opts) EnvApply(opts->env, env);
 
-	if (!Host_Spawn(spec, IsUrl(spec), IsSteamUrl(spec), haveWorkdir ? workdir : NULL,
-	                g_launchLastResult, sizeof(g_launchLastResult), proc)) {
+	bool spawned = Host_Spawn(spec, IsUrl(spec), IsSteamUrl(spec), haveWorkdir ? workdir : NULL,
+	                          g_launchLastResult, sizeof(g_launchLastResult), proc);
+	EnvRestore(env);
+	if (!spawned) {
 		fprintf(stderr, "[launch] %s\n", g_launchLastResult);
 		return false;
 	}
+	if (opts && (opts->args[0] || opts->workdir[0] || opts->env[0]))
+		fprintf(stderr, "[launch] with options: %s%s%s%s\n", spec,
+		        haveWorkdir ? " (in " : "", haveWorkdir ? workdir : "", haveWorkdir ? ")" : "");
 
 	snprintf(g_launchLastResult, sizeof(g_launchLastResult),
 	         "Launched: %s", spec);
@@ -164,7 +221,7 @@ static bool Launch_DoSpawn(const char* expanded, HostProc** proc)
 // (Build()), log the trace, then spawn. Both public dispatchers funnel
 // through this so the trace, error reporting, and command-form rules
 // live in one place.
-static bool Launch_ExpandAndSpawn(const char* spec,
+static bool Launch_ExpandAndSpawn(const char* spec, const LaunchOpts* opts,
                                   char* finalOut, size_t finalSize, HostProc** proc)
 {
 	if (!spec || !spec[0]) return false;
@@ -176,7 +233,7 @@ static bool Launch_ExpandAndSpawn(const char* spec,
 		fprintf(stderr, "[launch] var: %s\n", expanded);
 	if (strcmp(expanded, finalOut) != 0)
 		fprintf(stderr, "[launch] cmd: %s\n", finalOut);
-	return Launch_DoSpawn(finalOut, proc);
+	return Launch_DoSpawn(finalOut, opts, proc);
 }
 
 // ============================================================================
@@ -319,18 +376,18 @@ void DesktopLaunch(const char* spec)
 {
 	char finalCmd[2048];
 	HostProc* proc = NULL;
-	Launch_ExpandAndSpawn(spec, finalCmd, sizeof(finalCmd), &proc);
+	Launch_ExpandAndSpawn(spec, NULL, finalCmd, sizeof(finalCmd), &proc);
 	Stray(proc);
 }
 
 // Spawn called by the launch overlay tick once the fade-in completes.
 // Identical to DesktopLaunch except we minimize the dashboard window
 // after a successful spawn so the game gets focus.
-static void SpawnLaunchSpec(const char* spec)
+static void SpawnLaunchSpec(const char* spec, const LaunchOpts* opts)
 {
 	char finalCmd[2048];
 	HostProc* proc = NULL;
-	if (!Launch_ExpandAndSpawn(spec, finalCmd, sizeof(finalCmd), &proc)) return;
+	if (!Launch_ExpandAndSpawn(spec, opts, finalCmd, sizeof(finalCmd), &proc)) return;
 	VGames_MarkPlayed(spec);
 	SessionBegin(spec, finalCmd, proc);
 
@@ -352,6 +409,7 @@ static bool   s_overlayActive  = false;
 static double s_overlayStart   = 0.0;
 static bool   s_overlaySpawned = false;
 static char   s_pendingSpec[2048];
+static LaunchOpts s_pendingOpts;
 
 // Total fade duration (seconds). The first kFadeIn portion is the alpha ramp,
 // after which we hold full black for the remaining time and fire the spawn at
@@ -385,6 +443,7 @@ void LaunchOverlay_Reset()
 	s_overlaySpawned = false;
 	s_overlayStart = 0.0;
 	s_pendingSpec[0] = 0;
+	memset(&s_pendingOpts, 0, sizeof(s_pendingOpts));
 }
 
 // Lazy-load the Xbox logo PNG (Configs/xboxlogo.png) into an ImGui
@@ -432,7 +491,7 @@ void LaunchOverlay_Tick()
 	if (!s_overlaySpawned && t >= (double)kSpawnAt)
 	{
 		s_overlaySpawned = true;
-		SpawnLaunchSpec(s_pendingSpec);
+		SpawnLaunchSpec(s_pendingSpec, &s_pendingOpts);
 	}
 
 	if (t >= (double)kHoldEnd)
@@ -444,7 +503,14 @@ void LaunchOverlay_Tick()
 	}
 }
 
+static void QueueGame(const char* spec, const LaunchOpts* opts);
+
 void DesktopLaunchGame(const char* spec)
+{
+	QueueGame(spec, NULL);
+}
+
+static void QueueGame(const char* spec, const LaunchOpts* opts)
 {
 	if (!spec || !spec[0]) return;
 
@@ -472,11 +538,13 @@ void DesktopLaunchGame(const char* spec)
 	if (s_overlayActive && !s_overlaySpawned && s_pendingSpec[0])
 	{
 		s_overlaySpawned = true;
-		SpawnLaunchSpec(s_pendingSpec);
+		SpawnLaunchSpec(s_pendingSpec, &s_pendingOpts);
 	}
 
 	strncpy(s_pendingSpec, spec, sizeof(s_pendingSpec) - 1);
 	s_pendingSpec[sizeof(s_pendingSpec) - 1] = 0;
+	if (opts) s_pendingOpts = *opts;
+	else memset(&s_pendingOpts, 0, sizeof(s_pendingOpts));
 	s_overlayStart   = LaunchOverlay_Now();
 	s_overlaySpawned = false;
 	s_overlayActive  = true;
@@ -541,8 +609,13 @@ void DesktopLaunchTitle(const char* devicePath)
 	// Primary: virtualized games.ini lookup.
 	int vgIdx = VGames_MatchFolder(localPath);
 	if (vgIdx >= 0 && g_vgames.games[vgIdx].launch[0]) {
-		fprintf(stderr, "[launch] VGames match: %s -> %s\n", devicePath, g_vgames.games[vgIdx].launch);
-		DesktopLaunchGame(g_vgames.games[vgIdx].launch);
+		const VirtualGame& vg = g_vgames.games[vgIdx];
+		fprintf(stderr, "[launch] VGames match: %s -> %s\n", devicePath, vg.launch);
+		LaunchOpts opts;
+		snprintf(opts.args, sizeof(opts.args), "%s", vg.args);
+		snprintf(opts.workdir, sizeof(opts.workdir), "%s", vg.workdir);
+		snprintf(opts.env, sizeof(opts.env), "%s", vg.env);
+		QueueGame(vg.launch, &opts);
 		return;
 	}
 
