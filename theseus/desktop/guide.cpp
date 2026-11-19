@@ -27,6 +27,8 @@
 #include "jellyfin_client.h"
 #include "xcloud_client.h"
 #include "launchers/xemu.h"
+#include "launchers/pcsx2.h"
+#include "xiso.h"
 #include "guide.h"
 #include "ui_overlay.h"
 #include <algorithm>
@@ -142,6 +144,10 @@ extern char s_esdePath[512];
 
 static const char* kCategories[] = { "Games", "Applications", "Homebrew", "Emulators", "Dashboards" };
 static const int   kCategoryCount = (int)(sizeof(kCategories) / sizeof(kCategories[0]));
+
+// What an added file runs with. A disc image needs an emulator in front.
+enum Runner { RUN_SELF, RUN_XEMU, RUN_PCSX2, RUN_COUNT };
+static const char* kRunners[RUN_COUNT] = { "Itself", "xemu", "PCSX2" };
 
 // A file browser entry. macOS apps are folders, but you pick them like files.
 struct BrowseEntry { std::string name; bool dir; };
@@ -269,7 +275,7 @@ enum Act {
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
-    GA_FINDEMU,
+    GA_FINDEMU, GA_RUNNER,
     GA_COUNT
 };
 
@@ -343,7 +349,7 @@ static struct Guide {
     std::string found[4];   // what each Find row turned up
     std::vector<BrowseEntry> entries;
     bool browseStale;
-    int category, playlist;
+    int category, playlist, runner;
     int gameList, game;
     char letter;           // GL_LETTER's initial, '#' for digits and the rest
     std::string search;    // GL_SEARCH's text
@@ -437,6 +443,8 @@ static const struct {
 } kEmus[] = {
     { "XemuPath", "Find xemu", "Looks in the usual install folders, RetroBat, scoop, Flatpak and AppImages.",
       Xemu_Find },
+    { "Pcsx2Path", "Find PCSX2", "Looks in the usual install folders, RetroBat, scoop, Flatpak, Lutris and AppImages.",
+      Pcsx2_Find },
 };
 static const int kEmuCount = (int)(sizeof(kEmus) / sizeof(kEmus[0]));
 
@@ -521,6 +529,10 @@ static void Build()
             g.pickedPath.empty() ? "Taken from the file name." : "Taken from the file name. Select it to rename it.",
             g.pickedPath.empty() ? GA_NONE : GA_NAME);
         Add("Category", kCategories[g.category], "Left and right change it.", GA_CATEGORY);
+        Add("Runs With", kRunners[g.runner],
+            g.runner == RUN_SELF ? "Programs, shortcuts and scripts run themselves. Left and right change it."
+                                 : "The emulator is found when the game starts. Left and right change it.",
+            GA_RUNNER);
         Add("Add to Launcher", g.added.c_str(),
             g.pickedPath.empty() ? "Choose a file first." : "Adds it under the category above.", GA_ADDGAME);
         break;
@@ -1022,6 +1034,11 @@ static bool Adjust(int dir)
         Build();
         return true;
     }
+    if (r.act == GA_RUNNER) {
+        g.runner = (g.runner + (dir < 0 ? RUN_COUNT - 1 : 1)) % RUN_COUNT;
+        Build();
+        return true;
+    }
     if (r.act != GA_SETTING) return false;
     const SettingDef& d = DesktopSettings_Table().defs[r.arg];
     if (!Setting_Cycle(d, dir < 0 ? -1 : 1)) return false;
@@ -1041,6 +1058,7 @@ static void Select()
         break;
     case GA_SETTING:
     case GA_CATEGORY:
+    case GA_RUNNER:
         Adjust(1);
         break;
     case GA_TEXT: {
@@ -1142,6 +1160,16 @@ static void Select()
         }
         g.pickedPath = full;
         g.pickedName = NameFromPath(full);
+        g.runner = RUN_SELF;
+        if (Pcsx2_IsDisc(full.c_str())) {
+            // An Xbox disc names itself; anything else is a PS2 guess.
+            XisoTitleInfo xiso = XisoGetTitleInfo(full.c_str());
+            g.runner = xiso.valid ? RUN_XEMU : RUN_PCSX2;
+            char clean[128] = "";
+            if (xiso.valid) Title_SanitizeName(xiso.titleName, clean, sizeof(clean));
+            if (clean[0]) g.pickedName = clean;
+            XisoFreeTitleInfo(&xiso);
+        }
         g.added.clear();
         Back();
         break;
@@ -1151,8 +1179,28 @@ static void Select()
         if (VGames_FindByName(g.pickedName.c_str()) >= 0) { g.added = "Already there"; Build(); break; }
         char genID[16];
         snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL));
-        std::string launch = "\"" + g.pickedPath + "\"";
-        VGames_Add(g.pickedName.c_str(), genID, launch.c_str(), "E", kCategories[g.category]);
+        char launch[sizeof(VirtualGame::launch)];
+        bool fits = true;
+        XisoTitleInfo xiso = {};
+        if (g.runner == RUN_XEMU) {
+            fits = Xemu_IsoLaunch(g.pickedPath.c_str(), launch, sizeof(launch));
+            xiso = XisoGetTitleInfo(g.pickedPath.c_str());
+            if (xiso.valid) snprintf(genID, sizeof(genID), "%08x", xiso.titleId);
+        } else if (g.runner == RUN_PCSX2) {
+            fits = Pcsx2_DiscLaunch(g.pickedPath.c_str(), launch, sizeof(launch));
+        } else {
+            int n = snprintf(launch, sizeof(launch), "\"%s\"", g.pickedPath.c_str());
+            fits = n > 0 && n < (int)sizeof(launch);
+        }
+        if (!fits) { XisoFreeTitleInfo(&xiso); g.added = "Path too long"; Build(); break; }
+        VGames_Add(g.pickedName.c_str(), genID, launch, "E", kCategories[g.category]);
+        if (xiso.titleImageRGBA) {
+            char icon[1024];
+            Host_MakeDir(VGAMES_ICONS);
+            snprintf(icon, sizeof(icon), "%s/%s.jpg", VGAMES_ICONS, genID);
+            XisoSaveTitleImage(&xiso, icon);
+        }
+        XisoFreeTitleInfo(&xiso);
         VGames_Save();
         UDataSynth_RebuildAll();
         g.added = "Added";

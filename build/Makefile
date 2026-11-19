@@ -446,13 +446,13 @@ clean:
 # talks to the OS by name: <windows.h> is host_win* only, the compiler's OS
 # macros are platform.h and host_* only, and THESEUS_HOST_* is too, apart
 # from LINT_HOST_DATA. Those files keep per-OS data, not OS calls: default
-# install paths for Steam, RetroArch and xemu, and the Linux CD ioctls.
+# install paths for Steam, RetroArch, xemu and PCSX2, and the Linux CD ioctls.
 # Vendored headers (stb, minimp3, imfilebrowser, imgui) are left alone.
 LINT_DIRS    = $(THESEUS_SRC)/desktop $(THESEUS_SRC)/shared $(THESEUS_SRC)/engine \
                $(THESEUS_SRC)/render $(THESEUS_SRC)/toolbox
 LINT_VENDOR  = --exclude-dir=third-party --exclude-dir=xdk --exclude-dir=imgui \
                --exclude='stb_*.h' --exclude='minimp3.h' --exclude='imfilebrowser.h'
-LINT_HOST_DATA = title_maker.cpp retroarch.cpp steam.cpp xemu.cpp hdd_browser.cpp cdaudio.cpp
+LINT_HOST_DATA = title_maker.cpp retroarch.cpp steam.cpp xemu.cpp pcsx2.cpp hdd_browser.cpp cdaudio.cpp
 LINT_HOSTTEST = THESEUS_HOST_(WIN|MAC|LINUX)
 .PHONY: lint-platform
 lint-platform:
@@ -872,6 +872,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/launchers/steam.cpp \
 	$(THESEUS_SRC)/desktop/launchers/retroarch.cpp \
 	$(THESEUS_SRC)/desktop/launchers/xemu.cpp \
+	$(THESEUS_SRC)/desktop/launchers/pcsx2.cpp \
 	$(THESEUS_SRC)/desktop/launchers/emu_find.cpp \
 	$(THESEUS_SRC)/desktop/title_sanitize.cpp \
 	$(THESEUS_SRC)/desktop/udata_synth.cpp \

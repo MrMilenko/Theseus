@@ -16,6 +16,7 @@
 #include "launchers/steam.h"
 #include "launchers/retroarch.h"
 #include "launchers/xemu.h"
+#include "launchers/pcsx2.h"
 #include "imgui.h"
 #include "imfilebrowser.h"
 #include "stb_image.h"
@@ -33,6 +34,8 @@
 #include "safe_save.h"
 
 bool g_titleMakerOpen = false;
+
+extern int Title_SanitizeName(const char*, char*, size_t);
 
 // ============================================================================
 // Helpers
@@ -750,6 +753,8 @@ void RenderTitleMaker() {
     static bool s_appBrowserInit = false;
     static ImGui::FileBrowser s_isoBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
     static bool s_isoBrowserInit = false;
+    static ImGui::FileBrowser s_ps2Browser(ImGuiFileBrowserFlags_CloseOnEsc);
+    static bool s_ps2BrowserInit = false;
     static ImGui::FileBrowser s_steamBrowser(
         ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_SelectDirectory);
     static bool s_steamBrowserInit = false;
@@ -773,6 +778,11 @@ void RenderTitleMaker() {
         s_isoBrowser.SetTitle("Select Xbox ISO");
         s_isoBrowser.SetTypeFilters({ ".iso", ".ISO" });
         s_isoBrowserInit = true;
+    }
+    if (!s_ps2BrowserInit) {
+        s_ps2Browser.SetTitle("Select PS2 Disc");
+        s_ps2Browser.SetTypeFilters({ ".iso", ".chd", ".cso", ".zso", ".mdf", ".ISO", ".CHD", ".CSO" });
+        s_ps2BrowserInit = true;
     }
     if (!s_steamBrowserInit) {
         s_steamBrowser.SetTitle("Select Steam install folder (contains steamapps/)");
@@ -876,6 +886,29 @@ void RenderTitleMaker() {
         }
         if (s_xemuPath[0] == 0 && !Xemu_FlatpakInstalled())
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "Set xemu path to enable ISO launching");
+    }
+
+    // PCSX2 path setting. Empty is fine: PS2 discs find PCSX2 at launch.
+    {
+        ImGui::Text("PCSX2:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 150);
+        ImGui::InputText("##pcsx2path", s_pcsx2Path, sizeof(s_pcsx2Path));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Save##pcsx2"))
+            SaveDesktopSettings();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Find##pcsx2")) {
+            char found[512];
+            if (Pcsx2_Find(found, sizeof(found))) {
+                snprintf(s_pcsx2Path, sizeof(s_pcsx2Path), "%s", found);
+                SaveDesktopSettings();
+                snprintf(s_statusMsg, sizeof(s_statusMsg), "Found PCSX2: %s", found);
+            } else {
+                strncpy(s_statusMsg, "PCSX2 not found in common locations", sizeof(s_statusMsg) - 1);
+            }
+            s_statusTime = 3.0f;
+        }
     }
 
     ImGui::Separator();
@@ -1146,6 +1179,32 @@ void RenderTitleMaker() {
     // Add ISO button, use the global theme so it matches Create / Import.
     if (ImGui::Button("Add ISO")) {
         ImGui::OpenPopup("AddISOPopup");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Add PS2 Disc")) s_ps2Browser.Open();
+    s_ps2Browser.Display();
+    if (s_ps2Browser.HasSelected()) {
+        std::string disc = s_ps2Browser.GetSelected().string();
+        s_ps2Browser.ClearSelected();
+        char name[128], clean[128];
+        TM_DeriveRomTitle(disc.c_str(), name, sizeof(name));
+        Title_SanitizeName(name, clean, sizeof(clean));
+        char launch[sizeof(VirtualGame::launch)];
+        if (!clean[0]) {
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "No usable name in %s", disc.c_str());
+        } else if (VGames_FindByName(clean) >= 0) {
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "Already in the library: %s", clean);
+        } else if (!Pcsx2_DiscLaunch(disc.c_str(), launch, sizeof(launch))) {
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "Disc path too long to launch: %s", disc.c_str());
+        } else {
+            char genID[16];
+            snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL));
+            VGames_Add(clean, genID, launch, "E", "Games");
+            VGames_Save(); UDataSynth_RebuildAll();
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "Added: %s", clean);
+            s_needsScan = true;
+        }
+        s_statusTime = 4.0f;
     }
 
     // ISO file browser + result window

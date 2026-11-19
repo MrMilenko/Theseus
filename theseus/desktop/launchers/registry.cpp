@@ -58,8 +58,10 @@ void Launcher_Build(const char* spec, char* outCmd, size_t outSize) {
 // Each module's RegisterFoo lives in its own .cpp.
 extern void Launcher_RegisterRetroArch();
 extern void Launcher_RegisterXemu();
+extern void Launcher_RegisterPcsx2();
 
 void Launchers_RegisterAll() {
 	Launcher_RegisterRetroArch();
 	Launcher_RegisterXemu();
+	Launcher_RegisterPcsx2();
 }
