@@ -33,8 +33,8 @@ extern void FormatDeviceName(int devUnit, TCHAR *szBuf);
 extern CNode *GetTextNode(const TCHAR *szText, float nWidth);
 extern float g_nEffectAlpha;
 extern XTIME g_pulseStartTime;
-extern const TCHAR *g_szCurTitleImage;
-extern const TCHAR *g_szSelTitleImage;
+extern const TCHAR *g_szTitleArt;
+extern const TCHAR *g_szPickedTitleArt;
 TCHAR szSelectionBuf[MAX_PATH];
 
 CGameCopier theGameCopier;
@@ -733,10 +733,10 @@ void CSavedGameGrid::RefreshDiskFreeSpace()
 
 	int totalBlocks = (int)((total.QuadPart + BLOCK_SIZE - 1) / BLOCK_SIZE) - 1;
 	int freeBlocks = (int)((free.QuadPart + BLOCK_SIZE - 1) / BLOCK_SIZE);
-	if (totalBlocks == m_deviceBlocks && freeBlocks == m_freeBlocks && g_nCurLanguage == m_shownLanguage)
+	if (totalBlocks == m_deviceBlocks && freeBlocks == m_freeBlocks && g_language == m_shownLanguage)
 		return;
 
-	m_shownLanguage = g_nCurLanguage;
+	m_shownLanguage = g_language;
 	m_deviceBlocks = totalBlocks;
 	m_freeBlocks = freeBlocks;
 	CallFunction(this, _T("OnTotalFreeChanged"));
@@ -994,16 +994,16 @@ void CSavedGameGrid::RenderIconRow(D3DXMATRIX *pMatrix, float y, int nTitle, int
 			else
 				_tcscpy(image, _T("dlcitem64.xbx"));
 
-			g_szCurTitleImage = image;
+			g_szTitleArt = image;
 			RenderNodeAt(m_SavedIconPanel, &at);
 		}
 		else
 		{
 			_tcscpy(image, _T("soundtracksave64.tga"));
-			g_szCurTitleImage = image;
+			g_szTitleArt = image;
 			RenderNodeAt(m_SoundtrackIconPanel, &at);
 		}
-		g_szCurTitleImage = NULL;
+		g_szTitleArt = NULL;
 
 		if (!m_detachIcon && m_smallIconHilite != NULL && nTitle == m_curTitle && item == m_curGridItem)
 			RenderNodeAt(m_iconRing, &at);
@@ -1060,7 +1060,7 @@ void CSavedGameGrid::RenderTitlePodAt(int nTitle, float y, const D3DXMATRIX *par
 
 	TCHAR image[MAX_PATH];
 	ResolveTitlePodImageName(nTitle, image);
-	g_szCurTitleImage = image;
+	g_szTitleArt = image;
 
 	const float alphaBefore = g_nEffectAlpha;
 	CNode *panel = (nTitle == m_soundtrackRow) ? m_podSoundtrackPanel : m_podSavePanel;
@@ -1086,7 +1086,7 @@ void CSavedGameGrid::RenderTitlePodAt(int nTitle, float y, const D3DXMATRIX *par
 			else
 			{
 				g_nEffectAlpha *= 1.0f - t;
-				g_szCurTitleImage = NULL;
+				g_szTitleArt = NULL;
 				m_focusPodMatrixValid = true;
 				ring = false;
 				plain = true;
@@ -1120,7 +1120,7 @@ void CSavedGameGrid::RenderTitlePodAt(int nTitle, float y, const D3DXMATRIX *par
 	}
 
 	g_nEffectAlpha = alphaBefore;
-	g_szCurTitleImage = image;
+	g_szTitleArt = image;
 
 	if (plain)
 	{
@@ -1130,7 +1130,7 @@ void CSavedGameGrid::RenderTitlePodAt(int nTitle, float y, const D3DXMATRIX *par
 		RenderNodeAt(m_pod, &at);
 		RenderNodeAt(panel, &at);
 	}
-	g_szCurTitleImage = NULL;
+	g_szTitleArt = NULL;
 }
 
 // CSavedGameGrid::Render
@@ -1481,7 +1481,7 @@ void CSavedGameGrid::selectRight()
 // TitleImage.xbx (or the logo), or the soundtrack art. Theseus adds DLC.
 void CSavedGameGrid::setSelImage()
 {
-	g_szSelTitleImage = NULL;
+	g_szPickedTitleArt = NULL;
 
 	if (m_curTitle == -1)
 	{
@@ -1507,7 +1507,7 @@ void CSavedGameGrid::setSelImage()
 			_tcscpy(szSelectionBuf, _T("dlcitem128.xbx"));
 	}
 
-	g_szSelTitleImage = szSelectionBuf;
+	g_szPickedTitleArt = szSelectionBuf;
 }
 
 // ContentMeta.xbx is a UTF-16 INI-like blob with [language] sections each

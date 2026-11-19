@@ -248,7 +248,7 @@ void TheseusPanic(const TCHAR* reason, const TCHAR* nextStep, LPEXCEPTION_POINTE
     DWORD startTick = GetTickCount();
 
     // Force the font table to load now so the very first frame has glyphs.
-    // OverlayFontDraw lazy-inits but only triggers when g_nFontCount==1, and
+    // OverlayFontDraw lazy-inits but only triggers when g_fontsLoaded==1, and
     // we want any failure to be visible in the panic log via the TRACE inside.
     (void)OverlayFontMeasure(_T("Theseus"), 16.0f);
 

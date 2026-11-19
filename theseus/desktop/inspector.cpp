@@ -482,9 +482,9 @@ void RenderInspectorPanel(IDirect3DDevice8* dev) {
                                 ? (uintptr_t)baseTex->m_surface->m_bgfxTex.idx : 0;
                             if (imguiTex) {
                                 ImGui::SameLine();
-                                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%dx%d", baseTex->m_nImageWidth, baseTex->m_nImageHeight);
+                                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "%dx%d", baseTex->m_texWidth, baseTex->m_texHeight);
                                 float thumbH = 64.0f;
-                                float aspect = baseTex->m_nImageWidth > 0 ? (float)baseTex->m_nImageWidth / baseTex->m_nImageHeight : 1.0f;
+                                float aspect = baseTex->m_texWidth > 0 ? (float)baseTex->m_texWidth / baseTex->m_texHeight : 1.0f;
                                 float thumbW = thumbH * aspect;
                                 if (thumbW > ImGui::GetContentRegionAvail().x)
                                     thumbW = ImGui::GetContentRegionAvail().x;

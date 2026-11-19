@@ -49,14 +49,14 @@ for (cls = geometry->GetNodeClass(); cls; cls = cls->base)     // class chain wa
             if (mesh->core == NULL) return;
         }
         if (mesh->core == NULL || mesh->core->GetFVF() == 0) return;
-        g_pRenderMeshNode /* 0x0017e758 */ = mesh;
+        g_pDrawingShape /* 0x0017e758 */ = mesh;
         SetVertexShader(GetFixedFunctionShader(fvf));           // 0x0005c740
         break;
     }
 if (appearance) appearance->Render();
 geometry->Render();
 copy 16 dwords of the device's world matrix (pDevice + 0xde0);
-position = row 3 (x, y, z); g_pRenderMeshNode = NULL;
+position = row 3 (x, y, z); g_pDrawingShape = NULL;
 ```
 
 **GetBBox (`0x00050eb0`)** tail calls the geometry's GetBBox, or zeroes all six floats.

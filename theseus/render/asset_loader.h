@@ -44,11 +44,11 @@ public:
 	DWORD GetFVF() const;
 
 	int m_nFaceCount;
-	int m_nVertexCount;
+	int m_vertCount;
 	int m_nIndexCount;
-	D3DPRIMITIVETYPE m_primitiveType;
+	D3DPRIMITIVETYPE m_drawMode;
 	DWORD m_fvf;
-	int m_nVertexStride;
+	int m_vertSize;
 	IDirect3DVertexBuffer8* m_vertexBuffer;
 	IDirect3DIndexBuffer8* m_indexBuffer;
 };
@@ -89,8 +89,8 @@ public:
 	bool m_titleImage;
 	D3DFORMAT m_format;
 	LPDIRECT3DTEXTURE8 m_surface;
-	int m_nImageWidth;
-	int m_nImageHeight;
+	int m_texWidth;
+	int m_texHeight;
 };
 
 // A texture loaded from a url. Every one sits on a list for reloads.

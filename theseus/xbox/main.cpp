@@ -1036,7 +1036,7 @@ static void Xbox_Init()
 		DeleteFileA(TheseusTempWmaFileA);
 	BootMark("  Xbox_Init: temp file cleanup");
 
-	g_nCurRegion = XGetGameRegion();
+	g_region = XGetGameRegion();
 	BootMark("  Xbox_Init: XGetGameRegion");
 
 	InitSkin();

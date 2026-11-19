@@ -250,8 +250,8 @@ void CPicture::Render()
 
         if (image)
         {
-            w = (image->m_nImageWidth / w) * w;
-            h = (image->m_nImageHeight / h) * h;
+            w = (image->m_texWidth / w) * w;
+            h = (image->m_texHeight / h) * h;
         }
     }
 
@@ -262,8 +262,8 @@ void CPicture::Render()
     {
         float surfW, surfH;
         TheseusGetTextureSize(surface, surfW, surfH);
-        maxU = image->m_nImageWidth / surfW;
-        maxV = image->m_nImageHeight / surfH;
+        maxU = image->m_texWidth / surfW;
+        maxV = image->m_texHeight / surfH;
     }
 
     TheseusSetTexture(0, surface);

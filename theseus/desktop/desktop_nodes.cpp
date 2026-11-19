@@ -482,13 +482,13 @@ protected:
 	void RenderEffect1(CSurfx* surface);
 	void RenderEffect2(CSurfx* surface);
 
-	short m_pcmLeft[256];		// 0x030
-	short m_pcmRight[256];		// 0x230
-	short m_fftLeft[128];		// 0x430
-	short m_fftRight[128];		// 0x530
-	bool m_bFFTValid;			// 0x630
+	short m_waveL[256];		// 0x030
+	short m_waveR[256];		// 0x230
+	short m_specL[128];		// 0x430
+	short m_specR[128];		// 0x530
+	bool m_bHaveSpectrum;			// 0x630
 	short m_pcmMono[256];		// 0x632
-	bool m_bMonoValid;			// 0x832
+	bool m_bHaveMono;			// 0x832
 };
 
 IMPLEMENT_NODE("AudioVisualizer", CAudioVisualizer, CNode)
@@ -517,13 +517,13 @@ CAudioVisualizer::CAudioVisualizer()
 	m_source = NULL;
 	m_scale = 1.0f;
 	m_offset = 0.0f;
-	m_bFFTValid = false;
-	m_bMonoValid = false;
+	m_bHaveSpectrum = false;
+	m_bHaveMono = false;
 
-	memset(m_pcmLeft, 0, sizeof (m_pcmLeft));
-	memset(m_pcmRight, 0, sizeof (m_pcmRight));
-	memset(m_fftLeft, 0, sizeof (m_fftLeft));
-	memset(m_fftRight, 0, sizeof (m_fftRight));
+	memset(m_waveL, 0, sizeof (m_waveL));
+	memset(m_waveR, 0, sizeof (m_waveR));
+	memset(m_specL, 0, sizeof (m_specL));
+	memset(m_specR, 0, sizeof (m_specR));
 	memset(m_pcmMono, 0, sizeof (m_pcmMono));
 }
 
@@ -552,12 +552,12 @@ void CAudioVisualizer::Advance(float dt)
 // Theseus: 5960 has no mono mix. Average of the two channels, cached per frame.
 short* CAudioVisualizer::GetMonoPCM()
 {
-	if (m_bMonoValid)
+	if (m_bHaveMono)
 		return m_pcmMono;
 
 	for (int i = 0; i < 256; i++)
-		m_pcmMono[i] = (short)((m_pcmLeft[i] + m_pcmRight[i]) / 2);
-	m_bMonoValid = true;
+		m_pcmMono[i] = (short)((m_waveL[i] + m_waveR[i]) / 2);
+	m_bHaveMono = true;
 	return m_pcmMono;
 }
 
@@ -586,14 +586,14 @@ void CAudioVisualizer::CalcSpectrum(short* pcm, short* bins)
 
 // CAudioVisualizer::UpdateSpectrum()
 // Reconstructed from 5960 retail XBE @ 0x00063900:
-//     if (!m_bFFTValid) { CalcSpectrum(left); CalcSpectrum(right); m_bFFTValid = 1; }
+//     if (!m_bHaveSpectrum) { CalcSpectrum(left); CalcSpectrum(right); m_bHaveSpectrum = 1; }
 void CAudioVisualizer::UpdateSpectrum()
 {
-	if (!m_bFFTValid)
+	if (!m_bHaveSpectrum)
 	{
-		CalcSpectrum(m_pcmLeft, m_fftLeft);
-		CalcSpectrum(m_pcmRight, m_fftRight);
-		m_bFFTValid = true;
+		CalcSpectrum(m_waveL, m_specL);
+		CalcSpectrum(m_waveR, m_specR);
+		m_bHaveSpectrum = true;
 	}
 }
 
@@ -639,9 +639,9 @@ static BYTE VizLevel(float n)
 // dot, and the spinner skips 5960's unused rand() call.
 void CAudioVisualizer::RenderDynamicTexture(CSurfx* surface)
 {
-	DashAudio_GetPCMSamples(m_pcmLeft, m_pcmRight, 256);
-	m_bMonoValid = false;
-	m_bFFTValid = false;
+	DashAudio_GetPCMSamples(m_waveL, m_waveR, 256);
+	m_bHaveMono = false;
+	m_bHaveSpectrum = false;
 
 	const int w = surface->m_nWidth;
 	const int h = surface->m_nHeight;
@@ -650,9 +650,9 @@ void CAudioVisualizer::RenderDynamicTexture(CSurfx* surface)
 		nFrames = h;
 
 	// One channel, picked by m_channel.
-	const short* pcm = m_pcmLeft;
+	const short* pcm = m_waveL;
 	if (m_channel != NULL && (m_channel[0] == 'r' || m_channel[0] == 'R'))
-		pcm = m_pcmRight;
+		pcm = m_waveR;
 
 	TCHAR style = (m_type != NULL) ? m_type[0] : 0;
 	if (style >= 'A' && style <= 'Z')
@@ -726,9 +726,9 @@ void CAudioVisualizer::RenderDynamicTexture(CSurfx* surface)
 
 		// Left spectrum high to low across the first half, right low to high after.
 		for (int i = 0; i < 128; i++)
-			level[i] = VizLevel(logf((float)(m_fftLeft[127 - i] + 1)) * 8.0f);
+			level[i] = VizLevel(logf((float)(m_specL[127 - i] + 1)) * 8.0f);
 		for (int i = 128; i < 256; i++)
-			level[i] = VizLevel(logf((float)(m_fftRight[i - 128] + 1)) * 8.0f);
+			level[i] = VizLevel(logf((float)(m_specR[i - 128] + 1)) * 8.0f);
 
 		for (int i = 0; i < 256; i++)
 		{
@@ -794,7 +794,7 @@ void CAudioVisualizer::RenderEffect1(CSurfx* surface)
 
 	int bass = 0;
 	for (int i = 0; i < 5; i++)
-		bass += (m_fftLeft[i] >> 4) + (m_fftRight[i] >> 4);
+		bass += (m_specL[i] >> 4) + (m_specR[i] >> 4);
 	bass /= 10;
 
 	if (bass > s_bass.hiNow)
@@ -876,7 +876,7 @@ void CAudioVisualizer::RenderEffect2(CSurfx* surface)
 			s_waveSin[i] = sinf((float)i / w * 3.14159265f + 3.14159265f / 2.0f);
 	}
 
-	float yA = (float)((((m_pcmLeft[0] + m_pcmRight[0]) >> 9) * amp * h) >> 12);
+	float yA = (float)((((m_waveL[0] + m_waveR[0]) >> 9) * amp * h) >> 12);
 	float yB = yA;
 	if (s_waveStyle == 3 && yA < 0)
 	{
@@ -892,8 +892,8 @@ void CAudioVisualizer::RenderEffect2(CSurfx* surface)
 		float yAPrev = yA;
 		float yBPrev = yB;
 		int iFrame = (i << 8) / w / 5;
-		yA = (float)(((m_pcmRight[iFrame] >> 8) * amp * h) >> 12);
-		yB = (float)(((m_pcmLeft[iFrame] >> 8) * amp * h) >> 12);
+		yA = (float)(((m_waveR[iFrame] >> 8) * amp * h) >> 12);
+		yB = (float)(((m_waveL[iFrame] >> 8) * amp * h) >> 12);
 
 		switch (s_waveStyle)
 		{
@@ -1844,8 +1844,8 @@ static void FormatSaveTime(char* buf, int bufSize, time_t t)
 	} else buf[0] = 0;
 }
 
-extern const TCHAR *g_szSelTitleImage;
-extern const char *g_szCurTitleImage;
+extern const TCHAR *g_szPickedTitleArt;
+extern const char *g_szTitleArt;
 extern float g_nEffectAlpha;
 
 // ============================================================================
@@ -2079,9 +2079,9 @@ public:
 					snprintf(s_szImage, sizeof (s_szImage), "E:\\UDATA\\%s\\SaveImage.xbx", title.titleID);
 			}
 
-			g_szCurTitleImage = s_szImage;
+			g_szTitleArt = s_szImage;
 			RenderNodeAt(m_SavedIconPanel, &at);
-			g_szCurTitleImage = NULL;
+			g_szTitleArt = NULL;
 
 			if (!m_detachIcon && m_iconRing != NULL && nTitle == m_curTitle && item == m_curGridItem)
 				RenderNodeAt(m_iconRing, &at);
@@ -2163,7 +2163,7 @@ public:
 					strcpy(s_szPodImage, "xboxlogo128.xbx");
 				}
 
-				g_szCurTitleImage = s_szPodImage;
+				g_szTitleArt = s_szPodImage;
 				D3DXMATRIX at;
 				D3DXMatrixTranslation(&at, xPod, y, zPod);
 				D3DXMatrixMultiply(&at, &frame, &at);
@@ -2172,7 +2172,7 @@ public:
 					RenderNodeAt(m_podSavePanel, &at);
 				if (bSelected && m_curGridItem == -1 && m_podHilite != NULL)
 					RenderNodeAt(m_podRing, &at);
-				g_szCurTitleImage = NULL;
+				g_szTitleArt = NULL;
 			}
 
 			if (bVisible)
@@ -2346,11 +2346,11 @@ public:
 				return;
 			strncpy(s_szSelImage, s_titles[m_curTitle].imagePath, sizeof (s_szSelImage) - 1);
 			s_szSelImage[sizeof (s_szSelImage) - 1] = 0;
-			g_szSelTitleImage = s_szSelImage;
+			g_szPickedTitleArt = s_szSelImage;
 		}
 		else if (m_curTitle >= s_titleCount && m_curTitle < s_titleCount + s_iconCount)
 		{
-			g_szSelTitleImage = s_iconEntries[m_curTitle - s_titleCount].iconPath;
+			g_szPickedTitleArt = s_iconEntries[m_curTitle - s_titleCount].iconPath;
 		}
 	}
 

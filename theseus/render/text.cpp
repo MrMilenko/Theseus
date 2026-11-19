@@ -18,9 +18,9 @@ extern void TheseusCreateMeshFVF(DWORD NumFaces, DWORD NumVertices, DWORD Option
 
 // The keyboard hands its edit string and cursor to the next Text node that
 // renders (0x0017e748, 0x00175220, 0x00175224 in the binary).
-TCHAR* g_szText = NULL;
-int g_nTextChar = -1;
-int g_nTextCharLast = -1;
+TCHAR* g_szEditText = NULL;
+int g_editCursor = -1;
+int g_editCursorPrev = -1;
 
 // *heading* formatting, off until a script turns it on through the keyboard's
 // SetAsteriskFormattingState (0x0017e74c, a BSS byte in 5960).
@@ -120,7 +120,7 @@ public:
 	void CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh, D3DXVECTOR3* pMin, D3DXVECTOR3* pMax, float nFormatWidth, bool bDoNotBreak, float scale,
 		float indentWidth = 0.0f, float indentHeight = 0.0f);
 
-	HANDLE m_hFile;
+	HANDLE m_hFontFile;
 
 private:
 	XtfGlyphSet* m_pSet;
@@ -129,7 +129,7 @@ private:
 };
 
 CFont::CFont() :
-	m_hFile(INVALID_HANDLE_VALUE),
+	m_hFontFile(INVALID_HANDLE_VALUE),
 	m_pSet(NULL),
 	m_pGlyphs(NULL),
 	m_ppShapes(NULL)
@@ -148,10 +148,10 @@ CFont::~CFont()
 //     free glyphSet, glyph records, loaded flags (plus the XTF1 buffers);
 void CFont::Close()
 {
-	if (m_hFile != INVALID_HANDLE_VALUE)
+	if (m_hFontFile != INVALID_HANDLE_VALUE)
 	{
-		CloseHandle(m_hFile);
-		m_hFile = INVALID_HANDLE_VALUE;
+		CloseHandle(m_hFontFile);
+		m_hFontFile = INVALID_HANDLE_VALUE;
 	}
 
 	if (m_ppShapes != NULL)
@@ -188,22 +188,22 @@ bool CFont::Open(const TCHAR* szFile)
 {
 	Close();
 
-	m_hFile = TheseusCreateFile(szFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-	if (m_hFile == INVALID_HANDLE_VALUE)
+	m_hFontFile = TheseusCreateFile(szFile, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+	if (m_hFontFile == INVALID_HANDLE_VALUE)
 		return false;
 
 	DWORD dwMagic = 0, cbHeader = 0, cbSet = 0;
 	char face[XTF_FACE_LEN];
-	bool ok = ReadExact(m_hFile, &dwMagic, 4) && dwMagic == XTF0_MAGIC &&
-		ReadExact(m_hFile, &cbHeader, 4) &&
-		ReadExact(m_hFile, face, XTF_FACE_LEN) &&
-		ReadExact(m_hFile, &cbSet, 4) && cbSet >= 20;
+	bool ok = ReadExact(m_hFontFile, &dwMagic, 4) && dwMagic == XTF0_MAGIC &&
+		ReadExact(m_hFontFile, &cbHeader, 4) &&
+		ReadExact(m_hFontFile, face, XTF_FACE_LEN) &&
+		ReadExact(m_hFontFile, &cbSet, 4) && cbSet >= 20;
 
 	if (ok)
 	{
 		m_pSet = (XtfGlyphSet*)new BYTE[cbSet];
 		m_pSet->cbThis = cbSet;
-		ok = ReadExact(m_hFile, &m_pSet->flAccel, cbSet - 4) &&
+		ok = ReadExact(m_hFontFile, &m_pSet->flAccel, cbSet - 4) &&
 			16 + m_pSet->cRanges * sizeof (XtfRange) == cbSet;
 	}
 
@@ -211,7 +211,7 @@ bool CFont::Open(const TCHAR* szFile)
 	{
 		DWORD nGlyphs = m_pSet->cGlyphs;
 		m_pGlyphs = new XtfGlyph[nGlyphs];
-		ok = ReadExact(m_hFile, m_pGlyphs, nGlyphs * sizeof (XtfGlyph));
+		ok = ReadExact(m_hFontFile, m_pGlyphs, nGlyphs * sizeof (XtfGlyph));
 
 		m_ppShapes = new CGlyphShape*[nGlyphs];
 		for (DWORD i = 0; i < nGlyphs; i++)
@@ -240,24 +240,24 @@ bool CFont::LoadGlyph(int nGlyph)
 		return true;
 
 	DWORD offset = m_pGlyphs[nGlyph].shapeOffset;
-	if (offset == 0 || SetFilePointer(m_hFile, offset, NULL, FILE_BEGIN) == (DWORD)-1)
+	if (offset == 0 || SetFilePointer(m_hFontFile, offset, NULL, FILE_BEGIN) == (DWORD)-1)
 		return false;
 
 	CGlyphShape* pShape = new CGlyphShape;
 	pShape->indices = NULL;
 	pShape->points = NULL;
 
-	bool ok = ReadExact(m_hFile, &pShape->nIndices, 2);
+	bool ok = ReadExact(m_hFontFile, &pShape->nIndices, 2);
 	if (ok)
 	{
 		pShape->indices = new WORD[pShape->nIndices];
-		ok = ReadExact(m_hFile, &pShape->nPoints, 2);
+		ok = ReadExact(m_hFontFile, &pShape->nPoints, 2);
 	}
 	if (ok)
 	{
 		pShape->points = new XtfPoint[pShape->nPoints];
-		ok = ReadExact(m_hFile, pShape->indices, pShape->nIndices * sizeof (WORD)) &&
-			ReadExact(m_hFile, pShape->points, pShape->nPoints * sizeof (XtfPoint));
+		ok = ReadExact(m_hFontFile, pShape->indices, pShape->nIndices * sizeof (WORD)) &&
+			ReadExact(m_hFontFile, pShape->points, pShape->nPoints * sizeof (XtfPoint));
 	}
 
 	if (!ok)
@@ -590,7 +590,7 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 			col2Max = colWidth[1];
 	}
 
-	if (g_nTextChar >= 0 && g_nTextChar <= nChars)
+	if (g_editCursor >= 0 && g_editCursor <= nChars)
 	{
 		nFaces += 2;
 		nVerts += 4;
@@ -779,7 +779,7 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 				v.color = color;
 			}
 
-			if (ich - 1 == g_nTextChar)
+			if (ich - 1 == g_editCursor)
 				AddCursor(indices, nIndex, verts, nVertex, x, y, true);
 
 			x += Advance(nGlyph);
@@ -797,7 +797,7 @@ void CFont::CreateTextMesh(const TCHAR* pchText, int nChars, LPD3DXMESH* ppMesh,
 
 	// The cursor past the last character hides once it would leave the
 	// keyboard's edit box (16.556152 units, 0x0002c1b4).
-	if (g_nTextChar == nChars)
+	if (g_editCursor == nChars)
 		AddCursor(indices, nIndex, verts, nVertex, x, y, x < 16.556152f);
 
 	for (int i = 0; i < nVerts; i++)
@@ -839,7 +839,7 @@ static CFontTableEntry g_fonts[MAX_FONT_COUNT] =
 #endif
 };
 
-static int g_nFontCount = 1;
+static int g_fontsLoaded = 1;
 
 static TCHAR* CopyString(const TCHAR* sz)
 {
@@ -890,7 +890,7 @@ static void InitFontTable()
 
 	do
 	{
-		if (g_nFontCount >= MAX_FONT_COUNT)
+		if (g_fontsLoaded >= MAX_FONT_COUNT)
 			continue;
 
 #ifdef _UNICODE
@@ -919,9 +919,9 @@ static void InitFontTable()
 #endif
 			if (_tcscmp(szFace, g_fonts[0].m_szFace) != 0)
 			{
-				g_fonts[g_nFontCount].m_szFace = CopyString(szFace);
-				g_fonts[g_nFontCount].m_szFile = CopyString(szPath);
-				g_nFontCount++;
+				g_fonts[g_fontsLoaded].m_szFace = CopyString(szFace);
+				g_fonts[g_fontsLoaded].m_szFile = CopyString(szPath);
+				g_fontsLoaded++;
 			}
 		}
 
@@ -945,17 +945,17 @@ static void InitFontTable()
 // Theseus builds the path from its font directory instead of the app dir.
 CFont* GetFont(const TCHAR* szFaceName)
 {
-	if (g_nFontCount == 1)
+	if (g_fontsLoaded == 1)
 		InitFontTable();
 
 	int i = 0;
-	while (i < g_nFontCount && _tcsicmp(szFaceName, g_fonts[i].m_szFace) != 0)
+	while (i < g_fontsLoaded && _tcsicmp(szFaceName, g_fonts[i].m_szFace) != 0)
 		i++;
-	if (i == g_nFontCount)
+	if (i == g_fontsLoaded)
 		i = 0;
 
 	CFontTableEntry& entry = g_fonts[i];
-	if (entry.m_font.m_hFile == INVALID_HANDLE_VALUE)
+	if (entry.m_font.m_hFontFile == INVALID_HANDLE_VALUE)
 	{
 		TCHAR szPath[MAX_PATH];
 		if (_tcschr(entry.m_szFile, ':') != NULL)
@@ -964,7 +964,7 @@ CFont* GetFont(const TCHAR* szFaceName)
 			_stprintf(szPath, _T("%s%s"), TheseusGetFontDir(), entry.m_szFile);
 
 		if (!entry.m_font.Open(szPath) &&
-			g_fonts[0].m_font.m_hFile == INVALID_HANDLE_VALUE &&
+			g_fonts[0].m_font.m_hFontFile == INVALID_HANDLE_VALUE &&
 			!g_fonts[0].m_font.Open(g_fonts[0].m_szFile))
 			return NULL;
 	}
@@ -977,7 +977,7 @@ CFont* GetFont(const TCHAR* szFaceName)
 // frees its face and file strings, then each font closes.
 void Text_Exit()
 {
-	for (int i = 0; i < g_nFontCount; i++)
+	for (int i = 0; i < g_fontsLoaded; i++)
 	{
 		if (i > 0)
 		{
@@ -1140,10 +1140,10 @@ public:
 
 	DECLARE_NODE_PROPS()
 
-	LPD3DXMESH m_pMesh;
+	LPD3DXMESH m_pGlyphMesh;
 	D3DXVECTOR3 m_bboxMin, m_bboxMax;
 	int m_nLanguage;
-	XTIME m_timeToScroll;
+	XTIME m_scrollAt;
 
 private:
 	typedef bool (*StampFormatter)(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale);
@@ -1192,9 +1192,9 @@ CTextNode::CTextNode() :
 	m_indentWidth(0.0f),
 	m_indentHeight(0.0f),
 	m_scrollHorizontal(false),
-	m_pMesh(NULL),
+	m_pGlyphMesh(NULL),
 	m_nLanguage(0),
-	m_timeToScroll(0.0)
+	m_scrollAt(0.0)
 {
 }
 
@@ -1208,10 +1208,10 @@ CTextNode::~CTextNode()
 
 void CTextNode::DropMesh()
 {
-	if (m_pMesh != NULL)
+	if (m_pGlyphMesh != NULL)
 	{
-		m_pMesh->Release();
-		m_pMesh = NULL;
+		m_pGlyphMesh->Release();
+		m_pGlyphMesh = NULL;
 	}
 }
 
@@ -1231,13 +1231,13 @@ void CTextNode::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
 
-	if (m_scrollRate <= 0.0f || m_pMesh == NULL)
+	if (m_scrollRate <= 0.0f || m_pGlyphMesh == NULL)
 		return;
 
 	XTIME now = TheseusGetNow();
-	if (m_timeToScroll == 0.0)
-		m_timeToScroll = now + m_scrollDelay;
-	if (now < m_timeToScroll)
+	if (m_scrollAt == 0.0)
+		m_scrollAt = now + m_scrollDelay;
+	if (now < m_scrollAt)
 		return;
 
 	float window, content;
@@ -1289,7 +1289,7 @@ int CTextNode::ExpandStamp(const TCHAR* szPrefix, StampFormatter pfnFormat, bool
 	GetLocalTime(&st);
 	TCHAR szValue[32];
 	szValue[0] = 0;
-	pfnFormat(szValue, countof(szValue), &st, LOCALE_CURRENT);
+	pfnFormat(szValue, countof(szValue), &st, LOCALE_ACTIVE);
 
 	if (_tcscmp(m_text + cchPrefix, szValue) != 0)
 	{
@@ -1319,16 +1319,16 @@ void CTextNode::Render()
 {
 	bool bRebuild = false;
 
-	if (g_szText != NULL)
+	if (g_szEditText != NULL)
 	{
-		if (m_text == NULL || _tcscmp(m_text, g_szText) != 0 || g_nTextChar != g_nTextCharLast)
+		if (m_text == NULL || _tcscmp(m_text, g_szEditText) != 0 || g_editCursor != g_editCursorPrev)
 		{
 			delete [] m_text;
-			m_text = CopyString(g_szText);
-			g_nTextCharLast = g_nTextChar;
+			m_text = CopyString(g_szEditText);
+			g_editCursorPrev = g_editCursor;
 			bRebuild = true;
 		}
-		g_szText = NULL;
+		g_szEditText = NULL;
 	}
 
 	if (m_text == NULL || m_text[0] == 0)
@@ -1344,25 +1344,25 @@ void CTextNode::Render()
 		szText = m_text + cchStamp;
 	}
 
-	if (m_translate && m_nLanguage != g_nCurLanguage)
+	if (m_translate && m_nLanguage != g_language)
 		bRebuild = true;
 
 	if (bRebuild)
 		DropMesh();
 
-	if (m_pMesh == NULL)
+	if (m_pGlyphMesh == NULL)
 	{
 		TCHAR szTranslated[MAX_TRANSLATE_LEN];
 		if (m_translate)
 			szText = Translate(szText, szTranslated);
-		m_nLanguage = g_nCurLanguage;
+		m_nLanguage = g_language;
 
 		CFont* pFont = GetFont(FaceFromFont(m_font));
 		if (pFont == NULL || !pFont->IsOpen())
 			return;
-		pFont->CreateTextMesh(szText, -1, &m_pMesh, &m_bboxMin, &m_bboxMax, fabsf(m_width), m_width < 0.0f, 1.0f,
+		pFont->CreateTextMesh(szText, -1, &m_pGlyphMesh, &m_bboxMin, &m_bboxMax, fabsf(m_width), m_width < 0.0f, 1.0f,
 			m_indentWidth, m_indentHeight);
-		if (m_pMesh == NULL)
+		if (m_pGlyphMesh == NULL)
 			return;
 	}
 
@@ -1392,11 +1392,11 @@ void CTextNode::Render()
 		{
 			float wrap = copy == 0 ? 0.0f : contentW + SCROLL_GAP;
 			TEXTVERTEX* verts;
-			if (SUCCEEDED(m_pMesh->LockVertexBuffer(0, (BYTE**)&verts)))
+			if (SUCCEEDED(m_pGlyphMesh->LockVertexBuffer(0, (BYTE**)&verts)))
 			{
 				float left = m_scroll - 1.0f;
-				HorizontalFade(verts, m_pMesh->GetNumVertices(), left, left + window + 2.0f, wrap);
-				m_pMesh->UnlockVertexBuffer();
+				HorizontalFade(verts, m_pGlyphMesh->GetNumVertices(), left, left + window + 2.0f, wrap);
+				m_pGlyphMesh->UnlockVertexBuffer();
 			}
 
 			if (copy == 1 && m_scroll + window < contentW)
@@ -1410,10 +1410,10 @@ void CTextNode::Render()
 			if (m_scroll == 0.0f)
 				top += 1.0f;   // no top fade until it starts moving
 			TEXTVERTEX* verts;
-			if (SUCCEEDED(m_pMesh->LockVertexBuffer(0, (BYTE**)&verts)))
+			if (SUCCEEDED(m_pGlyphMesh->LockVertexBuffer(0, (BYTE**)&verts)))
 			{
-				VerticalFade(verts, m_pMesh->GetNumVertices(), top, bottom, wrap);
-				m_pMesh->UnlockVertexBuffer();
+				VerticalFade(verts, m_pGlyphMesh->GetNumVertices(), top, bottom, wrap);
+				m_pGlyphMesh->UnlockVertexBuffer();
 			}
 
 			if (copy == 1 && m_scroll + m_height < contentH)
@@ -1438,7 +1438,7 @@ void CTextNode::Render()
 #endif
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
 		Frame_Count(FC_DRAW_SUBSET);
-		m_pMesh->DrawSubset(0);
+		m_pGlyphMesh->DrawSubset(0);
 		TheseusSetRenderState(D3DRS_CULLMODE, D3DCULL_CCW);
 #ifndef _XBOX
 		TheseusSetVertexAlphaMul(FALSE);
@@ -1459,7 +1459,7 @@ bool CTextNode::OnSetProperty(const PRD* pprd, const void* pvValue)
 	{
 		DropMesh();
 		m_scroll = 0.0f;
-		m_timeToScroll = 0.0;
+		m_scrollAt = 0.0;
 	}
 	return true;
 }

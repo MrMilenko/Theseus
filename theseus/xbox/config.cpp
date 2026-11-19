@@ -208,7 +208,7 @@ CStrObject *CConfig::GetAVRegion()
 CStrObject *CConfig::GetGameRegion()
 {
 	const TCHAR *szName = NULL;
-	switch (g_nCurRegion)
+	switch (g_region)
 	{
 	case XC_GAME_REGION_NA:          szName = _T("NA");          break;
 	case XC_GAME_REGION_JAPAN:       szName = _T("JAPAN");       break;

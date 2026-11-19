@@ -15,7 +15,7 @@
 #include "scene_groups.h"
 #include "camera.h"
 
-extern class CMeshNode* g_pRenderMeshNode;
+extern class CMeshNode* g_pDrawingShape;
 extern D3DXMATRIX g_cameraWorld;
 extern D3DXMATRIX g_viewMatrix;
 extern D3DXMATRIX g_matProjection;
@@ -56,11 +56,11 @@ CShape::~CShape()
 //     if (class chain of geometry reaches MeshNode) {
 //         if (mesh->dirty) { if (url && *url) load(url); mesh->Init(); if (!mesh->core) return; }
 //         if (!mesh->core || !mesh->core->GetFVF()) return;
-//         g_pRenderMeshNode = mesh; SetVertexShader(GetFixedFunctionShader(fvf));
+//         g_pDrawingShape = mesh; SetVertexShader(GetFixedFunctionShader(fvf));
 //     }
 //     if (appearance) appearance->Render();
 //     geometry->Render();
-//     position = world matrix row 3 (copied from the device); g_pRenderMeshNode = NULL;
+//     position = world matrix row 3 (copied from the device); g_pDrawingShape = NULL;
 // Initialize() is the binary's inlined load/Init/core test. The profiler
 // phases and the per mesh triangle tally are Theseus additions.
 void CShape::Render()
@@ -79,7 +79,7 @@ void CShape::Render()
 		if (meshFVF == 0)
 			return;
 
-		g_pRenderMeshNode = pMesh;
+		g_pDrawingShape = pMesh;
 		TheseusSetVertexShader(GetFixedFunctionShader(meshFVF));
 	}
 
@@ -100,7 +100,7 @@ void CShape::Render()
 	D3DXMATRIX world;
 	TheseusGetTransform(D3DTS_WORLD, &world);
 	m_position = D3DXVECTOR3(world._41, world._42, world._43);
-	g_pRenderMeshNode = NULL;
+	g_pDrawingShape = NULL;
 }
 
 // CShape::GetBBox(pBBox) / GetRadius() / Advance(nSeconds)

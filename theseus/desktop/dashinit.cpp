@@ -135,7 +135,7 @@ void DashInit()
 	TheseusCreateDirectory("e:\\TDATA\\fffe0000\\music", NULL);
 
 	// Set current region
-	g_nCurRegion = 1; // NA
+	g_region = 1; // NA
 
 	// Initialize skin system
 	InitSkin();

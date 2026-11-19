@@ -16,7 +16,7 @@
 #include "settingsfile.h"
 #include "xip_archive.h"
 
-extern class CMeshNode *g_pRenderMeshNode;
+extern class CMeshNode *g_pDrawingShape;
 extern void SetFalloffShaderValues(const D3DXCOLOR &sideColor, const D3DXCOLOR &frontColor);
 extern DWORD GetEffectShader(int nEffect, DWORD fvf);
 extern LPDIRECT3DTEXTURE8 CreateTexture(int &nWidth, int &nHeight, D3DFORMAT format);
@@ -28,14 +28,14 @@ extern void SetReflectShaderFrameValues();
 // 0x0017c8c8), the key palette switch (0x0017e74d), and the shared pulse
 // clock (0x0017c8c0) with the material that last restarted it (0x0017e750).
 BOOL g_bEdgeAntialiasOverride;
-const TCHAR *g_szCurTitleImage;
-const TCHAR *g_szSelTitleImage;
+const TCHAR *g_szTitleArt;
+const TCHAR *g_szPickedTitleArt;
 bool g_bActiveKey = false;
 extern float g_nEffectAlpha;
 extern D3DRECT g_clipRect;
 extern D3DRECT g_clipRect2x;
 XTIME g_pulseStartTime;
-static class CMaxMaterial *g_pLastPulseMaxMat = NULL;
+static class CMaxMaterial *g_pPulsingMat = NULL;
 int g_nMatInfoCount = 0;
 TCHAR g_szLastLoadedSkin[MAX_PATH] = _T("");
 
@@ -82,7 +82,7 @@ public:
 
 	void Render();
 
-	class CMatInfo *m_pMatInfo;
+	class CMatInfo *m_pDef;
 
 	DECLARE_NODE_PROPS()
 };
@@ -234,7 +234,7 @@ public:
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
-	BYTE m_r, m_g, m_b, m_a;
+	BYTE m_red, m_green, m_blue, m_alpha;
 };
 
 // Falloff, vtable 0x00028bf0: side 0x0c, front 0x10, shader effect 0x14,
@@ -246,10 +246,10 @@ public:
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
-	D3DCOLOR m_colorSide;
-	D3DCOLOR m_colorFront;
-	int m_nShaderEffect;
-	TCHAR m_matName[MAX_PATH];
+	D3DCOLOR m_sideColor;
+	D3DCOLOR m_faceColor;
+	int m_effect;
+	TCHAR m_szMatLabel[MAX_PATH];
 };
 
 // FalloffTex, vtable 0x00028be8: falloff modulated by the mesh's texture.
@@ -260,9 +260,9 @@ public:
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
-	D3DCOLOR m_colorSide;
-	D3DCOLOR m_colorFront;
-	int m_nShaderEffect;
+	D3DCOLOR m_sideColor;
+	D3DCOLOR m_faceColor;
+	int m_effect;
 };
 
 // Aniso, vtable 0x00028be0: falloff through the anisotropic shader.
@@ -273,9 +273,9 @@ public:
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
-	D3DCOLOR m_colorSide;
-	D3DCOLOR m_colorFront;
-	int m_nShaderEffect;
+	D3DCOLOR m_sideColor;
+	D3DCOLOR m_faceColor;
+	int m_effect;
 };
 
 // Icon, vtable 0x00028bd8: the current or selected title image.
@@ -342,7 +342,7 @@ public:
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
-	BYTE m_r, m_g, m_b, m_a;
+	BYTE m_red, m_green, m_blue, m_alpha;
 };
 
 // ModulateTexture, vtable 0x00028bec: the mesh's texture, pulsing alpha.
@@ -353,7 +353,7 @@ public:
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
-	BYTE m_r, m_g, m_b, m_a;
+	BYTE m_red, m_green, m_blue, m_alpha;
 };
 
 // Reflect, vtable 0x00028be4: the environment reflection shader.
@@ -364,7 +364,7 @@ public:
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
-	int m_nShaderEffect;
+	int m_effect;
 };
 
 // MaskTexture, vtable 0x00028bdc: one of the masks on stage 1.
@@ -393,9 +393,9 @@ public:
 
 	bool Setup(CMaxMaterial *pMaxMat);
 
-	D3DCOLOR m_colorSide;
-	D3DCOLOR m_colorFront;
-	int m_nShaderEffect;
+	D3DCOLOR m_sideColor;
+	D3DCOLOR m_faceColor;
+	int m_effect;
 };
 
 // The material list Material_Init fills, 0x0017c6b8, count at 0x0017e754.
@@ -404,7 +404,7 @@ CMatInfo *g_rgMatInfo[240];
 // The vertex shader every falloff style material starts with.
 static void SetEffectShader(int nEffect)
 {
-	TheseusSetVertexShader(GetEffectShader(nEffect, g_pRenderMeshNode->GetFVF()));
+	TheseusSetVertexShader(GetEffectShader(nEffect, g_pDrawingShape->GetFVF()));
 }
 
 // Texture factor alpha scaled by the scene's fade (0x00175ca0).
@@ -467,10 +467,10 @@ bool CMatInfo::Setup(CMaxMaterial *pMaxMat)
 // A flat color with the vertex alpha kept.
 CSolidMatInfo::CSolidMatInfo(const TCHAR *szName, BYTE r, BYTE g, BYTE b, BYTE a, DWORD dwFlags /*=0*/) : CMatInfo(szName, dwFlags)
 {
-	m_r = r;
-	m_g = g;
-	m_b = b;
-	m_a = a;
+	m_red = r;
+	m_green = g;
+	m_blue = b;
+	m_alpha = a;
 }
 
 bool CSolidMatInfo::Setup(CMaxMaterial *pMaxMat)
@@ -482,7 +482,7 @@ bool CSolidMatInfo::Setup(CMaxMaterial *pMaxMat)
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
 
-	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB(FadedAlpha(m_a), m_r, m_g, m_b));
+	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB(FadedAlpha(m_alpha), m_red, m_green, m_blue));
 #ifdef _XBOX
 	TheseusSetRenderState(D3DRS_EDGEANTIALIAS, (m_flags & MATINFO_NO_EDGE_AA) ? FALSE : TRUE);
 	TheseusSetRenderState(D3DRS_MULTISAMPLEANTIALIAS, FALSE);
@@ -495,7 +495,7 @@ bool CSolidMatInfo::Setup(CMaxMaterial *pMaxMat)
 // Material_Init builds these inline (see the Key constructor at 0x000570c0):
 //     side, front, shader effect 1, wcscpy(matName, name).
 // Setup reconstructed from 5960 retail XBE @ 0x00057790. Ghidra decompile:
-//     if (!g_pRenderMeshNode) return 0;
+//     if (!g_pDrawingShape) return 0;
 //     tss[0].ADDRESSV = WRAP; SetVertexShader(GetEffectShader(effect, fvf));
 //     tss[0].COLOROP = tss[0].ALPHAOP = DISABLE;
 //     rs.EDGEANTIALIAS = 1; rs.MULTISAMPLEANTIALIAS = 0;
@@ -504,30 +504,30 @@ bool CSolidMatInfo::Setup(CMaxMaterial *pMaxMat)
 // The shader blends side to front by how directly a face looks at the camera.
 CFalloffMatInfo::CFalloffMatInfo(const TCHAR *szName, D3DCOLOR colorSide, D3DCOLOR colorFront, DWORD dwFlags /*=0*/) : CMatInfo(szName, dwFlags)
 {
-	m_colorSide = colorSide;
-	m_colorFront = colorFront;
-	m_nShaderEffect = 1;
-	_tcscpy(m_matName, szName);
+	m_sideColor = colorSide;
+	m_faceColor = colorFront;
+	m_effect = 1;
+	_tcscpy(m_szMatLabel, szName);
 }
 
 bool CFalloffMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
-	if (g_pRenderMeshNode == NULL)
+	if (g_pDrawingShape == NULL)
 		return false;
 
 	TheseusSetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
-	SetEffectShader(m_nShaderEffect);
+	SetEffectShader(m_effect);
 	TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_DISABLE);
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 	UseEdgeAntialias();
-	SetFalloffShaderValues(m_colorSide, m_colorFront);
+	SetFalloffShaderValues(m_sideColor, m_faceColor);
 
 	return CMatInfo::Setup(pMaxMat);
 }
 
 // CFalloffTexInfo
 // Setup reconstructed from 5960 retail XBE @ 0x00057940. Ghidra decompile:
-//     if (!g_pRenderMeshNode) return 0;
+//     if (!g_pDrawingShape) return 0;
 //     SetVertexShader(GetEffectShader(effect 3, fvf)); falloff constants;
 //     tss[0]: ADDRESSV WRAP, COLOROP and ALPHAOP MODULATE (DIFFUSE, TEXTURE);
 //     tss[1]: COLOROP, ALPHAOP DISABLE;
@@ -535,18 +535,18 @@ bool CFalloffMatInfo::Setup(CMaxMaterial *pMaxMat)
 // Theseus also pins stage 0 to texture coordinate set 0.
 CFalloffTexInfo::CFalloffTexInfo(const TCHAR *szName, D3DCOLOR colorSide, D3DCOLOR colorFront, DWORD dwFlags /*=0*/) : CMatInfo(szName, dwFlags)
 {
-	m_colorSide = colorSide;
-	m_colorFront = colorFront;
-	m_nShaderEffect = 3;
+	m_sideColor = colorSide;
+	m_faceColor = colorFront;
+	m_effect = 3;
 }
 
 bool CFalloffTexInfo::Setup(CMaxMaterial *pMaxMat)
 {
-	if (g_pRenderMeshNode == NULL)
+	if (g_pDrawingShape == NULL)
 		return false;
 
-	SetEffectShader(m_nShaderEffect);
-	SetFalloffShaderValues(m_colorSide, m_colorFront);
+	SetEffectShader(m_effect);
+	SetFalloffShaderValues(m_sideColor, m_faceColor);
 
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
 	TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
@@ -567,21 +567,21 @@ bool CFalloffTexInfo::Setup(CMaxMaterial *pMaxMat)
 //     the Falloff Setup with shader effect 2 and no edge AA writes.
 CAnisoMatInfo::CAnisoMatInfo(const TCHAR *szName, D3DCOLOR colorSide, D3DCOLOR colorFront, DWORD dwFlags /*=0*/) : CMatInfo(szName, dwFlags)
 {
-	m_colorSide = colorSide;
-	m_colorFront = colorFront;
-	m_nShaderEffect = 2;
+	m_sideColor = colorSide;
+	m_faceColor = colorFront;
+	m_effect = 2;
 }
 
 bool CAnisoMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
-	if (g_pRenderMeshNode == NULL)
+	if (g_pDrawingShape == NULL)
 		return false;
 
 	TheseusSetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
-	SetEffectShader(m_nShaderEffect);
+	SetEffectShader(m_effect);
 	TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_DISABLE);
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
-	SetFalloffShaderValues(m_colorSide, m_colorFront);
+	SetFalloffShaderValues(m_sideColor, m_faceColor);
 
 	return CMatInfo::Setup(pMaxMat);
 }
@@ -592,18 +592,18 @@ bool CAnisoMatInfo::Setup(CMaxMaterial *pMaxMat)
 //     and rs.CULLMODE = NONE before CMatInfo::Setup().
 CInnerWallMatInfo::CInnerWallMatInfo(const TCHAR *szName, D3DCOLOR colorSide, D3DCOLOR colorFront, DWORD dwFlags /*=0*/) : CMatInfo(szName, dwFlags)
 {
-	m_colorSide = colorSide;
-	m_colorFront = colorFront;
-	m_nShaderEffect = 3;
+	m_sideColor = colorSide;
+	m_faceColor = colorFront;
+	m_effect = 3;
 }
 
 bool CInnerWallMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
-	if (g_pRenderMeshNode == NULL)
+	if (g_pDrawingShape == NULL)
 		return false;
 
-	SetEffectShader(m_nShaderEffect);
-	SetFalloffShaderValues(m_colorSide, m_colorFront);
+	SetEffectShader(m_effect);
+	SetFalloffShaderValues(m_sideColor, m_faceColor);
 
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
 	TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
@@ -733,10 +733,10 @@ static float PulseLevel()
 // the scene has finished fading in.
 CModulateTextureMatInfo::CModulateTextureMatInfo(const TCHAR *szName, BYTE r, BYTE g, BYTE b, BYTE a, DWORD dwFlags /*=0*/) : CMatInfo(szName, dwFlags)
 {
-	m_r = r;
-	m_g = g;
-	m_b = b;
-	m_a = a;
+	m_red = r;
+	m_green = g;
+	m_blue = b;
+	m_alpha = a;
 }
 
 bool CModulateTextureMatInfo::Setup(CMaxMaterial *pMaxMat)
@@ -747,14 +747,14 @@ bool CModulateTextureMatInfo::Setup(CMaxMaterial *pMaxMat)
 	TheseusSetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TFACTOR);
 
-	if (pMaxMat != g_pLastPulseMaxMat && g_nEffectAlpha == 1.0f)
+	if (pMaxMat != g_pPulsingMat && g_nEffectAlpha == 1.0f)
 	{
-		g_pLastPulseMaxMat = pMaxMat;
+		g_pPulsingMat = pMaxMat;
 		g_pulseStartTime = TheseusGetNow();
 	}
 
-	float nAlpha = (float)m_a * (PulseLevel() * 0.25f + 0.75f) * g_nEffectAlpha;
-	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB((BYTE)(int)nAlpha, m_r, m_g, m_b));
+	float nAlpha = (float)m_alpha * (PulseLevel() * 0.25f + 0.75f) * g_nEffectAlpha;
+	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB((BYTE)(int)nAlpha, m_red, m_green, m_blue));
 	UseEdgeAntialias();
 
 	return CMatInfo::Setup(pMaxMat);
@@ -762,7 +762,7 @@ bool CModulateTextureMatInfo::Setup(CMaxMaterial *pMaxMat)
 
 // CReflectMatInfo
 // Setup reconstructed from 5960 retail XBE @ 0x00056d90. Ghidra decompile:
-//     if (!g_pRenderMeshNode) return 0;
+//     if (!g_pDrawingShape) return 0;
 //     SetVertexShader(GetEffectShader(effect 4, fvf));
 //     falloff constants side (229, 229, 229, 0), front (229, 229, 229, 255);
 //     SetReflectShaderFrameValues();
@@ -771,15 +771,15 @@ bool CModulateTextureMatInfo::Setup(CMaxMaterial *pMaxMat)
 //     return CMatInfo::Setup();
 CReflectMatInfo::CReflectMatInfo(const TCHAR *szName) : CMatInfo(szName, 0)
 {
-	m_nShaderEffect = 4;
+	m_effect = 4;
 }
 
 bool CReflectMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
-	if (g_pRenderMeshNode == NULL)
+	if (g_pDrawingShape == NULL)
 		return false;
 
-	SetEffectShader(m_nShaderEffect);
+	SetEffectShader(m_effect);
 	SetFalloffShaderValues(D3DCOLOR_ARGB(0, 229, 229, 229), D3DCOLOR_ARGB(255, 229, 229, 229));
 	SetReflectShaderFrameValues();
 
@@ -804,10 +804,10 @@ bool CReflectMatInfo::Setup(CMaxMaterial *pMaxMat)
 // A colored panel whose shape comes from the mask's alpha.
 CBackingMatInfo::CBackingMatInfo(const TCHAR *szName, BYTE r, BYTE g, BYTE b, BYTE a, DWORD dwFlags /*=0*/) : CMatInfo(szName, dwFlags)
 {
-	m_r = r;
-	m_g = g;
-	m_b = b;
-	m_a = a;
+	m_red = r;
+	m_green = g;
+	m_blue = b;
+	m_alpha = a;
 }
 
 bool CBackingMatInfo::Setup(CMaxMaterial *pMaxMat)
@@ -822,7 +822,7 @@ bool CBackingMatInfo::Setup(CMaxMaterial *pMaxMat)
 	TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
 	TheseusSetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_WRAP);
 	TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB(FadedAlpha(m_a), m_r, m_g, m_b));
+	TheseusSetRenderState(D3DRS_TEXTUREFACTOR, D3DCOLOR_ARGB(FadedAlpha(m_alpha), m_red, m_green, m_blue));
 
 	return CMatInfo::Setup(pMaxMat);
 }
@@ -844,15 +844,15 @@ CEggGlowPulseMatInfo::CEggGlowPulseMatInfo(const TCHAR *szName, CustomColor colo
 
 bool CEggGlowPulseMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
-	if (pMaxMat != g_pLastPulseMaxMat)
+	if (pMaxMat != g_pPulsingMat)
 	{
-		g_pLastPulseMaxMat = pMaxMat;
+		g_pPulsingMat = pMaxMat;
 		g_pulseStartTime = 2.0;
 	}
 
 	int nFrontAlpha = (int)(PulseLevel() * 128.0f + 64.0f);
-	m_colorSide = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, Color1.a);
-	m_colorFront = D3DCOLOR_RGBA(Color2.r, Color2.g, Color2.b, nFrontAlpha);
+	m_sideColor = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, Color1.a);
+	m_faceColor = D3DCOLOR_RGBA(Color2.r, Color2.g, Color2.b, nFrontAlpha);
 
 	return CFalloffMatInfo::Setup(pMaxMat);
 }
@@ -892,7 +892,7 @@ bool CEggGlowFadeMatInfo::Setup(CMaxMaterial *pMaxMat)
 		nLeft = 1.0f - t;
 	}
 
-	m_colorFront = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, (int)(nLeft * 255.0f));
+	m_faceColor = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, (int)(nLeft * 255.0f));
 
 	return CFalloffMatInfo::Setup(pMaxMat);
 }
@@ -943,14 +943,14 @@ bool CKeyMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
 	if (g_bActiveKey)
 	{
-		if (pMaxMat != g_pLastPulseMaxMat && g_nEffectAlpha > 0.0f)
+		if (pMaxMat != g_pPulsingMat && g_nEffectAlpha > 0.0f)
 		{
-			g_pLastPulseMaxMat = pMaxMat;
+			g_pPulsingMat = pMaxMat;
 			g_pulseStartTime = TheseusGetNow();
 		}
 
-		m_colorSide = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, Color1.a);
-		m_colorFront = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, Color1.a - 65);
+		m_sideColor = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, Color1.a);
+		m_faceColor = D3DCOLOR_RGBA(Color1.r, Color1.g, Color1.b, Color1.a - 65);
 
 		if (m_bText)
 			KeyTextStage(D3DCOLOR_ARGB(FadedAlpha(192.0f), 0, 0, 0));
@@ -959,13 +959,13 @@ bool CKeyMatInfo::Setup(CMaxMaterial *pMaxMat)
 	{
 		if (m_bBright)
 		{
-			m_colorSide = D3DCOLOR_RGBA(Color2.r, Color2.g, Color2.b, Color2.a);
-			m_colorFront = D3DCOLOR_RGBA(Color3.r, Color3.g, Color3.b, Color3.a);
+			m_sideColor = D3DCOLOR_RGBA(Color2.r, Color2.g, Color2.b, Color2.a);
+			m_faceColor = D3DCOLOR_RGBA(Color3.r, Color3.g, Color3.b, Color3.a);
 		}
 		else
 		{
-			m_colorSide = D3DCOLOR_RGBA(Color2.r, Color2.g, Color2.b, Color2.a - 33);
-			m_colorFront = D3DCOLOR_RGBA(Color3.r - 5, Color3.g - 33, Color3.b, Color3.a - 19);
+			m_sideColor = D3DCOLOR_RGBA(Color2.r, Color2.g, Color2.b, Color2.a - 33);
+			m_faceColor = D3DCOLOR_RGBA(Color3.r - 5, Color3.g - 33, Color3.b, Color3.a - 19);
 		}
 
 		if (m_bText)
@@ -980,10 +980,10 @@ bool CKeyMatInfo::Setup(CMaxMaterial *pMaxMat)
 // CIconMatInfo
 // Setup reconstructed from 5960 retail XBE @ 0x000572d0. Ghidra decompile:
 //     inXIP = this->inXIP;
-//     if (g_szCurTitleImage && !selImg) {
+//     if (g_szTitleArt && !selImg) {
 //         if (name is xboxlogo64.xbx / xboxlogo128.xbx / xboxlogo64a.xbx) inXIP = 1;
 //         tex = FindTexture(name, async, w, h, inXIP);
-//     } else if (g_szSelTitleImage && selImg) {
+//     } else if (g_szPickedTitleArt && selImg) {
 //         if (name is xboxlogo64.xbx / xboxlogo128.xbx /
 //             XboxLiveAccount64.tga / XboxLiveAccount128.tga) inXIP = 1;
 //         tex = FindTexture(...);
@@ -1028,9 +1028,9 @@ bool CIconMatInfo::Setup(CMaxMaterial *pMaxMat)
 {
 	const TCHAR *szImage = NULL;
 	if (!m_bSelImg)
-		szImage = g_szCurTitleImage;
+		szImage = g_szTitleArt;
 	else
-		szImage = g_szSelTitleImage;
+		szImage = g_szPickedTitleArt;
 
 	LPDIRECT3DTEXTURE8 pImage = NULL;
 	float nAlpha = 1.0f;
@@ -1135,11 +1135,11 @@ DWORD MatInfo_GetColor(CMatInfo* p, int idx)
 {
 	if (!p) return 0;
 	if (CSolidMatInfo* m = dynamic_cast<CSolidMatInfo*>(p))
-		return D3DCOLOR_RGBA(m->m_r, m->m_g, m->m_b, m->m_a);
+		return D3DCOLOR_RGBA(m->m_red, m->m_green, m->m_blue, m->m_alpha);
 	if (CBackingMatInfo* m = dynamic_cast<CBackingMatInfo*>(p))
-		return D3DCOLOR_RGBA(m->m_r, m->m_g, m->m_b, m->m_a);
+		return D3DCOLOR_RGBA(m->m_red, m->m_green, m->m_blue, m->m_alpha);
 	if (CModulateTextureMatInfo* m = dynamic_cast<CModulateTextureMatInfo*>(p))
-		return D3DCOLOR_RGBA(m->m_r, m->m_g, m->m_b, m->m_a);
+		return D3DCOLOR_RGBA(m->m_red, m->m_green, m->m_blue, m->m_alpha);
 	// The egg glows rebuild their falloff colors every frame from these, so
 	// that's where the skin's ColorA / ColorB actually live.
 	if (CEggGlowPulseMatInfo* m = dynamic_cast<CEggGlowPulseMatInfo*>(p)) {
@@ -1147,11 +1147,11 @@ DWORD MatInfo_GetColor(CMatInfo* p, int idx)
 		return D3DCOLOR_RGBA(c.r, c.g, c.b, c.a);
 	}
 	if (CEggGlowFadeMatInfo* m = dynamic_cast<CEggGlowFadeMatInfo*>(p))
-		return (idx == 0) ? m->m_colorSide : D3DCOLOR_RGBA(m->Color1.r, m->Color1.g, m->Color1.b, m->Color1.a);
+		return (idx == 0) ? m->m_sideColor : D3DCOLOR_RGBA(m->Color1.r, m->Color1.g, m->Color1.b, m->Color1.a);
 	if (CInnerWallMatInfo* m = dynamic_cast<CInnerWallMatInfo*>(p))
-		return (idx == 0) ? m->m_colorSide : m->m_colorFront;
+		return (idx == 0) ? m->m_sideColor : m->m_faceColor;
 	if (CFalloffMatInfo* m = dynamic_cast<CFalloffMatInfo*>(p))
-		return (idx == 0) ? m->m_colorSide : m->m_colorFront;
+		return (idx == 0) ? m->m_sideColor : m->m_faceColor;
 	return 0;
 }
 
@@ -1163,11 +1163,11 @@ void MatInfo_SetColor(CMatInfo* p, int idx, DWORD c)
 	BYTE g = (BYTE)((c >>  8) & 0xFF);
 	BYTE b = (BYTE)( c        & 0xFF);
 	if (CSolidMatInfo* m = dynamic_cast<CSolidMatInfo*>(p))
-		{ m->m_r=r; m->m_g=g; m->m_b=b; m->m_a=a; return; }
+		{ m->m_red=r; m->m_green=g; m->m_blue=b; m->m_alpha=a; return; }
 	if (CBackingMatInfo* m = dynamic_cast<CBackingMatInfo*>(p))
-		{ m->m_r=r; m->m_g=g; m->m_b=b; m->m_a=a; return; }
+		{ m->m_red=r; m->m_green=g; m->m_blue=b; m->m_alpha=a; return; }
 	if (CModulateTextureMatInfo* m = dynamic_cast<CModulateTextureMatInfo*>(p))
-		{ m->m_r=r; m->m_g=g; m->m_b=b; m->m_a=a; return; }
+		{ m->m_red=r; m->m_green=g; m->m_blue=b; m->m_alpha=a; return; }
 	CustomColor cc;
 	cc.r = r; cc.g = g; cc.b = b; cc.a = a;
 	if (CEggGlowPulseMatInfo* m = dynamic_cast<CEggGlowPulseMatInfo*>(p)) {
@@ -1175,15 +1175,15 @@ void MatInfo_SetColor(CMatInfo* p, int idx, DWORD c)
 		return;
 	}
 	if (CEggGlowFadeMatInfo* m = dynamic_cast<CEggGlowFadeMatInfo*>(p)) {
-		if (idx == 0) m->m_colorSide = c; else m->Color1 = cc;
+		if (idx == 0) m->m_sideColor = c; else m->Color1 = cc;
 		return;
 	}
 	if (CInnerWallMatInfo* m = dynamic_cast<CInnerWallMatInfo*>(p)) {
-		if (idx == 0) m->m_colorSide = c; else m->m_colorFront = c;
+		if (idx == 0) m->m_sideColor = c; else m->m_faceColor = c;
 		return;
 	}
 	if (CFalloffMatInfo* m = dynamic_cast<CFalloffMatInfo*>(p)) {
-		if (idx == 0) m->m_colorSide = c; else m->m_colorFront = c;
+		if (idx == 0) m->m_sideColor = c; else m->m_faceColor = c;
 		return;
 	}
 }
@@ -1206,7 +1206,7 @@ CMaxMaterial::CMaxMaterial()
 {
 	m_name = NULL;
 	m_param = 0.0;
-	m_pMatInfo = NULL;
+	m_pDef = NULL;
 }
 
 CMaxMaterial::~CMaxMaterial()
@@ -1230,7 +1230,7 @@ bool CMaxMaterial::OnSetProperty(const PRD *pprd, const void *pvValue)
 	}
 
 	if (field == offsetof(m_name))
-		m_pMatInfo = NULL;
+		m_pDef = NULL;
 
 	return true;
 }
@@ -1246,11 +1246,11 @@ bool CMaxMaterial::OnSetProperty(const PRD *pprd, const void *pvValue)
 // AA. The tube meshes get the override so their outlines keep edge AA.
 void CMaxMaterial::Render()
 {
-	if (m_pMatInfo == NULL)
+	if (m_pDef == NULL)
 	{
 		if (m_name != NULL)
-			m_pMatInfo = LookupMatInfo(m_name);
-		if (m_pMatInfo == NULL)
+			m_pDef = LookupMatInfo(m_name);
+		if (m_pDef == NULL)
 			return;
 	}
 
@@ -1265,12 +1265,12 @@ void CMaxMaterial::Render()
 		_tcscmp(m_name, _T("TubesQ")) == 0 ||
 		_tcscmp(m_name, _T("Tube")) == 0;
 
-	m_pMatInfo->Setup(this);
+	m_pDef->Setup(this);
 
 #ifdef THESEUS_DESKTOP
 	// The skin editor highlights the materials drawn this frame.
 	extern IDirect3DDevice8* g_pD3DDev;
 	if (g_pD3DDev != NULL)
-		m_pMatInfo->m_lastUsedFrame = g_pD3DDev->m_frameNumber;
+		m_pDef->m_lastUsedFrame = g_pD3DDev->m_frameNumber;
 #endif
 }

@@ -181,7 +181,7 @@ void CSurfx::Fade(char* inPix, long inBytesPerRow, long inX, long inY, DeltaFiel
 // palette used when a DynamicTexture has none of its own.
 
 // Last recipe GetHSV ran; out of range requests come back here as 0.
-int g_nPalette = -1;
+int g_paletteIdx = -1;
 
 static inline int Clamp255(int c)
 {
@@ -225,12 +225,12 @@ void HSV2RGB(float H, float S, float V, DWORD& outRGB)
 // GetHSV(nPalette, i, t, H, S, V)
 // Reconstructed from 5960 retail XBE @ 0x0005f920. Maps intensity i (0..1) at
 // time t (seconds) to a color for one of 10 recipes; writes the recipe it used
-// to g_nPalette (0x00175e70) first, and anything past 9 snaps to 0. The pow
+// to g_paletteIdx (0x00175e70) first, and anything past 9 snaps to 0. The pow
 // exponents are the doubles at 0x0002c068..0x0002c0f8; wrap() is the
 // x - floor(x) helper @ 0x0005f3d0. See docs/decomp/TmapSystem.md for the table.
 void GetHSV(int nPalette, float i, float t, float& H, float& S, float& V)
 {
-	g_nPalette = nPalette;
+	g_paletteIdx = nPalette;
 
 	switch (nPalette)
 	{
@@ -289,7 +289,7 @@ void GetHSV(int nPalette, float i, float t, float& H, float& S, float& V)
 		return;
 
 	default:
-		g_nPalette = 0;
+		g_paletteIdx = 0;
 		// fall through
 	case 0:
 		H = powf(i, 1.9f) * 0.166f;
@@ -307,15 +307,15 @@ static inline void BlendHSV(float amount, float H2, float S2, float V2, float& H
 	V = amount * V + (1.0f - amount) * V2;
 }
 
-int g_nBlendPalette;
-float g_nBlendPaletteAmount;
+int g_blendTarget;
+float g_blendMix;
 
 // MakePalette(outPalette)
 // Reconstructed from 5960 retail XBE @ 0x0005fc30. The default palette: every
 // 10 + rnd(5) seconds (0x0002c148, 0x0002c140) it moves on to the next recipe
 // and crossfades from the old one. The blend amount grows by half the time
 // since the switch on every call (0x0002bed4), so it accumulates rather than
-// tracking elapsed time. During a fade the second lookup leaves g_nPalette on
+// tracking elapsed time. During a fade the second lookup leaves g_paletteIdx on
 // the old recipe, so from entry 1 on both lookups read it; the binary does the same.
 void MakePalette(DWORD outPalette [256])
 {
@@ -326,9 +326,9 @@ void MakePalette(DWORD outPalette [256])
 	if (now > nextChange)
 	{
 		nextChange = now + 10.0f + rnd(5.0f);
-		g_nBlendPalette = g_nPalette;
-		g_nPalette++;
-		g_nBlendPaletteAmount = 0.0f;
+		g_blendTarget = g_paletteIdx;
+		g_paletteIdx++;
+		g_blendMix = 0.0f;
 		blendStart = now;
 	}
 
@@ -336,21 +336,21 @@ void MakePalette(DWORD outPalette [256])
 	for (int n = 0; n < 256; n++, intensity += 1.0f / 255.0f)
 	{
 		float H, S, V;
-		GetHSV(g_nPalette, intensity, (float)now, H, S, V);
-		if (g_nBlendPalette != -1)
+		GetHSV(g_paletteIdx, intensity, (float)now, H, S, V);
+		if (g_blendTarget != -1)
 		{
 			float H2, S2, V2;
-			GetHSV(g_nBlendPalette, intensity, (float)now, H2, S2, V2);
-			BlendHSV(g_nBlendPaletteAmount, H2, S2, V2, H, S, V);
+			GetHSV(g_blendTarget, intensity, (float)now, H2, S2, V2);
+			BlendHSV(g_blendMix, H2, S2, V2, H, S, V);
 		}
 		HSV2RGB(H, S, V, outPalette[n]);
 	}
 
-	if (g_nBlendPalette != -1)
+	if (g_blendTarget != -1)
 	{
-		g_nBlendPaletteAmount += (float)(now - blendStart) / 2.0f;
-		if (g_nBlendPaletteAmount >= 1.0f)
-			g_nBlendPalette = -1;
+		g_blendMix += (float)(now - blendStart) / 2.0f;
+		if (g_blendMix >= 1.0f)
+			g_blendTarget = -1;
 	}
 }
 
@@ -921,7 +921,7 @@ public:
 	const DWORD* GetPalette() { return m_palette; }
 
 #ifdef _XBOX
-	D3DPalette* m_pPalette;
+	D3DPalette* m_pColors;
 #endif
 
 protected:
@@ -929,10 +929,10 @@ protected:
 	void RenderDynamicTexture(CSurfx* pSurfx);
 
 	DWORD m_palette [256];
-	int m_nBlendPalette;
-	float m_nBlendPaletteAmount;
-	XTIME m_nextPaletteChangeTime;
-	XTIME m_startBlendTime;
+	int m_blendTarget;
+	float m_blendMix;
+	XTIME m_paletteSwapTime;
+	XTIME m_blendBegin;
 
 	DECLARE_NODE_PROPS()
 };
@@ -955,10 +955,10 @@ CPalette::CPalette() :
 	m_changePeriodRandomness(0.0f),
 	m_timeToBlend(2.0f)
 {
-	m_nBlendPalette = -1;
-	m_nextPaletteChangeTime = 0.0f;
+	m_blendTarget = -1;
+	m_paletteSwapTime = 0.0f;
 #ifdef _XBOX
-	m_pPalette = NULL;
+	m_pColors = NULL;
 #endif
 }
 
@@ -968,8 +968,8 @@ CPalette::CPalette() :
 CPalette::~CPalette()
 {
 #ifdef _XBOX
-	if (m_pPalette != NULL)
-		m_pPalette->Release();
+	if (m_pColors != NULL)
+		m_pColors->Release();
 #endif
 }
 
@@ -986,29 +986,29 @@ void CPalette::Advance(float nSeconds)
 	CNode::Advance(nSeconds);
 
 	XTIME now = TheseusGetNow();
-	if (m_changePeriod > 0.0f && now > m_nextPaletteChangeTime)
+	if (m_changePeriod > 0.0f && now > m_paletteSwapTime)
 	{
-		m_nextPaletteChangeTime = now + m_changePeriod + rnd(m_changePeriodRandomness);
-		m_nBlendPalette = m_type;
+		m_paletteSwapTime = now + m_changePeriod + rnd(m_changePeriodRandomness);
+		m_blendTarget = m_type;
 		m_type++;
-		m_nBlendPaletteAmount = 0.0f;
-		m_startBlendTime = now;
+		m_blendMix = 0.0f;
+		m_blendBegin = now;
 	}
 
 	Update();
 
-	if (m_nBlendPalette != -1)
+	if (m_blendTarget != -1)
 	{
-		m_nBlendPaletteAmount = (float)(now - m_startBlendTime) / m_timeToBlend;
-		if (m_nBlendPaletteAmount >= 1.0f)
-			m_nBlendPalette = -1;
+		m_blendMix = (float)(now - m_blendBegin) / m_timeToBlend;
+		if (m_blendMix >= 1.0f)
+			m_blendTarget = -1;
 	}
 }
 
 // CPalette::Update()
 // Reconstructed from 5960 retail XBE @ 0x0005d8b0. Fills the 256 entries from
 // GetHSV (crossfading from the old recipe while a blend runs) and copies
-// g_nPalette back into type after each lookup, so an out of range type wraps
+// g_paletteIdx back into type after each lookup, so an out of range type wraps
 // to 0. Then copies the table into a D3D palette with alpha forced to 0xff,
 // creating it on first use (the binary inlines CreatePalette and Lock).
 // The palette upload is Xbox only; on desktop the texture upload in
@@ -1022,29 +1022,29 @@ void CPalette::Update()
 	{
 		float H, S, V;
 		GetHSV(m_type, intensity, now, H, S, V);
-		m_type = g_nPalette;
+		m_type = g_paletteIdx;
 
-		if (m_nBlendPalette != -1)
+		if (m_blendTarget != -1)
 		{
 			float H2, S2, V2;
-			GetHSV(m_nBlendPalette, intensity, now, H2, S2, V2);
-			BlendHSV(m_nBlendPaletteAmount, H2, S2, V2, H, S, V);
+			GetHSV(m_blendTarget, intensity, now, H2, S2, V2);
+			BlendHSV(m_blendMix, H2, S2, V2, H, S, V);
 		}
 
 		HSV2RGB(H, S, V, m_palette[n]);
 	}
 
 #ifdef _XBOX
-	if (m_pPalette == NULL)
-		TheseusGetD3DDev()->CreatePalette(D3DPALETTE_256, &m_pPalette);
+	if (m_pColors == NULL)
+		TheseusGetD3DDev()->CreatePalette(D3DPALETTE_256, &m_pColors);
 
 	// A failed create or lock would leave nothing to write into.
 	D3DCOLOR* entries;
-	if (m_pPalette == NULL || FAILED(m_pPalette->Lock(&entries, D3DLOCK_NOOVERWRITE)))
+	if (m_pColors == NULL || FAILED(m_pColors->Lock(&entries, D3DLOCK_NOOVERWRITE)))
 		return;
 	for (int n = 0; n < 256; n++)
 		entries[n] = 0xFF000000 | (m_palette[n] & 0x00FFFFFF);
-	m_pPalette->Unlock();
+	m_pColors->Unlock();
 #endif
 }
 
@@ -1082,8 +1082,8 @@ public:
 protected:
 	void Update();
 
-	CSurfx* m_pSurfx;
-	XTIME m_lastUpdateTime;
+	CSurfx* m_pScratchSurf;
+	XTIME m_prevTick;
 
 	DECLARE_NODE_PROPS()
 };
@@ -1109,8 +1109,8 @@ CDynamicTexture::CDynamicTexture() :
 	m_palette(NULL)
 {
 	m_format = D3DFMT_P8;
-	m_pSurfx = NULL;
-	m_lastUpdateTime = 0.0f;
+	m_pScratchSurf = NULL;
+	m_prevTick = 0.0f;
 }
 
 // CDynamicTexture::~CDynamicTexture()
@@ -1120,7 +1120,7 @@ CDynamicTexture::~CDynamicTexture()
 {
 	if (m_palette != NULL)
 		m_palette->Release();
-	delete m_pSurfx;
+	delete m_pScratchSurf;
 }
 
 // CDynamicTexture::Create(nWidth, nHeight)
@@ -1131,17 +1131,17 @@ CDynamicTexture::~CDynamicTexture()
 // Always 512x512 whatever size asks for; the effect only fills the top left corner.
 bool CDynamicTexture::Create(int nWidth, int nHeight)
 {
-	m_nImageWidth = 512;
-	m_nImageHeight = 512;
-	if (FAILED(D3DXCreateTexture(TheseusGetD3DDev(), m_nImageWidth, m_nImageHeight, 1, 0, m_format, D3DPOOL_MANAGED, &m_surface)))
+	m_texWidth = 512;
+	m_texHeight = 512;
+	if (FAILED(D3DXCreateTexture(TheseusGetD3DDev(), m_texWidth, m_texHeight, 1, 0, m_format, D3DPOOL_MANAGED, &m_surface)))
 		return false;
 
 	D3DLOCKED_RECT lr;
 	m_surface->LockRect(0, &lr, NULL, 0);
-	memset(lr.pBits, 0, m_nImageWidth * m_nImageHeight);
+	memset(lr.pBits, 0, m_texWidth * m_texHeight);
 	m_surface->UnlockRect(0);
 
-	TheseusGetTextureSize(m_surface, m_nImageWidth, m_nImageHeight);
+	TheseusGetTextureSize(m_surface, m_texWidth, m_texHeight);
 	return true;
 }
 
@@ -1166,15 +1166,15 @@ void CDynamicTexture::Advance(float nSeconds)
 // applies the palette while uploading in Update.
 LPDIRECT3DTEXTURE8 CDynamicTexture::GetTextureSurface()
 {
-	if (TheseusGetNow() > m_lastUpdateTime + 1.0f / m_fps)
+	if (TheseusGetNow() > m_prevTick + 1.0f / m_fps)
 	{
-		m_lastUpdateTime = TheseusGetNow();
+		m_prevTick = TheseusGetNow();
 		Update();
 	}
 
 #ifdef _XBOX
 	if (m_palette != NULL && m_palette->IsKindOf(NODE_CLASS(CPalette)))
-		TheseusGetD3DDev()->SetPalette(0, ((CPalette*)m_palette)->m_pPalette);
+		TheseusGetD3DDev()->SetPalette(0, ((CPalette*)m_palette)->m_pColors);
 #endif
 
 	return m_surface;
@@ -1193,17 +1193,17 @@ void CDynamicTexture::Update()
 	if (m_surface == NULL && m_size > 0 && !Create(m_size, m_size))
 		return;
 
-	if (m_pSurfx == NULL && m_size > 0)
-		m_pSurfx = new CSurfx(m_size, m_size);
+	if (m_pScratchSurf == NULL && m_size > 0)
+		m_pScratchSurf = new CSurfx(m_size, m_size);
 
-	if (m_surface == NULL || m_pSurfx == NULL || TheseusGetNow() < m_lastUpdateTime)
+	if (m_surface == NULL || m_pScratchSurf == NULL || TheseusGetNow() < m_prevTick)
 		return;
 
 	if (m_erase)
-		memset(m_pSurfx->m_pels, 0, m_pSurfx->m_nWidth * m_pSurfx->m_nHeight);
+		memset(m_pScratchSurf->m_pels, 0, m_pScratchSurf->m_nWidth * m_pScratchSurf->m_nHeight);
 
 	for (int n = 0; n < m_children.GetLength(); n++)
-		m_children.GetNode(n)->RenderDynamicTexture(m_pSurfx);
+		m_children.GetNode(n)->RenderDynamicTexture(m_pScratchSurf);
 
 	const DWORD* rgpe = m_palette != NULL ? m_palette->GetPalette() : NULL;
 	DWORD rgpeDefault [256];
@@ -1216,18 +1216,18 @@ void CDynamicTexture::Update()
 	{
 #ifdef _XBOX
 		(void)rgpe;
-		Swizzler swz(m_nImageWidth, m_nImageHeight, 1);
+		Swizzler swz(m_texWidth, m_texHeight, 1);
 		D3DLOCKED_RECT lr;
 		if (FAILED(m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD)))
 			return;
 		BYTE* dst = (BYTE*)lr.pBits;
-		const BYTE* src = m_pSurfx->m_pels;
+		const BYTE* src = m_pScratchSurf->m_pels;
 		for (int y = 0; y < m_size; y++, src += m_size)
 		{
 			for (int x = 0; x < m_size; x++, swz.IncU())
 				dst[swz.Get2D()] = src[x];
 			swz.IncV();
-			swz.AddU(swz.SwizzleU(m_nImageWidth - m_size));
+			swz.AddU(swz.SwizzleU(m_texWidth - m_size));
 		}
 		m_surface->UnlockRect(0);
 #else
@@ -1235,9 +1235,9 @@ void CDynamicTexture::Update()
 		if (FAILED(m_surface->LockRect(0, &lr, NULL, D3DLOCK_DISCARD)))
 			return;
 		uint32_t* pBase = (uint32_t*)lr.pBits;
-		// Texture is m_nImageWidth wide but we only fill m_size; respect
+		// Texture is m_texWidth wide but we only fill m_size; respect
 		// the row stride or the data ends up smeared diagonally.
-		int dstStridePx = (lr.Pitch > 0) ? (lr.Pitch / 4) : m_nImageWidth;
+		int dstStridePx = (lr.Pitch > 0) ? (lr.Pitch / 4) : m_texWidth;
 
 		extern bool g_useMilkdropViz;
 		extern bool g_showAlbumCover;
@@ -1320,7 +1320,7 @@ void CDynamicTexture::Update()
 		}
 		else
 		{
-			uint8_t* pbSrc = (uint8_t*)m_pSurfx->m_pels;
+			uint8_t* pbSrc = (uint8_t*)m_pScratchSurf->m_pels;
 			for (int dy = 0; dy < m_size; dy++) {
 				uint32_t* dstRow = pBase + dy * dstStridePx;
 				for (int dx = 0; dx < m_size; dx++) {
@@ -1359,9 +1359,9 @@ public:
 	bool OnSetProperty(const PRD* pprd, const void* pvValue);
 
 protected:
-	DeltaField* m_pDeltaField;
-	DeltaField* m_pDeltaField2;
-	XTIME m_nextChangeTime;
+	DeltaField* m_pWarpA;
+	DeltaField* m_pWarpB;
+	XTIME m_nextSwapTime;
 
 	DECLARE_NODE_PROPS()
 };
@@ -1382,17 +1382,17 @@ CImageFader::CImageFader() :
 	m_changePeriod(0.0f),
 	m_changePeriodRandomness(0.0f)
 {
-	m_pDeltaField = NULL;
-	m_pDeltaField2 = NULL;
-	m_nextChangeTime = 0.0f;
+	m_pWarpA = NULL;
+	m_pWarpB = NULL;
+	m_nextSwapTime = 0.0f;
 }
 
 // CImageFader::~CImageFader()
 // Reconstructed from 5960 retail XBE @ 0x0005e0c0: frees both fields.
 CImageFader::~CImageFader()
 {
-	delete m_pDeltaField;
-	delete m_pDeltaField2;
+	delete m_pWarpA;
+	delete m_pWarpB;
 }
 
 // Inlined twice in 0x0005e120: new DeltaField, style, Assign, SetSize to the surface.
@@ -1419,38 +1419,38 @@ static DeltaField* NewDeltaField(int style, CSurfx* pSurfx)
 //     through the current one.
 void CImageFader::RenderDynamicTexture(CSurfx* pSurfx)
 {
-	if (m_pDeltaField == NULL)
+	if (m_pWarpA == NULL)
 	{
-		m_pDeltaField = NewDeltaField(m_type, pSurfx);
-		m_nextChangeTime = TheseusGetNow() + m_changePeriod + rnd(m_changePeriodRandomness);
+		m_pWarpA = NewDeltaField(m_type, pSurfx);
+		m_nextSwapTime = TheseusGetNow() + m_changePeriod + rnd(m_changePeriodRandomness);
 	}
-	else if (m_changePeriod > 0.0f && TheseusGetNow() >= m_nextChangeTime)
+	else if (m_changePeriod > 0.0f && TheseusGetNow() >= m_nextSwapTime)
 	{
 		m_type++;
-		m_nextChangeTime = TheseusGetNow() + m_changePeriod;
-		delete m_pDeltaField;
-		m_pDeltaField = m_pDeltaField2;
-		m_pDeltaField2 = NULL;
+		m_nextSwapTime = TheseusGetNow() + m_changePeriod;
+		delete m_pWarpA;
+		m_pWarpA = m_pWarpB;
+		m_pWarpB = NULL;
 	}
 
-	if (m_pDeltaField2 == NULL)
-		m_pDeltaField2 = NewDeltaField(m_type + 1, pSurfx);
+	if (m_pWarpB == NULL)
+		m_pWarpB = NewDeltaField(m_type + 1, pSurfx);
 
-	if (m_pDeltaField->IsCalculating())
+	if (m_pWarpA->IsCalculating())
 	{
 		for (int n = 0; n < 10; n++)
-			m_pDeltaField->CalcSome();
-		m_type = m_pDeltaField->m_nStyle;
+			m_pWarpA->CalcSome();
+		m_type = m_pWarpA->m_nStyle;
 		return;
 	}
 
-	if (m_pDeltaField2->IsCalculating())
+	if (m_pWarpB->IsCalculating())
 	{
 		for (int n = 0; n < 5; n++)
-			m_pDeltaField2->CalcSome();
+			m_pWarpB->CalcSome();
 	}
 
-	pSurfx->Fade(m_pDeltaField->GetField());
+	pSurfx->Fade(m_pWarpA->GetField());
 }
 
 // CImageFader::OnSetProperty(pprd, pvValue)
@@ -1462,9 +1462,9 @@ bool CImageFader::OnSetProperty(const PRD* pprd, const void* pvValue)
 {
 	if (PTR2INT(pprd->pbOffset) == offsetof(m_type))
 	{
-		delete m_pDeltaField;
-		m_pDeltaField = m_pDeltaField2;
-		m_pDeltaField2 = NULL;
+		delete m_pWarpA;
+		m_pWarpA = m_pWarpB;
+		m_pWarpB = NULL;
 	}
 	return true;
 }
@@ -1501,14 +1501,14 @@ protected:
 	void RenderEffect1(CSurfx* pSurfx);
 	void RenderEffect2(CSurfx* pSurfx);
 
-	short m_pcmLeft [256];
-	short m_pcmRight [256];
+	short m_waveL [256];
+	short m_waveR [256];
 
-	short m_fftLeft [128];
-	short m_fftRight [128];
-	bool m_bFFTValid;
+	short m_specL [128];
+	short m_specR [128];
+	bool m_bHaveSpectrum;
 	short m_pcmMono [256];
-	bool m_bMonoValid;
+	bool m_bHaveMono;
 
 	DECLARE_NODE_PROPS()
 };
@@ -1577,11 +1577,11 @@ void CAudioVisualizer::CalcSpectrum(short* pcm, short* fft)
 // Reconstructed from 5960 retail XBE @ 0x00063900: once per frame, left then right.
 void CAudioVisualizer::UpdateSpectrum()
 {
-	if (m_bFFTValid)
+	if (m_bHaveSpectrum)
 		return;
-	CalcSpectrum(m_pcmLeft, m_fftLeft);
-	CalcSpectrum(m_pcmRight, m_fftRight);
-	m_bFFTValid = true;
+	CalcSpectrum(m_waveL, m_specL);
+	CalcSpectrum(m_waveR, m_specR);
+	m_bHaveSpectrum = true;
 }
 
 // log(level) * 8 as a byte, 0 for silence (and NaN), 255 at the top.
@@ -1620,11 +1620,11 @@ void CAudioVisualizer::RenderDynamicTexture(CSurfx* pSurfx)
 
 	for (int n = 0; n < 256; n++)
 	{
-		m_pcmLeft[n] = n < count ? samples[n * 2] : 0;
-		m_pcmRight[n] = n < count ? samples[n * 2 + 1] : 0;
+		m_waveL[n] = n < count ? samples[n * 2] : 0;
+		m_waveR[n] = n < count ? samples[n * 2 + 1] : 0;
 	}
-	m_bMonoValid = false;
-	m_bFFTValid = false;
+	m_bHaveMono = false;
+	m_bHaveSpectrum = false;
 
 	if (count > pSurfx->m_nHeight)
 		count = pSurfx->m_nHeight;
@@ -1668,9 +1668,9 @@ void CAudioVisualizer::RenderDynamicTexture(CSurfx* pSurfx)
 
 		UpdateSpectrum();
 		for (int n = 0; n < 128; n++)
-			bars[n] = SpectrumByte(m_fftLeft[127 - n]);
+			bars[n] = SpectrumByte(m_specL[127 - n]);
 		for (int n = 128; n < 256; n++)
-			bars[n] = SpectrumByte(m_fftRight[n - 128]);
+			bars[n] = SpectrumByte(m_specR[n - 128]);
 
 		for (int n = 0; n < 256; n++)
 		{
@@ -1729,7 +1729,7 @@ void CAudioVisualizer::RenderEffect1(CSurfx* pSurfx)
 
 	int bass = 0;
 	for (int n = 0; n < 5; n++)
-		bass += (m_fftLeft[n] >> 4) + (m_fftRight[n] >> 4);
+		bass += (m_specL[n] >> 4) + (m_specR[n] >> 4);
 	bass /= 10;
 
 	if (bass > s_beat.highNow)
@@ -1805,7 +1805,7 @@ void CAudioVisualizer::RenderEffect2(CSurfx* pSurfx)
 	const int midX = width >> 1;
 	const int midY = height >> 1;
 
-	float right = (float)((((m_pcmLeft[0] + m_pcmRight[0]) >> 9) * s_waveAmplitude * height) >> 12);
+	float right = (float)((((m_waveL[0] + m_waveR[0]) >> 9) * s_waveAmplitude * height) >> 12);
 	float left = right;
 
 	if (s_waveMode < 0 || TheseusGetNow() >= nextMode)
@@ -1848,8 +1848,8 @@ void CAudioVisualizer::RenderEffect2(CSurfx* pSurfx)
 	{
 		float lastRight = right, lastLeft = left;
 		int slot = (n << 8) / width / 5;
-		right = (float)(((m_pcmRight[slot] >> 8) * s_waveAmplitude * height) >> 12);
-		left = (float)(((m_pcmLeft[slot] >> 8) * s_waveAmplitude * height) >> 12);
+		right = (float)(((m_waveR[slot] >> 8) * s_waveAmplitude * height) >> 12);
+		left = (float)(((m_waveL[slot] >> 8) * s_waveAmplitude * height) >> 12);
 
 		switch (s_waveMode)
 		{
