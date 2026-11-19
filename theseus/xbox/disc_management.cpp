@@ -324,7 +324,8 @@ static const DISCTYPECHECK rgddc[] =
 // ERROR_UNRECOGNIZED_MEDIA means a bad disc), anything else is no disc.
 // Otherwise an audio TOC makes it Audio, then the marker files decide; a
 // lookup failing with anything but not found gets one retry after 100 ms.
-// See docs/decomp/Disc.md for the instruction walk.
+// Nothing found is a bad disc, unless the tray has settled meanwhile, which
+// means the disc went away. See docs/decomp/Disc.md for the instruction walk.
 int GetDiscType()
 {
     if (g_cdrom.IsOpen())
@@ -374,6 +375,8 @@ int GetDiscType()
         bMayRetry = true;
     }
 
+    if (NT_SUCCESS(HalReadSMCTrayState(&trayState, NULL)) && trayState != SMC_TRAY_STATE_MEDIA_DETECT)
+        return DISC_NONE;
     return DISC_BAD;
 }
 
