@@ -146,17 +146,23 @@ bool Icons_FitFile(const char* src, const char* dst, int maxDim, int quality)
     int w = 0, h = 0, ch = 0;
     unsigned char* rgba = stbi_load(src, &w, &h, &ch, 4);
     if (!rgba || w <= 0 || h <= 0) { if (rgba) stbi_image_free(rgba); return false; }
+    bool ok = Icons_FitPixels(rgba, w, h, dst, maxDim, quality);
+    stbi_image_free(rgba);
+    return ok;
+}
 
+bool Icons_FitPixels(const unsigned char* rgba, int w, int h, const char* dst, int maxDim, int quality)
+{
+    if (!rgba || w <= 0 || h <= 0) return false;
     // Box art with a transparent edge would otherwise keep whatever color sat under it.
     unsigned char* rgb = (unsigned char*)malloc((size_t)w * h * 3);
-    if (!rgb) { stbi_image_free(rgba); return false; }
+    if (!rgb) return false;
     for (size_t i = 0, n = (size_t)w * h; i < n; i++) {
         unsigned a = rgba[i * 4 + 3];
         rgb[i * 3 + 0] = (unsigned char)(rgba[i * 4 + 0] * a / 255);
         rgb[i * 3 + 1] = (unsigned char)(rgba[i * 4 + 1] * a / 255);
         rgb[i * 3 + 2] = (unsigned char)(rgba[i * 4 + 2] * a / 255);
     }
-    stbi_image_free(rgba);
 
     int big = (w > h) ? w : h;
     int dw = w, dh = h;

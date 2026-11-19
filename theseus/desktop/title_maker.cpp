@@ -11,6 +11,7 @@
 #include "esde.h"
 #include "esde_vgames.h"
 #include "icon_compress.h"
+#include "exe_icon.h"
 #include "udata_synth.h"
 #include "xiso.h"
 #include "launchers/steam.h"
@@ -767,7 +768,8 @@ void RenderTitleMaker() {
 
     if (!s_iconBrowserInit) {
         s_iconBrowser.SetTitle("Select Icon Image");
-        s_iconBrowser.SetTypeFilters({ ".jpg", ".jpeg", ".png", ".bmp", ".JPG", ".PNG" });
+        s_iconBrowser.SetTypeFilters({ ".jpg", ".jpeg", ".png", ".bmp", ".ico", ".exe", ".dll",
+                                        ".JPG", ".PNG", ".ICO", ".EXE", ".DLL" });
         s_iconBrowserInit = true;
     }
     if (!s_appBrowserInit) {
@@ -1364,10 +1366,13 @@ void RenderTitleMaker() {
 
         char dstPath[512];
         snprintf(dstPath, sizeof(dstPath), "%s/%s.jpg", VGAMES_ICONS, sel.titleID);
-        TM_CopyFile(iconSrc.c_str(), dstPath);
+        // An .ico or a program gives its biggest icon.
+        bool saved = ExeIcon_IsIconSource(iconSrc.c_str()) ? ExeIcon_Save(iconSrc.c_str(), dstPath)
+                                                           : TM_CopyFile(iconSrc.c_str(), dstPath);
 
         s_iconTexIdx = -1; // force icon reload
-        snprintf(s_statusMsg, sizeof(s_statusMsg), "Icon saved: %s", dstPath);
+        if (saved) snprintf(s_statusMsg, sizeof(s_statusMsg), "Icon saved: %s", dstPath);
+        else       snprintf(s_statusMsg, sizeof(s_statusMsg), "No icon in %s", iconSrc.c_str());
         s_statusTime = 3.0f;
     }
 
@@ -1376,6 +1381,14 @@ void RenderTitleMaker() {
         std::string appPath = s_appBrowser.GetSelected().string();
         s_appBrowser.ClearSelected();
         strncpy(s_editLaunch, appPath.c_str(), sizeof(s_editLaunch) - 1);
+        // A program with no icon yet lends its own.
+        if (s_selectedIdx >= 0 && s_selectedIdx < s_entryCount && ExeIcon_IsIconSource(appPath.c_str()) &&
+            !VGames_GetIconPath(s_entries[s_selectedIdx].vgIndex)) {
+            TM_EnsureDir(VGAMES_ICONS);
+            char dstPath[512];
+            snprintf(dstPath, sizeof(dstPath), "%s/%s.jpg", VGAMES_ICONS, s_entries[s_selectedIdx].titleID);
+            if (ExeIcon_Save(appPath.c_str(), dstPath)) s_iconTexIdx = -1;
+        }
     }
 
     ImGui::EndTabItem();

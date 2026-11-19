@@ -892,6 +892,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/esde.cpp \
 	$(THESEUS_SRC)/desktop/esde_vgames.cpp \
 	$(THESEUS_SRC)/desktop/icon_compress.cpp \
+	$(THESEUS_SRC)/desktop/exe_icon.cpp \
 	$(THESEUS_SRC)/desktop/game_art.cpp \
 	$(THESEUS_SRC)/desktop/playlist.cpp \
 	$(THESEUS_SRC)/desktop/playlist_maker.cpp \

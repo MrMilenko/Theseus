@@ -29,6 +29,7 @@
 #include "launchers/xemu.h"
 #include "launchers/pcsx2.h"
 #include "xiso.h"
+#include "exe_icon.h"
 #include "guide.h"
 #include "ui_overlay.h"
 #include <algorithm>
@@ -1194,11 +1195,14 @@ static void Select()
         }
         if (!fits) { XisoFreeTitleInfo(&xiso); g.added = "Path too long"; Build(); break; }
         VGames_Add(g.pickedName.c_str(), genID, launch, "E", kCategories[g.category]);
+        char icon[1024];
+        snprintf(icon, sizeof(icon), "%s/%s.jpg", VGAMES_ICONS, genID);
         if (xiso.titleImageRGBA) {
-            char icon[1024];
             Host_MakeDir(VGAMES_ICONS);
-            snprintf(icon, sizeof(icon), "%s/%s.jpg", VGAMES_ICONS, genID);
             XisoSaveTitleImage(&xiso, icon);
+        } else if (g.runner == RUN_SELF && ExeIcon_IsIconSource(g.pickedPath.c_str())) {
+            Host_MakeDir(VGAMES_ICONS);
+            ExeIcon_Save(g.pickedPath.c_str(), icon);
         }
         XisoFreeTitleInfo(&xiso);
         VGames_Save();
