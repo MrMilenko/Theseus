@@ -555,12 +555,12 @@ bool CJoystick::PollRemote(int port, float nSeconds)
 
     ResetScreenSaver();
     m_remoteIdleTime = 0.0f;
-    m_joystate[port] = state;
 
     if (state.IrRemote.wKeyCode != m_joystate[port].IrRemote.wKeyCode || state.IrRemote.wTimeDelta > 120)
         m_remoteRepeatCount = 1;
     else
         m_remoteRepeatCount++;
+    m_joystate[port] = state;
 
     bool bFire = m_remoteRepeatCount == 1 || (m_remoteRepeatCount > 7 && (m_remoteRepeatCount % 2) != 0);
     if (!bFire)
