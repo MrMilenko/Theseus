@@ -3584,11 +3584,31 @@ public:
 		if (!it.thumbUrl.empty()) Plex_QueueArtDownload(it.ratingKey, it.thumbUrl);
 	}
 
+	// First poster in the list that's on disk, else the logo. A missing file
+	// would stick as a miss in the texture cache, so it's never asked for.
+	static CStrObject* ArtOrLogo(const std::string& a, const std::string& b = "",
+	                             const std::string& c = "")
+	{
+		const std::string* keys[3] = { &a, &b, &c };
+		for (const std::string* k : keys)
+			if (!k->empty() && Plex_ArtReady(*k))
+				return new CStrObject(_T(Plex_ArtCachePath(*k).c_str()));
+		return new CStrObject(_T("E:\\Plex\\plex_logo.png"));
+	}
+
+	void QueueShowArt()
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return;
+		const PlexItem& sh = items[m_currentShow];
+		if (!sh.thumbUrl.empty()) Plex_QueueArtDownload(sh.ratingKey, sh.thumbUrl);
+	}
+
 	CStrObject* GetItemArtPath(int i)
 	{
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
-		return new CStrObject(_T(Plex_ArtCachePath(items[i].ratingKey).c_str()));
+		return ArtOrLogo(items[i].ratingKey);
 	}
 
 	void QueueSeasonArt(int i)
@@ -3599,6 +3619,7 @@ public:
 		Plex_Cache_GetSeasons(showKey, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return;
 		const PlexSeason& s = seasons[i];
+		QueueShowArt();
 		if (!s.thumbUrl.empty()) Plex_QueueArtDownload(s.ratingKey, s.thumbUrl);
 	}
 
@@ -3609,7 +3630,7 @@ public:
 		if (showKey.empty()) return new CStrObject;
 		Plex_Cache_GetSeasons(showKey, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
-		return new CStrObject(_T(Plex_ArtCachePath(seasons[i].ratingKey).c_str()));
+		return ArtOrLogo(seasons[i].ratingKey, showKey);
 	}
 
 	void QueueEpisodeArt(int i)
@@ -3620,6 +3641,7 @@ public:
 		Plex_Cache_GetEpisodes(seasonKey, eps);
 		if (i < 0 || i >= (int)eps.size()) return;
 		const PlexEpisode& e = eps[i];
+		QueueShowArt();
 		if (!e.thumbUrl.empty()) Plex_QueueArtDownload(e.ratingKey, e.thumbUrl);
 	}
 
@@ -3630,7 +3652,7 @@ public:
 		if (seasonKey.empty()) return new CStrObject;
 		Plex_Cache_GetEpisodes(seasonKey, eps);
 		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		return new CStrObject(_T(Plex_ArtCachePath(eps[i].ratingKey).c_str()));
+		return ArtOrLogo(eps[i].ratingKey, seasonKey, CurrentShowKey());
 	}
 
 	void PlayRatingKey(const std::string& ratingKey,
@@ -3930,11 +3952,30 @@ public:
 		Jellyfin_QueueArtDownload(items[i].id, items[i].primaryTag);
 	}
 
+	// First poster in the list that's on disk, else the logo. A missing file
+	// would stick as a miss in the texture cache, so it's never asked for.
+	static CStrObject* ArtOrLogo(const std::string& a, const std::string& b = "",
+	                             const std::string& c = "")
+	{
+		const std::string* ids[3] = { &a, &b, &c };
+		for (const std::string* id : ids)
+			if (!id->empty() && Jellyfin_ArtReady(*id))
+				return new CStrObject(_T(Jellyfin_ArtCachePath(*id).c_str()));
+		return new CStrObject(_T("E:\\Jellyfin\\jellyfin_logo.png"));
+	}
+
+	void QueueShowArt()
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return;
+		Jellyfin_QueueArtDownload(items[m_currentShow].id, items[m_currentShow].primaryTag);
+	}
+
 	CStrObject* GetItemArtPath(int i)
 	{
 		std::vector<JellyfinItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
-		return new CStrObject(_T(Jellyfin_ArtCachePath(items[i].id).c_str()));
+		return ArtOrLogo(items[i].id);
 	}
 
 	std::string CurrentShowId()
@@ -4041,7 +4082,9 @@ public:
 		if (showId.empty()) return;
 		Jellyfin_Cache_GetSeasons(showId, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return;
-		Jellyfin_QueueArtDownload(seasons[i].id, seasons[i].primaryTag);
+		QueueShowArt();
+		if (!seasons[i].primaryTag.empty())
+			Jellyfin_QueueArtDownload(seasons[i].id, seasons[i].primaryTag);
 	}
 
 	CStrObject* GetSeasonArtPath(int i)
@@ -4051,7 +4094,7 @@ public:
 		if (showId.empty()) return new CStrObject;
 		Jellyfin_Cache_GetSeasons(showId, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
-		return new CStrObject(_T(Jellyfin_ArtCachePath(seasons[i].id).c_str()));
+		return ArtOrLogo(seasons[i].id, showId);
 	}
 
 	int GetEpisodeCount()
@@ -4107,7 +4150,9 @@ public:
 		if (seasonId.empty()) return;
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
 		if (i < 0 || i >= (int)eps.size()) return;
-		Jellyfin_QueueArtDownload(eps[i].id, eps[i].primaryTag);
+		QueueShowArt();
+		if (!eps[i].primaryTag.empty())
+			Jellyfin_QueueArtDownload(eps[i].id, eps[i].primaryTag);
 	}
 
 	CStrObject* GetEpisodeArtPath(int i)
@@ -4117,7 +4162,7 @@ public:
 		if (seasonId.empty()) return new CStrObject;
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
 		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		return new CStrObject(_T(Jellyfin_ArtCachePath(eps[i].id).c_str()));
+		return ArtOrLogo(eps[i].id, seasonId, CurrentShowId());
 	}
 
 	CStrObject* GetSubtitle(int view, int i)

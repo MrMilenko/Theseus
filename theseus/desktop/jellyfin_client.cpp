@@ -97,6 +97,7 @@ static std::map<std::string, std::vector<JellyfinEpisode>> s_cacheEpisodes;
 // ---------- Art download queue ----------
 static std::mutex                                  s_artMtx;
 static std::map<std::string, std::atomic<bool>*>   s_artInFlight;
+static std::map<std::string, bool>                 s_artFailed;
 
 
 // ============================================================================
@@ -610,6 +611,8 @@ static void ArtWorker(std::string itemId, std::string tag,
         }
         if (!Http_GetToFile(url, path)) {
             fprintf(stderr, "[Jellyfin] art fetch failed for %s\n", itemId.c_str());
+            std::lock_guard<std::mutex> lk(s_artMtx);
+            s_artFailed[itemId] = true;
         }
     }
     {
@@ -627,9 +630,20 @@ void Jellyfin_QueueArtDownload(const std::string& itemId, const std::string& tag
     std::atomic<bool>* flag;
     {
         std::lock_guard<std::mutex> lk(s_artMtx);
-        if (s_artInFlight.count(itemId)) return;
+        if (s_artInFlight.count(itemId) || s_artFailed.count(itemId)) return;
         flag = new std::atomic<bool>(false);
         s_artInFlight[itemId] = flag;
     }
     std::thread(ArtWorker, itemId, tag, flag).detach();
+}
+
+bool Jellyfin_ArtReady(const std::string& itemId)
+{
+    if (!Http_IsSafeFileId(itemId)) return false;
+    {
+        std::lock_guard<std::mutex> lk(s_artMtx);
+        if (s_artInFlight.count(itemId)) return false;
+    }
+    struct stat st;
+    return stat(ArtHostPath(itemId).c_str(), &st) == 0 && st.st_size > 0;
 }

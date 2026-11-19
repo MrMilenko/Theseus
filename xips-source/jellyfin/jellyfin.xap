@@ -14,6 +14,8 @@ var nJfLastCount;       // last count we actually drew; behavior re-renders on m
 var nJfCursorBackup0;   // saved cursor when drilling lib -> items
 var nJfCursorBackup1;   // saved cursor when drilling item -> seasons
 var nJfCursorBackup2;   // saved cursor when drilling season -> episodes
+var sJfPoster;          // poster url on the CD now; behavior swaps it when art lands
+var bJfLoaded;          // the chrome scene is in, so the behavior can touch it
 
 
 function initialize()
@@ -27,6 +29,7 @@ function initialize()
 	nJfCursorBackup0  = 0;
 	nJfCursorBackup1  = 0;
 	nJfCursorBackup2  = 0;
+	sJfPoster         = "";
 }
 
 
@@ -104,6 +107,8 @@ function StartJellyfinLevel()
 	c.MU_cd_04.visible = false;
 	c.MU_cd_05.visible = false;
 
+	sJfPoster = "";
+	bJfLoaded = 1;
 	BindActiveList();
 	UpdateJellyfinList();
 }
@@ -165,24 +170,27 @@ function UpdateJellyfinList()
 function UpdatePoster(c)
 {
 	if (nJfView == 1)
-	{
 		theJellyfinLibrary.QueueItemArt(nJfCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = theJellyfinLibrary.GetItemArtPath(nJfCursor);
-	}
 	else if (nJfView == 2)
-	{
 		theJellyfinLibrary.QueueSeasonArt(nJfCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = theJellyfinLibrary.GetSeasonArtPath(nJfCursor);
-	}
 	else if (nJfView == 3)
-	{
 		theJellyfinLibrary.QueueEpisodeArt(nJfCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = theJellyfinLibrary.GetEpisodeArtPath(nJfCursor);
-	}
-	else
-	{
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = "E:\\Jellyfin\\jellyfin_logo.png";
-	}
+	sJfPoster = GetPosterArt();
+	c.MU_cd_01.children[0].children[0].appearance.texture.url = sJfPoster;
+}
+
+
+// The library hands back the logo until the poster is downloaded; the
+// behavior redraws once the real one lands.
+function GetPosterArt()
+{
+	if (nJfView == 1)
+		return theJellyfinLibrary.GetItemArtPath(nJfCursor);
+	if (nJfView == 2)
+		return theJellyfinLibrary.GetSeasonArtPath(nJfCursor);
+	if (nJfView == 3)
+		return theJellyfinLibrary.GetEpisodeArtPath(nJfCursor);
+	return "E:\\Jellyfin\\jellyfin_logo.png";
 }
 
 
@@ -437,7 +445,12 @@ DEF theJellyfinMenu Level
 	{
 		sleep .4;
 		BindActiveList();
-		if (nJfCount != nJfLastCount)
+		if (bJfLoaded == 1)
+		{
+			if ((nJfCount != nJfLastCount) | (GetPosterArt() != sJfPoster))
+				UpdateJellyfinList();
+		}
+		else if (nJfCount != nJfLastCount)
 		{
 			UpdateJellyfinList();
 		}

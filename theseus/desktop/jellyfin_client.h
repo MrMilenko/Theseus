@@ -75,3 +75,6 @@ std::string Jellyfin_StreamUrl(const std::string& itemId);
 std::string Jellyfin_ArtCachePath(const std::string& itemId);
 void        Jellyfin_QueueArtDownload(const std::string& itemId,
                                       const std::string& primaryTag);
+// The poster is on disk. Only hand the scene a path once this is true: the
+// texture cache remembers a miss for the rest of the session.
+bool        Jellyfin_ArtReady(const std::string& itemId);

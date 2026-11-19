@@ -74,6 +74,7 @@ static std::atomic<bool> s_episodesBusy{false};
 // Art download queue
 static std::mutex                                  s_artMtx;
 static std::map<std::string, std::atomic<bool>*>   s_artInFlight;
+static std::map<std::string, bool>                 s_artFailed;
 
 // ---------- Pre-stage cache ----------
 static std::atomic<bool>                              s_syncReady{false};
@@ -691,6 +692,8 @@ static void ArtWorker(std::string ratingKey, std::string url,
     if (stat(path.c_str(), &st) != 0 || st.st_size == 0) {
         if (!Http_GetToFile(url, path)) {
             fprintf(stderr, "[Plex] art fetch failed for %s\n", ratingKey.c_str());
+            std::lock_guard<std::mutex> lk(s_artMtx);
+            s_artFailed[ratingKey] = true;
         }
     }
     {
@@ -708,9 +711,20 @@ void Plex_QueueArtDownload(const std::string& ratingKey, const std::string& url)
     std::atomic<bool>* flag;
     {
         std::lock_guard<std::mutex> lk(s_artMtx);
-        if (s_artInFlight.count(ratingKey)) return;
+        if (s_artInFlight.count(ratingKey) || s_artFailed.count(ratingKey)) return;
         flag = new std::atomic<bool>(false);
         s_artInFlight[ratingKey] = flag;
     }
     std::thread(ArtWorker, ratingKey, url, flag).detach();
+}
+
+bool Plex_ArtReady(const std::string& ratingKey)
+{
+    if (!Http_IsSafeFileId(ratingKey)) return false;
+    {
+        std::lock_guard<std::mutex> lk(s_artMtx);
+        if (s_artInFlight.count(ratingKey)) return false;
+    }
+    struct stat st;
+    return stat(Plex_ArtCacheHostPath(ratingKey).c_str(), &st) == 0 && st.st_size > 0;
 }

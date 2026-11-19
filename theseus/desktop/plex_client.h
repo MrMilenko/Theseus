@@ -92,3 +92,6 @@ bool        Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
 std::string Plex_ArtCachePath(const std::string& ratingKey);
 void        Plex_QueueArtDownload(const std::string& ratingKey,
                                   const std::string& url);
+// The poster is on disk. Only hand the scene a path once this is true: the
+// texture cache remembers a miss for the rest of the session.
+bool        Plex_ArtReady(const std::string& ratingKey);

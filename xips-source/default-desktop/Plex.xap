@@ -14,6 +14,8 @@ var nPlexLastCount;       // last count we actually drew; behavior re-renders on
 var nPlexCursorBackup0;   // saved cursor when drilling lib -> items
 var nPlexCursorBackup1;   // saved cursor when drilling item -> seasons
 var nPlexCursorBackup2;   // saved cursor when drilling season -> episodes
+var sPlexPoster;          // poster url on the CD now; behavior swaps it when art lands
+var bPlexLoaded;          // the chrome scene is in, so the behavior can touch it
 
 
 function initialize()
@@ -27,6 +29,7 @@ function initialize()
 	nPlexCursorBackup0  = 0;
 	nPlexCursorBackup1  = 0;
 	nPlexCursorBackup2  = 0;
+	sPlexPoster         = "";
 }
 
 
@@ -104,6 +107,8 @@ function StartPlexLevel()
 	c.MU_cd_04.visible = false;
 	c.MU_cd_05.visible = false;
 
+	sPlexPoster = "";
+	bPlexLoaded = 1;
 	BindActiveList();
 	UpdatePlexList();
 }
@@ -165,24 +170,27 @@ function UpdatePlexList()
 function UpdatePoster(c)
 {
 	if (nPlexView == 1)
-	{
 		thePlexLibrary.QueueItemArt(nPlexCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = thePlexLibrary.GetItemArtPath(nPlexCursor);
-	}
 	else if (nPlexView == 2)
-	{
 		thePlexLibrary.QueueSeasonArt(nPlexCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = thePlexLibrary.GetSeasonArtPath(nPlexCursor);
-	}
 	else if (nPlexView == 3)
-	{
 		thePlexLibrary.QueueEpisodeArt(nPlexCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = thePlexLibrary.GetEpisodeArtPath(nPlexCursor);
-	}
-	else
-	{
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = "E:\\Plex\\plex_logo.png";
-	}
+	sPlexPoster = GetPosterArt();
+	c.MU_cd_01.children[0].children[0].appearance.texture.url = sPlexPoster;
+}
+
+
+// The library hands back the logo until the poster is downloaded; the
+// behavior redraws once the real one lands.
+function GetPosterArt()
+{
+	if (nPlexView == 1)
+		return thePlexLibrary.GetItemArtPath(nPlexCursor);
+	if (nPlexView == 2)
+		return thePlexLibrary.GetSeasonArtPath(nPlexCursor);
+	if (nPlexView == 3)
+		return thePlexLibrary.GetEpisodeArtPath(nPlexCursor);
+	return "E:\\Plex\\plex_logo.png";
 }
 
 
@@ -437,7 +445,12 @@ DEF thePlexMenu Level
 	{
 		sleep .4;
 		BindActiveList();
-		if (nPlexCount != nPlexLastCount)
+		if (bPlexLoaded == 1)
+		{
+			if ((nPlexCount != nPlexLastCount) | (GetPosterArt() != sPlexPoster))
+				UpdatePlexList();
+		}
+		else if (nPlexCount != nPlexLastCount)
 		{
 			UpdatePlexList();
 		}
