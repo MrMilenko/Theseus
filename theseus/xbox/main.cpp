@@ -460,7 +460,11 @@ bool InitD3D()
 		XSetValue(XC_VIDEO_FLAGS, REG_DWORD, &videoFlags, sizeof(videoFlags));
 	}
 
-	if (isPAL)
+	// Composite, S-Video, RF and SCART can't carry a progressive signal, so
+	// Config.ini's 480p and 720p only count on an HDTV or VGA pack. 5960 only
+	// goes progressive on the HDTV pack (0x0002ccf0).
+	DWORD dwPack = XGetAVPack();
+	if (isPAL || (dwPack != XC_AV_PACK_HDTV && dwPack != XC_AV_PACK_VGA))
 	{
 		bEnable480p = false;
 		bEnable720p = false;
