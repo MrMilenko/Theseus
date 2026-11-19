@@ -3396,6 +3396,15 @@ public:
 	int  m_currentShow;
 	int  m_currentSeason;
 	std::string m_serverUri;
+	// Artists, albums and collections opened inside the library, innermost
+	// last, with the row to put the cursor back on when B leaves each one.
+	struct Folder { std::string key, name; int cursor; };
+	std::vector<Folder> m_folders;
+
+	static bool IsFolderType(const std::string& t)
+	{
+		return t == "artist" || t == "album" || t == "collection" || t == "playlist";
+	}
 
 	void EnsureLibrariesPending()
 	{
@@ -3428,6 +3437,7 @@ public:
 
 	void SetCurrent(int i)
 	{
+		m_folders.clear();
 		if (i == m_currentLib) return;
 		m_currentLib    = i;
 		m_currentShow   = -1;
@@ -3448,13 +3458,50 @@ public:
 	{
 		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
 		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		if (!m_folders.empty()) {
+			std::vector<PlexItem> kids;
+			Plex_Cache_GetChildren(m_folders.back().key, kids);
+			return kids;
+		}
 		return Plex_Cache_GetItems(libs[m_currentLib].sectionKey);
+	}
+
+	void DrillIntoFolder(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size() || !IsFolderType(items[i].type)) return;
+		m_folders.push_back({ items[i].ratingKey, items[i].title, i });
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+		std::vector<PlexItem> dummy;
+		(void)Plex_Cache_GetChildren(items[i].ratingKey, dummy);
+	}
+
+	int GetFolderDepth() { return (int)m_folders.size(); }
+
+	// Steps out of the innermost folder; the row it was opened from.
+	int LeaveFolder()
+	{
+		if (m_folders.empty()) return 0;
+		int cursor = m_folders.back().cursor;
+		m_folders.pop_back();
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+		return cursor;
+	}
+
+	// The library's name, or the folder's once one is open.
+	CStrObject* GetListTitle()
+	{
+		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
+		return GetName(m_currentLib);
 	}
 
 	CStrObject* GetItemType(int i)
 	{
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		if (IsFolderType(items[i].type)) return new CStrObject(_T("folder"));
 		return new CStrObject(_T(items[i].type.c_str()));
 	}
 
@@ -3607,7 +3654,7 @@ public:
 	CStrObject* GetItemArtPath(int i)
 	{
 		std::vector<PlexItem> items = CurrentItems();
-		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		if (i < 0 || i >= (int)items.size()) return ArtOrLogo("");
 		return ArtOrLogo(items[i].ratingKey);
 	}
 
@@ -3627,9 +3674,9 @@ public:
 	{
 		std::vector<PlexSeason> seasons;
 		std::string showKey = CurrentShowKey();
-		if (showKey.empty()) return new CStrObject;
+		if (showKey.empty()) return ArtOrLogo("");
 		Plex_Cache_GetSeasons(showKey, seasons);
-		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
+		if (i < 0 || i >= (int)seasons.size()) return ArtOrLogo("");
 		return ArtOrLogo(seasons[i].ratingKey, showKey);
 	}
 
@@ -3649,9 +3696,9 @@ public:
 	{
 		std::vector<PlexEpisode> eps;
 		std::string seasonKey = CurrentSeasonKey();
-		if (seasonKey.empty()) return new CStrObject;
+		if (seasonKey.empty()) return ArtOrLogo("");
 		Plex_Cache_GetEpisodes(seasonKey, eps);
-		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
+		if (i < 0 || i >= (int)eps.size()) return ArtOrLogo("");
 		return ArtOrLogo(eps[i].ratingKey, seasonKey, CurrentShowKey());
 	}
 
@@ -3844,6 +3891,10 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_VI(QueueEpisodeArt)
 	NODE_FUN_SI(GetEpisodeArtPath)
 	NODE_FUN_IV(IsSignedIn)
+	NODE_FUN_VI(DrillIntoFolder)
+	NODE_FUN_IV(GetFolderDepth)
+	NODE_FUN_IV(LeaveFolder)
+	NODE_FUN_SV(GetListTitle)
 END_NODE_FUN()
 
 
@@ -3866,6 +3917,10 @@ public:
 	int  m_currentLib;
 	int  m_currentShow;
 	int  m_currentSeason;
+	// Folders opened inside the library, innermost last, with the row to
+	// put the cursor back on when B leaves each one.
+	struct Folder { std::string id, name; int cursor; };
+	std::vector<Folder> m_folders;
 
 	void EnsureLibrariesPending()
 	{
@@ -3895,6 +3950,7 @@ public:
 
 	void SetCurrent(int i)
 	{
+		m_folders.clear();
 		if (i == m_currentLib) return;
 		m_currentLib    = i;
 		m_currentShow   = -1;
@@ -3917,7 +3973,43 @@ public:
 	{
 		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
 		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		if (!m_folders.empty()) {
+			std::vector<JellyfinItem> kids;
+			Jellyfin_Cache_GetChildren(m_folders.back().id, kids);
+			return kids;
+		}
 		return Jellyfin_Cache_GetItems(libs[m_currentLib].id);
+	}
+
+	void DrillIntoFolder(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size() || !items[i].isFolder) return;
+		m_folders.push_back({ items[i].id, items[i].name, i });
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+		std::vector<JellyfinItem> dummy;
+		(void)Jellyfin_Cache_GetChildren(items[i].id, dummy);
+	}
+
+	int GetFolderDepth() { return (int)m_folders.size(); }
+
+	// Steps out of the innermost folder; the row it was opened from.
+	int LeaveFolder()
+	{
+		if (m_folders.empty()) return 0;
+		int cursor = m_folders.back().cursor;
+		m_folders.pop_back();
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+		return cursor;
+	}
+
+	// The library's name, or the folder's once one is open.
+	CStrObject* GetListTitle()
+	{
+		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
+		return GetName(m_currentLib);
 	}
 
 	int GetItemCount() { return (int)CurrentItems().size(); }
@@ -3940,6 +4032,7 @@ public:
 		std::string t = items[i].type;
 		if (t == "Series") return new CStrObject(_T("show"));
 		if (t == "Movie")  return new CStrObject(_T("movie"));
+		if (items[i].isFolder) return new CStrObject(_T("folder"));
 		std::string lc = t;
 		for (auto& c : lc) c = (char)tolower((unsigned char)c);
 		return new CStrObject(_T(lc.c_str()));
@@ -3974,7 +4067,7 @@ public:
 	CStrObject* GetItemArtPath(int i)
 	{
 		std::vector<JellyfinItem> items = CurrentItems();
-		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		if (i < 0 || i >= (int)items.size()) return ArtOrLogo("");
 		return ArtOrLogo(items[i].id);
 	}
 
@@ -3999,7 +4092,7 @@ public:
 	                   const std::string& title,
 	                   const std::string& subtitle)
 	{
-		std::string url = Jellyfin_StreamUrl(itemId);
+		std::string url = Jellyfin_StreamUrl(itemId, m_playAudio);
 		if (url.empty()) {
 			fprintf(stderr, "[Jellyfin] stream URL build failed for %s\n", itemId.c_str());
 			return;
@@ -4022,11 +4115,15 @@ public:
 		g_mediaFullscreenSubtitle[sizeof(g_mediaFullscreenSubtitle) - 1] = 0;
 	}
 
+	bool m_playAudio = false;
+
 	void PlayItem(int i)
 	{
 		std::vector<JellyfinItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return;
 		const JellyfinItem& it = items[i];
+		if (it.isFolder) return;
+		m_playAudio = (it.type == "Audio");
 		std::string sub = "Jellyfin";
 		if (!it.year.empty()) { sub += "  \xE2\x80\xA2  "; sub += it.year; }
 		PlayRatingKey(it.id, it.name, sub);
@@ -4091,9 +4188,9 @@ public:
 	{
 		std::vector<JellyfinSeason> seasons;
 		std::string showId = CurrentShowId();
-		if (showId.empty()) return new CStrObject;
+		if (showId.empty()) return ArtOrLogo("");
 		Jellyfin_Cache_GetSeasons(showId, seasons);
-		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
+		if (i < 0 || i >= (int)seasons.size()) return ArtOrLogo("");
 		return ArtOrLogo(seasons[i].id, showId);
 	}
 
@@ -4128,6 +4225,7 @@ public:
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
 		if (i < 0 || i >= (int)eps.size()) return;
 		const JellyfinEpisode& e = eps[i];
+		m_playAudio = false;
 		std::vector<JellyfinItem>   items = CurrentItems();
 		std::vector<JellyfinSeason> seasons;
 		std::string showId = CurrentShowId();
@@ -4159,9 +4257,9 @@ public:
 	{
 		std::vector<JellyfinEpisode> eps;
 		std::string seasonId = CurrentSeasonId();
-		if (seasonId.empty()) return new CStrObject;
+		if (seasonId.empty()) return ArtOrLogo("");
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
-		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
+		if (i < 0 || i >= (int)eps.size()) return ArtOrLogo("");
 		return ArtOrLogo(eps[i].id, seasonId, CurrentShowId());
 	}
 
@@ -4315,6 +4413,10 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_VI(QueueEpisodeArt)
 	NODE_FUN_SI(GetEpisodeArtPath)
 	NODE_FUN_IV(IsSignedIn)
+	NODE_FUN_VI(DrillIntoFolder)
+	NODE_FUN_IV(GetFolderDepth)
+	NODE_FUN_IV(LeaveFolder)
+	NODE_FUN_SV(GetListTitle)
 END_NODE_FUN()
 
 

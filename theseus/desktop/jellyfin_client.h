@@ -18,6 +18,7 @@ struct JellyfinItem {
     std::string overview;      // plot
     std::string type;          // "Movie" | "Series" | "Audio" | ...
     std::string primaryTag;    // image tag for Primary image URL
+    bool        isFolder = false;  // opens to more items (folders, box sets, albums)
 };
 
 struct JellyfinSeason {
@@ -68,8 +69,12 @@ std::vector<JellyfinItem>    Jellyfin_Cache_GetItems(const std::string& libraryI
 bool Jellyfin_Cache_GetSeasons (const std::string& showId,    std::vector<JellyfinSeason>&  out);
 bool Jellyfin_Cache_GetEpisodes(const std::string& seasonId,  std::vector<JellyfinEpisode>& out);
 
+// Items inside a folder, box set, album or playlist. Fetched in the
+// background on first ask: false until they land.
+bool Jellyfin_Cache_GetChildren(const std::string& parentId, std::vector<JellyfinItem>& out);
+
 // Direct-play URL with api_key. Empty on failure.
-std::string Jellyfin_StreamUrl(const std::string& itemId);
+std::string Jellyfin_StreamUrl(const std::string& itemId, bool audio = false);
 
 // Cover art. Same E:\Jellyfin\<id>.jpg trick as Plex.
 std::string Jellyfin_ArtCachePath(const std::string& itemId);

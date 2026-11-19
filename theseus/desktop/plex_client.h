@@ -86,6 +86,10 @@ bool        Plex_Cache_GetSeasons(const std::string& showRatingKey,
                                   std::vector<PlexSeason>& out);
 bool        Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
                                    std::vector<PlexEpisode>& out);
+// What's inside an artist, album or collection. Fetched in the background
+// on first ask: false until it lands.
+bool        Plex_Cache_GetChildren(const std::string& ratingKey,
+                                   std::vector<PlexItem>& out);
 
 // Cover art. Cache path is Xbox-style (E:\Plex\<rk>.jpg); xboxfs routes
 // it to Library/Plex/ for the texture loader.

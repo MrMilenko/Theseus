@@ -93,6 +93,8 @@ static std::vector<JellyfinLibrary>                      s_cacheLibs;
 static std::map<std::string, std::vector<JellyfinItem>>  s_cacheItems;
 static std::map<std::string, std::vector<JellyfinSeason>>  s_cacheSeasons;
 static std::map<std::string, std::vector<JellyfinEpisode>> s_cacheEpisodes;
+static std::map<std::string, std::vector<JellyfinItem>>    s_cacheChildren;
+static std::map<std::string, bool>                         s_childrenBusy;
 
 // ---------- Art download queue ----------
 static std::mutex                                  s_artMtx;
@@ -141,6 +143,7 @@ void Jellyfin_SignOut()
     s_cacheItems.clear();
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
+    s_cacheChildren.clear();
     s_syncGen++;
     s_syncReady    = false;
     s_syncProgress = 0;
@@ -318,6 +321,7 @@ static JellyfinItem ParseItem(const std::string& obj)
     it.overview  = Json_GetString(obj, "Overview");
     it.type      = Json_GetString(obj, "Type");
     it.primaryTag = ParsePrimaryTag(obj);
+    it.isFolder  = Json_GetBool(obj, "IsFolder");
     int y = Json_GetInt(obj, "ProductionYear");
     if (y > 0) {
         char buf[8]; snprintf(buf, sizeof(buf), "%d", y);
@@ -554,6 +558,32 @@ bool Jellyfin_Cache_GetEpisodes(const std::string& seasonId,
 
 
 // ============================================================================
+// Folder contents (lazy, in the background)
+// ============================================================================
+
+static void ChildrenWorker(unsigned gen, std::string parentId)
+{
+    std::vector<JellyfinItem> items = FetchItemsForLibrary(parentId);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen == s_syncGen) s_cacheChildren[parentId] = std::move(items);
+    s_childrenBusy.erase(parentId);
+}
+
+bool Jellyfin_Cache_GetChildren(const std::string& parentId, std::vector<JellyfinItem>& out)
+{
+    if (parentId.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto it = s_cacheChildren.find(parentId);
+    if (it != s_cacheChildren.end()) { out = it->second; return true; }
+    if (!s_childrenBusy.count(parentId)) {
+        s_childrenBusy[parentId] = true;
+        std::thread(ChildrenWorker, (unsigned)s_syncGen, parentId).detach();
+    }
+    return false;
+}
+
+
+// ============================================================================
 // Stream URL
 // ============================================================================
 
@@ -564,11 +594,11 @@ static std::string Base()
     return u;
 }
 
-std::string Jellyfin_StreamUrl(const std::string& itemId)
+std::string Jellyfin_StreamUrl(const std::string& itemId, bool audio)
 {
     if (itemId.empty() || g_jellyfinUrl[0] == 0 || g_jellyfinToken[0] == 0) return "";
     std::string out = Base();
-    out += "/Videos/";
+    out += audio ? "/Audio/" : "/Videos/";
     out += itemId;
     out += "/stream?Static=true&api_key=";
     out += g_jellyfinToken;

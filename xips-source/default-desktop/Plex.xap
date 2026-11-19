@@ -64,11 +64,11 @@ function GetHeaderText()
 {
 	var server = thePlexLibrary.GetServerName();
 	if (server == "")
-		server = "PLEX";
+		server = "Plex";
 	if (nPlexView == 0)
 		return server;
 	if (nPlexView == 1)
-		return server + " / " + thePlexLibrary.GetName(nPlexCursorBackup0);
+		return server + " / " + thePlexLibrary.GetListTitle();
 	var showTitle = thePlexLibrary.GetItemTitle(nPlexCursorBackup1);
 	if (nPlexView == 2)
 		return showTitle;
@@ -206,11 +206,20 @@ function EnterLibrary()
 }
 
 
-// Movies/tracks play immediately; TV shows drill into seasons.
+// Movies/tracks play immediately; TV shows drill into seasons and folders
+// (box sets, albums, playlists) open in place.
 function EnterItem()
 {
 	var type = thePlexLibrary.GetItemType(nPlexCursor);
-	if (type == "show")
+	if (type == "folder")
+	{
+		thePlexLibrary.DrillIntoFolder(nPlexCursor);
+		nPlexCursor = 0;
+		nPlexScroll = 0;
+		BindActiveList();
+		UpdatePlexList();
+	}
+	else if (type == "show")
 	{
 		thePlexLibrary.DrillIntoShow(nPlexCursor);
 		nPlexCursorBackup1 = nPlexCursor;
@@ -260,6 +269,13 @@ function GoBackOne()
 	{
 		nPlexView   = 1;
 		nPlexCursor = nPlexCursorBackup1;
+		nPlexScroll = 0;
+		BindActiveList();
+		UpdatePlexList();
+	}
+	else if ((nPlexView == 1) & (thePlexLibrary.GetFolderDepth() > 0))
+	{
+		nPlexCursor = thePlexLibrary.LeaveFolder();
 		nPlexScroll = 0;
 		BindActiveList();
 		UpdatePlexList();

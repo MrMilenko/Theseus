@@ -89,6 +89,8 @@ static std::vector<PlexLibrary>                       s_cacheLibs;
 static std::map<std::string, std::vector<PlexItem>>   s_cacheItems;        // sectionKey -> items
 static std::map<std::string, std::vector<PlexSeason>> s_cacheSeasons;      // showRk -> seasons
 static std::map<std::string, std::vector<PlexEpisode>> s_cacheEpisodes;    // seasonRk -> episodes
+static std::map<std::string, std::vector<PlexItem>>   s_cacheChildren;     // rk -> items inside it
+static std::map<std::string, bool>                    s_childrenBusy;
 
 
 // ============================================================================
@@ -133,6 +135,7 @@ void Plex_SignOut()
     s_cacheItems.clear();
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
+    s_cacheChildren.clear();
     s_syncGen++;
     s_syncReady    = false;
     s_syncProgress = 0;
@@ -324,6 +327,61 @@ static std::string BuildAssetUrl(const std::string& serverUri,
     out += "X-Plex-Token=";
     out += g_plexToken;
     return out;
+}
+
+static PlexItem ParseItem(const std::string& obj, const std::string& serverUri)
+{
+    PlexItem it;
+    it.ratingKey = Json_GetString(obj, "ratingKey");
+    it.title     = Json_GetString(obj, "title");
+    int y        = Json_GetInt(obj, "year");
+    if (y > 0) {
+        char ybuf[8]; snprintf(ybuf, sizeof(ybuf), "%d", y);
+        it.year = ybuf;
+    }
+    it.summary   = Json_GetString(obj, "summary");
+    it.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
+    it.artUrl    = BuildAssetUrl(serverUri, Json_GetString(obj, "art"));
+    it.type      = Json_GetString(obj, "type");
+    return it;
+}
+
+static std::vector<PlexItem> ParseItems(const std::string& body, const std::string& serverUri)
+{
+    std::vector<PlexItem> items;
+    size_t mArr = Json_FindArray(body, "Metadata");
+    if (mArr == std::string::npos) return items;
+    for (const auto& obj : Json_SplitArray(body, mArr)) {
+        PlexItem it = ParseItem(obj, serverUri);
+        if (!it.ratingKey.empty()) items.push_back(it);
+    }
+    return items;
+}
+
+static void ChildrenWorker(unsigned gen, std::string serverUri, std::string rk)
+{
+    HttpResponse r = Http_Get(serverUri + "/library/metadata/" + rk + "/children",
+                              PlexHeaders(true, true));
+    std::vector<PlexItem> items;
+    if (r.ok()) items = ParseItems(r.body, serverUri);
+    else fprintf(stderr, "[Plex] children fetch failed for %s (status %ld)\n", rk.c_str(), r.status);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen == s_syncGen) s_cacheChildren[rk] = std::move(items);
+    s_childrenBusy.erase(rk);
+}
+
+bool Plex_Cache_GetChildren(const std::string& ratingKey, std::vector<PlexItem>& out)
+{
+    if (ratingKey.empty()) return false;
+    std::string uri = Plex_GetActiveServerUri();
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto it = s_cacheChildren.find(ratingKey);
+    if (it != s_cacheChildren.end()) { out = it->second; return true; }
+    if (!uri.empty() && !s_childrenBusy.count(ratingKey)) {
+        s_childrenBusy[ratingKey] = true;
+        std::thread(ChildrenWorker, (unsigned)s_syncGen, uri, ratingKey).detach();
+    }
+    return false;
 }
 
 // ============================================================================
@@ -559,26 +617,7 @@ static void SyncWorker()
         std::string url = serverUri + "/library/sections/" + lib.sectionKey + "/all";
         HttpResponse ir = Http_Get(url, PlexHeaders(true, true));
         std::vector<PlexItem> items;
-        if (ir.ok()) {
-            size_t mArr = Json_FindArray(ir.body, "Metadata");
-            if (mArr != std::string::npos) {
-                for (const auto& obj : Json_SplitArray(ir.body, mArr)) {
-                    PlexItem it;
-                    it.ratingKey = Json_GetString(obj, "ratingKey");
-                    it.title     = Json_GetString(obj, "title");
-                    int y        = Json_GetInt(obj, "year");
-                    if (y > 0) {
-                        char ybuf[8]; snprintf(ybuf, sizeof(ybuf), "%d", y);
-                        it.year = ybuf;
-                    }
-                    it.summary   = Json_GetString(obj, "summary");
-                    it.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
-                    it.artUrl    = BuildAssetUrl(serverUri, Json_GetString(obj, "art"));
-                    it.type      = Json_GetString(obj, "type");
-                    if (!it.ratingKey.empty()) items.push_back(it);
-                }
-            }
-        }
+        if (ir.ok()) items = ParseItems(ir.body, serverUri);
         itemsByKey[lib.sectionKey] = std::move(items);
     }
 

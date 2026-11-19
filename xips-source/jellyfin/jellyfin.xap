@@ -64,11 +64,11 @@ function GetHeaderText()
 {
 	var server = theJellyfinLibrary.GetServerName();
 	if (server == "")
-		server = "PLEX";
+		server = "Jellyfin";
 	if (nJfView == 0)
 		return server;
 	if (nJfView == 1)
-		return server + " / " + theJellyfinLibrary.GetName(nJfCursorBackup0);
+		return server + " / " + theJellyfinLibrary.GetListTitle();
 	var showTitle = theJellyfinLibrary.GetItemTitle(nJfCursorBackup1);
 	if (nJfView == 2)
 		return showTitle;
@@ -206,11 +206,20 @@ function EnterLibrary()
 }
 
 
-// Movies/tracks play immediately; TV shows drill into seasons.
+// Movies/tracks play immediately; TV shows drill into seasons and folders
+// (box sets, albums, playlists) open in place.
 function EnterItem()
 {
 	var type = theJellyfinLibrary.GetItemType(nJfCursor);
-	if (type == "show")
+	if (type == "folder")
+	{
+		theJellyfinLibrary.DrillIntoFolder(nJfCursor);
+		nJfCursor = 0;
+		nJfScroll = 0;
+		BindActiveList();
+		UpdateJellyfinList();
+	}
+	else if (type == "show")
 	{
 		theJellyfinLibrary.DrillIntoShow(nJfCursor);
 		nJfCursorBackup1 = nJfCursor;
@@ -260,6 +269,13 @@ function GoBackOne()
 	{
 		nJfView   = 1;
 		nJfCursor = nJfCursorBackup1;
+		nJfScroll = 0;
+		BindActiveList();
+		UpdateJellyfinList();
+	}
+	else if ((nJfView == 1) & (theJellyfinLibrary.GetFolderDepth() > 0))
+	{
+		nJfCursor = theJellyfinLibrary.LeaveFolder();
 		nJfScroll = 0;
 		BindActiveList();
 		UpdateJellyfinList();
