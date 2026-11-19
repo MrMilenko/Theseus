@@ -44,12 +44,12 @@ CSurfx::CSurfx(int nWidth, int nHeight)
 	m_nWidth = nWidth;
 	m_nHeight = nHeight;
 	m_pels = new BYTE [(nHeight + 1) * nWidth];
-	mBytesPerRow = nWidth;
-	mLineWidth = 1;
-	mClipRect.left = 0;
-	mClipRect.top = 0;
-	mClipRect.right = nWidth;
-	mClipRect.bottom = nHeight;
+	m_rowBytes = nWidth;
+	m_rowStride = 1;
+	m_clip.left = 0;
+	m_clip.top = 0;
+	m_clip.right = nWidth;
+	m_clip.bottom = nHeight;
 	sTempRef++;
 }
 
@@ -128,7 +128,7 @@ void CSurfx::Fade(const char* inSrce, long inBytesPerSrceRow, char* inDest, long
 
 // CSurfx::Fade(inPix, inBytesPerRow, inX, inY, inGrad)
 // Reconstructed from 5960 retail XBE @ 0x0005f540. Warps the image in place.
-// A pixel can pull from up to mNegYExtents rows above itself, so finished rows
+// A pixel can pull from up to m_negYSpan rows above itself, so finished rows
 // wait in a ring of that many rows (the shared DAT_0017e764 buffer, grown on
 // demand) and only overwrite the image once nothing can read them anymore.
 // Steps: first ring-full of rows goes through the out-of-place pass; each later
@@ -137,7 +137,7 @@ void CSurfx::Fade(const char* inSrce, long inBytesPerSrceRow, char* inDest, long
 // See docs/decomp/TmapSystem.md.
 void CSurfx::Fade(char* inPix, long inBytesPerRow, long inX, long inY, DeltaFieldData* inGrad)
 {
-	long ringRows = inGrad->mNegYExtents;
+	long ringRows = inGrad->m_negYSpan;
 	if (sTempSize < ringRows * inBytesPerRow)
 	{
 		sTempSize = ringRows * inBytesPerRow;
@@ -147,7 +147,7 @@ void CSurfx::Fade(char* inPix, long inBytesPerRow, long inX, long inY, DeltaFiel
 	if (ringRows > inY)
 		ringRows = inY;
 
-	const char* grad = inGrad->mField;
+	const char* grad = inGrad->m_cells;
 	Fade(inPix, inBytesPerRow, sTemp, inBytesPerRow, inX, ringRows, grad);
 	grad += 3 * inX * ringRows;
 
@@ -356,7 +356,7 @@ void MakePalette(DWORD outPalette [256])
 
 // ===== Line Drawing =========================================================
 // Bresenham stepping with an optional round pen. Nothing in the dash ever
-// raises mLineWidth above 1, but the wide pen is there and kept working.
+// raises m_rowStride above 1, but the wide pen is there and kept working.
 
 // Pen insets per row for widths 2..11, from the byte tables at 0x0002a310..0x0002a364.
 static const char* PenShape(int width)
@@ -401,8 +401,8 @@ void CSurfx::Line(int sx, int sy, int ex, int ey, unsigned char color)
 	ex = FoldCoord(ex);
 	ey = FoldCoord(ey);
 
-	long w = mLineWidth;
-	if (mLineWidth > 3)
+	long w = m_rowStride;
+	if (m_rowStride > 3)
 	{
 		// 64 bit squares: the folded coordinates can reach 2^30.
 		long long dx2 = (long long)(ex - sx) * (ex - sx);
@@ -412,14 +412,14 @@ void CSurfx::Line(int sx, int sy, int ex, int ey, unsigned char color)
 		else if (dy2 > 0 && dy2 > dx2)
 			w = (long)(128 + 55 * dx2 / dy2);
 		if (dx2 > 0 || dy2 > 0)
-			w = (mLineWidth * w + 64) >> 7;
+			w = (m_rowStride * w + 64) >> 7;
 	}
 	long half = w >> 1;
 
-	long left = mClipRect.left + half;
-	long top = mClipRect.top + half;
-	long right = mClipRect.right - half;
-	long bottom = mClipRect.bottom - half;
+	long left = m_clip.left + half;
+	long top = m_clip.top + half;
+	long right = m_clip.right - half;
+	long bottom = m_clip.bottom - half;
 
 	if (sx < left || sx >= right || sy < top || sy >= bottom)
 	{
@@ -453,21 +453,21 @@ void CSurfx::Line(int sx, int sy, int ex, int ey, unsigned char color)
 	if (dy < 0)
 	{
 		dy = -dy;
-		rowStep = -mBytesPerRow;
+		rowStep = -m_rowBytes;
 		yLeft = (sy - dy < top) ? sy - top : dy;
 	}
 	else
 	{
-		rowStep = mBytesPerRow;
+		rowStep = m_rowBytes;
 		yLeft = (sy + dy >= bottom) ? bottom - 1 - sy : dy;
 	}
 
-	unsigned char* p = m_pels + sy * mBytesPerRow + sx;
+	unsigned char* p = m_pels + sy * m_rowBytes + sx;
 	long err = 0;
 
 	if (w > 1)
 	{
-		long pen = mLineWidth;
+		long pen = m_rowStride;
 		long penHalf = pen >> 1;
 		const char* shape = pen < 12 ? PenShape(pen) : NULL;
 
@@ -476,15 +476,15 @@ void CSurfx::Line(int sx, int sy, int ex, int ey, unsigned char color)
 			long k = row - penHalf;
 			long inset = shape ? shape[row] : penHalf - (long)sqrt((double)(penHalf * penHalf - k * k));
 			if (inset < pen - inset)
-				memset(p + k * mBytesPerRow + inset - penHalf, color, pen - 2 * inset);
+				memset(p + k * m_rowBytes + inset - penHalf, color, pen - 2 * inset);
 		}
 
 		if (dx > dy)
 		{
 			for (; xLeft >= 0 && yLeft >= 0; xLeft--)
 			{
-				unsigned char* q = p - half * mBytesPerRow;
-				for (long i = 0; i < w; i++, q += mBytesPerRow)
+				unsigned char* q = p - half * m_rowBytes;
+				for (long i = 0; i < w; i++, q += m_rowBytes)
 					*q = color;
 
 				p += xStep;
@@ -561,22 +561,22 @@ void CSurfx::Line(int sx, int sy, int ex, int ey, unsigned char color)
 DeltaField::DeltaField()
 {
 	m_nStyle = 0;
-	mCurrentY = -1;
-	mWidth = 0;
-	mHeight = 0;
+	m_rowCursor = -1;
+	m_fieldW = 0;
+	m_fieldH = 0;
 }
 
 DeltaFieldData::DeltaFieldData()
 {
-	mNegYExtents = 0;
-	mField = NULL;
+	m_negYSpan = 0;
+	m_cells = NULL;
 }
 
 // DeltaFieldData::~DeltaFieldData()
 // Reconstructed from 5960 retail XBE @ 0x0005e110: free(field).
 DeltaFieldData::~DeltaFieldData()
 {
-	delete [] mField;
+	delete [] m_cells;
 }
 
 // DeltaField::GetField()
@@ -586,13 +586,13 @@ DeltaFieldData::~DeltaFieldData()
 // is a Theseus guard; the binary never reaches here in that state.
 DeltaFieldData* DeltaField::GetField()
 {
-	if (mCurrentY < 0)
+	if (m_rowCursor < 0)
 		return NULL;
 
-	while (mCurrentY != mHeight)
+	while (m_rowCursor != m_fieldH)
 		CalcSome();
 
-	return &mFieldData;
+	return &m_grid;
 }
 
 // DeltaField::Assign()
@@ -601,10 +601,10 @@ DeltaFieldData* DeltaField::GetField()
 void DeltaField::Assign()
 {
 	mAspect1to1 = true;
-	mPolar = true;
-	mHasRTerm = true;
-	mHasThetaTerm = true;
-	SetSize(mWidth, mHeight, true);
+	m_bPolarStyle = true;
+	m_bUsesR = true;
+	m_bUsesTheta = true;
+	SetSize(m_fieldW, m_fieldH, true);
 }
 
 // DeltaField::SetSize(w, h, force)
@@ -617,28 +617,28 @@ void DeltaField::Assign()
 // The y scale is flipped so +y points up in the warp formulas.
 void DeltaField::SetSize(long inWidth, long inHeight, bool inForceRegen)
 {
-	if (inWidth == mWidth && inHeight == mHeight && !inForceRegen)
+	if (inWidth == m_fieldW && inHeight == m_fieldH && !inForceRegen)
 		return;
 
-	mWidth = inWidth;
-	mHeight = inHeight;
+	m_fieldW = inWidth;
+	m_fieldH = inHeight;
 
-	delete [] mFieldData.mField;
-	mFieldData.mField = new char [mWidth * mHeight * 3 + 64];
+	delete [] m_grid.m_cells;
+	m_grid.m_cells = new char [m_fieldW * m_fieldH * 3 + 64];
 
-	mXScale = 2.0f / (float)mWidth;
-	mYScale = 2.0f / (float)mHeight;
+	m_stretchX = 2.0f / (float)m_fieldW;
+	m_stretchY = 2.0f / (float)m_fieldH;
 	if (mAspect1to1)
 	{
-		if (mYScale > mXScale)
-			mXScale = mYScale;
+		if (m_stretchY > m_stretchX)
+			m_stretchX = m_stretchY;
 		else
-			mYScale = mXScale;
+			m_stretchY = m_stretchX;
 	}
-	mYScale *= -1.0f;
+	m_stretchY *= -1.0f;
 
-	mCurrentY = 0;
-	mNegYExtents = 0;
+	m_rowCursor = 0;
+	m_negYSpan = 0;
 }
 
 static inline void WriteDelta(char* cell, unsigned long code)
@@ -660,70 +660,70 @@ static inline void WriteDelta(char* cell, unsigned long code)
 // See docs/decomp/TmapSystem.md.
 int DeltaField::CalcSome()
 {
-	char* cell = mFieldData.mField + mCurrentY * mWidth * 3;
+	char* cell = m_grid.m_cells + m_rowCursor * m_fieldW * 3;
 
-	if (mCurrentY == 0 || mCurrentY == mHeight - 1)
+	if (m_rowCursor == 0 || m_rowCursor == m_fieldH - 1)
 	{
-		for (long x = 0; x < mWidth; x++, cell += 3)
+		for (long x = 0; x < m_fieldW; x++, cell += 3)
 			WriteDelta(cell, DELTA_ZERO);
-		mCurrentY++;
+		m_rowCursor++;
 	}
 
-	if (mCurrentY > 0 && mCurrentY < mHeight - 1)
+	if (m_rowCursor > 0 && m_rowCursor < m_fieldH - 1)
 	{
-		mY_Cord = (mHeight - mCurrentY * 2) * mYScale * 0.5f;
-		float toFixedX = 32.0f / mXScale;
-		float toFixedY = 32.0f / mYScale;
+		m_cy = (m_fieldH - m_rowCursor * 2) * m_stretchY * 0.5f;
+		float toFixedX = 32.0f / m_stretchX;
+		float toFixedY = 32.0f / m_stretchY;
 
 		WriteDelta(cell, DELTA_ZERO);
 		cell += 3;
 
-		for (long px = 1; px < mWidth - 1; px++, cell += 3)
+		for (long px = 1; px < m_fieldW - 1; px++, cell += 3)
 		{
-			mX_Cord = (px * 2 - mWidth) * mXScale * 0.5f;
-			if (mHasRTerm)
-				mR_Cord = sqrtf(mX_Cord * mX_Cord + mY_Cord * mY_Cord);
-			if (mHasThetaTerm)
-				mT_Cord = atan2f(mY_Cord, mX_Cord);
+			m_cx = (px * 2 - m_fieldW) * m_stretchX * 0.5f;
+			if (m_bUsesR)
+				m_polarR = sqrtf(m_cx * m_cx + m_cy * m_cy);
+			if (m_bUsesTheta)
+				m_polarT = atan2f(m_cy, m_cx);
 
 			float srcX, srcY;
-			GetXY(mR_Cord, mT_Cord, mX_Cord, mY_Cord, srcX, srcY, mPolar, px == 1 && mCurrentY == 1);
-			if (mPolar)
+			GetXY(m_polarR, m_polarT, m_cx, m_cy, srcX, srcY, m_bPolarStyle, px == 1 && m_rowCursor == 1);
+			if (m_bPolarStyle)
 			{
 				float radius = srcX;
 				srcX = radius * cosf(srcY);
 				srcY = radius * sinf(srcY);
 			}
 
-			long dx = (long)(toFixedX * (srcX - mX_Cord));
-			long dy = (long)(toFixedY * (mY_Cord - srcY));
+			long dx = (long)(toFixedX * (srcX - m_cx));
+			long dy = (long)(toFixedY * (m_cy - srcY));
 
 			long landX = px + (dx >> 5);
-			if (landX >= mWidth - 1)
-				dx = (mWidth - 1 - px) * 32;
+			if (landX >= m_fieldW - 1)
+				dx = (m_fieldW - 1 - px) * 32;
 			else if (landX < 0)
 				dx = -px * 32;
 
-			long landY = mCurrentY + (dy >> 5);
-			if (landY >= mHeight - 1)
-				dy = (mHeight - 1 - mCurrentY) * 32;
+			long landY = m_rowCursor + (dy >> 5);
+			if (landY >= m_fieldH - 1)
+				dy = (m_fieldH - 1 - m_rowCursor) * 32;
 			else if (landY < 0)
-				dy = -mCurrentY * 32;
+				dy = -m_rowCursor * 32;
 
-			if (dy < mNegYExtents)
-				mNegYExtents = dy;
+			if (dy < m_negYSpan)
+				m_negYSpan = dy;
 
 			WriteDelta(cell, ((dx + 0x7E0) << 12) | (dy + 0x7E0));
 		}
 
 		WriteDelta(cell, DELTA_ZERO);
-		mCurrentY++;
+		m_rowCursor++;
 	}
 
-	if (mCurrentY == mHeight)
-		mFieldData.mNegYExtents = 1 - (mNegYExtents >> 5);
+	if (m_rowCursor == m_fieldH)
+		m_grid.m_negYSpan = 1 - (m_negYSpan >> 5);
 
-	return mHeight - mCurrentY;
+	return m_fieldH - m_rowCursor;
 }
 
 // DeltaField::GetXY(r, theta, x, y, X, Y, bPolar, bInit)
