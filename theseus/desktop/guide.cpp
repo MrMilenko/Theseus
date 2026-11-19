@@ -35,6 +35,7 @@
 #include "ui_overlay.h"
 #include "pads.h"
 #include "launchers/steam.h"
+#include "launchers/stores.h"
 #include <algorithm>
 #include <ctype.h>
 #include <strings.h>
@@ -145,6 +146,20 @@ int TitleMaker_ImportSteam(int* outSkipped);
 int TitleMaker_ImportRetroArch(int* outSkipped);
 extern int Title_SanitizeName(const char*, char*, size_t);
 extern char s_esdePath[512];
+
+// PC stores with an Import row of their own, shown only when the store is here.
+static const struct Store {
+    const char* label;
+    const char* help;
+    bool (*found)();
+    void (*scan)(std::vector<StoreGame>&);
+} kStores[] = {
+    { "Import Epic Games", "Installed games from the Epic launcher and Heroic.", Epic_Found, Epic_Scan },
+    { "Import GOG Games", "Installed games from GOG Galaxy, GOG installers and Heroic.", Gog_Found, Gog_Scan },
+    { "Import Lutris Games", "Installed games from your Lutris library, with its cover art.", Lutris_Found, Lutris_Scan },
+    { "Import itch.io Games", "Games installed with the itch.io app.", Itch_Found, Itch_Scan },
+};
+static const int kStoreCount = (int)(sizeof(kStores) / sizeof(kStores[0]));
 
 static const char* kCategories[] = { "Games", "Applications", "Homebrew", "Emulators", "Dashboards" };
 static const int   kCategoryCount = (int)(sizeof(kCategories) / sizeof(kCategories[0]));
@@ -282,7 +297,7 @@ enum Act {
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
-    GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT,
+    GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT, GA_STORE,
     GA_COUNT
 };
 
@@ -352,6 +367,7 @@ static struct Guide {
 
     int copied;
     std::string result[GA_COUNT];
+    std::string storeResult[kStoreCount];
     std::string browseDir, pickedPath, pickedName, added;
     std::string found[4];   // what each Find row turned up
     std::vector<XdgApp> apps;   // the Linux app menu, read when its list opens
@@ -541,6 +557,9 @@ static void Build()
         Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
         Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
         Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
+        for (int s = 0; s < kStoreCount; s++)
+            if (kStores[s].found())
+                Add(kStores[s].label, g.storeResult[s].c_str(), kStores[s].help, GA_STORE, s);
         if (strcmp(Host_Name(), "Linux") == 0)
             Add("Import Linux Apps", "", "Games and apps from your app menu, Flatpak and your Desktop.", GA_APPS);
         char n[32];
@@ -1207,6 +1226,18 @@ static void Select()
         if (added < 0) { snprintf(msg, sizeof(msg), "Not found"); Refuse(); }
         else snprintf(msg, sizeof(msg), "%d new, %d already in", added, skipped);
         g.result[r.act] = msg;
+        Build();
+        break;
+    }
+    case GA_STORE: {
+        if (r.arg < 0 || r.arg >= kStoreCount) break;
+        std::vector<StoreGame> list;
+        kStores[r.arg].scan(list);
+        int added = 0, had = 0;
+        StoreGames_Add(list, &added, &had);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%d new, %d already in", added, had);
+        g.storeResult[r.arg] = msg;
         Build();
         break;
     }
