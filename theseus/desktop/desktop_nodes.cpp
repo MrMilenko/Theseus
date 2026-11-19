@@ -4996,8 +4996,8 @@ public:
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS()
 
-	// Current filter
-	char m_category[32];
+	// Current filter. Room for "Collection:" and a collection's name.
+	char m_category[64];
 	// Folder we've drilled into, "/" separated, empty at the top of a category
 	char m_group[128];
 	// Folder rows, the distinct next path segment below m_group
@@ -5008,6 +5008,8 @@ public:
 	unsigned int m_gen;
 	// Hidden titles come back so a scene can offer to unhide them.
 	bool m_showHidden;
+	// What GetCollectionCount found, for GetCollectionName.
+	std::vector<std::string> m_collections;
 
 	// Rows are folders first, then titles, so an index below the folder count
 	// addresses m_folders and anything above it addresses m_slice.
@@ -5121,6 +5123,27 @@ public:
 			if (VGames_IsShown(g) && strcasecmp(g.category, cat) == 0) n++;
 		}
 		return n;
+	}
+
+	// Your collections with something showing in them, A to Z, for the
+	// launcher's category rows.
+	int GetCollectionCount()
+	{
+		VGames_Collections(m_collections, true);
+		return (int)m_collections.size();
+	}
+
+	CStrObject* GetCollectionName(int i)
+	{
+		if (i < 0 || i >= (int)m_collections.size()) return new CStrObject;
+		return new CStrObject(m_collections[i].c_str());
+	}
+
+	// 1 for lists that mix categories (Favorites, Recently Played, a
+	// collection), which launch by row since there's no folder path.
+	int IsMixedList(const TCHAR* cat)
+	{
+		return VGames_IsMarkList(cat) ? 1 : 0;
 	}
 
 	// The DB row behind a list row, or -1 for folders and anything past the end.
@@ -5289,6 +5312,9 @@ START_NODE_FUN(CGamesCollection, CNode)
 	NODE_FUN_VII(SetHidden)
 	NODE_FUN_VI(ShowHidden)
 	NODE_FUN_SI(GetLastPlayed)
+	NODE_FUN_IV(GetCollectionCount)
+	NODE_FUN_SI(GetCollectionName)
+	NODE_FUN_IS(IsMixedList)
 END_NODE_FUN()
 
 

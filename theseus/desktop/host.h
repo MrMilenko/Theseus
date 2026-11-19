@@ -95,6 +95,11 @@ void Host_OpenFolder(const char* dir);
 void Host_SetEnv(const char* name, const char* value);
 // A value under HKEY_CURRENT_USER as text (numbers in decimal). Always false off Windows.
 bool Host_RegistryString(const char* subKey, const char* value, char* out, size_t outSize);
+// The same from either hive. HKEY_LOCAL_MACHINE is where installers write for everyone.
+enum { HOST_REG_USER, HOST_REG_MACHINE };
+bool Host_RegistryValue(int hive, const char* subKey, const char* value, char* out, size_t outSize);
+// Names of the keys right under subKey, up to max. 0 when there are none or off Windows.
+int Host_RegistrySubkeys(int hive, const char* subKey, char (*out)[256], int max);
 // Audio CD in the first optical drive: track count and per-track lengths
 // in seconds. -1 when there's no readable disc.
 int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio);

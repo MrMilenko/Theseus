@@ -345,6 +345,14 @@ function LoadMenuItems()
 		arrMenuPaths[TotalSections] = "Favorites";
 		TotalSections = TotalSections + 1;
 	}
+	// Your collections, same deal: a row each while something's in it.
+	var nCollections = theGamesCollection.GetCollectionCount();
+	for (var k = 0; k < nCollections; k = k + 1)
+	{
+		arrMenuNames[TotalSections] = theGamesCollection.GetCollectionName(k);
+		arrMenuPaths[TotalSections] = "Collection:" + arrMenuNames[TotalSections];
+		TotalSections = TotalSections + 1;
+	}
 	for (var x = 0; x < 5; x = x + 1)
 	{
 		c.theMenuButtons.children[x].visible = false;
@@ -740,7 +748,15 @@ DEF theLauncher Level
 				{
 					CurFillDir = arrMenuPaths[nCurLauncherItem0];
 					subTitle0 = mnuName;
-					TempTitleList = GetTitleList(mnuName);
+					// A collection is asked for by its path, so one named Games stays itself.
+					if(theGamesCollection.IsMixedList(CurFillDir) == 1)
+					{
+						TempTitleList = GetTitleList(CurFillDir);
+					}
+					else
+					{
+						TempTitleList = GetTitleList(mnuName);
+					}
 					thePlayerPanelIn.Play();
 					StartTitleList();
 				}
@@ -789,7 +805,7 @@ DEF theLauncher Level
 					return;
 				}
 				// These lists mix categories, so there's no folder path to build.
-				if((CurFillDir == "Recently Played") | (CurFillDir == "Favorites"))
+				if(theGamesCollection.IsMixedList(CurFillDir) == 1)
 				{
 					theGamesCollection.LaunchTitle(nPlayCursor0);
 					return;
