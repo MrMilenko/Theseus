@@ -1,7 +1,10 @@
-// savegame_grid.cpp: CSavedGameGrid, the Memory panel's grid of saved-
-// game tiles. Walks the title collection, paginates entries, resolves
-// per-title icons, and dispatches selection / copy / delete actions.
-// Decompiled from the 5960 retail XBE.
+// savegame_grid.cpp: SavedGameGrid, the Memory blade's list of titles on a
+// device with a grid of save icons under each. Lays the list out, moves
+// the selection, sizes things on a worker thread and starts copies and
+// deletes. Rebuilt from the 5960 retail XBE (0x47320..0x4bc60); see
+// docs/decomp/SavedGameGrid.md. DLC items, the ContentMeta reader and the
+// Live account calls below are Theseus's own.
+
 
 #include "std.h"
 #include "theseus.h"
@@ -86,8 +89,8 @@ public:
 	int m_iconsPerRow;
 	float m_scroll;
 	int m_curTitle;
-	int m_curTitleCache;
-	int m_curGridItemCache;
+	int m_sizedTitle;
+	int m_sizedItem;
 	int m_iconRowScroll;
 	float m_smallIconSpacing;
 	bool m_detachIcon;
@@ -96,7 +99,7 @@ public:
 	int m_freeBlocks;
 	int m_gameBlocks;
 	bool m_isActive;
-	bool m_busy;
+	bool m_listing;
 	int m_nPrefColumn;
 
 	void selectUp();
@@ -141,22 +144,22 @@ public:
 	void StartXboxLiveAccountCopy(int destDevUnit);
 
 protected:
-	int m_language;
-	int m_totalBlocks;
-	float m_scrollTo;
-	XTIME m_timeScroll;
-	int m_curTitleLast;
-	bool m_copying;
-	XTIME m_timeCopyingStarted;
-	bool m_copyError;
-	int m_deletedTitle;
-	XTIME m_timeOfDelete;
-	int m_soundtrackTitle;
-	int m_soundtrackCount;
-	int m_xboxLiveAccountTitle; // 5960: index in title list where Live accounts start (-1 = none)
+	int m_shownLanguage;
+	int m_deviceBlocks;
+	float m_scrollTarget;
+	XTIME m_scrollStart;
+	int m_prevTitle;
+	bool m_copyRunning;
+	XTIME m_copyStart;
+	bool m_copyFailed;
+	int m_fadingTitle;
+	XTIME m_fadeStart;
+	int m_soundtrackRow;
+	int m_soundtracks;
+	int m_liveAccountRow; // 5960: index in title list where Live accounts start (-1 = none)
 
-	int m_cacheTitleSize;
-	int m_cacheSavedGameSize;
+	int m_titleBlocks;
+	int m_itemBlocks;
 
 	void RenderIconRow(D3DXMATRIX *pMatrix, float y, int nTitle, int nFirstSavedGame, int nSavedGameCount);
 	float RenderLoop(bool bRender);
@@ -173,27 +176,27 @@ protected:
 	CStrObject *GetTitleID(int nTitle);
 	CStrObject *GetTitleName(int nTitle);
 
-	DWORD m_lastUpdateTick;
-	int m_periodStatus;
-	TCHAR m_statusText[MAX_TRANSLATE_LEN];
+	DWORD m_dotsTick;
+	int m_dots;
+	TCHAR m_copyingText[MAX_TRANSLATE_LEN];
 
 	DECLARE_NODE_PROPS();
 	DECLARE_NODE_FUNCTIONS();
 
 private:
-	HANDLE m_titlesEnumThread;
-	HANDLE m_savedGameEnumThread;
-	HANDLE m_cancelEvent;
-	HANDLE m_startEvent, m_stopEvent;
-	bool m_savedGameQueryPending;
-	volatile bool m_done;
-	XTIME m_timeToSendEnd;
+	HANDLE m_listThread;
+	HANDLE m_sizeThread;
+	HANDLE m_sizeCancel;
+	HANDLE m_sizeStart, m_sizeIdle;
+	bool m_sizing;
+	volatile bool m_sizeQuit;
+	XTIME m_listEndAt;
 	static void WINAPI TitlesEnumThread(CSavedGameGrid *p);
 	static void WINAPI SavedGameEnumThread(CSavedGameGrid *p);
 
 	// Background delete thread and flag
-	HANDLE m_deleteThread;
-	bool m_deleting;
+	HANDLE m_deleter;
+	bool m_deleteRunning;
 	static void WINAPI DeleteThread(CSavedGameGrid *p);
 
 	// DeleteThread helpers split by case.
@@ -233,6 +236,7 @@ private:
 	bool ResolveDLCFolder(int nTitle, int dlcIndex,
 	                      char *outTitleIDChar, int titleIDBufSize,
 	                      char *outDLCFolder, int dlcFolderBufSize);
+	bool GetDLCImagePath(int nTitle, int dlcIndex, TCHAR *out);
 
 	// Device-unit classification. Dev units 0..7 are physical storage
 	// (Dev0 = HDD, 1..7 = MU slots). Dev unit 8 is the synthetic
@@ -413,422 +417,348 @@ bool CSavedGameGrid::ResolveDLCFolder(int nTitle, int dlcIndex,
 	return FindDLCFolderByIndex(outTitleIDChar, dlcIndex, outDLCFolder, dlcFolderBufSize);
 }
 
-CSavedGameGrid::CSavedGameGrid() : m_language(0),
-								   m_pod(NULL),
-								   m_podRing(NULL),
-								   // Xbox Live Accounts Panel
-								   m_podXboxLiveAccountsPanel(NULL),
-								   m_XboxLiveAccountsIconPanel(NULL),
-								   m_iconBumpRing(NULL),
-								   m_iconArrow(NULL),
-								   m_iconCheck(NULL),
-								   m_curGridItem(-1),
+// =============================================================================
+// Setup and title access
+// =============================================================================
 
-								   m_podSavePanel(NULL),
-								   m_podSoundtrackPanel(NULL),
-								   m_podHilite(NULL),
-								   m_MUheader(NULL),
-								   m_MUhiliteHeader(NULL),
-								   m_firstMURow(NULL),
-								   m_header(NULL),
-								   m_hiliteHeader(NULL),
-								   m_firstRow(NULL),
-								   m_secondRow(NULL),
-								   m_otherRow(NULL),
-								   m_moreUp(NULL),
-								   m_moreDown(NULL),
-								   m_renderIcons(true),
-								   m_iconsPerRow(4),
-								   m_scroll(0.0f),
-								   m_curTitle(-1),
-								   m_curTitleCache(-1),
-								   m_curGridItemCache(-1),
-								   m_smallIcon(NULL),
-								   m_SavedIconPanel(NULL),
-								   m_SoundtrackIconPanel(NULL),
-								   m_iconRing(NULL),
-								   m_smallIconHilite(NULL),
-								   m_smallIconSpacing(1.0f),
-								   m_detachIcon(false),
-								   m_isActive(false),
-								   m_busy(false),
-								   m_deleteThread(NULL),
-								   m_deleting(false),
-								   m_titlesEnumThread(NULL),
-								   m_savedGameEnumThread(NULL),
-								   m_cacheSavedGameSize(-1),
-								   m_cacheTitleSize(-1),
-								   m_savedGameQueryPending(false),
-								   m_done(false),
-								   m_copying(false),
-								   m_timeCopyingStarted(0.0f),
-								   m_curDevUnit(-1),
-								   m_iconRowScroll(0),
-								   m_nPrefColumn(-1)
+// CSavedGameGrid::CSavedGameGrid
+// Reconstructed from 5960 retail XBE @ 0x47320. Every node pointer null,
+// icons rendered four to a row, no device, title or item picked, sizes and
+// counts unknown (-1), no scroll. Three events (start auto reset, stop and
+// cancel manual reset) and the size worker thread are made up front.
+// Theseus adds the focused pod matrix cache and the DLC count cache.
+CSavedGameGrid::CSavedGameGrid()
 {
-	m_scrollTo = 0.0f;
-	m_timeScroll = 0.0f;
-	m_curTitleLast = -1;
-	m_totalBlocks = -1;
+	m_pod = m_podRing = m_podSavePanel = NULL;
+	m_podXboxLiveAccountsPanel = m_XboxLiveAccountsIconPanel = NULL;
+	m_iconBumpRing = m_iconArrow = m_iconCheck = NULL;
+	m_podSoundtrackPanel = m_podHilite = NULL;
+	m_MUheader = m_MUhiliteHeader = m_firstMURow = NULL;
+	m_header = m_hiliteHeader = NULL;
+	m_firstRow = m_secondRow = m_otherRow = NULL;
+	m_smallIcon = m_SavedIconPanel = m_SoundtrackIconPanel = NULL;
+	m_iconRing = m_smallIconHilite = NULL;
+	m_moreUp = m_moreDown = NULL;
+
+	m_renderIcons = true;
+	m_iconsPerRow = 4;
+	m_smallIconSpacing = 1.0f;
+	m_detachIcon = false;
+	m_isActive = false;
+	m_listing = false;
+
+	m_curDevUnit = -1;
+	m_curTitle = -1;
+	m_sizedTitle = -1;
+	m_prevTitle = -1;
+	m_curGridItem = -1;
+	m_sizedItem = -1;
+	m_nPrefColumn = -1;
+	m_iconRowScroll = 0;
+	m_scroll = 0.0f;
+	m_scrollTarget = 0.0f;
+	m_scrollStart = 0.0f;
+
+	m_shownLanguage = 0;
+	m_deviceBlocks = -1;
 	m_freeBlocks = -1;
 	m_gameBlocks = -1;
-	m_deletedTitle = -1;
-	m_timeOfDelete = 0.0f;
-	m_soundtrackTitle = -1;
-	m_soundtrackCount = 0;
-	m_xboxLiveAccountTitle = -1;
+	m_titleBlocks = -1;
+	m_itemBlocks = -1;
+
+	m_copyRunning = false;
+	m_copyStart = 0.0f;
+	m_deleteRunning = false;
+	m_deleter = NULL;
+	m_fadingTitle = -1;
+	m_fadeStart = 0.0f;
+
+	m_soundtrackRow = -1;
+	m_soundtracks = 0;
+	m_liveAccountRow = -1;
+
 	m_focusPodMatrixValid = false;
 	D3DXMatrixIdentity(&m_focusPodMatrix);
 	m_dlcCountCacheSize = 0;
 
-	VERIFY(m_startEvent = CreateEvent(0, FALSE, FALSE, 0));
-	VERIFY(m_stopEvent = CreateEvent(0, TRUE, FALSE, 0));
-	VERIFY(m_cancelEvent = CreateEvent(0, TRUE, FALSE, 0));
-	VERIFY(m_savedGameEnumThread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)SavedGameEnumThread, (LPVOID)this, 0, 0));
+	m_listThread = NULL;
+	m_sizing = false;
+	m_sizeQuit = false;
+	m_sizeStart = CreateEvent(0, FALSE, FALSE, 0);
+	m_sizeIdle = CreateEvent(0, TRUE, FALSE, 0);
+	m_sizeCancel = CreateEvent(0, TRUE, FALSE, 0);
+	m_sizeThread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)SavedGameEnumThread, (LPVOID)this, 0, 0);
 }
 
+// CSavedGameGrid::~CSavedGameGrid
+// Reconstructed from 5960 retail XBE @ 0x47520. Releases the 25 nodes the
+// script handed it. If a size query is running the worker is told to quit
+// and cancel; then it's waited for and the events and thread closed.
 CSavedGameGrid::~CSavedGameGrid()
 {
-	if (m_pod != NULL)
-		m_pod->Release();
-
-	if (m_podRing != NULL)
-		m_podRing->Release();
-
-	// Xbox Live Accounts Panel
-	if (m_podXboxLiveAccountsPanel != NULL)
-		m_podXboxLiveAccountsPanel->Release();
-	if (m_XboxLiveAccountsIconPanel != NULL)
-		m_XboxLiveAccountsIconPanel->Release();
-	if (m_iconBumpRing != NULL)
-		m_iconBumpRing->Release();
-	if (m_iconArrow != NULL)
-		m_iconArrow->Release();
-	if (m_iconCheck != NULL)
-		m_iconCheck->Release();
-
-	if (m_podSavePanel != NULL)
-		m_podSavePanel->Release();
-
-	if (m_podSoundtrackPanel != NULL)
-		m_podSoundtrackPanel->Release();
-
-	if (m_podHilite != NULL)
-		m_podHilite->Release();
-
-	if (m_MUheader != NULL)
-		m_MUheader->Release();
-
-	if (m_MUhiliteHeader != NULL)
-		m_MUhiliteHeader->Release();
-
-	if (m_firstMURow != NULL)
-		m_firstMURow->Release();
-
-	if (m_header != NULL)
-		m_header->Release();
-
-	if (m_hiliteHeader != NULL)
-		m_hiliteHeader->Release();
-
-	if (m_firstRow != NULL)
-		m_firstRow->Release();
-
-	if (m_secondRow != NULL)
-		m_secondRow->Release();
-
-	if (m_otherRow != NULL)
-		m_otherRow->Release();
-
-	if (m_smallIcon != NULL)
-		m_smallIcon->Release();
-
-	if (m_SavedIconPanel != NULL)
-		m_SavedIconPanel->Release();
-
-	if (m_SoundtrackIconPanel != NULL)
-		m_SoundtrackIconPanel->Release();
-
-	if (m_iconRing != NULL)
-		m_iconRing->Release();
-
-	if (m_smallIconHilite != NULL)
-		m_smallIconHilite->Release();
-
-	if (m_moreUp != NULL)
-		m_moreUp->Release();
-
-	if (m_moreDown != NULL)
-		m_moreDown->Release();
-
-	// Tear down the background enumeration thread before closing its events.
-	if (m_savedGameQueryPending)
+	CNode* held[] =
 	{
-		m_done = true;
-		SetEvent(m_cancelEvent);
+		m_pod, m_podRing,
+		m_podXboxLiveAccountsPanel, m_XboxLiveAccountsIconPanel, m_iconBumpRing, m_iconArrow, m_iconCheck,
+		m_podSavePanel, m_podSoundtrackPanel, m_podHilite,
+		m_MUheader, m_MUhiliteHeader, m_firstMURow, m_header, m_hiliteHeader,
+		m_firstRow, m_secondRow, m_otherRow,
+		m_smallIcon, m_SavedIconPanel, m_SoundtrackIconPanel, m_iconRing, m_smallIconHilite,
+		m_moreUp, m_moreDown,
+	};
+	for (int i = 0; i < (int)countof(held); i++)
+	{
+		if (held[i] != NULL)
+			held[i]->Release();
 	}
 
-	WaitForSingleObject(m_savedGameEnumThread, INFINITE);
-
-	VERIFY(CloseHandle(m_startEvent));
-	VERIFY(CloseHandle(m_stopEvent));
-	VERIFY(CloseHandle(m_cancelEvent));
-	VERIFY(CloseHandle(m_savedGameEnumThread));
+	if (m_sizing)
+	{
+		m_sizeQuit = true;
+		SetEvent(m_sizeCancel);
+	}
+	WaitForSingleObject(m_sizeThread, INFINITE);
+	CloseHandle(m_sizeStart);
+	CloseHandle(m_sizeIdle);
+	CloseHandle(m_sizeCancel);
+	CloseHandle(m_sizeThread);
 }
 
+// Whether a title index is a game rather than the soundtrack row.
+#define IS_GAME_ROW(n) (m_soundtrackRow < 0 || (n) < m_soundtrackRow)
+
+// CSavedGameGrid::GetTitleCount   [script fn 'GetTitleCount', FND 0x00187998, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x476f0. The device's titles, plus
+// one soundtrack row after them on the hard drive when there are any
+// soundtracks. 5960 also adds a Live accounts row; Theseus keeps those on
+// the copy destination view instead.
 int CSavedGameGrid::GetTitleCount()
 {
-	ASSERT(IsValidDevUnit());
+	int titles = g_titles[m_curDevUnit].GetTitleCount();
 
-	int nTitleCount = g_titles[m_curDevUnit].GetTitleCount();
-	if (IsHDD())
-	{
-		m_soundtrackCount = GetSoundtrackCount();
-		m_soundtrackTitle = nTitleCount;
-	}
-	else
-	{
-		m_soundtrackCount = 0;
-		m_soundtrackTitle = -1;
-	}
+	m_soundtracks = IsHDD() ? GetSoundtrackCount() : 0;
+	m_soundtrackRow = IsHDD() ? titles : -1;
 
-	if (IsHDD() && m_soundtrackCount > 0)
-	{
-		ASSERT(nTitleCount == m_soundtrackTitle);
-		nTitleCount += 1;
-	}
-
-	return nTitleCount;
+	if (IsHDD() && m_soundtracks > 0)
+		titles++;
+	return titles;
 }
 
+// Blocks a title row takes: the title's folders, or every soundtrack.
+// 5960 @ 0x477b0.
 inline int CSavedGameGrid::GetTitleTotalBlocks(int nTitle, HANDLE hCancelEvent)
 {
-	ASSERT(IsValidDevUnit());
-
 	if (nTitle < 0)
 		return 0;
-
-	if (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle)
+	if (IS_GAME_ROW(nTitle))
 		return g_titles[m_curDevUnit].GetTitleTotalBlocks(nTitle, hCancelEvent);
-
 	return GetSoundtrackSize(-1);
 }
 
 inline const TCHAR *CSavedGameGrid::GetTitleID2(int nTitle)
 {
-	ASSERT(IsValidDevUnit());
-
-	ASSERT(nTitle >= 0 && (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle));
 	return g_titles[m_curDevUnit].GetTitleID(nTitle);
 }
 
+// CSavedGameGrid::GetTitleID   [script fn 'GetTitleID', FND 0x00187848, sig 4]
+// 5960 @ 0x478d0: the title array's id as a string.
 inline CStrObject *CSavedGameGrid::GetTitleID(int nTitle)
 {
-	ASSERT(nTitle >= 0 && (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle));
 	return new CStrObject(GetTitleID2(nTitle));
 }
 
+// CSavedGameGrid::GetTitleName2(n, out)
+// Reconstructed from 5960 retail XBE @ 0x47970. The device row (-1) is
+// "Xbox Hard Disk", or the memory unit's own name, or failing that
+// "memory unit <port><A|B>" from its slot. The soundtrack row is
+// "Soundtracks"; anything else is the title's name.
 void CSavedGameGrid::GetTitleName2(int nTitle, TCHAR *szBuf)
 {
-	TCHAR sz[MAX_TRANSLATE_LEN];
-	ASSERT(IsValidDevUnit());
+	TCHAR translated[MAX_TRANSLATE_LEN];
 
-	if (nTitle < 0)
+	if (nTitle >= 0)
 	{
-		if (IsHDD())
-			_tcscpy(szBuf, Translate(_T("Xbox Hard Disk"), sz));
+		if (IS_GAME_ROW(nTitle))
+			_tcscpy(szBuf, g_titles[m_curDevUnit].GetTitleName(nTitle));
 		else
-		{
-			FormatDeviceName(m_curDevUnit, szBuf);
-			if (szBuf[0] == 0)
-			{
-				TCHAR ch = _T('B');
-
-				// Generate a name based on location of slot...
-				int nGamePad = (m_curDevUnit + 1) % 2;
-				if (nGamePad)
-					ch = _T('A');
-
-				Translate(_T("memory unit"), sz);
-				swprintf(szBuf, _T("%s %d%c"), sz, (m_curDevUnit / 2) + 1, ch);
-			}
-		}
+			_tcscpy(szBuf, Translate(_T("Soundtracks"), translated));
 		return;
 	}
 
-	if (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle)
+	if (IsHDD())
 	{
-		_tcscpy(szBuf, g_titles[m_curDevUnit].GetTitleName(nTitle));
+		_tcscpy(szBuf, Translate(_T("Xbox Hard Disk"), translated));
 		return;
 	}
 
-	_tcscpy(szBuf, Translate(_T("Soundtracks"), sz));
+	FormatDeviceName(m_curDevUnit, szBuf);
+	if (szBuf[0] != 0)
+		return;
+
+	TCHAR slot = ((m_curDevUnit + 1) % 2) ? _T('A') : _T('B');
+	Translate(_T("memory unit"), translated);
+	swprintf(szBuf, _T("%s %d%c"), translated, m_curDevUnit / 2 + 1, slot);
 }
 
+// CSavedGameGrid::GetTitleName   [script fn 'GetTitleName', FND 0x00187830, sig 4]
+// 5960 @ 0x47ab0.
 inline CStrObject *CSavedGameGrid::GetTitleName(int nTitle)
 {
-	TCHAR szBuf[256];
-	GetTitleName2(nTitle, szBuf);
-	return new CStrObject(szBuf);
+	TCHAR name[256];
+	GetTitleName2(nTitle, name);
+	return new CStrObject(name);
 }
 
 inline const TCHAR *CSavedGameGrid::GetSavedGameID2(int nTitle, int nSavedGame)
 {
-	ASSERT(IsValidDevUnit());
-
-	ASSERT(nTitle >= 0 && (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle));
 	return g_titles[m_curDevUnit].GetSavedGameID(nTitle, nSavedGame);
 }
 
 inline FILETIME CSavedGameGrid::GetSavedGameTime(int nTitle, int nSavedGame)
 {
-	ASSERT(IsValidDevUnit());
-
-	ASSERT(nTitle >= 0 && (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle));
 	return g_titles[m_curDevUnit].GetSavedGameTime(nTitle, nSavedGame);
 }
 
+// CSavedGameGrid::TitlesEnumThread
+// Reconstructed from 5960 retail XBE @ 0x47bb0. Busy while the device's
+// title list is rebuilt; on the hard drive the soundtrack row goes after
+// the titles if there are soundtracks.
 void WINAPI CSavedGameGrid::TitlesEnumThread(CSavedGameGrid *p)
 {
-	p->m_busy = true;
-
-	// Enumerate all titles on current device unit
+	p->m_listing = true;
 	g_titles[p->m_curDevUnit].Update();
 
-	// Also enumerate soundtrack if it's a hard disk
-	if (p->IsHDD() && p->m_soundtrackTitle == -1)
+	if (p->IsHDD() && p->m_soundtrackRow == -1)
 	{
-		int nSoundtrackCount = GetSoundtrackCount();
-		if (nSoundtrackCount > 0)
+		int soundtracks = GetSoundtrackCount();
+		if (soundtracks > 0)
 		{
-			p->m_soundtrackTitle = p->GetTitleCount();
-			p->m_soundtrackCount = nSoundtrackCount;
+			p->m_soundtrackRow = p->GetTitleCount();
+			p->m_soundtracks = soundtracks;
 		}
 	}
-
-	p->m_busy = false;
+	p->m_listing = false;
 }
 
+// CSavedGameGrid::SavedGameEnumThread
+// 5960 @ 0x47c70. Sleeps until Advance asks (start event), signaling stop
+// while it waits, then fills whichever size is missing: the selected save
+// (or soundtrack), else the selected title. The cancel event cuts a count
+// short.
 void WINAPI CSavedGameGrid::SavedGameEnumThread(CSavedGameGrid *p)
 {
-	while (!p->m_done)
+	while (!p->m_sizeQuit)
 	{
-		ASSERT(p->m_startEvent);
-		ASSERT(p->m_stopEvent);
+		SignalObjectAndWait(p->m_sizeIdle, p->m_sizeStart, INFINITE, FALSE);
+		ResetEvent(p->m_sizeIdle);
 
-		SignalObjectAndWait(p->m_stopEvent, p->m_startEvent, INFINITE, FALSE);
-		ResetEvent(p->m_stopEvent);
-
-		ASSERT(!g_titles[p->m_curDevUnit].IsDirty());
-
-		if (p->m_cacheSavedGameSize < 0 && p->m_curTitle >= 0 && p->m_curGridItem >= 0)
+		if (p->m_itemBlocks < 0 && p->m_curTitle >= 0 && p->m_curGridItem >= 0)
 		{
-			if (p->m_soundtrackTitle < 0 || p->m_curTitle < p->m_soundtrackTitle)
+			if (p->m_soundtrackRow >= 0 && p->m_curTitle >= p->m_soundtrackRow)
 			{
-				TCHAR szSavedGameDir[MAX_PATH];
-				if (p->GetSavedGamePath(szSavedGameDir, p->m_curTitle, p->m_curGridItem))
-				{
-					p->m_cacheSavedGameSize = GetDirectoryBlocks(szSavedGameDir, BLOCK_SIZE, true, p->m_cancelEvent);
-				}
-				else
-				{
-					p->m_cacheSavedGameSize = 0;
-				}
+				p->m_itemBlocks = GetSoundtrackSize(p->m_curGridItem);
+				continue;
 			}
-			else
-			{
-				p->m_cacheSavedGameSize = GetSoundtrackSize(p->m_curGridItem);
-			}
+
+			TCHAR dir[MAX_PATH];
+			p->m_itemBlocks = p->GetSavedGamePath(dir, p->m_curTitle, p->m_curGridItem)
+				? GetDirectoryBlocks(dir, BLOCK_SIZE, true, p->m_sizeCancel) : 0;
 		}
-		else if (p->m_cacheTitleSize < 0)
+		else if (p->m_titleBlocks < 0)
 		{
-			p->m_cacheTitleSize = p->GetTitleTotalBlocks(p->m_curTitle, p->m_cancelEvent);
+			p->m_titleBlocks = p->GetTitleTotalBlocks(p->m_curTitle, p->m_sizeCancel);
 		}
 	}
 }
 
+// Theseus's size cache upkeep (5960 does the same work inline in Advance):
+// collect a finished query, drop the sizes the selection change made stale,
+// and start the worker when one is missing.
 void CSavedGameGrid::RefreshSizeCaches()
 {
-	// Drain a completed background size query if one was running.
-	if (m_savedGameQueryPending && WaitForSingleObject(m_stopEvent, 0) == WAIT_OBJECT_0)
-		m_savedGameQueryPending = false;
+	if (m_sizing && WaitForSingleObject(m_sizeIdle, 0) == WAIT_OBJECT_0)
+		m_sizing = false;
 
-	// Detect selection changes and invalidate the affected caches.
-	bool needQuery = false;
-
-	if (m_curGridItem != m_curGridItemCache)
+	bool ask;
+	if (m_curGridItem != m_sizedItem)
 	{
-		m_curGridItemCache = m_curGridItem;
-		m_cacheSavedGameSize = -1;
-		needQuery = true;
+		m_sizedItem = m_curGridItem;
+		m_itemBlocks = -1;
+		ask = true;
 	}
-	else if (m_curTitle != m_curTitleCache)
+	else if (m_curTitle != m_sizedTitle)
 	{
-		m_curTitleCache = m_curTitle;
-		m_curGridItemCache = m_curGridItem;
-		m_cacheTitleSize = -1;
-		m_cacheSavedGameSize = -1;
-		needQuery = true;
+		m_sizedTitle = m_curTitle;
+		m_sizedItem = m_curGridItem;
+		m_titleBlocks = -1;
+		m_itemBlocks = -1;
+		ask = true;
 	}
-	else if (!m_savedGameQueryPending && (m_cacheTitleSize < 0 || m_cacheSavedGameSize < 0))
+	else
 	{
-		needQuery = true;
+		ask = !m_sizing && (m_titleBlocks < 0 || m_itemBlocks < 0);
 	}
 
-	// Kick off a new background query if there's a missing cache and a
-	// real title to query.
-	if (!needQuery || m_curTitle < 0)
+	if (!ask || m_curTitle < 0)
+		return;
+	if (m_titleBlocks >= 0 && (m_itemBlocks >= 0 || m_curGridItem < 0))
 		return;
 
-	const bool wantTitleSize = (m_cacheTitleSize < 0);
-	const bool wantSaveSize = (m_cacheSavedGameSize < 0 && m_curGridItem >= 0);
-	if (!wantTitleSize && !wantSaveSize)
-		return;
-
-	// Cancel any in-flight query before starting the new one.
-	if (m_savedGameQueryPending)
-		SignalObjectAndWait(m_cancelEvent, m_stopEvent, INFINITE, FALSE);
-
-	ResetEvent(m_cancelEvent);
-	SetEvent(m_startEvent);
-	m_savedGameQueryPending = true;
+	if (m_sizing)
+		SignalObjectAndWait(m_sizeCancel, m_sizeIdle, INFINITE, FALSE);
+	ResetEvent(m_sizeCancel);
+	SetEvent(m_sizeStart);
+	m_sizing = true;
 }
 
+// From the end of 5960's Advance (0x47e50): the device's size and free
+// space in blocks, rounded up, less the root folder's block. A failed
+// query reads as one block, none free. A change (or a new language) is
+// announced with OnTotalFreeChanged and OnSelChange.
 void CSavedGameGrid::RefreshDiskFreeSpace()
 {
 #ifdef _XBOX
-	FSCHAR path[MAX_PATH];
-	Ansi(path, g_titles[m_curDevUnit].GetUData(), MAX_PATH);
+	FSCHAR root[MAX_PATH];
+	Ansi(root, g_titles[m_curDevUnit].GetUData(), MAX_PATH);
 #else
-	const FSCHAR *path = g_titles[m_curDevUnit].GetUData();
+	const FSCHAR *root = g_titles[m_curDevUnit].GetUData();
 #endif
 
-	ULARGE_INTEGER availBytes, totalBytes, freeBytes;
-	if (!TheseusGetDiskFreeSpaceEx(path, &availBytes, &totalBytes, &freeBytes))
+	ULARGE_INTEGER avail, total, free;
+	if (!TheseusGetDiskFreeSpaceEx(root, &avail, &total, &free))
 	{
-		// Treat query failures as a "full empty disk" so the UI shows
-		// 0 free instead of stale values from the previous device.
-		freeBytes.QuadPart = 0;
-		totalBytes.QuadPart = BLOCK_SIZE;
-		TRACE(_T("GetDiskFreeSpaceEx %s failed: %d\n"), g_titles[m_curDevUnit].GetUData(), GetLastError());
+		free.QuadPart = 0;
+		total.QuadPart = BLOCK_SIZE;
 	}
 
-	int totalBlocks = (int)((totalBytes.QuadPart + BLOCK_SIZE - 1) / BLOCK_SIZE);
-	int freeBlocks  = (int)((freeBytes.QuadPart + BLOCK_SIZE - 1) / BLOCK_SIZE);
-
-	// One block is always consumed by the volume root directory.
-	totalBlocks -= 1;
-
-	if (totalBlocks == m_totalBlocks && freeBlocks == m_freeBlocks && g_nCurLanguage == m_language)
+	int totalBlocks = (int)((total.QuadPart + BLOCK_SIZE - 1) / BLOCK_SIZE) - 1;
+	int freeBlocks = (int)((free.QuadPart + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	if (totalBlocks == m_deviceBlocks && freeBlocks == m_freeBlocks && g_nCurLanguage == m_shownLanguage)
 		return;
 
-	m_language = g_nCurLanguage;
-	m_totalBlocks = totalBlocks;
+	m_shownLanguage = g_nCurLanguage;
+	m_deviceBlocks = totalBlocks;
 	m_freeBlocks = freeBlocks;
 	CallFunction(this, _T("OnTotalFreeChanged"));
 	CallFunction(this, _T("OnSelChange"));
 }
 
+// Fires OnSelChange and restarts the highlight pulse.
+void CSavedGameGrid::NotifySelectionChanged()
+{
+	CallFunction(this, _T("OnSelChange"));
+	g_pulseStartTime = TheseusGetNow();
+}
+
+// CSavedGameGrid::Advance(seconds)
+// Reconstructed from 5960 retail XBE @ 0x47e50. Nothing without a device or
+// while inactive. A stale title list is rebuilt on a thread between
+// OnUpdatingTitlesBegin and OnUpdatingTitlesEnd (the end held back at least
+// a second; run inline if no thread). A copy reports progress and finishes
+// with OnCopyError or, half a second in at the earliest, OnCopyComplete. A
+// delete finishes with OnDeleteEnd and OnSelChange. A pulled device sends
+// OnDeviceRemoved and drops it. Then sizes and free space are kept current
+// and the list eases toward its scroll target over a quarter second.
 void CSavedGameGrid::Advance(float nSeconds)
 {
 	CNode::Advance(nSeconds);
@@ -836,50 +766,34 @@ void CSavedGameGrid::Advance(float nSeconds)
 	if (m_curDevUnit == -1 || !m_isActive)
 		return;
 
-	ASSERT(IsValidDevUnit());
+	CTitleArray& titles = g_titles[m_curDevUnit];
 
-	// Enumerating all titles in UDATA
-	if (m_titlesEnumThread)
+	if (m_listThread != NULL)
 	{
-		if (TheseusGetNow() > m_timeToSendEnd && WaitForSingleObject(m_titlesEnumThread, 0) == WAIT_OBJECT_0)
-		{
-			VERIFY(CallFunction(this, _T("OnUpdatingTitlesEnd")));
-			VERIFY(CloseHandle(m_titlesEnumThread));
-			m_titlesEnumThread = NULL;
-			InvalidateDLCCache();
-		}
-		else
-		{
+		if (TheseusGetNow() <= m_listEndAt || WaitForSingleObject(m_listThread, 0) != WAIT_OBJECT_0)
 			return;
-		}
+		CallFunction(this, _T("OnUpdatingTitlesEnd"));
+		CloseHandle(m_listThread);
+		m_listThread = NULL;
+		InvalidateDLCCache();
 	}
-	else if (g_titles[m_curDevUnit].IsDirty())
+	else if (titles.IsDirty())
 	{
-		if (!m_titlesEnumThread)
-		{
-			m_soundtrackTitle = -1;
-			m_soundtrackCount = 0;
+		m_soundtrackRow = -1;
+		m_soundtracks = 0;
+		m_listEndAt = TheseusGetNow() + 1.0f;
+		CallFunction(this, _T("OnUpdatingTitlesBegin"));
 
-			m_timeToSendEnd = TheseusGetNow() + 1.0f;
-			VERIFY(CallFunction(this, _T("OnUpdatingTitlesBegin")));
+		m_listThread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)TitlesEnumThread, (LPVOID)this, 0, 0);
+		if (m_listThread != NULL)
+			return;
 
-			m_titlesEnumThread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)TitlesEnumThread, (LPVOID)this, 0, 0);
-
-			// If the CreateThread failed, call it directly
-			if (!m_titlesEnumThread)
-			{
-				TitlesEnumThread(this);
-				VERIFY(CallFunction(this, _T("OnUpdatingTitlesEnd")));
-				InvalidateDLCCache();
-				goto next;
-			}
-		}
-		return;
+		TitlesEnumThread(this);
+		CallFunction(this, _T("OnUpdatingTitlesEnd"));
+		InvalidateDLCCache();
 	}
 
-next:
-
-	if (m_copying)
+	if (m_copyRunning)
 	{
 		if (m_copyProgress != theGameCopier.m_progress)
 		{
@@ -889,84 +803,73 @@ next:
 
 		if (theGameCopier.m_error)
 		{
-			m_copying = false;
+			m_copyRunning = false;
 			theGameCopier.Finish();
-			TRACE(_T("OnCopyError\n"));
 			CallFunction(this, _T("OnCopyError"));
 		}
-		else if (theGameCopier.m_done && TheseusGetNow() >= m_timeCopyingStarted + 0.5f)
+		else if (theGameCopier.m_done && TheseusGetNow() >= m_copyStart + 0.5f)
 		{
-			m_copying = false;
+			m_copyRunning = false;
 			theGameCopier.Finish();
-			TRACE(_T("OnCopyComplete\n"));
 			CallFunction(this, _T("OnCopyComplete"));
 		}
 		return;
 	}
 
-	if (m_deleting)
+	if (m_deleteRunning)
 	{
-		ASSERT(m_deleteThread);
-		if (WaitForSingleObject(m_deleteThread, 0) == WAIT_OBJECT_0)
+		if (WaitForSingleObject(m_deleter, 0) == WAIT_OBJECT_0)
 		{
-			CloseHandle(m_deleteThread);
-			m_deleteThread = NULL;
-			m_deleting = false;
+			CloseHandle(m_deleter);
+			m_deleter = NULL;
+			m_deleteRunning = false;
 			InvalidateDLCCache();
-			VERIFY(CallFunction(this, _T("OnDeleteEnd")));
-			VERIFY(CallFunction(this, _T("OnSelChange")));
-			g_pulseStartTime = TheseusGetNow();
+			CallFunction(this, _T("OnDeleteEnd"));
+			NotifySelectionChanged();
 		}
 		return;
 	}
 
-	if (!g_titles[m_curDevUnit].IsValid())
+	if (!titles.IsValid())
 	{
 		CallFunction(this, _T("OnDeviceRemoved"));
 		m_curDevUnit = -1;
 		return;
 	}
-
-	if (g_titles[m_curDevUnit].IsDirty())
-	{
+	if (titles.IsDirty())
 		return;
-	}
 
 	RefreshSizeCaches();
 	RefreshDiskFreeSpace();
 
-	if (m_timeScroll != 0.0f)
+	if (m_scrollStart == 0.0f)
+		return;
+
+	float t = (float)(TheseusGetNow() - m_scrollStart) / 0.25f;
+	if (t >= 1.0f)
 	{
-		float t = (float)(TheseusGetNow() - m_timeScroll) / 0.25f;
-		if (t >= 1.0f)
-		{
-			m_timeScroll = 0.0f;
-			t = 1.0f;
-		}
-
-		float t1 = 1.0f - t;
-		m_scroll = t1 * m_scroll + t * m_scrollTo;
-
-		m_focusPodMatrixValid = false;
+		t = 1.0f;
+		m_scrollStart = 0.0f;
 	}
+	m_scroll = (1.0f - t) * m_scroll + t * m_scrollTarget;
+	m_focusPodMatrixValid = false;
 }
 
+// CSavedGameGrid::GetUpdateString   [script fn 'GetUpdateString', FND 0x001879b0, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x48450: every half second the
+// translated "Copying" gets one more dot, cycling 0..3.
 CStrObject *CSavedGameGrid::GetUpdateString(void)
 {
-	if ((GetTickCount() - m_lastUpdateTick) > 500)
+	if (GetTickCount() - m_dotsTick > 500)
 	{
-		m_lastUpdateTick = GetTickCount();
-		m_periodStatus++;
-		if (m_periodStatus > 3)
-			m_periodStatus = 0;
+		m_dotsTick = GetTickCount();
+		m_dots = (m_dots + 1 > 3) ? 0 : m_dots + 1;
 
-		Translate(_T("Copying"), m_statusText);
-
-		for (int i = 0; i < m_periodStatus; i++)
-			_tcscat(m_statusText, _T("."));
+		Translate(_T("Copying"), m_copyingText);
+		for (int dots = 0; dots < m_dots; dots++)
+			_tcscat(m_copyingText, _T("."));
 	}
-
-	return new CStrObject(m_statusText);
+	return new CStrObject(m_copyingText);
 }
 
 void CSavedGameGrid::InvalidateDLCCache()
@@ -974,252 +877,210 @@ void CSavedGameGrid::InvalidateDLCCache()
 	m_dlcCountCacheSize = 0;
 }
 
+// curDevUnit set: select the device row (the first title on the copy
+// destination view) at once and forget cached sizes. 5960 @ 0x48530.
 void CSavedGameGrid::OnDevUnitChanged(int newDevUnit)
 {
 	m_curDevUnit = newDevUnit;
-
-	// Focus the first row by default; on the MU selector view focus the
-	// first MU slot instead.
 	SelectTitle(IsMUSelector() ? 0 : -1, true);
-
-	// Cached sizes belong to the previous device; drop them.
-	m_cacheSavedGameSize = -1;
-	m_cacheTitleSize = -1;
+	m_itemBlocks = -1;
+	m_titleBlocks = -1;
 	InvalidateDLCCache();
 }
 
+// isActive cleared on an active grid: cancel a running size query, forget
+// sizes, and (Theseus) flush the texture cache so save icons don't stay.
 void CSavedGameGrid::OnIsActiveChanged(bool active)
 {
-	if (active)
+	if (active || !m_isActive)
 		return;
 
-	// Only run deactivation cleanup on a real active->inactive transition,
-	// not during initial scene setup when isActive is first set to false.
-	if (!m_isActive)
-		return;
-
-	// Going inactive while a query is in flight: cancel it and let the
-	// worker drop back to its idle wait state before we touch the cache.
-	if (m_savedGameQueryPending)
+	if (m_sizing)
 	{
-		SignalObjectAndWait(m_cancelEvent, m_stopEvent, INFINITE, FALSE);
-		m_savedGameQueryPending = false;
+		SignalObjectAndWait(m_sizeCancel, m_sizeIdle, INFINITE, FALSE);
+		m_sizing = false;
 	}
-
-	m_cacheTitleSize = -1;
-	m_cacheSavedGameSize = -1;
-
-	// Flush the texture cache so save game thumbnails don't linger and
-	// consume RAM after we leave the Memory blade.
+	m_titleBlocks = -1;
+	m_itemBlocks = -1;
 	FlushTextureCache();
 }
 
+// CSavedGameGrid::OnSetProperty
+// Reconstructed from 5960 retail XBE @ 0x48530: curDevUnit and curTitle go
+// through their handlers instead of being stored; isActive is watched for
+// going off.
 bool CSavedGameGrid::OnSetProperty(const PRD *pprd, const void *pvValue)
 {
-	const int offset = PTR2INT(pprd->pbOffset);
+	int field = PTR2INT(pprd->pbOffset);
 
-	if (offset == offsetof(m_curDevUnit))
+	if (field == offsetof(m_curDevUnit))
 	{
-		OnDevUnitChanged(*(int *)pvValue);
+		OnDevUnitChanged(*(const int *)pvValue);
 		return false;
 	}
-	if (offset == offsetof(m_curTitle))
+	if (field == offsetof(m_curTitle))
 	{
-		SelectTitle(*(int *)pvValue);
+		SelectTitle(*(const int *)pvValue);
 		return false;
 	}
-	if (offset == offsetof(m_isActive))
-	{
-		OnIsActiveChanged(*(bool *)pvValue);
-	}
-
+	if (field == offsetof(m_isActive))
+		OnIsActiveChanged(*(const bool *)pvValue);
 	return true;
 }
 
+// =============================================================================
+// Drawing
+// =============================================================================
+
+// Draws one node under an extra transform.
 static void RenderNodeAt(CNode *pNode, D3DXMATRIX *pMatrix)
 {
 	if (pNode == NULL)
 		return;
-
 	TheseusPushWorld();
 	TheseusMultWorld(pMatrix);
-
 	TheseusUpdateWorld();
-
 	pNode->Render();
-
 	TheseusPopWorld();
 }
 
+// Theseus: the ContentImage.xbx of a title's Nth DLC, false when there's
+// no such folder.
+bool CSavedGameGrid::GetDLCImagePath(int nTitle, int dlcIndex, TCHAR *out)
+{
+	char titleID[9];
+	char folder[17];
+	if (!ResolveDLCFolder(nTitle, dlcIndex, titleID, sizeof(titleID), folder, sizeof(folder)))
+		return false;
+
+	char path[MAX_PATH];
+	_snprintf(path, MAX_PATH, "E:\\TDATA\\%s\\$c\\%s\\ContentImage.xbx", titleID, folder);
+	MultiByteToWideChar(CP_ACP, 0, path, -1, out, MAX_PATH);
+	return true;
+}
+
+// CSavedGameGrid::RenderIconRow(parent, y, title, first, count)
+// Reconstructed from 5960 retail XBE @ 0x48690. One row of up to
+// iconsPerRow small icons starting at item first, spaced smallIconSpacing
+// apart. A save shows its image through SavedIconPanel, a soundtrack the
+// soundtrack icon through SoundtrackIconPanel. The selected item gets the
+// ring unless its icon is lifted out. Theseus: items past the saves are
+// DLC, drawn from the content's image with a check mark.
 void CSavedGameGrid::RenderIconRow(D3DXMATRIX *pMatrix, float y, int nTitle, int nFirstSavedGame, int nSavedGames)
 {
+	if (m_smallIcon == NULL || nTitle < 0)
+		return;
+
+	int end = nFirstSavedGame + m_iconsPerRow;
+	if (end > nSavedGames)
+		end = nSavedGames;
+
 	bool isDLC = false;
-	if (m_smallIcon == NULL)
-		return;
-
-	if (nTitle < 0)
-	{
-		// Device-level row (memory unit selector); no icon row to draw.
-		return;
-	}
-
-	int nLim = nFirstSavedGame + m_iconsPerRow;
-	if (nLim > nSavedGames)
-		nLim = nSavedGames;
-
-	ASSERT(nFirstSavedGame == 0 || nFirstSavedGame < nLim);
-
 	float x = 0.0f;
-	for (int i = nFirstSavedGame; i < nLim; i += 1)
+	for (int item = nFirstSavedGame; item < end; item++, x += m_smallIconSpacing)
 	{
-		D3DXMATRIX mat2;
-		D3DXMatrixTranslation(&mat2, x, y, 0.0f);
-		D3DXMatrixMultiply(&mat2, pMatrix, &mat2);
+		D3DXMATRIX at;
+		D3DXMatrixTranslation(&at, x, y, 0.0f);
+		D3DXMatrixMultiply(&at, pMatrix, &at);
 
-		TCHAR szBuf[MAX_PATH];
-		if (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle)
+		TCHAR image[MAX_PATH];
+		if (IS_GAME_ROW(nTitle))
 		{
-			int nSavedCount = GetSavedGameCount(nTitle);
-			if (i < nSavedCount)
-			{
-				g_titles[m_curDevUnit].GetSavedGameImageName(nTitle, i, szBuf);
-			}
+			int saves = GetSavedGameCount(nTitle);
+			if (item < saves)
+				g_titles[m_curDevUnit].GetSavedGameImageName(nTitle, item, image);
+			else if (GetDLCImagePath(nTitle, item - saves, image))
+				isDLC = true;
 			else
-			{
-				// DLC item: load the Nth DLC folder's ContentImage.xbx
-				// (small icon variant), or fall back to the placeholder.
-				char titleIDChar[9];
-				char dlcFolder[17];
-				if (ResolveDLCFolder(nTitle, i - nSavedCount,
-				                     titleIDChar, sizeof(titleIDChar),
-				                     dlcFolder, sizeof(dlcFolder)))
-				{
-					char dlcImagePath[MAX_PATH];
-					_snprintf(dlcImagePath, MAX_PATH, "E:\\TDATA\\%s\\$c\\%s\\ContentImage.xbx",
-					          titleIDChar, dlcFolder);
-					MultiByteToWideChar(CP_ACP, 0, dlcImagePath, -1, szBuf, MAX_PATH);
-					isDLC = true; // show m_iconCheck overlay
-				}
-				else
-				{
-					_tcscpy(szBuf, _T("dlcitem64.xbx"));
-				}
-			}
+				_tcscpy(image, _T("dlcitem64.xbx"));
 
-			g_szCurTitleImage = szBuf;
-			RenderNodeAt(m_SavedIconPanel, &mat2);
+			g_szCurTitleImage = image;
+			RenderNodeAt(m_SavedIconPanel, &at);
 		}
-		else // is a soundtrack
+		else
 		{
-			_tcscpy(szBuf, _T("soundtracksave64.tga"));
-			g_szCurTitleImage = szBuf;
-			RenderNodeAt(m_SoundtrackIconPanel, &mat2);
+			_tcscpy(image, _T("soundtracksave64.tga"));
+			g_szCurTitleImage = image;
+			RenderNodeAt(m_SoundtrackIconPanel, &at);
 		}
-
 		g_szCurTitleImage = NULL;
 
-		if (!m_detachIcon && m_smallIconHilite != NULL && nTitle == m_curTitle && i == m_curGridItem)
-			RenderNodeAt(m_iconRing, &mat2);
-		if (isDLC && m_iconCheck)
-			RenderNodeAt(m_iconCheck, &mat2);
-		x += m_smallIconSpacing;
+		if (!m_detachIcon && m_smallIconHilite != NULL && nTitle == m_curTitle && item == m_curGridItem)
+			RenderNodeAt(m_iconRing, &at);
+		if (isDLC && m_iconCheck != NULL)
+			RenderNodeAt(m_iconCheck, &at);
 	}
 }
 
+// The big icon on a title's pod: the memory unit for the device row, the
+// soundtrack art, the lifted item's own image while an icon is detached,
+// else the title's TitleImage.xbx or the Xbox logo. (5960 RenderLoop,
+// 0x48910; the DLC images are Theseus's.)
 void CSavedGameGrid::ResolveTitlePodImageName(int nTitle, TCHAR *outBuf)
 {
-	// Memory unit row.
 	if (nTitle == -1)
 	{
 		_tcscpy(outBuf, _T("memoryUnit128.tga"));
 		return;
 	}
-
-	// Soundtrack row sits at the end of the title list on HDD.
-	if (m_soundtrackTitle >= 0 && nTitle >= m_soundtrackTitle)
+	if (!IS_GAME_ROW(nTitle))
 	{
 		_tcscpy(outBuf, _T("soundtracksave3.tga"));
 		return;
 	}
 
-	// Game title with detached icon: the lifted pod shows the icon for
-	// whichever grid item is currently selected (saved game or DLC).
 	if (nTitle == m_curTitle && m_detachIcon && m_curGridItem != -1)
 	{
-		const int nSavedGames = GetSavedGameCount(nTitle);
-		const int nDLC = GetDLContentCount(nTitle);
-
-		if (m_curGridItem < nSavedGames)
-		{
+		int saves = GetSavedGameCount(nTitle);
+		int dlc = GetDLContentCount(nTitle);
+		if (m_curGridItem < saves)
 			g_titles[m_curDevUnit].GetSavedGameImageName(nTitle, m_curGridItem, outBuf);
-			return;
-		}
-
-		if (m_curGridItem - nSavedGames < nDLC)
-		{
-			char titleIDChar[9];
-			char dlcFolder[17];
-			if (ResolveDLCFolder(nTitle, m_curGridItem - nSavedGames,
-			                     titleIDChar, sizeof(titleIDChar),
-			                     dlcFolder, sizeof(dlcFolder)))
-			{
-				char contentImagePath[MAX_PATH];
-				_snprintf(contentImagePath, MAX_PATH,
-				          "E:\\TDATA\\%s\\$c\\%s\\ContentImage.xbx",
-				          titleIDChar, dlcFolder);
-				MultiByteToWideChar(CP_ACP, 0, contentImagePath, -1, outBuf, MAX_PATH);
-				return;
-			}
+		else if (m_curGridItem - saves >= dlc)
+			_tcscpy(outBuf, _T("xboxlogo128.xbx"));
+		else if (!GetDLCImagePath(nTitle, m_curGridItem - saves, outBuf))
 			_tcscpy(outBuf, _T("dlcitem128.xbx"));
-			return;
-		}
-
-		// Out-of-range grid item: fall back to the generic logo.
-		_tcscpy(outBuf, _T("xboxlogo128.xbx"));
 		return;
 	}
 
-	// Default: the title's own 128px icon, falling back to the logo if
-	// the title doesn't ship one.
 	MakePath(outBuf, g_titles[m_curDevUnit].GetUData(), GetTitleID2(nTitle));
 	MakePath(outBuf, outBuf, szTitleImageXBX);
 	if (!DoesFileExist(outBuf))
 		_tcscpy(outBuf, _T("xboxlogo128.xbx"));
 }
 
+// A title's pod and its save (or soundtrack) panel. Once the list has
+// settled, the selected pod is drawn from a remembered world matrix so it
+// can be lifted independently of the list, with the ring when the title
+// itself is selected. A title just deleted fades out over a second through
+// the ordinary path. (5960 RenderLoop, 0x48910.)
 void CSavedGameGrid::RenderTitlePodAt(int nTitle, float y, const D3DXMATRIX *parentMat)
 {
 	if (m_pod == NULL)
 		return;
 
-	TCHAR imageName[MAX_PATH];
-	ResolveTitlePodImageName(nTitle, imageName);
-	g_szCurTitleImage = imageName;
+	TCHAR image[MAX_PATH];
+	ResolveTitlePodImageName(nTitle, image);
+	g_szCurTitleImage = image;
 
-	const float effectAlphaSave = g_nEffectAlpha;
+	const float alphaBefore = g_nEffectAlpha;
+	CNode *panel = (nTitle == m_soundtrackRow) ? m_podSoundtrackPanel : m_podSavePanel;
 
-	bool renderNormal = true;
-	bool renderHack = false;
-	bool renderHilite = false;
-	const bool renderSoundtrack = (nTitle == m_soundtrackTitle);
-
-	// Selected pod takes the captured-matrix path so it can lift up
-	// independent of the row scroll position.
-	if (nTitle == m_curTitle && m_scroll == m_scrollTo)
+	bool lifted = false;
+	bool ring = false;
+	bool plain = true;
+	if (nTitle == m_curTitle && m_scroll == m_scrollTarget)
 	{
-		renderNormal = false;
-		renderHack = true;
-		renderHilite = !m_detachIcon && m_podHilite != NULL && m_curGridItem == -1;
+		lifted = true;
+		plain = false;
+		ring = !m_detachIcon && m_podHilite != NULL && m_curGridItem == -1;
 
-		// Mid-delete fade: collapse to the normal pod path with alpha
-		// decay so the pod fades out instead of jumping.
-		if (nTitle > -1 && nTitle == m_deletedTitle)
+		if (nTitle > -1 && nTitle == m_fadingTitle)
 		{
-			const float t = (float)(TheseusGetNow() - m_timeOfDelete) / 1.0f;
+			float t = (float)(TheseusGetNow() - m_fadeStart) / 1.0f;
 			if (t >= 1.0f)
 			{
-				m_timeOfDelete = 0.0f;
-				m_deletedTitle = -1;
+				m_fadeStart = 0.0f;
+				m_fadingTitle = -1;
 				m_focusPodMatrixValid = false;
 			}
 			else
@@ -1227,15 +1088,14 @@ void CSavedGameGrid::RenderTitlePodAt(int nTitle, float y, const D3DXMATRIX *par
 				g_nEffectAlpha *= 1.0f - t;
 				g_szCurTitleImage = NULL;
 				m_focusPodMatrixValid = true;
-				renderHilite = false;
-				renderNormal = true;
+				ring = false;
+				plain = true;
 			}
 		}
 	}
 
-	if (renderHack)
+	if (lifted)
 	{
-		D3DXMATRIX mat;
 		TheseusPushWorld();
 		if (m_focusPodMatrixValid)
 		{
@@ -1244,388 +1104,298 @@ void CSavedGameGrid::RenderTitlePodAt(int nTitle, float y, const D3DXMATRIX *par
 		}
 		else
 		{
-			D3DXMatrixTranslation(&mat, -0.3292f, y, -0.0271f);
-			D3DXMatrixMultiply(&mat, parentMat, &mat);
-			TheseusMultWorld(&mat);
+			D3DXMATRIX at;
+			D3DXMatrixTranslation(&at, -0.3292f, y, -0.0271f);
+			D3DXMatrixMultiply(&at, parentMat, &at);
+			TheseusMultWorld(&at);
 			m_focusPodMatrix = *TheseusGetWorld();
 			m_focusPodMatrixValid = true;
 		}
-
 		TheseusUpdateWorld();
 		m_pod->Render();
-		if (renderSoundtrack)
-			m_podSoundtrackPanel->Render();
-		else
-			m_podSavePanel->Render();
-		if (renderHilite)
+		panel->Render();
+		if (ring)
 			m_podRing->Render();
 		TheseusPopWorld();
 	}
 
-	g_nEffectAlpha = effectAlphaSave;
-	g_szCurTitleImage = imageName;
+	g_nEffectAlpha = alphaBefore;
+	g_szCurTitleImage = image;
 
-	if (renderNormal)
+	if (plain)
 	{
-		D3DXMATRIX mat;
-		D3DXMatrixTranslation(&mat, -0.3292f, y, -0.0271f);
-		D3DXMatrixMultiply(&mat, parentMat, &mat);
-		RenderNodeAt(m_pod, &mat);
-		if (renderSoundtrack)
-			RenderNodeAt(m_podSoundtrackPanel, &mat);
-		else
-			RenderNodeAt(m_podSavePanel, &mat);
+		D3DXMATRIX at;
+		D3DXMatrixTranslation(&at, -0.3292f, y, -0.0271f);
+		D3DXMatrixMultiply(&at, parentMat, &at);
+		RenderNodeAt(m_pod, &at);
+		RenderNodeAt(panel, &at);
 	}
-
 	g_szCurTitleImage = NULL;
 }
 
+// CSavedGameGrid::Render
+// Reconstructed from 5960 retail XBE @ 0x488a0: only with the row nodes
+// set, a mounted and current device, active and not rebuilding.
 void CSavedGameGrid::Render()
 {
 	if (m_header == NULL || m_firstRow == NULL || m_secondRow == NULL || m_otherRow == NULL)
 		return;
-
 	if (m_curDevUnit == -1 || !g_titles[m_curDevUnit].IsValid() || g_titles[m_curDevUnit].IsDirty())
 		return;
-
-	if (!m_isActive || m_busy)
+	if (!m_isActive || m_listing)
 		return;
-
 	RenderLoop(true);
 }
 
+// CSavedGameGrid::RenderLoop(render)
+// Reconstructed from 5960 retail XBE @ 0x48910. Lays the list out top
+// down from the scroll offset in a frame turned a quarter turn about -x
+// and scaled 0.05942: the device row first (not on the copy destination
+// view), then each title. A title is its pod, a header (highlighted when
+// selected) with its name tinted gray when selected and green otherwise,
+// and up to three icon rows with more-up and more-down arrows. Rows above
+// the selected one show their last icon rows. Unselected titles fade to
+// half strength as the selection moves. With render off it only measures:
+// the offset of the selected title, which SelectTitle scrolls to. Drawing
+// stops below -1.25. Spacing constants and the layout are in
+// docs/decomp/SavedGameGrid.md.
 float CSavedGameGrid::RenderLoop(bool bRender)
 {
-	D3DXMATRIX mat, mat2, scrollMat;
-	D3DXVECTOR3 v(-1.0f, 0.0f, 0.0f);
-	D3DXMatrixRotationAxis(&mat, &v, -1.571f);
-	D3DXMatrixScaling(&mat2, 0.05942f, 0.05942f, 0.05942f);
-	D3DXMatrixMultiply(&mat, &mat, &mat2);
+	D3DXMATRIX frame, at, upArrow;
+	D3DXVECTOR3 axis(-1.0f, 0.0f, 0.0f);
+	D3DXMatrixRotationAxis(&frame, &axis, -1.571f);
+	D3DXMatrixScaling(&at, 0.05942f, 0.05942f, 0.05942f);
+	D3DXMatrixMultiply(&frame, &frame, &at);
 
+	const float bottom = -1.25f;
 	float y = m_scroll;
-	float yLimit = -1.25f;
+	int titleCount = GetTitleCount();
 
-	int nTitleCount = GetTitleCount();
-
-	int initLoop;
-	if (IsMUSelector()) // do we render the memory panel at the top of the memory list
-		initLoop = 0;
-	else
-		initLoop = -1;
-
-	int nTitle;
-	for (nTitle = initLoop; nTitle < nTitleCount && (!bRender || y > yLimit); nTitle += 1)
+	for (int nTitle = IsMUSelector() ? 0 : -1; nTitle < titleCount && (!bRender || y > bottom); nTitle++)
 	{
-		float nEffectAlphaSave = g_nEffectAlpha;
-		int nSavedGames = 0;
+		const float alphaBefore = g_nEffectAlpha;
 
-		// Check how many saved games (or soundtracks) this title has
+		int items = 0;
 		if (nTitle >= 0)
-		{
-			if (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle)
-			{
-				nSavedGames = GetSavedGameCount(nTitle);
-				nSavedGames += GetDLContentCount(nTitle);
-			}
-			else
-			{
-				nSavedGames = m_soundtrackCount;
-			}
-		}
+			items = IS_GAME_ROW(nTitle) ? GetSavedGameCount(nTitle) + GetDLContentCount(nTitle) : m_soundtracks;
+		int rows = (items + m_iconsPerRow - 1) / m_iconsPerRow;
 
-		int nRowCount = (nSavedGames + m_iconsPerRow - 1) / m_iconsPerRow;
-
-		int nIconRowScroll = 0;
+		int firstRow = 0;
 		if (nTitle == m_curTitle)
-		{
-			// we keep track of the scroll position for the current title
-			nIconRowScroll = m_iconRowScroll;
-		}
-		else if (nTitle < m_curTitle)
-		{
-			// this title is above the current one; show it scrolled to its bottom
-			nIconRowScroll = nRowCount - VISIBLE_ICON_ROWS;
-			if (nIconRowScroll < 0)
-				nIconRowScroll = 0;
-		}
+			firstRow = m_iconRowScroll;
+		else if (nTitle < m_curTitle && rows > VISIBLE_ICON_ROWS)
+			firstRow = rows - VISIBLE_ICON_ROWS;
 
-		if (bRender)
+		if (!bRender)
 		{
-			float nSelectedAmount = 0.0f;
-			float t = (float)(TheseusGetNow() - m_timeScroll) / 0.25f;
+			if (nTitle == m_curTitle)
+				return y - m_scroll;
+		}
+		else
+		{
+			float t = (float)(TheseusGetNow() - m_scrollStart) / 0.25f;
 			if (t > 1.0f)
 				t = 1.0f;
 
+			float selected = 0.0f;
 			if (nTitle == m_curTitle)
-			{
-				if (m_timeScroll != 0.0f)
-					nSelectedAmount = t;
-				else
-					nSelectedAmount = 1.0f;
-			}
-			else if (nTitle == m_curTitleLast)
-			{
-				if (m_timeScroll != 0.0f)
-					nSelectedAmount = 1.0f - t;
-			}
-
-			g_nEffectAlpha *= 0.5f + (0.5f * nSelectedAmount);
+				selected = (m_scrollStart != 0.0f) ? t : 1.0f;
+			else if (nTitle == m_prevTitle && m_scrollStart != 0.0f)
+				selected = 1.0f - t;
+			g_nEffectAlpha *= 0.5f + (0.5f * selected);
 		}
-		else if (nTitle == m_curTitle)
+
+		bool onScreen = bRender && y - 0.25f < 0.5f;
+
+		if (onScreen)
+			RenderTitlePodAt(nTitle, y, &frame);
+
+		// Header and name.
+		if (onScreen)
 		{
-			return y - m_scroll;
-		}
+			D3DXMatrixTranslation(&at, -0.3292f, y, -0.0271f);
+			D3DXMatrixMultiply(&at, &frame, &at);
+			bool selectedRow = nTitle == m_curTitle;
+			if (nTitle >= 0)
+				RenderNodeAt(selectedRow ? m_hiliteHeader : m_header, &at);
+			else
+				RenderNodeAt(selectedRow ? m_MUhiliteHeader : m_MUheader, &at);
 
-		// Title pod (the orb-and-panel widget for this title row).
+			if (m_renderIcons)
+			{
+				TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+				TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
+				TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+				TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+				TheseusSetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
+				TheseusSetRenderState(D3DRS_TEXTUREFACTOR, selectedRow ? D3DCOLOR_RGBA(170, 170, 170, 255) : D3DCOLOR_RGBA(140, 201, 25, 255));
+
+				D3DXMATRIX textScale;
+				D3DXMatrixScaling(&textScale, 0.06442f, 0.06442f, 0.06442f);
+				D3DXMatrixTranslation(&at, -0.3292f - 0.05942f, y + 0.05942f, -0.0271f + (0.6f * 0.05942f));
+				D3DXMatrixMultiply(&at, &textScale, &at);
+
+				TCHAR name[256];
+				GetTitleName2(nTitle, name);
+				RenderNodeAt(GetTextNode(name, -11.2f), &at);
+			}
+
+			if (firstRow > 0)
+			{
+				D3DXMatrixTranslation(&at, -0.17f, (y - 0.07f), 0.0f);
+				D3DXMatrixMultiply(&upArrow, &frame, &at);
+			}
+		}
+		y -= 0.0092f;
+
+		// First icon row (the device row has its own).
 		if (bRender && y - 0.25f < 0.5f)
-			RenderTitlePodAt(nTitle, y, &mat);
-
-		// Draw header
 		{
-			if (bRender && y - 0.25f < 0.5f)
-			{
-				D3DXMatrixTranslation(&mat2, -0.3292f, y, -0.0271f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-
-				if (nTitle >= 0 && nTitle == m_curTitle) // is a game title or soundtrack
-					RenderNodeAt(m_hiliteHeader, &mat2);
-				else if (nTitle >= 0)
-					RenderNodeAt(m_header, &mat2);
-				else if (nTitle < 0 && nTitle == m_curTitle) // the title is the memory unit
-					RenderNodeAt(m_MUhiliteHeader, &mat2);
-				else if (nTitle < 0)
-					RenderNodeAt(m_MUheader, &mat2);
-
-				// Draw text
-				if (m_renderIcons) // are we on the proper screen?
-				{
-					TheseusSetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-					TheseusSetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TFACTOR);
-					TheseusSetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-					TheseusSetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
-					TheseusSetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_TFACTOR);
-					TheseusSetRenderState(D3DRS_TEXTUREFACTOR, (nTitle == m_curTitle) ? D3DCOLOR_RGBA(170, 170, 170, 255) : D3DCOLOR_RGBA(140, 201, 25, 255));
-
-					D3DXMATRIX mat3;
-					// D3DXMatrixScaling(&mat3, 0.05942f, 0.05942f, 0.05942f);
-					D3DXMatrixScaling(&mat3, 0.06442f, 0.06442f, 0.06442f);
-					D3DXMatrixTranslation(&mat2, -0.3292f - 0.05942f, y + 0.05942f, -0.0271f + (0.6f * 0.05942f));
-					D3DXMatrixMultiply(&mat2, &mat3, &mat2);
-
-					TCHAR szBuf[256];
-					GetTitleName2(nTitle, szBuf);
-					RenderNodeAt(GetTextNode(szBuf, -11.2f), &mat2);
-				}
-
-				if (nIconRowScroll > 0)
-				{
-					// Draw the up arrow
-					D3DXMatrixTranslation(&mat2, -0.17f, (y - 0.07f), 0.0f);
-					D3DXMatrixMultiply(&mat2, &mat, &mat2);
-					scrollMat = mat2;
-					// RenderNodeAt(m_moreUp, &mat2);
-				}
-			}
-
-			y -= 0.0092f;
+			D3DXMatrixTranslation(&at, -0.3292f, y, 0.01144f);
+			D3DXMatrixMultiply(&at, &frame, &at);
+			RenderNodeAt(nTitle >= 0 ? m_firstRow : m_firstMURow, &at);
+			if (firstRow > 0)
+				RenderNodeAt(m_moreUp, &upArrow);
+			RenderIconRow(&frame, y, nTitle, firstRow * m_iconsPerRow, items);
 		}
+		y -= 0.2455f;
 
-		// Draw first icon row
+		if (items > m_iconsPerRow)
 		{
 			if (bRender && y - 0.25f < 0.5f)
 			{
-				D3DXMatrixTranslation(&mat2, -0.3292f, y, 0.01144f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-				if (nTitle >= 0) // is a game title or soundtrack
-					RenderNodeAt(m_firstRow, &mat2);
-				else // the title is a memory unit
-					RenderNodeAt(m_firstMURow, &mat2);
-
-				if (nIconRowScroll > 0)
-				{
-					// Draw the up arrow
-					RenderNodeAt(m_moreUp, &scrollMat);
-				}
-
-				RenderIconRow(&mat, y, nTitle, nIconRowScroll * m_iconsPerRow, nSavedGames);
+				D3DXMatrixTranslation(&at, -0.3301f, y, 0.01144f);
+				D3DXMatrixMultiply(&at, &frame, &at);
+				RenderNodeAt(m_secondRow, &at);
+				RenderIconRow(&frame, y, nTitle, (firstRow + 1) * m_iconsPerRow, items);
 			}
-
-			y -= 0.2455f;
-		}
-
-		if (nSavedGames > m_iconsPerRow)
-		{
-			if (bRender && y - 0.25f < 0.5f)
-			{
-				D3DXMatrixTranslation(&mat2, -0.3301f, y, 0.01144f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-				RenderNodeAt(m_secondRow, &mat2);
-				RenderIconRow(&mat, y, nTitle, (nIconRowScroll + 1) * m_iconsPerRow, nSavedGames);
-			}
-
 			y -= 0.24499f;
 
-			if (nSavedGames > m_iconsPerRow * 2)
+			if (items > m_iconsPerRow * 2)
 			{
-				for (int nRow = 2; nRow < (nRowCount - nIconRowScroll) && nRow < VISIBLE_ICON_ROWS && (!bRender || y > yLimit); nRow += 1)
+				for (int row = 2; row < rows - firstRow && row < VISIBLE_ICON_ROWS && (!bRender || y > bottom); row++)
 				{
 					if (bRender && y - 0.25f < 0.5f)
 					{
-						D3DXMatrixTranslation(&mat2, -0.3412f, y, 0.01144f);
-						D3DXMatrixMultiply(&mat2, &mat, &mat2);
-						RenderNodeAt(m_otherRow, &mat2);
-						if (nRow == VISIBLE_ICON_ROWS - 1 && (nIconRowScroll + nRow) < nRowCount - 1)
+						D3DXMatrixTranslation(&at, -0.3412f, y, 0.01144f);
+						D3DXMatrixMultiply(&at, &frame, &at);
+						RenderNodeAt(m_otherRow, &at);
+						if (row == VISIBLE_ICON_ROWS - 1 && firstRow + row < rows - 1)
 						{
-							D3DXMatrixTranslation(&mat2, -0.17f, (y - 0.015f), 0.0f);
-							D3DXMatrixMultiply(&mat2, &mat, &mat2);
-							RenderNodeAt(m_moreDown, &mat2);
+							D3DXMatrixTranslation(&at, -0.17f, (y - 0.015f), 0.0f);
+							D3DXMatrixMultiply(&at, &frame, &at);
+							RenderNodeAt(m_moreDown, &at);
 						}
-						RenderIconRow(&mat, y, nTitle, (nIconRowScroll + nRow) * m_iconsPerRow, nSavedGames);
+						RenderIconRow(&frame, y, nTitle, (firstRow + row) * m_iconsPerRow, items);
 					}
-
 					y -= 0.24499f;
 				}
 			}
 		}
 
-		// Prepare for next title area
 		y -= 0.09f;
-		g_nEffectAlpha = nEffectAlphaSave;
+		g_nEffectAlpha = alphaBefore;
 	}
 
 	return 0.0f;
 }
 
-void CSavedGameGrid::SelectTitle(int nTitle, bool bInstantScroll /*=false*/)
-{
-	m_curTitleLast = m_curTitle;
-	m_curTitle = nTitle;
+// =============================================================================
+// Selection
+// =============================================================================
 
+// CSavedGameGrid::SelectTitle(n, instant)
+// Reconstructed from 5960 retail XBE @ 0x49410. Remembers the last title
+// and takes the new one (clamped to the list) unless the list is stale.
+// Scrolls so it's at the top, at once or eased from now. Inside the title
+// the item follows the preferred column: none keeps the title itself
+// selected; moving down lands on that column in the first row, moving up
+// on that column in the last row, clamped to the last item, with the icon
+// rows scrolled to show it. 5960 sizes the grid from all of its items;
+// Theseus from the saves alone.
+void CSavedGameGrid::SelectTitle(int nTitle, bool bInstantScroll)
+{
+	m_prevTitle = m_curTitle;
+	m_curTitle = nTitle;
 	if (g_titles[m_curDevUnit].IsDirty())
+		return;
+
+	int titleCount = GetTitleCount();
+	if (m_curTitle >= titleCount)
+		m_curTitle = titleCount - 1;
+
+	int items = GetSavedGameCount(m_curTitle);
+	int rows = (items + m_iconsPerRow - 1) / m_iconsPerRow;
+
+	float target = -RenderLoop(false);
+	if (target != m_scrollTarget)
 	{
+		m_scrollTarget = target;
+		if (bInstantScroll)
+		{
+			m_scroll = target;
+			m_scrollStart = 0.001f;
+		}
+		else
+		{
+			m_scrollStart = TheseusGetNow();
+		}
+	}
+
+	if (m_nPrefColumn != -1)
+		m_nPrefColumn = (m_curGridItem != -1) ? m_curGridItem % m_iconsPerRow : 0;
+
+	if (m_nPrefColumn == -1)
+	{
+		m_curGridItem = -1;
+		m_iconRowScroll = 0;
 		return;
 	}
 
-	/*
-		if (m_curTitle < 0)
-		{
-			m_curTitle = -1;
-			m_curGridItem = -1;
-			m_nPrefColumn = -1;
-			m_scrollTo = 0.0f;
-			m_scroll = 0.0f;
-			m_timeScroll = 0.0f;
-			m_iconRowScroll = 0;
-			m_detachIcon = false;
-			m_totalBlocks = -1;
-			m_freeBlocks = -1;
-		}
-		else
-	*/
+	if (m_curTitle > m_prevTitle)
 	{
-		int nTitleCount = GetTitleCount();
-		if (m_curTitle >= nTitleCount)
-			m_curTitle = nTitleCount - 1;
-
-		int nSavedGames = GetSavedGameCount(m_curTitle);
-		int nRowCount = (nSavedGames + m_iconsPerRow - 1) / m_iconsPerRow;
-
-		{
-			float y = -RenderLoop(false);
-
-			if (y != m_scrollTo)
-			{
-				if (bInstantScroll)
-				{
-					m_scrollTo = m_scroll = y;
-					m_timeScroll = 0.001f;
-				}
-				else
-				{
-					m_scrollTo = y;
-					m_timeScroll = TheseusGetNow();
-				}
-			}
-		}
-
-		// Select the right save icon based on the preferred column and
-		// the direction the selection moved..
-		if ((m_nPrefColumn > -1) && (m_curGridItem != -1))
-		{
-			m_nPrefColumn = m_curGridItem % m_iconsPerRow;
-		}
-		else if (m_nPrefColumn != -1)
-		{
-			m_nPrefColumn = 0;
-		}
-
-		if (m_nPrefColumn == -1)
-		{
-			m_curGridItem = -1;
-			m_iconRowScroll = 0;
-		}
-		else
-		{
-			if (m_curTitle > m_curTitleLast)
-			{
-				m_curGridItem = m_nPrefColumn;
-
-				if (m_curGridItem > nSavedGames - 1)
-					m_curGridItem = nSavedGames - 1;
-
-				m_iconRowScroll = 0;
-			}
-			else
-			{
-				if (nSavedGames == 0)
-				{
-					m_curGridItem = -1;
-				}
-				else
-				{
-					m_curGridItem = m_nPrefColumn + (nRowCount - 1) * m_iconsPerRow;
-					ASSERT(m_curGridItem >= 0);
-					if (m_curGridItem > nSavedGames - 1)
-						m_curGridItem = nSavedGames - 1;
-				}
-
-				m_iconRowScroll = nRowCount - VISIBLE_ICON_ROWS;
-				if (m_iconRowScroll < 0)
-					m_iconRowScroll = 0;
-			}
-		}
+		m_curGridItem = m_nPrefColumn;
+		if (m_curGridItem > items - 1)
+			m_curGridItem = items - 1;
+		m_iconRowScroll = 0;
+		return;
 	}
+
+	if (items == 0)
+	{
+		m_curGridItem = -1;
+	}
+	else
+	{
+		m_curGridItem = m_nPrefColumn + (rows - 1) * m_iconsPerRow;
+		if (m_curGridItem > items - 1)
+			m_curGridItem = items - 1;
+	}
+	m_iconRowScroll = rows > VISIBLE_ICON_ROWS ? rows - VISIBLE_ICON_ROWS : 0;
 }
 
-void CSavedGameGrid::NotifySelectionChanged()
-{
-	CallFunction(this, _T("OnSelChange"));
-	g_pulseStartTime = TheseusGetNow();
-}
+// Saves plus DLC under a title (Theseus counts DLC as grid items).
+#define GRID_ITEMS(n) (GetSavedGameCount(n) + GetDLContentCount(n))
 
+// CSavedGameGrid::selectUp   [script fn 'selectUp', FND 0x00187698, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x49590. Up a row inside the grid
+// (keeping the column, scrolling the rows if needed); from the top row or
+// the title itself, the title above. Either way OnSelChange fires and the
+// column is remembered.
 void CSavedGameGrid::selectUp()
 {
-	// First try moving up within the current title's icon grid.
-	if (m_curGridItem != -1)
+	if (m_curGridItem != -1 && m_curGridItem / m_iconsPerRow > 0)
 	{
-		const int curRow = m_curGridItem / m_iconsPerRow;
-		if (curRow > 0)
-		{
-			const int newRow = curRow - 1;
-			m_curGridItem = newRow * m_iconsPerRow + m_nPrefColumn;
-			if (newRow < m_iconRowScroll)
-				m_iconRowScroll = newRow;
-			m_nPrefColumn = m_curGridItem % m_iconsPerRow;
-			NotifySelectionChanged();
-			return;
-		}
+		int row = m_curGridItem / m_iconsPerRow - 1;
+		m_curGridItem = row * m_iconsPerRow + m_nPrefColumn;
+		if (row < m_iconRowScroll)
+			m_iconRowScroll = row;
+		m_nPrefColumn = m_curGridItem % m_iconsPerRow;
+		NotifySelectionChanged();
+		return;
 	}
 
-	// At the top of the grid (or no grid item selected): walk up to the
-	// previous title row. The MU selector view starts at row 0 instead
-	// of -1 because there's no "device" pseudo-row above it.
-	const int topRow = IsMUSelector() ? 0 : -1;
-	if (m_curTitle > topRow)
+	if (m_curTitle > (IsMUSelector() ? 0 : -1))
 	{
 		SelectTitle(m_curTitle - 1);
 		NotifySelectionChanged();
@@ -1633,31 +1403,29 @@ void CSavedGameGrid::selectUp()
 	m_nPrefColumn = m_curGridItem % m_iconsPerRow;
 }
 
+// CSavedGameGrid::selectDown   [script fn 'selectDown', FND 0x001876b0, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x49650. Down a row inside the grid
+// (clamped to the last item, scrolling the rows), else the next title.
 void CSavedGameGrid::selectDown()
 {
-	// First try moving down within the current title's icon grid.
 	if (m_curGridItem != -1)
 	{
-		const int totalItems = GetSavedGameCount(m_curTitle) + GetDLContentCount(m_curTitle);
-		const int curRow = m_curGridItem / m_iconsPerRow;
-		const int rowCount = (totalItems + m_iconsPerRow - 1) / m_iconsPerRow;
-
-		if (curRow < rowCount - 1)
+		int items = GRID_ITEMS(m_curTitle);
+		int row = m_curGridItem / m_iconsPerRow;
+		if (row < (items + m_iconsPerRow - 1) / m_iconsPerRow - 1)
 		{
-			const int newRow = curRow + 1;
+			row++;
 			m_curGridItem += m_iconsPerRow;
-			// Bottom row may be partially filled; clamp to last valid item.
-			if (m_curGridItem > totalItems - 1)
-				m_curGridItem = totalItems - 1;
-			if (newRow >= m_iconRowScroll + VISIBLE_ICON_ROWS - 1)
-				m_iconRowScroll = newRow - (VISIBLE_ICON_ROWS - 1);
+			if (m_curGridItem > items - 1)
+				m_curGridItem = items - 1;
+			if (row >= m_iconRowScroll + VISIBLE_ICON_ROWS - 1)
+				m_iconRowScroll = row - (VISIBLE_ICON_ROWS - 1);
 			m_nPrefColumn = m_curGridItem % m_iconsPerRow;
 			NotifySelectionChanged();
 			return;
 		}
 	}
 
-	// At the bottom of the grid: walk down to the next title row.
 	if (m_curTitle < GetTitleCount() - 1)
 	{
 		SelectTitle(m_curTitle + 1);
@@ -1666,102 +1434,77 @@ void CSavedGameGrid::selectDown()
 	m_nPrefColumn = m_curGridItem % m_iconsPerRow;
 }
 
+// CSavedGameGrid::selectLeft   [script fn 'selectLeft', FND 0x001876c8, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x49740: from the first column back
+// out to the title, else one item left. OnSelChange only on a change.
 void CSavedGameGrid::selectLeft()
 {
-	const int oldTitle = m_curTitle;
-	const int oldGridItem = m_curGridItem;
-
+	int before = m_curGridItem;
 	if (m_curGridItem >= 0)
 	{
 		if (m_nPrefColumn == 0)
 		{
-			// Leftmost column: jump out of the grid back to the title orb.
 			m_nPrefColumn = -1;
 			m_curGridItem = -1;
 			m_iconRowScroll = 0;
 		}
 		else
 		{
-			m_curGridItem -= 1;
+			m_curGridItem--;
 			m_nPrefColumn = m_curGridItem % m_iconsPerRow;
 		}
 	}
-
-	if (m_curTitle != oldTitle || m_curGridItem != oldGridItem)
+	if (m_curGridItem != before)
 		NotifySelectionChanged();
 }
 
+// CSavedGameGrid::selectRight   [script fn 'selectRight', FND 0x001876e0, sig 1]
+// Reconstructed from 5960 retail XBE @ 0x497b0: one item right while there
+// is one and the column is under 3, scrolling the rows to keep it shown.
 void CSavedGameGrid::selectRight()
 {
-	const int oldTitle = m_curTitle;
-	const int oldGridItem = m_curGridItem;
-
-	const int totalItems = GetSavedGameCount(m_curTitle) + GetDLContentCount(m_curTitle);
-	if (m_curGridItem < totalItems - 1 && m_nPrefColumn < VISIBLE_ICON_ROWS)
+	int before = m_curGridItem;
+	if (m_curGridItem < GRID_ITEMS(m_curTitle) - 1 && m_nPrefColumn < VISIBLE_ICON_ROWS)
 	{
-		m_curGridItem += 1;
+		m_curGridItem++;
 		m_nPrefColumn = m_curGridItem % m_iconsPerRow;
-
-		// Scroll the icon view if we just moved off the bottom-visible row.
 		if (m_curGridItem >= (m_iconRowScroll + VISIBLE_ICON_ROWS) * m_iconsPerRow)
 			m_iconRowScroll = m_curGridItem / m_iconsPerRow - (VISIBLE_ICON_ROWS - 1);
 	}
-
-	if (m_curTitle != oldTitle || m_curGridItem != oldGridItem)
+	if (m_curGridItem != before)
 		NotifySelectionChanged();
 }
 
+// CSavedGameGrid::setSelImage   [script fn 'setSelImage']
+// Reconstructed from 5960 retail XBE @ 0x49840: points the selection image
+// at the memory unit art, the selected save's image, the title's
+// TitleImage.xbx (or the logo), or the soundtrack art. Theseus adds DLC.
 void CSavedGameGrid::setSelImage()
 {
 	g_szSelTitleImage = NULL;
 
-	if (m_curTitle == -1) // Memory Unit
+	if (m_curTitle == -1)
 	{
 		_tcscpy(szSelectionBuf, _T("memoryUnit128.tga"));
 	}
-	else if (m_curTitle >= 0 && (m_soundtrackTitle < 0 || m_curTitle < m_soundtrackTitle)) // Game title
-	{
-		if (m_curGridItem != -1)
-		{
-			int nSavedGames = GetSavedGameCount(m_curTitle);
-			if (m_curGridItem < nSavedGames)
-			{
-				g_titles[m_curDevUnit].GetSavedGameImageName(m_curTitle, m_curGridItem, szSelectionBuf);
-			}
-			else
-			{
-				// DLC item: locate the Nth DLC folder and load its 128px image.
-				char titleIDChar[9];
-				char dlcFolder[17];
-				if (ResolveDLCFolder(m_curTitle, m_curGridItem - nSavedGames,
-				                     titleIDChar, sizeof(titleIDChar),
-				                     dlcFolder, sizeof(dlcFolder)))
-				{
-					char dlcImagePath[MAX_PATH];
-					_snprintf(dlcImagePath, MAX_PATH, "E:\\TDATA\\%s\\$c\\%s\\ContentImage.xbx",
-					          titleIDChar, dlcFolder);
-					MultiByteToWideChar(CP_ACP, 0, dlcImagePath, -1, szSelectionBuf, MAX_PATH);
-				}
-				else
-				{
-					_tcscpy(szSelectionBuf, _T("dlcitem128.xbx"));
-				}
-			}
-		}
-		else // Title image
-		{
-			MakePath(szSelectionBuf, g_titles[m_curDevUnit].GetUData(), GetTitleID2(m_curTitle));
-			MakePath(szSelectionBuf, szSelectionBuf, szTitleImageXBX);
-
-			if (!DoesFileExist(szSelectionBuf))
-			{
-				_tcscpy(szSelectionBuf, _T("xboxlogo128.xbx"));
-			}
-		}
-	}
-	else // soundtrack
+	else if (m_curTitle < 0 || !IS_GAME_ROW(m_curTitle))
 	{
 		_tcscpy(szSelectionBuf, _T("soundtracksave3.tga"));
+	}
+	else if (m_curGridItem == -1)
+	{
+		MakePath(szSelectionBuf, g_titles[m_curDevUnit].GetUData(), GetTitleID2(m_curTitle));
+		MakePath(szSelectionBuf, szSelectionBuf, szTitleImageXBX);
+		if (!DoesFileExist(szSelectionBuf))
+			_tcscpy(szSelectionBuf, _T("xboxlogo128.xbx"));
+	}
+	else
+	{
+		int saves = GetSavedGameCount(m_curTitle);
+		if (m_curGridItem < saves)
+			g_titles[m_curDevUnit].GetSavedGameImageName(m_curTitle, m_curGridItem, szSelectionBuf);
+		else if (!GetDLCImagePath(m_curTitle, m_curGridItem - saves, szSelectionBuf))
+			_tcscpy(szSelectionBuf, _T("dlcitem128.xbx"));
 	}
 
 	g_szSelTitleImage = szSelectionBuf;
@@ -1836,214 +1579,204 @@ bool ContentMetaParse(const TCHAR *wszMetaPath, TCHAR *outName, int outLen)
 }
 
 
+// =============================================================================
+// What the panel shows
+// =============================================================================
+
+// CSavedGameGrid::FormatGridItemName   [script fn 'FormatGridItemName']
+// Reconstructed from 5960 retail XBE @ 0x49940 / 0x49aa0. Nothing without
+// an item; a soundtrack's name; otherwise the Name in the save's
+// SaveMeta.xbx for the current language, or "Broken Save". Theseus names
+// DLC from its ContentMeta.xbx.
 CStrObject *CSavedGameGrid::FormatGridItemName()
 {
 	if (m_curGridItem < 0)
-		return new CStrObject; // empty string
-
-	if (m_soundtrackTitle >= 0 && m_curTitle == m_soundtrackTitle)
+		return new CStrObject;
+	if (IsSoundtrackSelected())
 		return new CStrObject(GetSoundtrackName(m_curGridItem));
 
-	// Calculate total saved games
-	int savedGameCount = GetSavedGameCount(m_curTitle);
-	int dlcCount = GetDLContentCount(m_curTitle);
+	int saves = GetSavedGameCount(m_curTitle);
+	int dlc = GetDLContentCount(m_curTitle);
+	m_isCurGridItemDLC = m_curGridItem >= saves && m_curGridItem < saves + dlc;
 
-	// Set DLC flag based on grid index
-	m_isCurGridItemDLC = (m_curGridItem >= savedGameCount && m_curGridItem < savedGameCount + dlcCount);
-
-	// If it's a DLC grid item, locate the Nth DLC folder and parse its
-	// ContentMeta.xbx for a localized name. Three fallbacks: parse failure
-	// returns "Unnamed DLC", missing folder returns "Downloadable Content N".
 	if (m_isCurGridItemDLC)
 	{
-		int dlcIndex = m_curGridItem - savedGameCount;
-		char titleIDChar[9];
-		char dlcFolder[17];
-
-		if (ResolveDLCFolder(m_curTitle, dlcIndex,
-		                     titleIDChar, sizeof(titleIDChar),
-		                     dlcFolder, sizeof(dlcFolder)))
+		int dlcIndex = m_curGridItem - saves;
+		char titleID[9];
+		char folder[17];
+		if (!ResolveDLCFolder(m_curTitle, dlcIndex, titleID, sizeof(titleID), folder, sizeof(folder)))
 		{
-			char metaPath[MAX_PATH];
-			_snprintf(metaPath, MAX_PATH, "E:\\TDATA\\%s\\$c\\%s\\ContentMeta.xbx",
-			          titleIDChar, dlcFolder);
-
-			TCHAR wszMetaPath[MAX_PATH];
-			MultiByteToWideChar(CP_ACP, 0, metaPath, -1, wszMetaPath, MAX_PATH);
-
-			TCHAR szSaveName[64];
-			if (ContentMetaParse(wszMetaPath, szSaveName, countof(szSaveName)))
-				return new CStrObject(szSaveName);
-
-			TCHAR szTranslate[MAX_TRANSLATE_LEN] = _T("");
-			return new CStrObject(Translate(_T("Unnamed DLC"), szTranslate));
+			TCHAR numbered[64];
+			_stprintf(numbered, _T("Downloadable Content %d"), dlcIndex + 1);
+			return new CStrObject(numbered);
 		}
 
-		// Fallback: numbered placeholder when no DLC folder exists for this index
-		TCHAR szBuf[64];
-		_stprintf(szBuf, _T("Downloadable Content %d"), dlcIndex + 1);
-		return new CStrObject(szBuf);
+		char metaPath[MAX_PATH];
+		_snprintf(metaPath, MAX_PATH, "E:\\TDATA\\%s\\$c\\%s\\ContentMeta.xbx", titleID, folder);
+		TCHAR wideMeta[MAX_PATH];
+		MultiByteToWideChar(CP_ACP, 0, metaPath, -1, wideMeta, MAX_PATH);
+
+		TCHAR name[64];
+		if (ContentMetaParse(wideMeta, name, countof(name)))
+			return new CStrObject(name);
+
+		TCHAR translated[MAX_TRANSLATE_LEN] = _T("");
+		return new CStrObject(Translate(_T("Unnamed DLC"), translated));
 	}
 
-	// Normal saved game
-	TCHAR szSavedGamePath[MAX_PATH];
-	if (!GetSavedGamePath(szSavedGamePath, m_curTitle, m_curGridItem))
-	{
-		//OutputDebugStringA("[SavedGameGrid] FormatGridItemName: Failed to get save path\n");
-		return new CStrObject; // empty string
-	}
+	TCHAR meta[MAX_PATH];
+	if (!GetSavedGamePath(meta, m_curTitle, m_curGridItem))
+		return new CStrObject;
+	MakePath(meta, meta, szSaveDataXBX);
 
-	MakePath(szSavedGamePath, szSavedGamePath, szSaveDataXBX);
-
-	TCHAR szSaveName[64];
-	TCHAR szLangCode[MAX_LANGUAGE_CODE_LEN];
-	TCHAR szTranslate[MAX_TRANSLATE_LEN];
+	TCHAR name[64];
+	TCHAR lang[MAX_LANGUAGE_CODE_LEN];
+	TCHAR translated[MAX_TRANSLATE_LEN];
 	CSettingsFile settings;
-	if (!settings.Open(szSavedGamePath) || !settings.GetValue(GetLanguageCode(szLangCode), _T("Name"), szSaveName, countof(szSaveName)))
-	{
-		//OutputDebugStringA("[SavedGameGrid] FormatGridItemName: Broken or missing name field\n");
-		return new CStrObject(Translate(_T("Broken Save"), szTranslate));
-	}
-
-	return new CStrObject(szSaveName);
+	if (!settings.Open(meta) || !settings.GetValue(GetLanguageCode(lang), _T("Name"), name, countof(name)))
+		return new CStrObject(Translate(_T("Broken Save"), translated));
+	return new CStrObject(name);
 }
 
+// CSavedGameGrid::FormatGridItemTime   [script fn 'FormatGridItemTime']
+// Reconstructed from 5960 retail XBE @ 0x49ca0: the save folder's last
+// write time in local time, formatted for the current locale. Empty for
+// soundtracks, no item, or a folder that won't open.
 CStrObject *CSavedGameGrid::FormatGridItemTime()
 {
-	if (m_soundtrackTitle >= 0 && m_curTitle == m_soundtrackTitle)
-		return new CStrObject; // empty string
+	if (IsSoundtrackSelected())
+		return new CStrObject;
 
-	TCHAR szPath[MAX_PATH];
-	if (m_curGridItem < 0 || !GetSavedGamePath(szPath, m_curTitle, m_curGridItem))
-		return new CStrObject; // empty string
+	TCHAR path[MAX_PATH];
+	if (m_curGridItem < 0 || !GetSavedGamePath(path, m_curTitle, m_curGridItem))
+		return new CStrObject;
 
-	HANDLE hFile = TheseusCreateFile(szPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-	if (hFile == INVALID_HANDLE_VALUE)
-		return new CStrObject; // empty string
+	HANDLE folder = TheseusCreateFile(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+	if (folder == INVALID_HANDLE_VALUE)
+		return new CStrObject;
 
-	FILETIME ft;
-	VERIFY(GetFileTime(hFile, NULL, NULL, &ft));
-	CloseHandle(hFile);
+	FILETIME written, local;
+	GetFileTime(folder, NULL, NULL, &written);
+	CloseHandle(folder);
+	FileTimeToLocalFileTime(&written, &local);
 
-	FILETIME lft;
-	VERIFY(FileTimeToLocalFileTime(&ft, &lft));
-
-	SYSTEMTIME st;
-	VERIFY(FileTimeToSystemTime(&lft, &st));
-
-	TCHAR szBuf[32];
-	FormatTime(szBuf, countof(szBuf), &st);
-
-	return new CStrObject(szBuf);
+	SYSTEMTIME when;
+	FileTimeToSystemTime(&local, &when);
+	TCHAR text[32];
+	FormatTime(text, countof(text), &when);
+	return new CStrObject(text);
 }
 
+// CSavedGameGrid::GetSavedGameCount   [script fn 'GetSavedGameCount']
+// Reconstructed from 5960 retail XBE @ 0x49e70: 0 for the device row or a
+// stale list, the soundtrack count for the soundtrack row, else the
+// title's saves.
 int CSavedGameGrid::GetSavedGameCount(int nTitle)
 {
-	ASSERT(IsValidDevUnit());
-
-	if (nTitle < 0)
+	if (nTitle < 0 || g_titles[m_curDevUnit].IsDirty())
 		return 0;
-
-	if (g_titles[m_curDevUnit].IsDirty())
-	{
-		return 0;
-	}
-
-	if (m_soundtrackTitle < 0 || nTitle < m_soundtrackTitle)
+	if (IS_GAME_ROW(nTitle))
 		return g_titles[m_curDevUnit].GetSavedGameCount(nTitle);
-
-	return m_soundtrackCount;
+	return m_soundtracks;
 }
 
+// CSavedGameGrid::FormatGridItemSize   [script fn 'FormatGridItemSize']
+// Reconstructed from 5960 retail XBE @ 0x49f70: the soundtrack's size, or
+// the cached size of the selected save (empty with none). Kept in
+// gameBlocks for the scripts.
 CStrObject *CSavedGameGrid::FormatGridItemSize()
 {
-	int nBlocks;
-
-	if (m_soundtrackTitle >= 0 && m_curTitle == m_soundtrackTitle)
+	int blocks;
+	if (IsSoundtrackSelected())
 	{
-		nBlocks = GetSoundtrackSize(m_curGridItem);
+		blocks = GetSoundtrackSize(m_curGridItem);
 	}
 	else
 	{
-		TCHAR szSavedGameDir[MAX_PATH];
-
-		if (m_curGridItem < 0 || !GetSavedGamePath(szSavedGameDir, m_curTitle, m_curGridItem))
-			return new CStrObject; // empty string
-
-		nBlocks = m_cacheSavedGameSize;
+		TCHAR path[MAX_PATH];
+		if (m_curGridItem < 0 || !GetSavedGamePath(path, m_curTitle, m_curGridItem))
+			return new CStrObject;
+		blocks = m_itemBlocks;
 	}
 
-	m_gameBlocks = nBlocks;
-
-	TCHAR szBuf[16];
-	FormatInteger(szBuf, nBlocks);
-	return new CStrObject(szBuf);
+	m_gameBlocks = blocks;
+	TCHAR text[16];
+	FormatInteger(text, blocks);
+	return new CStrObject(text);
 }
 
+// CSavedGameGrid::FormatTitleSize   [script fn 'FormatTitleSize']
+// 5960 @ 0x4a3e0: the cached size of the selected title.
 CStrObject *CSavedGameGrid::FormatTitleSize()
 {
-	int nBlocks = m_cacheTitleSize;
-
-	TCHAR szBuf[16];
-	FormatInteger(szBuf, nBlocks);
-	return new CStrObject(szBuf);
+	TCHAR text[16];
+	FormatInteger(text, m_titleBlocks);
+	return new CStrObject(text);
 }
 
+// <udata>\<title>\<save> on the current device; false when unmounted.
 bool CSavedGameGrid::GetSavedGamePath(TCHAR *szBuf, int nTitle, int nSavedGame)
 {
-	if (!g_titles[m_curDevUnit].IsValid())
-	{
+	CTitleArray& titles = g_titles[m_curDevUnit];
+	if (!titles.IsValid())
 		return false;
-	}
-
-	MakePath(szBuf, g_titles[m_curDevUnit].GetUData(), GetTitleID2(nTitle));
+	MakePath(szBuf, titles.GetUData(), GetTitleID2(nTitle));
 	MakePath(szBuf, szBuf, GetSavedGameID2(nTitle, nSavedGame));
 	return true;
 }
 
+// CSavedGameGrid::GetSavedGamePath   [script fn 'GetSavedGamePath']
+// Reconstructed from 5960 retail XBE @ 0x4a700: the save as the game sees
+// it, "<drive>:\<save>", U: on the hard drive.
 CStrObject *CSavedGameGrid::GetSavedGamePath(int nTitle, int nSavedGame)
 {
-	TCHAR szBuf[MAX_PATH];
-
-	szBuf[0] = IsHDD() ? 'U' : g_titles[m_curDevUnit].GetUData()[0];
-	szBuf[1] = ':';
-	szBuf[2] = '\\';
-	_tcscpy(szBuf + 3, GetSavedGameID2(nTitle, nSavedGame));
-
-	return new CStrObject(szBuf);
+	TCHAR path[MAX_PATH];
+	path[0] = IsHDD() ? 'U' : g_titles[m_curDevUnit].GetUData()[0];
+	path[1] = ':';
+	path[2] = '\\';
+	_tcscpy(path + 3, GetSavedGameID2(nTitle, nSavedGame));
+	return new CStrObject(path);
 }
 
+// CSavedGameGrid::FormatFreeBlocks / FormatTotalBlocks / GetTotalBlocks
+// 5960 @ 0x4a820 / 0x4a8d0 / 0x4a980: the device's free and usable blocks.
 CStrObject *CSavedGameGrid::FormatFreeBlocks()
 {
-	TCHAR szBuf[16];
-	FormatBlocks(szBuf, m_freeBlocks);
-	return new CStrObject(szBuf);
+	TCHAR text[16];
+	FormatBlocks(text, m_freeBlocks);
+	return new CStrObject(text);
 }
 
 CStrObject *CSavedGameGrid::FormatTotalBlocks()
 {
-	TCHAR szBuf[16];
-	FormatBlocks(szBuf, m_totalBlocks);
-	return new CStrObject(szBuf);
+	TCHAR text[16];
+	FormatBlocks(text, m_deviceBlocks);
+	return new CStrObject(text);
 }
 
 int CSavedGameGrid::GetTotalBlocks()
 {
-	return m_totalBlocks;
+	return m_deviceBlocks;
 }
 
+// CSavedGameGrid::CanDetachIcon   [script fn 'CanDetachIcon']
+// 5960 @ 0x4a990: once the list has stopped scrolling. Theseus also waits
+// for the lifted pod's matrix.
 int CSavedGameGrid::CanDetachIcon()
 {
-	return m_timeScroll == 0.0f && m_focusPodMatrixValid;
+	return m_scrollStart == 0.0f && m_focusPodMatrixValid;
 }
 
+// =============================================================================
+// Copy and delete
+// =============================================================================
+
+// Blocks a title file adds to a copy: none if the destination has it.
 int CSavedGameGrid::CountSupportFileIfMissing(int destDevUnit, const TCHAR *fileName)
 {
 	TCHAR path[MAX_PATH];
-
 	MakePath(path, g_titles[destDevUnit].GetUData(), GetTitleID2(m_curTitle));
 	MakePath(path, path, fileName);
-
 	if (DoesFileExist(path))
 		return 0;
 
@@ -2052,164 +1785,156 @@ int CSavedGameGrid::CountSupportFileIfMissing(int destDevUnit, const TCHAR *file
 	return GetFileBlocks(path, BLOCK_SIZE);
 }
 
+// CSavedGameGrid::StartCopy(dest)   [script fn 'StartCopy']
+// Reconstructed from 5960 retail XBE @ 0x4aac0 (StartSavedGameCopy). With
+// no save selected it just reports OnCopyComplete. Otherwise the copy is
+// sized (the save folder plus whichever title files the destination
+// lacks), the status text reset, and the copier started on the one save.
 void CSavedGameGrid::StartCopy(int destDevUnit)
 {
 	if (m_curGridItem == -1)
 	{
-		TRACE(_T("Attempted to copy a title!\n"));
 		CallFunction(this, _T("OnCopyComplete"));
 		return;
 	}
 
-	// Total block budget for the copy: the saved game directory itself,
-	// plus any per-title support XBX files the destination is missing.
-	TCHAR szBuf[MAX_PATH];
-	VERIFY(GetSavedGamePath(szBuf, m_curTitle, m_curGridItem));
-	int nBlocks = GetDirectoryBlocks(szBuf, BLOCK_SIZE, true, NULL);
+	TCHAR folder[MAX_PATH];
+	GetSavedGamePath(folder, m_curTitle, m_curGridItem);
+	int blocks = GetDirectoryBlocks(folder, BLOCK_SIZE, true, NULL);
+	blocks += CountSupportFileIfMissing(destDevUnit, szTitleDataXBX);
+	blocks += CountSupportFileIfMissing(destDevUnit, szTitleImageXBX);
+	blocks += CountSupportFileIfMissing(destDevUnit, szSaveImageXBX);
 
-	nBlocks += CountSupportFileIfMissing(destDevUnit, szTitleDataXBX);
-	nBlocks += CountSupportFileIfMissing(destDevUnit, szTitleImageXBX);
-	nBlocks += CountSupportFileIfMissing(destDevUnit, szSaveImageXBX);
-
-	m_copying = true;
-	m_timeCopyingStarted = TheseusGetNow();
+	m_copyRunning = true;
+	m_copyStart = TheseusGetNow();
 	m_copyProgress = 0.0f;
-	m_lastUpdateTick = GetTickCount();
-	m_periodStatus = 0;
-	m_statusText[0] = 0;
-	Translate(_T("Copying"), m_statusText);
+	m_dotsTick = GetTickCount();
+	m_dots = 0;
+	m_copyingText[0] = 0;
+	Translate(_T("Copying"), m_copyingText);
 
 	theGameCopier.SetSource(m_curDevUnit);
 	theGameCopier.SetDestination(destDevUnit);
-	theGameCopier.AddGame(GetTitleID2(m_curTitle),
-	                      GetSavedGameID2(m_curTitle, m_curGridItem),
-	                      GetSavedGameTime(m_curTitle, m_curGridItem),
-	                      nBlocks);
+	theGameCopier.AddGame(GetTitleID2(m_curTitle), GetSavedGameID2(m_curTitle, m_curGridItem),
+		GetSavedGameTime(m_curTitle, m_curGridItem), blocks);
 	theGameCopier.Start();
 }
 
+// 8 hex digits to a title id, 0xffffffff when it isn't one. 5960 @ 0x4b160.
 static DWORD ParseTitleID(const TCHAR *szID)
 {
 	if (_tcslen(szID) != 8)
-		return 0xffffffff; // Invalid ID
+		return 0xffffffff;
 
-	DWORD dw = 0;
-	const TCHAR *pch = szID;
-	while (*pch != 0)
+	DWORD id = 0;
+	for (const TCHAR *p = szID; *p != 0; p++)
 	{
-		DWORD dwDigit;
-
-		if (*pch >= '0' && *pch <= '9')
-			dwDigit = *pch - '0';
-		else if (*pch >= 'a' && *pch <= 'f')
-			dwDigit = 10 + *pch - 'a';
-		else if (*pch >= 'A' && *pch <= 'F')
-			dwDigit = 10 + *pch - 'A';
+		int digit;
+		if (*p >= '0' && *p <= '9')
+			digit = *p - '0';
+		else if (*p >= 'a' && *p <= 'f')
+			digit = *p - 'a' + 10;
+		else if (*p >= 'A' && *p <= 'F')
+			digit = *p - 'A' + 10;
 		else
-			return 0xffffffff; // Invalid ID
-
-		dw = (dw << 4) + dwDigit;
-
-		pch += 1;
+			return 0xffffffff;
+		id = id * 16 + digit;
 	}
-
-	return dw;
+	return id;
 }
 
+// From 5960's DeleteThread (0x4b1d0): a whole title goes from the list and
+// from <udata>; the publisher's shared <pub>ffff folder in tdata too when
+// it was that publisher's last title; on the hard drive also its tdata
+// folder and cache partition. The soundtrack row moves up one.
 void CSavedGameGrid::DeleteGameTitleFiles()
 {
+	CTitleArray& titles = g_titles[m_curDevUnit];
 	TCHAR titleID[MAX_PATH];
-	TCHAR publisherID[16];
+	TCHAR publisher[16];
 	TCHAR path[MAX_PATH];
 
 	lstrcpyn(titleID, GetTitleID2(m_curTitle), countof(titleID));
-	lstrcpyn(publisherID, titleID, countof(publisherID));
+	lstrcpyn(publisher, titleID, countof(publisher));
+	publisher[4] = 0;
 
-	// Truncate to the 4-character publisher prefix.
-	publisherID[4] = 0;
+	titles.RemoveTitle(m_curTitle);
 
-	g_titles[m_curDevUnit].RemoveTitle(m_curTitle);
-
-	// If this was the last title from this publisher, sweep the shared
-	// publisher directory ("<pub>ffff" under TDATA).
-	if (!g_titles[m_curDevUnit].IsPublisherExists(publisherID))
+	if (!titles.IsPublisherExists(publisher))
 	{
-		lstrcat(publisherID, _T("ffff"));
-		MakePath(path, g_titles[m_curDevUnit].GetTData(), publisherID);
+		lstrcat(publisher, _T("ffff"));
+		MakePath(path, titles.GetTData(), publisher);
 		theGameCopier.DeleteDirectory(path);
 	}
 
-	// Delete the title's UDATA tree (saved games + title metadata).
-	MakePath(path, g_titles[m_curDevUnit].GetUData(), titleID);
+	MakePath(path, titles.GetUData(), titleID);
 	theGameCopier.DeleteDirectory(path);
 
 	if (IsHDD())
 	{
-		// HDD only: also wipe TDATA and the title's cache partition.
-		MakePath(path, g_titles[m_curDevUnit].GetTData(), titleID);
+		MakePath(path, titles.GetTData(), titleID);
 		theGameCopier.DeleteDirectory(path);
 		XapiDeleteCachePartition(ParseTitleID(titleID));
 	}
 
-	if (m_soundtrackTitle >= 0)
-		m_soundtrackTitle -= 1;
+	if (m_soundtrackRow >= 0)
+		m_soundtrackRow--;
 }
 
+// Deleting the title row: all soundtracks, or the game's files. The pod
+// fades out from now and the list reselects in place.
 void CSavedGameGrid::DeleteCurrentTitle()
 {
-	if (m_curTitle == m_soundtrackTitle)
+	if (m_curTitle == m_soundtrackRow)
 	{
 		DeleteAllSoundtracks();
-		m_soundtrackTitle = -1;
-		m_soundtrackCount = 0;
+		m_soundtrackRow = -1;
+		m_soundtracks = 0;
 	}
 	else
 	{
 		DeleteGameTitleFiles();
 	}
 
-	m_timeOfDelete = TheseusGetNow();
-	m_deletedTitle = m_curTitle;
-	ASSERT(m_focusPodMatrixValid);
-
+	m_fadeStart = TheseusGetNow();
+	m_fadingTitle = m_curTitle;
 	SelectTitle(m_curTitle, true);
 }
 
+// Deleting one item: a soundtrack, or a save's folder and list entry. The
+// selection stays in range and the rows scroll back if the last one went.
 void CSavedGameGrid::DeleteCurrentGridItem()
 {
-	if (m_curTitle == m_soundtrackTitle)
+	if (m_curTitle == m_soundtrackRow)
 	{
 		DeleteSoundtrack(m_curGridItem);
-		m_soundtrackCount -= 1;
+		m_soundtracks--;
 	}
 	else
 	{
-		TCHAR path[MAX_PATH];
-		VERIFY(GetSavedGamePath(path, m_curTitle, m_curGridItem));
-
+		TCHAR folder[MAX_PATH];
+		GetSavedGamePath(folder, m_curTitle, m_curGridItem);
 		theGameCopier.m_error = false;
-		theGameCopier.DeleteDirectory(path);
-
+		theGameCopier.DeleteDirectory(folder);
 		g_titles[m_curDevUnit].RemoveSavedGame(m_curTitle, m_curGridItem);
 	}
 
-	// Fixup selection within the (now smaller) title.
-	int nSavedGameCount = GetSavedGameCount(m_curTitle);
-	if (m_curGridItem > nSavedGameCount - 1)
-		m_curGridItem = nSavedGameCount - 1;
-	m_nPrefColumn = (m_curGridItem % m_iconsPerRow);
+	int saves = GetSavedGameCount(m_curTitle);
+	if (m_curGridItem > saves - 1)
+		m_curGridItem = saves - 1;
+	m_nPrefColumn = m_curGridItem % m_iconsPerRow;
 
-	if (m_iconRowScroll && ((m_iconRowScroll + VISIBLE_ICON_ROWS - 1) * m_iconsPerRow >= nSavedGameCount))
-	{
+	if (m_iconRowScroll != 0 && (m_iconRowScroll + VISIBLE_ICON_ROWS - 1) * m_iconsPerRow >= saves)
 		m_iconRowScroll--;
-	}
 }
 
+// CSavedGameGrid::DeleteThread
+// Reconstructed from 5960 retail XBE @ 0x4b1d0: the last soundtrack takes
+// the whole row with it; no item means the whole title; then the sizes are
+// counted again.
 void WINAPI CSavedGameGrid::DeleteThread(CSavedGameGrid *p)
 {
-	ASSERT(p->m_curTitle >= 0);
-
-	if (p->m_curTitle == p->m_soundtrackTitle && p->m_soundtrackCount == 1)
+	if (p->m_curTitle == p->m_soundtrackRow && p->m_soundtracks == 1)
 		p->m_curGridItem = -1;
 
 	if (p->m_curGridItem == -1)
@@ -2217,93 +1942,88 @@ void WINAPI CSavedGameGrid::DeleteThread(CSavedGameGrid *p)
 	else
 		p->DeleteCurrentGridItem();
 
-	p->m_cacheTitleSize = -1;
-	p->m_cacheSavedGameSize = -1;
+	p->m_titleBlocks = -1;
+	p->m_itemBlocks = -1;
 }
 
+// CSavedGameGrid::StartDelete   [script fn 'StartDelete']
+// Reconstructed from 5960 retail XBE @ 0x4b630: cancel a running size
+// query, then delete on a thread; without one, delete here and report
+// OnDeleteEnd and OnSelChange straight away.
 void CSavedGameGrid::StartDelete()
 {
-	ASSERT(m_deleteThread == NULL);
-	ASSERT(!m_deleting);
+	if (m_sizing)
+		SignalObjectAndWait(m_sizeCancel, m_sizeIdle, INFINITE, FALSE);
 
-	// Cancel previous pending query
-	if (m_savedGameQueryPending)
+	m_deleter = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)DeleteThread, this, 0, 0);
+	if (m_deleter != NULL)
 	{
-		SignalObjectAndWait(m_cancelEvent, m_stopEvent, INFINITE, FALSE);
+		m_deleteRunning = true;
+		return;
 	}
 
-	m_deleteThread = CreateThread(0, 0, (LPTHREAD_START_ROUTINE)DeleteThread, this, 0, 0);
-
-	if (!m_deleteThread)
-	{
-		DeleteThread(this);
-		VERIFY(CallFunction(this, _T("OnDeleteEnd")));
-		VERIFY(CallFunction(this, _T("OnSelChange")));
-		g_pulseStartTime = TheseusGetNow();
-	}
-	else
-	{
-		m_deleting = true;
-	}
+	DeleteThread(this);
+	CallFunction(this, _T("OnDeleteEnd"));
+	NotifySelectionChanged();
 }
 
+// CSavedGameGrid::CanCopy   [script fn 'CanCopy', FND 0x001878f0, sig 2]
+// Reconstructed from 5960 retail XBE @ 0x4b6b0. Not the device row, not
+// soundtracks, and only a save whose SaveMeta.xbx has a Name; then yes
+// unless its NoCopy is nonzero. Theseus also refuses saves of a broken
+// title.
 int CSavedGameGrid::CanCopy()
 {
 	if (m_curTitle < 0 || IsSoundtrackSelected())
-		return false; // can't copy devices or soundtracks
+		return false;
 
-	TCHAR szSavedGamePath[MAX_PATH];
-
-	if (m_curGridItem < 0 || !GetSavedGamePath(szSavedGamePath, m_curTitle, m_curGridItem))
-		return false; // can't copy saves when one isn't selected
-
-	MakePath(szSavedGamePath, szSavedGamePath, szSaveDataXBX);
+	TCHAR meta[MAX_PATH];
+	if (m_curGridItem < 0 || !GetSavedGamePath(meta, m_curTitle, m_curGridItem))
+		return false;
+	MakePath(meta, meta, szSaveDataXBX);
 
 	CSettingsFile settings;
-	if (!settings.Open(szSavedGamePath))
-		return false; // can't copy broken saves
+	if (!settings.Open(meta))
+		return false;
 
-	TCHAR szSaveName[64];
-	TCHAR szLangCode[MAX_LANGUAGE_CODE_LEN];
-	if (!settings.GetValue(GetLanguageCode(szLangCode), _T("Name"), szSaveName, countof(szSaveName)))
-		return false; // can't copy broken saved game
-
+	TCHAR lang[MAX_LANGUAGE_CODE_LEN];
+	TCHAR value[64];
+	if (!settings.GetValue(GetLanguageCode(lang), _T("Name"), value, countof(value)))
+		return false;
 	if (g_titles[m_curDevUnit].IsBroken(m_curTitle))
-		return false; // can't copy a saved game in a broken title
-
-	TCHAR szNoCopy[64];
-	if (!settings.GetValue(GetLanguageCode(szLangCode), _T("NoCopy"), szNoCopy, countof(szNoCopy)))
-		return true; // can copy if it doesn't say otherwise
-
-	return _ttoi(szNoCopy) == 0;
+		return false;
+	if (!settings.GetValue(GetLanguageCode(lang), _T("NoCopy"), value, countof(value)))
+		return true;
+	return _ttoi(value) == 0;
 }
 
+// CSavedGameGrid::IsSoundtrackSelected   [script fn 'IsSoundtrackSelected']
+// 5960 @ 0x4b870.
 int CSavedGameGrid::IsSoundtrackSelected()
 {
-	return (m_soundtrackTitle >= 0 && m_curTitle == m_soundtrackTitle);
+	return m_soundtrackRow >= 0 && m_curTitle == m_soundtrackRow;
 }
 
+// CSavedGameGrid::IsDevUnitReady   [script fn 'IsDevUnitReady']
+// 5960 @ 0x4bab0: the device's list isn't being rebuilt.
 int CSavedGameGrid::IsDevUnitReady(int nUnit)
 {
 	return !g_titles[nUnit].IsDirty();
 }
 
+// CSavedGameGrid::DoesSavedGameExists   [script fn 'DoesSavedGameExists']
+// 5960 @ 0x4bc60: whether the selected save is already on the destination.
 int CSavedGameGrid::DoesSavedGameExists(int destDevUnit)
 {
 	if (m_curGridItem < 0)
-	{
 		return false;
-	}
 
-	const TCHAR *szRoot = g_titles[destDevUnit].GetUData();
-	ASSERT(szRoot[0] != 0);
-
-	TCHAR szBuf[MAX_PATH];
-	MakePath(szBuf, g_titles[destDevUnit].GetUData(), GetTitleID2(m_curTitle));
-	MakePath(szBuf, szBuf, GetSavedGameID2(m_curTitle, m_curGridItem));
-
-	return DoesFileExist(szBuf);
+	TCHAR path[MAX_PATH];
+	MakePath(path, g_titles[destDevUnit].GetUData(), GetTitleID2(m_curTitle));
+	MakePath(path, path, GetSavedGameID2(m_curTitle, m_curGridItem));
+	return DoesFileExist(path);
 }
+
 static int ScanDLContentCount(const char *titleID)
 {
 	char dlcPath[MAX_PATH];
@@ -2371,9 +2091,9 @@ extern "C" { extern DWORD g_NumUsers; }
 int CSavedGameGrid::IsXboxLiveAccountSelected()
 {
 	// Returns 1 if curTitle points to the Xbox Live accounts entry.
-	// m_xboxLiveAccountTitle is the title index where Live accounts appear,
+	// m_liveAccountRow is the title index where Live accounts appear,
 	// or -1 if no Live accounts entry exists on the current device.
-	return (m_xboxLiveAccountTitle >= 0 && m_curTitle == m_xboxLiveAccountTitle) ? 1 : 0;
+	return (m_liveAccountRow >= 0 && m_curTitle == m_liveAccountRow) ? 1 : 0;
 }
 
 int CSavedGameGrid::IsGameTitleSelected()
@@ -2381,9 +2101,9 @@ int CSavedGameGrid::IsGameTitleSelected()
 	// Returns 1 if curTitle is a real game title (not soundtracks, not Live accounts).
 	if (m_curTitle < 0)
 		return 0;
-	if (m_soundtrackTitle >= 0 && m_curTitle == m_soundtrackTitle)
+	if (m_soundtrackRow >= 0 && m_curTitle == m_soundtrackRow)
 		return 0;
-	if (m_xboxLiveAccountTitle >= 0 && m_curTitle == m_xboxLiveAccountTitle)
+	if (m_liveAccountRow >= 0 && m_curTitle == m_liveAccountRow)
 		return 0;
 	return 1;
 }
@@ -2419,7 +2139,7 @@ int CSavedGameGrid::GetGridItemCount(int nTitle)
 		return 0;
 
 	// Don't count for soundtracks (they use a different system)
-	if (m_soundtrackTitle >= 0 && nTitle >= m_soundtrackTitle)
+	if (m_soundtrackRow >= 0 && nTitle >= m_soundtrackRow)
 		return 0;
 
 	int nCount = GetSavedGameCount(nTitle);

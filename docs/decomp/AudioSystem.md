@@ -159,3 +159,38 @@ The threshold balances DSound buffer allocation cost (static is cheaper but hold
 ## DSound Mixing Headroom
 
 `CAudioBuf::SetAttenuation` writes attenuation in dB rather than linear. The attenuation is offset against the headroom configured by `DSoundManager` (1200 millibels by default) to leave room for mixed signal peaks. See `DSoundManager.md`.
+
+## 5960 addresses
+
+| Address | Function | Notes |
+|---------|----------|-------|
+| 0x00062750 | DSound_Init | Skipped in DVD boot mode (boot type 4). Reads `XGetAudioFlags`, `DirectSoundCreate(0, &ds, 0)`, then `SetMixBinHeadroom(bin, 0)` for all 31 mix bins and starts the DoWork thread (0x62680) |
+| 0x000626b0 | XAppCreateSoundBuffer | Runs DSound_Init on first use, `CreateSoundBuffer` with a 0x18 byte desc, `SetHeadroom(1200)` |
+| 0x00062960 | CAudioBuf dtor | Stop, Release |
+| 0x000629a0 / 0x000629d0 | Lock / Unlock | Whole buffer from 0 |
+| 0x00062a30 | CAudioBuf::Stop | Stop, then spins on GetStatus until it reports stopped |
+| 0x00062ad0 | SetFrequency | `hz == 0 ? 0 : (int)hz` |
+| 0x00062b90 | CAudioPump dtor | Quit event, join thread, close handles, Stop, Release, close segment events |
+| 0x00062c90 | CAudioPump::ThreadProc | See below |
+| 0x00062de0 | CAudioPump::Initialize | Segment events (manual reset), quit event, mutex, thread, buffer with flags 0x1a0, notify a block before each segment end |
+| 0x00062fe0 | CAudioPump::Stop | Under the mutex: Stop, wait stopped, rewind, DirectSoundDoWork, reset events, zero counters |
+| 0x00063060 | CAudioPump::Pause | `IDirectSoundBuffer_Pause(buf, flag)` under the mutex |
+| 0x000630d0 | CAudioPump::FillBuffer | Lock a segment, GetData, zero the tail on a short read and drain |
+| 0x000631c0 | CAudioPump::GetPlaybackTime | Counts cursor wraps |
+| 0x00063220 / 0x00063290 / 0x000632b0 | CFilePump ctor / dtor / Initialize | Segment = whole blocks in 8 KB, 8 KB thread stack |
+| 0x00061890 | CAudioClip ctor | |
+| 0x000619f0 | CAudioClip::OnSetProperty | volume (0x38) and pan (0x3c) lerp when fade is set; url (0x30) dirties; isActive (0x28) |
+| 0x00061ae0 | OnIsActiveChanged | |
+| 0x00061b40 | Cleanup | |
+| 0x00061ba0 | Initialize | `cd:` CD track, `st:` WMA soundtrack song, `.wav` file, `.wma` file |
+| 0x00061d20 | wave loader | RIFF/WAVE/fmt check, up to 0x14 bytes of format, data <= 64 KB into a CAudioBuf, longer through CFilePump |
+| 0x00062050 | Advance | |
+| 0x00062290..0x00062420 | PlayOrPause, Play, Stop, Pause, getMinutes, getSeconds | |
+| 0x000624a0 / 0x00062540 | CPeriodicAudioGroup ctor / Advance | |
+
+The pump thread in 5960, when it finds a signaled segment that was marked filled, clears the mark
+and drops the filled count before refilling it. That's how the count reaches 0 and the drain
+branch stops the sound and runs OnAudioEnd. Theseus never decrements, so a stream that runs out
+keeps playing silence until AudioClip notices (with sendProgress) that it played past its length.
+
+The clip's end check in 5960 is `!playing && (!loop || !isActive) && transportMode == PLAY`.
