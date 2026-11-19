@@ -111,3 +111,5 @@ void Jellyfin_ReportPlayback(const std::string& itemId, int event,
                              long long posTicks, bool paused);
 // Bumped whenever watch state in the cache changes, so the scene redraws.
 unsigned Jellyfin_WatchStamp();
+// Marks it watched or not on the server; the cache shows it straight away.
+void Jellyfin_SetPlayed(const std::string& itemId, bool played);

@@ -814,8 +814,9 @@ static void PatchDetails(const std::string& rk, const PlexDetails& d)
     for (auto& kv : s_cacheEpisodes) PatchList(kv.second, rk, d);
 }
 
+// The item's watch state, and the show it belongs to (itself for a show).
 static bool FetchDetails(const std::string& uri, const std::string& rk, PlexDetails& d,
-                         std::string* showRk = NULL)
+                         std::string* showRk = NULL, std::string* type = NULL)
 {
     HttpResponse r = Http_Get(uri + "/library/metadata/" + rk, PlexHeaders(true, true));
     if (!r.ok()) return false;
@@ -824,7 +825,11 @@ static bool FetchDetails(const std::string& uri, const std::string& rk, PlexDeta
     std::vector<std::string> objs = Json_SplitArray(r.body, arr);
     if (objs.empty()) return false;
     ParseDetails(objs[0], d);
-    if (showRk) *showRk = Json_GetString(objs[0], "grandparentRatingKey");
+    std::string t = Json_GetString(objs[0], "type");
+    if (type) *type = t;
+    if (showRk) *showRk = t == "show"   ? rk
+                        : t == "season" ? Json_GetString(objs[0], "parentRatingKey")
+                        : Json_GetString(objs[0], "grandparentRatingKey");
     return true;
 }
 
@@ -832,12 +837,12 @@ static bool FetchDetails(const std::string& uri, const std::string& rk, PlexDeta
 static void RefreshWatchState(unsigned gen, const std::string& uri, const std::string& rk)
 {
     PlexDetails d, show;
-    std::string showRk;
-    bool haveItem = FetchDetails(uri, rk, d, &showRk);
+    std::string showRk, type;
+    bool haveItem = FetchDetails(uri, rk, d, &showRk, &type);
     bool haveShow = false, haveSeasons = false;
     std::vector<PlexSeason> seasons;
     if (!showRk.empty()) {
-        haveShow = FetchDetails(uri, showRk, show);
+        haveShow = showRk == rk ? false : FetchDetails(uri, showRk, show);
         HttpResponse r = Http_Get(uri + "/library/metadata/" + showRk + "/children", PlexHeaders(true, true));
         if (r.ok()) { seasons = ParseSeasons(r.body, uri); haveSeasons = true; }
     }
@@ -848,6 +853,13 @@ static void RefreshWatchState(unsigned gen, const std::string& uri, const std::s
     if (gen != s_syncGen) return;
     if (haveItem) PatchDetails(rk, d);
     if (haveShow) PatchDetails(showRk, show);
+    // A whole show or season was marked: its episodes load fresh next time.
+    if (type == "show" || type == "season") {
+        auto cached = s_cacheSeasons.find(showRk);
+        if (cached != s_cacheSeasons.end())
+            for (const auto& se : cached->second) s_cacheEpisodes.erase(se.ratingKey);
+        s_cacheEpisodes.erase(rk);
+    }
     if (haveSeasons && s_cacheSeasons.count(showRk)) s_cacheSeasons[showRk] = std::move(seasons);
     if (haveDeck && !s_cacheLibs.empty()) {
         const std::string key = OnDeckShelf().sectionKey;
@@ -894,6 +906,34 @@ void Plex_ReportPlayback(const std::string& ratingKey, int event, int timeMs, in
     s_reports.Post([=] {
         GetReport(url);
         if (finished) GetReport(scrobble);
+        RefreshWatchState(gen, uri, ratingKey);
+    });
+}
+
+
+void Plex_SetPlayed(const std::string& ratingKey, bool played)
+{
+    std::string uri = Plex_GetActiveServerUri();
+    if (ratingKey.empty() || uri.empty() || !Plex_HasToken()) return;
+    {
+        // Show it right away; the refresh after the request has the final word.
+        std::lock_guard<std::mutex> lk(g_mtx);
+        auto mark = [&](PlexDetails& e) {
+            e.viewCount = played ? (e.viewCount > 0 ? e.viewCount : 1) : 0;
+            e.viewedLeafCount = played ? e.leafCount : 0;
+            e.offsetMs = 0;
+        };
+        for (auto* m : { &s_cacheItems, &s_cacheChildren })
+            for (auto& kv : *m) for (auto& e : kv.second) if (e.ratingKey == ratingKey) mark(e);
+        for (auto& kv : s_cacheSeasons)  for (auto& e : kv.second) if (e.ratingKey == ratingKey) mark(e);
+        for (auto& kv : s_cacheEpisodes) for (auto& e : kv.second) if (e.ratingKey == ratingKey) mark(e);
+        s_watchStamp++;
+    }
+    std::string url = uri + (played ? "/:/scrobble" : "/:/unscrobble") +
+                      "?identifier=com.plexapp.plugins.library&key=" + ratingKey;
+    unsigned gen = s_syncGen;
+    s_reports.Post([=] {
+        GetReport(url);
         RefreshWatchState(gen, uri, ratingKey);
     });
 }

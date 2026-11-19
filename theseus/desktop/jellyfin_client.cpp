@@ -718,13 +718,17 @@ static void PatchDetails(const std::string& id, const JellyfinDetails& d)
     for (auto& kv : s_cacheEpisodes) PatchList(kv.second, id, d);
 }
 
-static bool FetchDetails(const std::string& id, JellyfinDetails& d, std::string* seriesId = NULL)
+// The item's watch state, and the series it belongs to (itself for a series).
+static bool FetchDetails(const std::string& id, JellyfinDetails& d, std::string* seriesId = NULL,
+                         std::string* type = NULL)
 {
     HttpResponse r = Http_Get(std::string(g_jellyfinUrl) + "/Users/" + g_jellyfinUserId + "/Items/" + id,
                               JellyfinHeaders(g_jellyfinToken));
     if (!r.ok()) return false;
     ParseDetails(r.body, d);
-    if (seriesId) *seriesId = Json_GetString(r.body, "SeriesId");
+    std::string t = Json_GetString(r.body, "Type");
+    if (type) *type = t;
+    if (seriesId) *seriesId = t == "Series" ? id : Json_GetString(r.body, "SeriesId");
     return true;
 }
 
@@ -748,16 +752,16 @@ static void FetchShelves(std::vector<JellyfinLibrary>& shelves,
 
 static bool IsShelf(const std::string& id) { return id == "uix-resume" || id == "uix-nextup"; }
 
-// After playback: the item, its series and seasons, and the shelves.
+// After playback or a mark: the item, its series and seasons, and the shelves.
 static void RefreshWatchState(unsigned gen, const std::string& id)
 {
     JellyfinDetails d, series;
-    std::string seriesId;
-    bool haveItem = FetchDetails(id, d, &seriesId);
+    std::string seriesId, type;
+    bool haveItem = FetchDetails(id, d, &seriesId, &type);
     bool haveSeries = false, haveSeasons = false;
     std::vector<JellyfinSeason> seasons;
     if (!seriesId.empty()) {
-        haveSeries  = FetchDetails(seriesId, series);
+        haveSeries  = seriesId == id ? false : FetchDetails(seriesId, series);
         haveSeasons = FetchSeasonsForShow(seriesId, seasons);
     }
     std::vector<JellyfinLibrary> shelves;
@@ -768,6 +772,13 @@ static void RefreshWatchState(unsigned gen, const std::string& id)
     if (gen != s_syncGen) return;
     if (haveItem)   PatchDetails(id, d);
     if (haveSeries) PatchDetails(seriesId, series);
+    // A whole series or season was marked: its episodes load fresh next time.
+    if (type == "Series" || type == "Season") {
+        auto cached = s_cacheSeasons.find(seriesId);
+        if (cached != s_cacheSeasons.end())
+            for (const auto& se : cached->second) s_cacheEpisodes.erase(se.id);
+        s_cacheEpisodes.erase(id);
+    }
     if (haveSeasons && s_cacheSeasons.count(seriesId)) s_cacheSeasons[seriesId] = std::move(seasons);
     if (!s_cacheLibs.empty()) {
         s_cacheLibs.erase(std::remove_if(s_cacheLibs.begin(), s_cacheLibs.end(),
@@ -805,6 +816,40 @@ void Jellyfin_ReportPlayback(const std::string& itemId, int event, long long pos
             PostReport("/Sessions/Playing/Stopped", b);
             RefreshWatchState(gen, itemId);
         });
+}
+
+
+void Jellyfin_SetPlayed(const std::string& itemId, bool played)
+{
+    if (itemId.empty() || !Jellyfin_HasToken()) return;
+    {
+        // Show it right away; the refresh after the request has the final word.
+        std::lock_guard<std::mutex> lk(g_mtx);
+        auto mark = [&](JellyfinDetails& e) {
+            e.played = played;
+            e.posTicks = 0;
+            if (played) e.unplayed = 0;
+        };
+        for (auto* m : { &s_cacheItems, &s_cacheChildren })
+            for (auto& kv : *m) for (auto& e : kv.second) if (e.id == itemId) mark(e);
+        for (auto& kv : s_cacheSeasons)  for (auto& e : kv.second) if (e.id == itemId) mark(e);
+        for (auto& kv : s_cacheEpisodes) for (auto& e : kv.second) if (e.id == itemId) mark(e);
+        s_watchStamp++;
+    }
+    unsigned gen = s_syncGen;
+    s_reports.Post([=] {
+        std::string base = std::string(g_jellyfinUrl);
+        HttpHeaders h = JellyfinHeaders(g_jellyfinToken);
+        std::string url = base + "/UserPlayedItems/" + itemId + "?userId=" + g_jellyfinUserId;
+        HttpResponse r = played ? Http_Post(url, "", h) : Http_Delete(url, h);
+        // Servers older than 10.9 only know the per-user path.
+        if (r.status == 404) {
+            url = base + "/Users/" + g_jellyfinUserId + "/PlayedItems/" + itemId;
+            r = played ? Http_Post(url, "", h) : Http_Delete(url, h);
+        }
+        if (!r.ok()) fprintf(stderr, "[Jellyfin] marking %s failed (status %ld)\n", itemId.c_str(), r.status);
+        RefreshWatchState(gen, itemId);
+    });
 }
 
 

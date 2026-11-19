@@ -504,7 +504,22 @@ DEF theJellyfinMenu Level
 			mc.MessageText.scrollDelay  = 2;
 		}
 		function OnWhiteDown(){ PlaySoundError(); }
-		function OnBlackDown(){ PlaySoundError(); }
+		// Black (RB): flip the row's watched mark.
+		function OnBlackDown()
+		{
+			if ((nJfView == 0) | (nJfCount <= 0) | (theJellyfinLibrary.IsSyncReady() == 0))
+			{
+				PlaySoundError();
+				return;
+			}
+			if (theJellyfinLibrary.ToggleWatched(nJfView, nJfCursor) < 0)
+			{
+				PlaySoundError();
+				return;
+			}
+			PlaySoundA();
+			UpdateJellyfinList();
+		}
 	}
 
 	function OnArrival()

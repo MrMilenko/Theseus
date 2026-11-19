@@ -3381,6 +3381,8 @@ END_NODE_FUN()
 // ============================================================================
 
 #include "plex_client.h"
+#include "guide.h"
+#include "pads.h"
 
 // "S2E05 · Title" for an episode row. No number, just the title.
 static std::string EpisodeCode(const std::string& season, const std::string& episode)
@@ -3469,6 +3471,21 @@ static std::string ClipInfo(std::string body)
 		body += "\xE2\x80\xA6";
 	}
 	return body;
+}
+
+// The info card's last line: which button flips the watched mark, named for
+// the pad or the keyboard used last.
+static std::string MarkHint(bool played)
+{
+	const char* key = "`";
+	if (Joy_LastDevice() == 1) {
+		switch (Pads_Style()) {
+		case PAD_STYLE_PLAYSTATION: key = "R1"; break;
+		case PAD_STYLE_NINTENDO:    key = "R"; break;
+		default:                    key = "RB"; break;
+		}
+	}
+	return std::string("Press ") + key + (played ? " to mark unwatched" : " to mark watched");
 }
 
 class CPlexLibrary : public CNode
@@ -3662,6 +3679,7 @@ public:
 			AppendLine(body, it.genres);
 			if (it.leafCount > 0) AppendLine(body, LeftLine(it));
 			else AppendLine(body, WatchLine(it.Played(), it.offsetMs / 1000, it.durationMs / 1000));
+			if (!IsFolderType(it.type)) AppendLine(body, MarkHint(it.Played()));
 			if (!it.summary.empty()) { body += "\n\n"; body += it.summary; }
 		}
 		else if (view == 2) {
@@ -3675,6 +3693,7 @@ public:
 			AppendLine(body, FactsLine(sh.year, 0, sh.rating, sh.stars));
 			AppendLine(body, sh.genres);
 			if (i < (int)seasons.size()) AppendLine(body, LeftLine(seasons[i]));
+			if (i < (int)seasons.size()) AppendLine(body, MarkHint(seasons[i].Played()));
 			if (!sh.summary.empty()) { body += "\n\n"; body += sh.summary; }
 		}
 		else if (view == 3) {
@@ -3688,6 +3707,7 @@ public:
 				AppendLine(body, items[m_currentShow].title);
 			AppendLine(body, FactsLine("", e.durationMs / 1000, e.rating, e.stars));
 			AppendLine(body, WatchLine(e.Played(), e.offsetMs / 1000, e.durationMs / 1000));
+			AppendLine(body, MarkHint(e.Played()));
 			if (!e.summary.empty()) { body += "\n\n"; body += e.summary; }
 		}
 		return new CStrObject(_T(ClipInfo(body).c_str()));
@@ -3845,6 +3865,35 @@ public:
 
 	// Bumps when a playback report or a mark changes watch state.
 	int GetWatchStamp() { return (int)Plex_WatchStamp(); }
+
+	// RB: watched becomes unwatched and the other way round. The new state,
+	// or -1 when the row can't be marked.
+	int ToggleWatched(int view, int i)
+	{
+		if (i < 0) return -1;
+		std::string key;
+		bool played = false;
+		if (view == 1) {
+			std::vector<PlexItem> items = CurrentItems();
+			if (i >= (int)items.size() || IsFolderType(items[i].type)) return -1;
+			key = items[i].ratingKey; played = items[i].Played();
+		} else if (view == 2) {
+			std::vector<PlexSeason> seasons;
+			Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
+			if (i >= (int)seasons.size()) return -1;
+			key = seasons[i].ratingKey; played = seasons[i].Played();
+		} else if (view == 3) {
+			std::vector<PlexEpisode> eps;
+			std::string seasonKey = CurrentSeasonKey();
+			if (seasonKey.empty()) return -1;
+			Plex_Cache_GetEpisodes(seasonKey, eps);
+			if (i >= (int)eps.size()) return -1;
+			key = eps[i].ratingKey; played = eps[i].Played();
+		}
+		if (key.empty()) return -1;
+		Plex_SetPlayed(key, !played);
+		return played ? 0 : 1;
+	}
 
 	// The row has a resume point, so X has a start to go back to.
 	int CanStartOver(int view, int i)
@@ -4141,6 +4190,7 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_VI(SetStartOver)
 	NODE_FUN_IV(GetWatchStamp)
 	NODE_FUN_III(CanStartOver)
+	NODE_FUN_III(ToggleWatched)
 END_NODE_FUN()
 
 
@@ -4385,6 +4435,41 @@ public:
 
 	// Bumps when a playback report or a mark changes watch state.
 	int GetWatchStamp() { return (int)Jellyfin_WatchStamp(); }
+
+	// Movies, episodes, tracks and whole series take a watched mark; other
+	// folders don't.
+	static bool Markable(const JellyfinItem& it) { return !it.isFolder || it.type == "Series"; }
+
+	// RB: watched becomes unwatched and the other way round. The new state,
+	// or -1 when the row can't be marked.
+	int ToggleWatched(int view, int i)
+	{
+		if (i < 0) return -1;
+		std::string id;
+		bool played = false;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size() || !Markable(items[i])) return -1;
+			id = items[i].id; played = items[i].played;
+		} else if (view == 2) {
+			std::vector<JellyfinSeason> seasons;
+			std::string showId = CurrentShowId();
+			if (showId.empty()) return -1;
+			Jellyfin_Cache_GetSeasons(showId, seasons);
+			if (i >= (int)seasons.size()) return -1;
+			id = seasons[i].id; played = seasons[i].played;
+		} else if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return -1;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			if (i >= (int)eps.size()) return -1;
+			id = eps[i].id; played = eps[i].played;
+		}
+		if (id.empty()) return -1;
+		Jellyfin_SetPlayed(id, !played);
+		return played ? 0 : 1;
+	}
 
 	// The row has a resume point, so X has a start to go back to.
 	int CanStartOver(int view, int i)
@@ -4688,6 +4773,7 @@ public:
 			} else {
 				AppendLine(body, WatchLine(it.played, Secs(it.posTicks), Secs(it.runTicks)));
 			}
+			if (Markable(it)) AppendLine(body, MarkHint(it.played));
 			if (!it.overview.empty()) { body += "\n\n"; body += it.overview; }
 		}
 		else if (view == 2) {
@@ -4706,6 +4792,7 @@ public:
 			} else if (i < (int)seasons.size() && seasons[i].played) {
 				AppendLine(body, "Watched");
 			}
+			if (i < (int)seasons.size()) AppendLine(body, MarkHint(seasons[i].played));
 			if (!sh.overview.empty()) { body += "\n\n"; body += sh.overview; }
 		}
 		else if (view == 3) {
@@ -4721,6 +4808,7 @@ public:
 				AppendLine(body, items[m_currentShow].name);
 			AppendLine(body, FactsLine("", Secs(e.runTicks), e.rating, e.stars));
 			AppendLine(body, WatchLine(e.played, Secs(e.posTicks), Secs(e.runTicks)));
+			AppendLine(body, MarkHint(e.played));
 			if (!e.overview.empty()) { body += "\n\n"; body += e.overview; }
 		}
 		return new CStrObject(_T(ClipInfo(body).c_str()));
@@ -4827,6 +4915,7 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_VI(SetStartOver)
 	NODE_FUN_IV(GetWatchStamp)
 	NODE_FUN_III(CanStartOver)
+	NODE_FUN_III(ToggleWatched)
 END_NODE_FUN()
 
 

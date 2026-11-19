@@ -130,3 +130,5 @@ void Plex_ReportPlayback(const std::string& ratingKey, int event,
                          int timeMs, int durationMs, bool paused);
 // Bumped whenever watch state in the cache changes, so the scene redraws.
 unsigned Plex_WatchStamp();
+// Scrobbles or unscrobbles it on the server; the cache shows it straight away.
+void Plex_SetPlayed(const std::string& ratingKey, bool played);

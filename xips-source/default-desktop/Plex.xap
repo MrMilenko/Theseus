@@ -504,7 +504,22 @@ DEF thePlexMenu Level
 			mc.MessageText.scrollDelay  = 2;
 		}
 		function OnWhiteDown(){ PlaySoundError(); }
-		function OnBlackDown(){ PlaySoundError(); }
+		// Black (RB): flip the row's watched mark.
+		function OnBlackDown()
+		{
+			if ((nPlexView == 0) | (nPlexCount <= 0) | (thePlexLibrary.IsSyncReady() == 0))
+			{
+				PlaySoundError();
+				return;
+			}
+			if (thePlexLibrary.ToggleWatched(nPlexView, nPlexCursor) < 0)
+			{
+				PlaySoundError();
+				return;
+			}
+			PlaySoundA();
+			UpdatePlexList();
+		}
 	}
 
 	function OnArrival()
