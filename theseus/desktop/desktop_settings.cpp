@@ -109,7 +109,7 @@ static const char* kModeLbl[]  = { "Windowed", "Borderless", "Fullscreen" };
     { key, "CRT", "Display", label, SK_FLOAT, &g_crt.field, 0, def, 0, NOENUM, lo, hi, 0.05f, NULL, NULL }
 
 static const SettingDef kDefs[] = {
-    S_PATH("XemuPath",      "Desktop", "General", "xemu Path",        s_xemuPath, 0),
+    S_PATH("XemuPath",      "Desktop", "Games",   "xemu Path",        s_xemuPath, 0),
     S_PATH("QcowPath",      "Desktop", "General", "qcow2 HDD Image",  g_qcowPath, 0),
     S_PATH("SteamPath",     "Desktop", "Games",   "Steam Folder",     s_steamPath, 0),
     S_PATH("RetroArchPath", "Desktop", "Games",   "RetroArch Folder", s_retroarchPath, 0),

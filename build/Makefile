@@ -452,7 +452,7 @@ LINT_DIRS    = $(THESEUS_SRC)/desktop $(THESEUS_SRC)/shared $(THESEUS_SRC)/engin
                $(THESEUS_SRC)/render $(THESEUS_SRC)/toolbox
 LINT_VENDOR  = --exclude-dir=third-party --exclude-dir=xdk --exclude-dir=imgui \
                --exclude='stb_*.h' --exclude='minimp3.h' --exclude='imfilebrowser.h'
-LINT_HOST_DATA = title_maker.cpp retroarch.cpp steam.cpp hdd_browser.cpp cdaudio.cpp
+LINT_HOST_DATA = title_maker.cpp retroarch.cpp steam.cpp xemu.cpp hdd_browser.cpp cdaudio.cpp
 LINT_HOSTTEST = THESEUS_HOST_(WIN|MAC|LINUX)
 .PHONY: lint-platform
 lint-platform:
@@ -872,6 +872,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/launchers/steam.cpp \
 	$(THESEUS_SRC)/desktop/launchers/retroarch.cpp \
 	$(THESEUS_SRC)/desktop/launchers/xemu.cpp \
+	$(THESEUS_SRC)/desktop/launchers/emu_find.cpp \
 	$(THESEUS_SRC)/desktop/title_sanitize.cpp \
 	$(THESEUS_SRC)/desktop/udata_synth.cpp \
 	$(THESEUS_SRC)/desktop/desktop_stubs.cpp \

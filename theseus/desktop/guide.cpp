@@ -26,6 +26,7 @@
 #include "plex_client.h"
 #include "jellyfin_client.h"
 #include "xcloud_client.h"
+#include "launchers/xemu.h"
 #include "guide.h"
 #include "ui_overlay.h"
 #include <algorithm>
@@ -268,6 +269,7 @@ enum Act {
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
+    GA_FINDEMU,
     GA_COUNT
 };
 
@@ -338,6 +340,7 @@ static struct Guide {
     int copied;
     std::string result[GA_COUNT];
     std::string browseDir, pickedPath, pickedName, added;
+    std::string found[4];   // what each Find row turned up
     std::vector<BrowseEntry> entries;
     bool browseStale;
     int category, playlist;
@@ -425,6 +428,18 @@ static VirtualGame* PickedGame()
 
 static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "" };
 
+// Emulators the guide can look for, each under its path setting.
+static const struct {
+    const char* key;
+    const char* findLabel;
+    const char* findHelp;
+    bool (*find)(char* out, size_t outSize);
+} kEmus[] = {
+    { "XemuPath", "Find xemu", "Looks in the usual install folders, RetroBat, scoop, Flatpak and AppImages.",
+      Xemu_Find },
+};
+static const int kEmuCount = (int)(sizeof(kEmus) / sizeof(kEmus[0]));
+
 static void Build()
 {
     g.rows.clear();
@@ -439,6 +454,9 @@ static void Build()
             Setting_Display(d, val, sizeof(val));
             bool typed = d.kind == SK_PATH || d.kind == SK_STRING;
             Add(d.label, val, SettingHelp(d), typed ? GA_TEXT : GA_SETTING, i);
+            for (int e = 0; e < kEmuCount; e++)
+                if (strcmp(d.key, kEmus[e].key) == 0)
+                    Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
         }
         break;
     }
@@ -1028,6 +1046,18 @@ static void Select()
     case GA_TEXT: {
         const SettingDef& d = DesktopSettings_Table().defs[r.arg];
         EditOpen(ED_SETTING, r.arg, d.label, (const char*)d.ptr, (size_t)d.size - 1, (d.flags & SF_SECRET) != 0);
+        break;
+    }
+    case GA_FINDEMU: {
+        char path[512];
+        const SettingDef* d = DesktopSettings_Find(kEmus[r.arg].key);
+        if (d && kEmus[r.arg].find(path, sizeof(path)) && Setting_SetText(*d, path)) {
+            SaveDesktopSettings();
+            g.found[r.arg] = "Found";
+        } else {
+            g.found[r.arg] = "Not found";
+        }
+        Build();
         break;
     }
     case GA_NAME:

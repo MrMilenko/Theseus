@@ -861,37 +861,18 @@ void RenderTitleMaker() {
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("Find##xemu")) {
-            const char* tryPaths[] = {
-#ifdef THESEUS_HOST_MAC
-                "/Applications/xemu.app",
-                "/opt/homebrew/bin/xemu",
-                "/usr/local/bin/xemu",
-#elif defined(THESEUS_HOST_WIN)
-                "C:\\Program Files\\xemu\\xemu.exe",
-                "C:\\Program Files (x86)\\xemu\\xemu.exe",
-#else
-                "/usr/bin/xemu",
-                "/usr/local/bin/xemu",
-                "/snap/bin/xemu",
-#endif
-                NULL
-            };
-            bool found = false;
-            for (int i = 0; tryPaths[i] && !found; i++) {
-                struct stat st;
-                if (stat(tryPaths[i], &st) == 0) {
-                    strncpy(s_xemuPath, tryPaths[i], sizeof(s_xemuPath) - 1);
-                    found = true;
-                }
-            }
-            if (!found && Xemu_FlatpakInstalled()) {
+            char found[512];
+            if (Xemu_Find(found, sizeof(found))) {
+                snprintf(s_xemuPath, sizeof(s_xemuPath), "%s", found);
+                SaveDesktopSettings();
+                snprintf(s_statusMsg, sizeof(s_statusMsg), "Found xemu: %s", found);
+            } else if (Xemu_FlatpakInstalled()) {
                 s_xemuPath[0] = 0;
                 strncpy(s_statusMsg, "Flatpak xemu found, leave the path empty", sizeof(s_statusMsg) - 1);
-                s_statusTime = 3.0f;
-            } else if (!found) {
+            } else {
                 strncpy(s_statusMsg, "xemu not found in common locations", sizeof(s_statusMsg) - 1);
-                s_statusTime = 3.0f;
             }
+            s_statusTime = 3.0f;
         }
         if (s_xemuPath[0] == 0 && !Xemu_FlatpakInstalled())
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "Set xemu path to enable ISO launching");
@@ -1237,28 +1218,10 @@ void RenderTitleMaker() {
                         char titleIdHex[16];
                         snprintf(titleIdHex, sizeof(titleIdHex), "%08x", s_isoInfo.titleId);
 
-                        // Build xemu launch command
                         char xemuLaunchCmd[sizeof(VirtualGame::launch)] = "";
-                        int cmdLen;
-                        {
-                            char xemuBin[512] = "";
-                            if (s_xemuPath[0]) {
-                                size_t plen = strlen(s_xemuPath);
-                                if (plen > 4 && strcmp(s_xemuPath + plen - 4, ".app") == 0)
-                                    snprintf(xemuBin, sizeof(xemuBin), "%s/Contents/MacOS/xemu", s_xemuPath);
-                                else
-                                    strncpy(xemuBin, s_xemuPath, sizeof(xemuBin) - 1);
-                            }
-                            // Bare xemu is found at launch, Flatpak and snap included.
-                            if (xemuBin[0])
-                                cmdLen = snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
-                                    "\"%s\" -machine xbox,short-animation=on -dvd_path \"%s\"", xemuBin, s_isoPath);
-                            else
-                                cmdLen = snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
-                                    "xemu -machine xbox,short-animation=on -dvd_path \"%s\"", s_isoPath);
-                        }
+                        bool fits = Xemu_IsoLaunch(s_isoPath, xemuLaunchCmd, sizeof(xemuLaunchCmd));
                         // A cut off line loses its closing quote and never launches.
-                        if (cmdLen < 0 || cmdLen >= (int)sizeof(xemuLaunchCmd)) {
+                        if (!fits) {
                             snprintf(s_statusMsg, sizeof(s_statusMsg), "ISO path too long to launch: %s", s_isoPath);
                             s_statusTime = 6.0f;
                         } else {
