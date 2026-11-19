@@ -1937,7 +1937,7 @@ public:
 		m_deleteUserContent = false;
 		m_enumDone = false;
 		m_nScrollTo = 0.0f;
-		m_timeScroll = 0.0f;
+		m_slideBegan = 0.0f;
 	}
 
 	DECLARE_NODE(CSavedGameGrid, CNode)
@@ -1988,7 +1988,7 @@ public:
 	bool m_deleteUserContent;
 	bool m_enumDone;
 	float m_nScrollTo;		// 5960 +0xd4
-	float m_timeScroll;		// 5960 keeps a double at +0xd8; this one is a float
+	float m_slideBegan;		// 5960 keeps a double at +0xd8; this one is a float
 
 	// CSavedGameGrid::Advance(dt)
 	// From 5960 @ 0x00047e50: nothing without a device or while hidden; the
@@ -2015,13 +2015,13 @@ public:
 			CallFunction(this, _T("OnUpdatingTitlesEnd"));
 		}
 
-		if (m_timeScroll == 0.0f)
+		if (m_slideBegan == 0.0f)
 			return;
-		float t = (float)(TheseusGetNow() - m_timeScroll) / 0.25f;
+		float t = (float)(TheseusGetNow() - m_slideBegan) / 0.25f;
 		if (t >= 1.0f)
 		{
 			t = 1.0f;
-			m_timeScroll = 0.0f;
+			m_slideBegan = 0.0f;
 		}
 		m_scroll = (1.0f - t) * m_scroll + t * m_nScrollTo;
 	}
@@ -2285,7 +2285,7 @@ public:
 		if (n >= 0 && n < s_titleCount)
 		{
 			m_nScrollTo = -RenderLoop(false);
-			m_timeScroll = TheseusGetNow();
+			m_slideBegan = TheseusGetNow();
 		}
 		CallFunction(this, "OnSelChange");
 	}

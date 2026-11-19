@@ -34,11 +34,11 @@ public:
 
 	bool OnSetProperty(const PRD* pprd, const void* pvValue);
 	void Advance(float nSeconds);
-	bool m_bSizeDirty;
-	bool m_bTitleDirty;
+	bool m_bResized;
+	bool m_bRetitled;
 
 	void SetBrightness(float nBrightness);
-	float m_lastBrightness;
+	float m_appliedBrightness;
 
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS()

@@ -1605,7 +1605,7 @@ static inline BYTE SpectrumByte(short level)
 void CAudioVisualizer::RenderDynamicTexture(CSurfx* pSurfx)
 {
 	CAudioClip* clip = (CAudioClip*)m_source;
-	if (clip == NULL || clip->GetNodeClass() != NODE_CLASS(CAudioClip) || clip->m_transportMode != TRANSPORT_PLAY)
+	if (clip == NULL || clip->GetNodeClass() != NODE_CLASS(CAudioClip) || clip->m_transportMode != PLAYSTATE_PLAYING)
 		return;
 
 	short* samples = (short*)clip->GetSampleBuffer();

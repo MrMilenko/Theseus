@@ -784,13 +784,13 @@ CAudioClip::CAudioClip()
 	m_pause_on_moving = false;
 	m_progress = 0.0f;
 	m_removeVoice = false;
-	m_transportMode = TRANSPORT_STOP;
-	m_lastTransportMode = -1;
+	m_transportMode = PLAYSTATE_STOPPED;
+	m_prevPlayState = -1;
 	m_dirty = true;
 	m_unpauseNeeded = false;
-	m_lastVolume = 1.0f;
+	m_prevVolume = 1.0f;
 	m_lastPan = 0.0f;
-	m_lastFrequency = 0.0f;
+	m_prevFreq = 0.0f;
 	m_fade = 0.0f;
 	m_volume = 1.0f;
 	m_pan = 0.0f;
@@ -862,9 +862,9 @@ HRESULT CAudioClip::Cleanup()
 	Stop();
 	delete m_sound;
 	m_sound = NULL;
-	m_lastVolume = 1.0f;
+	m_prevVolume = 1.0f;
 	m_lastPan = 0.0f;
-	m_lastFrequency = 0.0f;
+	m_prevFreq = 0.0f;
 	return S_OK;
 }
 
@@ -1095,17 +1095,17 @@ void CAudioClip::Advance(float nSeconds)
 	if (m_sound == NULL)
 	{
 		m_isActive = false;
-		m_transportMode = TRANSPORT_STOP;
+		m_transportMode = PLAYSTATE_STOPPED;
 	}
 	else if (m_isActive)
 	{
-		if (m_volume != m_lastVolume)
+		if (m_volume != m_prevVolume)
 		{
-			if (m_lastVolume == 0.0f && m_transportMode == TRANSPORT_PAUSE)
+			if (m_prevVolume == 0.0f && m_transportMode == PLAYSTATE_PAUSED)
 				Pause();
-			m_lastVolume = m_volume;
+			m_prevVolume = m_volume;
 			m_sound->SetAttenuation((1.0f - m_volume) * 100.0f);
-			if (m_volume == 0.0f && m_transportMode == TRANSPORT_PLAY)
+			if (m_volume == 0.0f && m_transportMode == PLAYSTATE_PLAYING)
 				Pause();
 		}
 
@@ -1115,9 +1115,9 @@ void CAudioClip::Advance(float nSeconds)
 			m_sound->SetPan(m_pan);
 		}
 
-		if (m_frequency != m_lastFrequency)
+		if (m_frequency != m_prevFreq)
 		{
-			m_lastFrequency = m_frequency;
+			m_prevFreq = m_frequency;
 			m_sound->SetFrequency(m_frequency);
 		}
 
@@ -1134,11 +1134,11 @@ void CAudioClip::Advance(float nSeconds)
 		bool ended = false;
 		if (m_sound->IsPaused())
 		{
-			m_transportMode = TRANSPORT_PAUSE;
+			m_transportMode = PLAYSTATE_PAUSED;
 		}
 		else if (m_sound->IsPlaying())
 		{
-			m_transportMode = TRANSPORT_PLAY;
+			m_transportMode = PLAYSTATE_PLAYING;
 			if (m_sendProgress)
 			{
 				float length = m_sound->GetPlaybackLength();
@@ -1148,20 +1148,20 @@ void CAudioClip::Advance(float nSeconds)
 		}
 		else
 		{
-			ended = m_transportMode == TRANSPORT_PLAY;
+			ended = m_transportMode == PLAYSTATE_PLAYING;
 		}
 
 		if (ended)
 		{
-			m_transportMode = TRANSPORT_STOP;
+			m_transportMode = PLAYSTATE_STOPPED;
 			m_isActive = false;
 			CallFunction(this, _T("OnEndOfAudio"));
 		}
 	}
 
-	if (m_transportMode != m_lastTransportMode)
+	if (m_transportMode != m_prevPlayState)
 	{
-		m_lastTransportMode = m_transportMode;
+		m_prevPlayState = m_transportMode;
 		CallFunction(this, _T("OnTransportModeChanged"));
 	}
 }
@@ -1171,7 +1171,7 @@ void CAudioClip::Advance(float nSeconds)
 //     if (transportMode is PLAY or PAUSE) Pause(); else Play();
 void CAudioClip::PlayOrPause()
 {
-	if (m_transportMode == TRANSPORT_PLAY || m_transportMode == TRANSPORT_PAUSE)
+	if (m_transportMode == PLAYSTATE_PLAYING || m_transportMode == PLAYSTATE_PAUSED)
 		Pause();
 	else
 		Play();
@@ -1195,7 +1195,7 @@ void CAudioClip::Play()
 	m_sound->SetFrequency(m_frequency);
 	if (m_sound->Play(m_capturedLoop))
 	{
-		m_transportMode = TRANSPORT_PLAY;
+		m_transportMode = PLAYSTATE_PLAYING;
 		m_isActive = true;
 	}
 }
@@ -1206,10 +1206,10 @@ void CAudioClip::Play()
 // loads it fresh from the start.
 void CAudioClip::Stop()
 {
-	if (m_transportMode == TRANSPORT_STOP)
+	if (m_transportMode == PLAYSTATE_STOPPED)
 		return;
 
-	m_transportMode = TRANSPORT_STOP;
+	m_transportMode = PLAYSTATE_STOPPED;
 	if (m_sound != NULL)
 		m_sound->Stop();
 	delete m_sound;
@@ -1226,8 +1226,8 @@ void CAudioClip::Pause()
 	if (m_dirty)
 		Initialize();
 
-	bool pausing = m_transportMode != TRANSPORT_PAUSE;
-	m_transportMode = pausing ? TRANSPORT_PAUSE : TRANSPORT_PLAY;
+	bool pausing = m_transportMode != PLAYSTATE_PAUSED;
+	m_transportMode = pausing ? PLAYSTATE_PAUSED : PLAYSTATE_PLAYING;
 	if (m_sound != NULL)
 		m_sound->Pause(pausing);
 }

@@ -6,9 +6,9 @@
 #pragma once
 
 // transportMode values the scripts see.
-#define TRANSPORT_STOP  0
-#define TRANSPORT_PLAY  1
-#define TRANSPORT_PAUSE 2
+#define PLAYSTATE_STOPPED  0
+#define PLAYSTATE_PLAYING  1
+#define PLAYSTATE_PAUSED 2
 
 class CAudioBuf;
 
@@ -29,7 +29,7 @@ public:
 	float m_progress;
 	bool m_removeVoice;
 	int m_transportMode;
-	int m_lastTransportMode;
+	int m_prevPlayState;
 
 	void Play();
 	void Pause();
@@ -47,9 +47,9 @@ public:
 protected:
 	bool m_dirty;             // url changed; the sound gets loaded again
 	bool m_unpauseNeeded;     // paused for a level change, resume after
-	float m_lastVolume;
+	float m_prevVolume;
 	float m_lastPan;
-	float m_lastFrequency;
+	float m_prevFreq;
 	float m_fade;             // seconds a volume or pan change glides over
 	float m_volume;
 	float m_pan;
