@@ -155,6 +155,7 @@ static const struct Store {
     void (*scan)(std::vector<StoreGame>&);
 } kStores[] = {
     { "Import Epic Games", "Installed games from the Epic launcher and Heroic.", Epic_Found, Epic_Scan },
+    { "Import GOG Games", "Installed games from GOG Galaxy, GOG installers and Heroic.", Gog_Found, Gog_Scan },
 };
 static const int kStoreCount = (int)(sizeof(kStores) / sizeof(kStores[0]));
 

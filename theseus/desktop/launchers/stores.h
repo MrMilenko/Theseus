@@ -25,6 +25,11 @@ void StoreGames_Add(const std::vector<StoreGame>& games, int* added, int* had);
 bool Epic_Found();
 void Epic_Scan(std::vector<StoreGame>& out);
 
+// GOG: Galaxy and offline installs from the Windows registry, and Heroic's
+// GOG installs.
+bool Gog_Found();
+void Gog_Scan(std::vector<StoreGame>& out);
+
 // Shared by the readers (stores.cpp).
 std::string Store_Home();
 std::string Store_Join(const std::string& dir, const std::string& name);
