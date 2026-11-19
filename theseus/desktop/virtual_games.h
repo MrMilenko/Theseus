@@ -46,6 +46,11 @@ struct VirtualGame {
     long long playTime;    // seconds, counted only when the launcher saw the game close
     // Another source has the same game and wins (VGames_FindDuplicates).
     bool duplicate;
+    // Launch options from the guide's game page. args go after the Launch
+    // line, env is NAME=value pairs split by ';'. Empty means as before.
+    char args[256];
+    char workdir[256];
+    char env[256];
 };
 
 struct VirtualGameDB {
@@ -127,6 +132,12 @@ inline void VGames_Load() {
             cur->lastPlayed = atoll(val);
         else if (strcmp(key, "PlayTime") == 0)
             cur->playTime = atoll(val);
+        else if (strcmp(key, "Args") == 0)
+            strncpy(cur->args, val, sizeof(cur->args) - 1);
+        else if (strcmp(key, "WorkDir") == 0)
+            strncpy(cur->workdir, val, sizeof(cur->workdir) - 1);
+        else if (strcmp(key, "Env") == 0)
+            strncpy(cur->env, val, sizeof(cur->env) - 1);
     }
     fclose(fp);
     g_vgames.generation++;
@@ -196,6 +207,9 @@ inline void VGames_Save() {
         if (g.hidden) fprintf(fp, "Hidden=1\n");
         if (g.lastPlayed) fprintf(fp, "LastPlayed=%lld\n", g.lastPlayed);
         if (g.playTime) fprintf(fp, "PlayTime=%lld\n", g.playTime);
+        if (g.args[0]) fprintf(fp, "Args=%s\n", g.args);
+        if (g.workdir[0]) fprintf(fp, "WorkDir=%s\n", g.workdir);
+        if (g.env[0]) fprintf(fp, "Env=%s\n", g.env);
         fprintf(fp, "\n");
     }
     save.Commit();

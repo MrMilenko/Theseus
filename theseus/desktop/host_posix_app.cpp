@@ -585,6 +585,11 @@ void Host_OpenFolder(const char* dir) {
 
 bool Host_RegistryString(const char*, const char*, char*, size_t) { return false; }
 
+void Host_SetEnv(const char* name, const char* value) {
+	if (value) setenv(name, value, 1);
+	else unsetenv(name);
+}
+
 // Linux reads its TOC in cdaudio.cpp.
 int Host_CdReadToc(int*, int, bool*) { return -1; }
 

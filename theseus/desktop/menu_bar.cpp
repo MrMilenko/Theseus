@@ -22,6 +22,7 @@ static const char* ShippedVersionPath() {
 #include "plex_client.h"
 #include "jellyfin_client.h"
 #include "xcloud_client.h"
+#include "launchers/xemu.h"
 #include "media_player.h"
 #include "milkdrop_window.h"
 #include "xbox_buttons.h"
@@ -586,11 +587,19 @@ void RenderSettingsWindow() {
 
             // Paths
             ImGui::Text("xemu Path:");
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 70);
+            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120);
             ImGui::InputText("##xemupath", s_xemuPath, sizeof(s_xemuPath));
             ImGui::SameLine();
             if (ImGui::Button("Save##xemu"))
                 SaveDesktopSettings();
+            ImGui::SameLine();
+            if (ImGui::Button("Find##xemu")) {
+                char found[512];
+                if (Xemu_Find(found, sizeof(found))) {
+                    snprintf(s_xemuPath, sizeof(s_xemuPath), "%s", found);
+                    SaveDesktopSettings();
+                }
+            }
 
             ImGui::Spacing();
             ImGui::Text("qcow2 HDD Image:");

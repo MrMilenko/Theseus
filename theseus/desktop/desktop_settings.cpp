@@ -10,8 +10,10 @@
 #include "audio_sdl.h"
 #include "media_player.h"
 #include "virtual_games.h"
+#include "pads.h"
 
 extern char s_xemuPath[512];
+extern char s_pcsx2Path[512];
 extern char g_qcowPath[512];
 extern char s_steamPath[512];
 extern char s_retroarchPath[512];
@@ -68,6 +70,13 @@ static const int   kStartupVals[] = { 0, 1, 2 };
 static const char* kStartupLbl[]  = { "Ask on launch", "Dashboard", "Development" };
 static const char* kStartupTok[]  = { "", "dashboard", "development" };
 
+// Turning it on buzzes once, so you know it works.
+static void ApplyRumble() { if (g_padRumble) Pads_Rumble(0.5f, 150); }
+
+static const int   kPadStyleVals[] = { 0, 1, 2, 3 };
+static const char* kPadStyleLbl[]  = { "Match the Pad", "Xbox", "PlayStation", "Nintendo" };
+static const char* kPadStyleTok[]  = { "auto", "xbox", "playstation", "nintendo" };
+
 static const int   kMsaaVals[] = { 0, 2, 4, 8 };
 static const char* kMsaaLbl[]  = { "Off", "2x", "4x", "8x" };
 
@@ -109,7 +118,8 @@ static const char* kModeLbl[]  = { "Windowed", "Borderless", "Fullscreen" };
     { key, "CRT", "Display", label, SK_FLOAT, &g_crt.field, 0, def, 0, NOENUM, lo, hi, 0.05f, NULL, NULL }
 
 static const SettingDef kDefs[] = {
-    S_PATH("XemuPath",      "Desktop", "General", "xemu Path",        s_xemuPath, 0),
+    S_PATH("XemuPath",      "Desktop", "Games",   "xemu Path",        s_xemuPath, 0),
+    S_PATH("Pcsx2Path",     "Desktop", "Games",   "PCSX2 Path",       s_pcsx2Path, 0),
     S_PATH("QcowPath",      "Desktop", "General", "qcow2 HDD Image",  g_qcowPath, 0),
     S_PATH("SteamPath",     "Desktop", "Games",   "Steam Folder",     s_steamPath, 0),
     S_PATH("RetroArchPath", "Desktop", "Games",   "RetroArch Folder", s_retroarchPath, 0),
@@ -150,6 +160,12 @@ static const SettingDef kDefs[] = {
 
     { "GuideTheme", "Desktop", "Display", "Guide Color", SK_ENUM, &g_guideTheme, 0, "green", SF_STRICT,
       ENUM(kThemeVals, kThemeLbl, kThemeTok), 0, 0, 0, NULL, NULL },
+
+    { "Rumble", "Controller", "Controller", "Rumble", SK_BOOL, &g_padRumble, 0, "1", 0,
+      NOENUM, 0, 0, 0, NULL, ApplyRumble },
+    { "ButtonStyle", "Controller", "Controller", "Button Prompts", SK_ENUM, &g_padStyle, 0, "auto", SF_STRICT,
+      ENUM(kPadStyleVals, kPadStyleLbl, kPadStyleTok), 0, 0, 0, NULL, NULL },
+    S_BOOL("SwapConfirm", "Controller", "Controller", "Confirm With the Right Button", g_padSwapConfirm, "0", 0),
 
     S_BOOL("CRT_Enabled", "CRT", "Display", "CRT Effect", g_crt.enabled, "0", 0),
     S_CRT("CRT_Scanlines",  "Scanlines",     scanlineIntensity, "0.500", 0.0f, 1.0f),

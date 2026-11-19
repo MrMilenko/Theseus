@@ -26,8 +26,15 @@
 #include "plex_client.h"
 #include "jellyfin_client.h"
 #include "xcloud_client.h"
+#include "launchers/xemu.h"
+#include "launchers/pcsx2.h"
+#include "xiso.h"
+#include "exe_icon.h"
+#include "xdg_apps.h"
 #include "guide.h"
 #include "ui_overlay.h"
+#include "pads.h"
+#include "launchers/steam.h"
 #include <algorithm>
 #include <ctype.h>
 #include <strings.h>
@@ -142,6 +149,10 @@ extern char s_esdePath[512];
 static const char* kCategories[] = { "Games", "Applications", "Homebrew", "Emulators", "Dashboards" };
 static const int   kCategoryCount = (int)(sizeof(kCategories) / sizeof(kCategories[0]));
 
+// What an added file runs with. A disc image needs an emulator in front.
+enum Runner { RUN_SELF, RUN_XEMU, RUN_PCSX2, RUN_COUNT };
+static const char* kRunners[RUN_COUNT] = { "Itself", "xemu", "PCSX2" };
+
 // A file browser entry. macOS apps are folders, but you pick them like files.
 struct BrowseEntry { std::string name; bool dir; };
 
@@ -230,6 +241,9 @@ static const char* SettingHelp(const SettingDef& d)
         { "GuideTheme",          "The guide's colors." },
         { "FetchGameArt",        "Box art for games without an icon. Icons you picked are never replaced." },
         { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
+        { "Rumble",              "A short buzz when the guide can't do what you asked." },
+        { "ButtonStyle",         "The buttons the guide shows. Match the Pad follows the pad you used last." },
+        { "SwapConfirm",         "Nintendo style: the right face button selects and the bottom one goes back." },
     };
     for (size_t i = 0; i < sizeof(kHelp) / sizeof(kHelp[0]); i++)
         if (strcmp(kHelp[i].key, d.key) == 0) return kHelp[i].help;
@@ -240,7 +254,7 @@ static const char* SettingHelp(const SettingDef& d)
     return "Left and right change it.";
 }
 
-static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games" };
+static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games", "Controller" };
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
 
 enum Section { SEC_SETTINGS, SEC_ACCOUNTS, SEC_LIBRARY, SEC_LOGS, SEC_SHORTCUTS, SEC_ABOUT, SEC_TOOLS, SEC_EXIT,
@@ -250,7 +264,7 @@ static const char* kSections[SEC_COUNT] = {
 };
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
-            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS };
+            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS, GV_APPS };
 
 // What a game list shows.
 enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH };
@@ -268,6 +282,7 @@ enum Act {
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
+    GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT,
     GA_COUNT
 };
 
@@ -311,7 +326,7 @@ static const float kWideKeys[KEY_COUNT - KEY_CHARS][2] = {
     { 0, 1.5f }, { 1.5f, 1.5f }, { 3, 3 }, { 6, 1.5f }, { 7.5f, 1.25f }, { 8.75f, 1.25f },
 };
 
-enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH };
+enum EditTarget { ED_SETTING, ED_NAME, ED_JELLYFIN, ED_SEARCH, ED_GAMEOPT };
 
 struct Editor {
     bool on, secret, shift, symbols;
@@ -338,9 +353,11 @@ static struct Guide {
     int copied;
     std::string result[GA_COUNT];
     std::string browseDir, pickedPath, pickedName, added;
+    std::string found[4];   // what each Find row turned up
+    std::vector<XdgApp> apps;   // the Linux app menu, read when its list opens
     std::vector<BrowseEntry> entries;
     bool browseStale;
-    int category, playlist;
+    int category, playlist, runner;
     int gameList, game;
     char letter;           // GL_LETTER's initial, '#' for digits and the rest
     std::string search;    // GL_SEARCH's text
@@ -423,7 +440,40 @@ static VirtualGame* PickedGame()
     return vg->valid ? vg : NULL;
 }
 
+// Button names in help text, as this pad prints them.
+static const char* Shoulders()
+{
+    switch (Pads_Style()) {
+    case UI_PAD_PLAYSTATION: return "L1 and R1";
+    case UI_PAD_NINTENDO:    return "L and R";
+    default:                 return "LB and RB";
+    }
+}
+
+static const char* GuideCombo()
+{
+    switch (Pads_Style()) {
+    case UI_PAD_PLAYSTATION: return "PS button, L2+Circle or F7";
+    case UI_PAD_NINTENDO:    return "Home button, ZL+A or F7";
+    default:                 return "Guide button, LT+B or F7";
+    }
+}
+
 static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "" };
+
+// Emulators the guide can look for, each under its path setting.
+static const struct {
+    const char* key;
+    const char* findLabel;
+    const char* findHelp;
+    bool (*find)(char* out, size_t outSize);
+} kEmus[] = {
+    { "XemuPath", "Find xemu", "Looks in the usual install folders, RetroBat, scoop, Flatpak and AppImages.",
+      Xemu_Find },
+    { "Pcsx2Path", "Find PCSX2", "Looks in the usual install folders, RetroBat, scoop, Flatpak, Lutris and AppImages.",
+      Pcsx2_Find },
+};
+static const int kEmuCount = (int)(sizeof(kEmus) / sizeof(kEmus[0]));
 
 static void Build()
 {
@@ -439,6 +489,9 @@ static void Build()
             Setting_Display(d, val, sizeof(val));
             bool typed = d.kind == SK_PATH || d.kind == SK_STRING;
             Add(d.label, val, SettingHelp(d), typed ? GA_TEXT : GA_SETTING, i);
+            for (int e = 0; e < kEmuCount; e++)
+                if (strcmp(d.key, kEmus[e].key) == 0)
+                    Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
         }
         break;
     }
@@ -455,13 +508,23 @@ static void Build()
         Add("And everyone who contributed", "", NULL);
         break;
     case GV_WELCOME: {
-        const char* intro = g_welcomeDone ? "A or B starts the dashboard."
+        const char* intro = g_welcomeDone
+            ? (Pads_Style() == UI_PAD_PLAYSTATION ? "Cross or Circle starts the dashboard." : "A or B starts the dashboard.")
             : "Nothing here is required. It's all in the guide later too.";
         Add("Start the Dashboard", "", intro, GA_RESUME);
         Add("Development Mode", "", "Edit the scenes live. Restarts UIX Desktop.", GA_DEVMODE);
         if (!g_welcomeDone || g.foldersDone)
             Add("Set Up My Folders", g.foldersDone ? "Done" : "",
                 "Makes Music, Movies, TV Shows and ROMs folders. Fill them when you like.", GA_FOLDERS);
+        // First run: fill the launcher from what's already on this machine.
+        if (!g_welcomeDone) {
+            char roots[4][512];
+            if (Steam_DiscoverInstallRoots(s_steamPath, roots, 4) > 0)
+                Add("Import My Steam Games", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.",
+                    GA_STEAM);
+            for (int e = 0; e < kEmuCount; e++)
+                Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
+        }
         Add("Open My Folders", "", "Shows them in your file manager.", GA_OPENFOLDERS);
         if (const SettingDef* mode = DesktopSettings_Find("StartupMode")) {
             char val[64];
@@ -478,18 +541,22 @@ static void Build()
         Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
         Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
         Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
+        if (strcmp(Host_Name(), "Linux") == 0)
+            Add("Import Linux Apps", "", "Games and apps from your app menu, Flatpak and your Desktop.", GA_APPS);
         char n[32];
         std::vector<int> list;
         static const char* kListHelp[] = {
             "Games you starred. They get their own spot in the launcher too.",
             "The last games you started, newest first.",
             "Games kept out of the launcher. Pick one to bring it back.",
-            "Everything in the launcher, A to Z. LB and RB jump a letter.",
+            "Everything in the launcher, A to Z.",
         };
         for (int l = GL_FAVORITES; l <= GL_ALL; l++) {
             GameListRows(l, list);
             snprintf(n, sizeof(n), "%d", (int)list.size());
-            Add(kGameListNames[l], n, kListHelp[l], GA_GAMELIST, l);
+            std::string help = kListHelp[l];
+            if (l == GL_ALL) help = help + " " + Shoulders() + " jump a letter.";
+            Add(kGameListNames[l], n, help.c_str(), GA_GAMELIST, l);
         }
         snprintf(n, sizeof(n), "%d", Playlist_Count());
         Add("Playlists", n, "Made in the Playlist Maker.", GA_VIEW, GV_PLAYLISTS);
@@ -503,6 +570,10 @@ static void Build()
             g.pickedPath.empty() ? "Taken from the file name." : "Taken from the file name. Select it to rename it.",
             g.pickedPath.empty() ? GA_NONE : GA_NAME);
         Add("Category", kCategories[g.category], "Left and right change it.", GA_CATEGORY);
+        Add("Runs With", kRunners[g.runner],
+            g.runner == RUN_SELF ? "Programs, shortcuts and scripts run themselves. Left and right change it."
+                                 : "The emulator is found when the game starts. Left and right change it.",
+            GA_RUNNER);
         Add("Add to Launcher", g.added.c_str(),
             g.pickedPath.empty() ? "Choose a file first." : "Adds it under the category above.", GA_ADDGAME);
         break;
@@ -556,6 +627,26 @@ static void Build()
             "Counted when the game closes. Games another launcher starts for us can't be timed.");
         std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
         Add("Category", where.c_str(), NULL);
+        // Rows from someone else's library aren't saved, so neither would these be.
+        if (!VGames_IsLive(*vg)) {
+            Add("Arguments", vg->args[0] ? vg->args : "None", "Added after the launch line, like -windowed.",
+                GA_GAMEOPT, 0);
+            Add("Working Folder", vg->workdir[0] ? vg->workdir : "Its own",
+                "Where the game starts. Empty starts it in the program's own folder.", GA_GAMEOPT, 1);
+            Add("Environment", vg->env[0] ? vg->env : "None",
+                "NAME=value, more than one split by ;. Like DXVK_HUD=1;MANGOHUD=1", GA_GAMEOPT, 2);
+        }
+        break;
+    }
+    case GV_APPS: {
+        Add("Add All Games", g.result[GA_APPGAMES].c_str(), "Everything marked as a game, with its icon.", GA_APPGAMES);
+        for (size_t i = 0; i < g.apps.size(); i++) {
+            char clean[128];
+            Title_SanitizeName(g.apps[i].name.c_str(), clean, sizeof(clean));
+            const char* state = VGames_FindByName(clean) >= 0 ? "In Library" : g.apps[i].game ? "Game" : "App";
+            Add(g.apps[i].name.c_str(), state, g.apps[i].exec.c_str(), GA_APP, (int)i);
+        }
+        if (g.apps.empty()) Add("Nothing found", "", "No .desktop entries in the app menu folders or on the Desktop.");
         break;
     }
     case GV_PLAYLISTS:
@@ -629,7 +720,7 @@ static void Build()
         Add("Report a Problem", "", "Paste the version and the log into an issue on GitHub.");
         break;
     case GV_SHORTCUTS:
-        Add("Guide button, LT+B or F7", "Guide", "Opens and closes this guide.");
+        Add(GuideCombo(), "Guide", "Opens and closes this guide.");
         Add("F3",  "Title Maker", NULL);
         Add("F4",  "Settings Window", NULL);
         Add("F5",  "HDD Browser", NULL);
@@ -673,6 +764,7 @@ static const char* ViewTitle()
     case GV_BROWSE:    return "Choose a File";
     case GV_PLAYLISTS: return "Playlists";
     case GV_LETTERS:   return "Find a Game";
+    case GV_APPS:      return "Linux Apps";
     case GV_GAMES: {
         static char title[32];
         if (g.gameList == GL_SEARCH) snprintf(title, sizeof(title), "Search: %.20s", g.search.c_str());
@@ -861,6 +953,14 @@ static void EditDone()
     case ED_SEARCH:
         g.search = Tidy(e.text, false);
         break;
+    case ED_GAMEOPT: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        char* field = e.arg == 0 ? vg->args : e.arg == 1 ? vg->workdir : vg->env;
+        snprintf(field, sizeof(vg->args), "%s", Tidy(e.text, e.arg == 1).c_str());
+        VGames_Save();
+        break;
+    }
     }
     bool search = e.what == ED_SEARCH && !g.search.empty();
     EditClose();
@@ -1004,13 +1104,26 @@ static bool Adjust(int dir)
         Build();
         return true;
     }
+    if (r.act == GA_RUNNER) {
+        g.runner = (g.runner + (dir < 0 ? RUN_COUNT - 1 : 1)) % RUN_COUNT;
+        Build();
+        return true;
+    }
     if (r.act != GA_SETTING) return false;
     const SettingDef& d = DesktopSettings_Table().defs[r.arg];
     if (!Setting_Cycle(d, dir < 0 ? -1 : 1)) return false;
     if (d.apply) d.apply();
     SaveDesktopSettings();
     Build();
+    // The button still held can mean something else now (SwapConfirm).
+    g.settle = true;
     return true;
+}
+
+// The pad buzzes when A can't do anything; the keyboard just doesn't.
+static void Refuse()
+{
+    if (g.device == 1) Pads_Rumble(0.35f, 90);
 }
 
 static void Select()
@@ -1018,16 +1131,39 @@ static void Select()
     if (g.cursor < 0 || g.cursor >= (int)g.rows.size()) return;
     const Row r = g.rows[g.cursor];
     switch (r.act) {
+    case GA_NONE:
+        Refuse();
+        break;
     case GA_VIEW:
         Push((View)r.arg);
         break;
     case GA_SETTING:
     case GA_CATEGORY:
+    case GA_RUNNER:
         Adjust(1);
         break;
     case GA_TEXT: {
         const SettingDef& d = DesktopSettings_Table().defs[r.arg];
         EditOpen(ED_SETTING, r.arg, d.label, (const char*)d.ptr, (size_t)d.size - 1, (d.flags & SF_SECRET) != 0);
+        break;
+    }
+    case GA_FINDEMU: {
+        char path[512];
+        const SettingDef* d = DesktopSettings_Find(kEmus[r.arg].key);
+        if (d && kEmus[r.arg].find(path, sizeof(path)) && Setting_SetText(*d, path)) {
+            SaveDesktopSettings();
+            g.found[r.arg] = "Found";
+        } else {
+            g.found[r.arg] = "Not found";
+        }
+        Build();
+        break;
+    }
+    case GA_GAMEOPT: {
+        VirtualGame* vg = PickedGame();
+        if (!vg) break;
+        const char* text = r.arg == 0 ? vg->args : r.arg == 1 ? vg->workdir : vg->env;
+        EditOpen(ED_GAMEOPT, r.arg, r.label.c_str(), text, sizeof(vg->args) - 1, false);
         break;
     }
     case GA_NAME:
@@ -1068,7 +1204,7 @@ static void Select()
         int skipped = 0;
         int added = r.act == GA_STEAM ? TitleMaker_ImportSteam(&skipped) : TitleMaker_ImportRetroArch(&skipped);
         char msg[64];
-        if (added < 0) snprintf(msg, sizeof(msg), "Not found");
+        if (added < 0) { snprintf(msg, sizeof(msg), "Not found"); Refuse(); }
         else snprintf(msg, sizeof(msg), "%d new, %d already in", added, skipped);
         g.result[r.act] = msg;
         Build();
@@ -1077,6 +1213,7 @@ static void Select()
     case GA_ESDE:
         if (!s_esdePath[0]) {
             g.result[GA_ESDE] = "Set its folder first";
+            Refuse();
         } else {
             EsdeVGames_Sync(s_esdePath);
             g.result[GA_ESDE] = "Refreshed";
@@ -1112,17 +1249,97 @@ static void Select()
         }
         g.pickedPath = full;
         g.pickedName = NameFromPath(full);
+        g.runner = RUN_SELF;
+        XdgApp entry;
+        if (e.name.size() > 8 && strcasecmp(e.name.c_str() + e.name.size() - 8, ".desktop") == 0 &&
+            XdgApps_Parse(full.c_str(), &entry)) {
+            char clean[128];
+            Title_SanitizeName(entry.name.c_str(), clean, sizeof(clean));
+            if (clean[0]) g.pickedName = clean;
+        }
+        if (Pcsx2_IsDisc(full.c_str())) {
+            // An Xbox disc names itself; anything else is a PS2 guess.
+            XisoTitleInfo xiso = XisoGetTitleInfo(full.c_str());
+            g.runner = xiso.valid ? RUN_XEMU : RUN_PCSX2;
+            char clean[128] = "";
+            if (xiso.valid) Title_SanitizeName(xiso.titleName, clean, sizeof(clean));
+            if (clean[0]) g.pickedName = clean;
+            XisoFreeTitleInfo(&xiso);
+        }
         g.added.clear();
         Back();
         break;
     }
+    case GA_APPS: {
+        std::vector<std::string> dirs;
+        XdgApps_Dirs(dirs);
+        XdgApps_Scan(dirs, g.apps);
+        g.result[GA_APPGAMES].clear();
+        Push(GV_APPS);
+        break;
+    }
+    case GA_APP:
+    case GA_APPGAMES: {
+        int added = 0, had = 0;
+        for (size_t i = 0; i < g.apps.size(); i++) {
+            const XdgApp& app = g.apps[i];
+            if (r.act == GA_APP ? (int)i != r.arg : !app.game) continue;
+            if (XdgApps_Add(app, app.game ? "Games" : "Applications")) added++; else had++;
+        }
+        if (added) { VGames_Save(); UDataSynth_RebuildAll(); }
+        if (r.act == GA_APPGAMES) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "%d new, %d already in", added, had);
+            g.result[GA_APPGAMES] = msg;
+        }
+        Build();
+        break;
+    }
     case GA_ADDGAME: {
-        if (g.pickedPath.empty() || g.pickedName.empty()) break;
-        if (VGames_FindByName(g.pickedName.c_str()) >= 0) { g.added = "Already there"; Build(); break; }
+        if (g.pickedPath.empty() || g.pickedName.empty()) { Refuse(); break; }
+        if (VGames_FindByName(g.pickedName.c_str()) >= 0) { g.added = "Already there"; Refuse(); Build(); break; }
+        // A .desktop shortcut runs its Exec line, not the file.
+        XdgApp entry;
+        if (g.runner == RUN_SELF && XdgApps_Parse(g.pickedPath.c_str(), &entry) &&
+            g.pickedPath.size() > 8 && strcasecmp(g.pickedPath.c_str() + g.pickedPath.size() - 8, ".desktop") == 0) {
+            entry.name = g.pickedName;
+            g.added = XdgApps_Add(entry, kCategories[g.category]) ? "Added" : "Already there";
+            if (g.added == "Added") {
+                VGames_Save();
+                UDataSynth_RebuildAll();
+                g.pickedPath.clear();
+                g.pickedName.clear();
+            }
+            Build();
+            break;
+        }
         char genID[16];
         snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL));
-        std::string launch = "\"" + g.pickedPath + "\"";
-        VGames_Add(g.pickedName.c_str(), genID, launch.c_str(), "E", kCategories[g.category]);
+        char launch[sizeof(VirtualGame::launch)];
+        bool fits = true;
+        XisoTitleInfo xiso = {};
+        if (g.runner == RUN_XEMU) {
+            fits = Xemu_IsoLaunch(g.pickedPath.c_str(), launch, sizeof(launch));
+            xiso = XisoGetTitleInfo(g.pickedPath.c_str());
+            if (xiso.valid) snprintf(genID, sizeof(genID), "%08x", xiso.titleId);
+        } else if (g.runner == RUN_PCSX2) {
+            fits = Pcsx2_DiscLaunch(g.pickedPath.c_str(), launch, sizeof(launch));
+        } else {
+            int n = snprintf(launch, sizeof(launch), "\"%s\"", g.pickedPath.c_str());
+            fits = n > 0 && n < (int)sizeof(launch);
+        }
+        if (!fits) { XisoFreeTitleInfo(&xiso); g.added = "Path too long"; Build(); break; }
+        VGames_Add(g.pickedName.c_str(), genID, launch, "E", kCategories[g.category]);
+        char icon[1024];
+        snprintf(icon, sizeof(icon), "%s/%s.jpg", VGAMES_ICONS, genID);
+        if (xiso.titleImageRGBA) {
+            Host_MakeDir(VGAMES_ICONS);
+            XisoSaveTitleImage(&xiso, icon);
+        } else if (g.runner == RUN_SELF && ExeIcon_IsIconSource(g.pickedPath.c_str())) {
+            Host_MakeDir(VGAMES_ICONS);
+            ExeIcon_Save(g.pickedPath.c_str(), icon);
+        }
+        XisoFreeTitleInfo(&xiso);
         VGames_Save();
         UDataSynth_RebuildAll();
         g.added = "Added";
@@ -1168,7 +1385,7 @@ static void Select()
     case GA_FAVORITE:
     case GA_HIDE: {
         VirtualGame* vg = PickedGame();
-        if (!vg) break;
+        if (!vg) { Refuse(); break; }
         if (r.act == GA_FAVORITE) VGames_SetFavorite(g.game, !vg->favorite);
         else                      VGames_SetHidden(g.game, !vg->hidden);
         Build();
@@ -1176,7 +1393,7 @@ static void Select()
     }
     case GA_LAUNCH: {
         VirtualGame* vg = PickedGame();
-        if (!vg) break;
+        if (!vg) { Refuse(); break; }
         // The same Xbox-style path the launcher hands over.
         char devicePath[512];
         snprintf(devicePath, sizeof(devicePath), "\\Device\\Harddisk0\\Partition1\\%s\\%s",
@@ -1190,11 +1407,11 @@ static void Select()
         Host_OpenFolder(Plat_UserDataDir());
         break;
     case GA_COPYVERSION:
-        if (SDL_SetClipboardText(VersionLine().c_str()) == 0) g.copied = GA_COPYVERSION;
+        if (SDL_SetClipboardText(VersionLine().c_str()) == 0) g.copied = GA_COPYVERSION; else Refuse();
         Build();
         break;
     case GA_COPYLOG:
-        if (CopyLog()) g.copied = GA_COPYLOG;
+        if (CopyLog()) g.copied = GA_COPYLOG; else Refuse();
         Build();
         break;
     case GA_QUIT: {
@@ -1645,7 +1862,7 @@ static void DrawEditor()
 
     ui_style_text(UI_TEXT_LINE, left, BODY_B + 8, UI_ALIGN_LEFT,
                   ui_overlay_keyboard() ? "Type away. Enter saves, Esc cancels."
-                                        : "LB and RB move the cursor.");
+                                        : (std::string(Shoulders()) + " move the cursor.").c_str());
 }
 
 static void Prompt(ui_style_prompt* p, int* n, int button, const char* key, const char* word, unsigned bits)
@@ -1696,6 +1913,8 @@ void Guide_Render(int width, int height)
         Hover();
         g.targets.clear();
         ui_overlay_set_device(g.device);
+        ui_overlay_set_pad_style(Pads_Style());
+        ui_overlay_set_pad_swap(g_padSwapConfirm);
         ui_style_theme(g_guideTheme);
         ui_style_clock(SDL_GetTicks());
         ui_overlay_layer(0);

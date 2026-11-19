@@ -11,11 +11,13 @@
 #include "esde.h"
 #include "esde_vgames.h"
 #include "icon_compress.h"
+#include "exe_icon.h"
 #include "udata_synth.h"
 #include "xiso.h"
 #include "launchers/steam.h"
 #include "launchers/retroarch.h"
 #include "launchers/xemu.h"
+#include "launchers/pcsx2.h"
 #include "imgui.h"
 #include "imfilebrowser.h"
 #include "stb_image.h"
@@ -33,6 +35,8 @@
 #include "safe_save.h"
 
 bool g_titleMakerOpen = false;
+
+extern int Title_SanitizeName(const char*, char*, size_t);
 
 // ============================================================================
 // Helpers
@@ -750,6 +754,8 @@ void RenderTitleMaker() {
     static bool s_appBrowserInit = false;
     static ImGui::FileBrowser s_isoBrowser(ImGuiFileBrowserFlags_CloseOnEsc);
     static bool s_isoBrowserInit = false;
+    static ImGui::FileBrowser s_ps2Browser(ImGuiFileBrowserFlags_CloseOnEsc);
+    static bool s_ps2BrowserInit = false;
     static ImGui::FileBrowser s_steamBrowser(
         ImGuiFileBrowserFlags_CloseOnEsc | ImGuiFileBrowserFlags_SelectDirectory);
     static bool s_steamBrowserInit = false;
@@ -762,7 +768,8 @@ void RenderTitleMaker() {
 
     if (!s_iconBrowserInit) {
         s_iconBrowser.SetTitle("Select Icon Image");
-        s_iconBrowser.SetTypeFilters({ ".jpg", ".jpeg", ".png", ".bmp", ".JPG", ".PNG" });
+        s_iconBrowser.SetTypeFilters({ ".jpg", ".jpeg", ".png", ".bmp", ".ico", ".exe", ".dll",
+                                        ".JPG", ".PNG", ".ICO", ".EXE", ".DLL" });
         s_iconBrowserInit = true;
     }
     if (!s_appBrowserInit) {
@@ -773,6 +780,11 @@ void RenderTitleMaker() {
         s_isoBrowser.SetTitle("Select Xbox ISO");
         s_isoBrowser.SetTypeFilters({ ".iso", ".ISO" });
         s_isoBrowserInit = true;
+    }
+    if (!s_ps2BrowserInit) {
+        s_ps2Browser.SetTitle("Select PS2 Disc");
+        s_ps2Browser.SetTypeFilters({ ".iso", ".chd", ".cso", ".zso", ".mdf", ".ISO", ".CHD", ".CSO" });
+        s_ps2BrowserInit = true;
     }
     if (!s_steamBrowserInit) {
         s_steamBrowser.SetTitle("Select Steam install folder (contains steamapps/)");
@@ -861,40 +873,44 @@ void RenderTitleMaker() {
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("Find##xemu")) {
-            const char* tryPaths[] = {
-#ifdef THESEUS_HOST_MAC
-                "/Applications/xemu.app",
-                "/opt/homebrew/bin/xemu",
-                "/usr/local/bin/xemu",
-#elif defined(THESEUS_HOST_WIN)
-                "C:\\Program Files\\xemu\\xemu.exe",
-                "C:\\Program Files (x86)\\xemu\\xemu.exe",
-#else
-                "/usr/bin/xemu",
-                "/usr/local/bin/xemu",
-                "/snap/bin/xemu",
-#endif
-                NULL
-            };
-            bool found = false;
-            for (int i = 0; tryPaths[i] && !found; i++) {
-                struct stat st;
-                if (stat(tryPaths[i], &st) == 0) {
-                    strncpy(s_xemuPath, tryPaths[i], sizeof(s_xemuPath) - 1);
-                    found = true;
-                }
-            }
-            if (!found && Xemu_FlatpakInstalled()) {
+            char found[512];
+            if (Xemu_Find(found, sizeof(found))) {
+                snprintf(s_xemuPath, sizeof(s_xemuPath), "%s", found);
+                SaveDesktopSettings();
+                snprintf(s_statusMsg, sizeof(s_statusMsg), "Found xemu: %s", found);
+            } else if (Xemu_FlatpakInstalled()) {
                 s_xemuPath[0] = 0;
                 strncpy(s_statusMsg, "Flatpak xemu found, leave the path empty", sizeof(s_statusMsg) - 1);
-                s_statusTime = 3.0f;
-            } else if (!found) {
+            } else {
                 strncpy(s_statusMsg, "xemu not found in common locations", sizeof(s_statusMsg) - 1);
-                s_statusTime = 3.0f;
             }
+            s_statusTime = 3.0f;
         }
         if (s_xemuPath[0] == 0 && !Xemu_FlatpakInstalled())
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.2f, 1.0f), "Set xemu path to enable ISO launching");
+    }
+
+    // PCSX2 path setting. Empty is fine: PS2 discs find PCSX2 at launch.
+    {
+        ImGui::Text("PCSX2:");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 150);
+        ImGui::InputText("##pcsx2path", s_pcsx2Path, sizeof(s_pcsx2Path));
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Save##pcsx2"))
+            SaveDesktopSettings();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Find##pcsx2")) {
+            char found[512];
+            if (Pcsx2_Find(found, sizeof(found))) {
+                snprintf(s_pcsx2Path, sizeof(s_pcsx2Path), "%s", found);
+                SaveDesktopSettings();
+                snprintf(s_statusMsg, sizeof(s_statusMsg), "Found PCSX2: %s", found);
+            } else {
+                strncpy(s_statusMsg, "PCSX2 not found in common locations", sizeof(s_statusMsg) - 1);
+            }
+            s_statusTime = 3.0f;
+        }
     }
 
     ImGui::Separator();
@@ -1166,6 +1182,32 @@ void RenderTitleMaker() {
     if (ImGui::Button("Add ISO")) {
         ImGui::OpenPopup("AddISOPopup");
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Add PS2 Disc")) s_ps2Browser.Open();
+    s_ps2Browser.Display();
+    if (s_ps2Browser.HasSelected()) {
+        std::string disc = s_ps2Browser.GetSelected().string();
+        s_ps2Browser.ClearSelected();
+        char name[128], clean[128];
+        TM_DeriveRomTitle(disc.c_str(), name, sizeof(name));
+        Title_SanitizeName(name, clean, sizeof(clean));
+        char launch[sizeof(VirtualGame::launch)];
+        if (!clean[0]) {
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "No usable name in %s", disc.c_str());
+        } else if (VGames_FindByName(clean) >= 0) {
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "Already in the library: %s", clean);
+        } else if (!Pcsx2_DiscLaunch(disc.c_str(), launch, sizeof(launch))) {
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "Disc path too long to launch: %s", disc.c_str());
+        } else {
+            char genID[16];
+            snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL));
+            VGames_Add(clean, genID, launch, "E", "Games");
+            VGames_Save(); UDataSynth_RebuildAll();
+            snprintf(s_statusMsg, sizeof(s_statusMsg), "Added: %s", clean);
+            s_needsScan = true;
+        }
+        s_statusTime = 4.0f;
+    }
 
     // ISO file browser + result window
     {
@@ -1237,28 +1279,10 @@ void RenderTitleMaker() {
                         char titleIdHex[16];
                         snprintf(titleIdHex, sizeof(titleIdHex), "%08x", s_isoInfo.titleId);
 
-                        // Build xemu launch command
                         char xemuLaunchCmd[sizeof(VirtualGame::launch)] = "";
-                        int cmdLen;
-                        {
-                            char xemuBin[512] = "";
-                            if (s_xemuPath[0]) {
-                                size_t plen = strlen(s_xemuPath);
-                                if (plen > 4 && strcmp(s_xemuPath + plen - 4, ".app") == 0)
-                                    snprintf(xemuBin, sizeof(xemuBin), "%s/Contents/MacOS/xemu", s_xemuPath);
-                                else
-                                    strncpy(xemuBin, s_xemuPath, sizeof(xemuBin) - 1);
-                            }
-                            // Bare xemu is found at launch, Flatpak and snap included.
-                            if (xemuBin[0])
-                                cmdLen = snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
-                                    "\"%s\" -machine xbox,short-animation=on -dvd_path \"%s\"", xemuBin, s_isoPath);
-                            else
-                                cmdLen = snprintf(xemuLaunchCmd, sizeof(xemuLaunchCmd),
-                                    "xemu -machine xbox,short-animation=on -dvd_path \"%s\"", s_isoPath);
-                        }
+                        bool fits = Xemu_IsoLaunch(s_isoPath, xemuLaunchCmd, sizeof(xemuLaunchCmd));
                         // A cut off line loses its closing quote and never launches.
-                        if (cmdLen < 0 || cmdLen >= (int)sizeof(xemuLaunchCmd)) {
+                        if (!fits) {
                             snprintf(s_statusMsg, sizeof(s_statusMsg), "ISO path too long to launch: %s", s_isoPath);
                             s_statusTime = 6.0f;
                         } else {
@@ -1342,10 +1366,13 @@ void RenderTitleMaker() {
 
         char dstPath[512];
         snprintf(dstPath, sizeof(dstPath), "%s/%s.jpg", VGAMES_ICONS, sel.titleID);
-        TM_CopyFile(iconSrc.c_str(), dstPath);
+        // An .ico or a program gives its biggest icon.
+        bool saved = ExeIcon_IsIconSource(iconSrc.c_str()) ? ExeIcon_Save(iconSrc.c_str(), dstPath)
+                                                           : TM_CopyFile(iconSrc.c_str(), dstPath);
 
         s_iconTexIdx = -1; // force icon reload
-        snprintf(s_statusMsg, sizeof(s_statusMsg), "Icon saved: %s", dstPath);
+        if (saved) snprintf(s_statusMsg, sizeof(s_statusMsg), "Icon saved: %s", dstPath);
+        else       snprintf(s_statusMsg, sizeof(s_statusMsg), "No icon in %s", iconSrc.c_str());
         s_statusTime = 3.0f;
     }
 
@@ -1354,6 +1381,14 @@ void RenderTitleMaker() {
         std::string appPath = s_appBrowser.GetSelected().string();
         s_appBrowser.ClearSelected();
         strncpy(s_editLaunch, appPath.c_str(), sizeof(s_editLaunch) - 1);
+        // A program with no icon yet lends its own.
+        if (s_selectedIdx >= 0 && s_selectedIdx < s_entryCount && ExeIcon_IsIconSource(appPath.c_str()) &&
+            !VGames_GetIconPath(s_entries[s_selectedIdx].vgIndex)) {
+            TM_EnsureDir(VGAMES_ICONS);
+            char dstPath[512];
+            snprintf(dstPath, sizeof(dstPath), "%s/%s.jpg", VGAMES_ICONS, s_entries[s_selectedIdx].titleID);
+            if (ExeIcon_Save(appPath.c_str(), dstPath)) s_iconTexIdx = -1;
+        }
     }
 
     ImGui::EndTabItem();

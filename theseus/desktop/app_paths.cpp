@@ -43,6 +43,21 @@ const char* Plat_UserDataDir() {
     if (s_init) return s_dir;
     s_init = true;
 
+    // THESEUS_DATA_DIR wins. Then portable mode: a portable.txt beside the
+    // app keeps everything in UserData next to it (a USB stick, one folder
+    // per setup). Otherwise the OS's usual per-user folder.
+    const char* env = getenv("THESEUS_DATA_DIR");
+    if (env && *env) {
+        snprintf(s_dir, sizeof(s_dir), "%s", env);
+        return s_dir;
+    }
+    char marker[1024];
+    snprintf(marker, sizeof(marker), "%s/portable.txt", Plat_ExeDir());
+    struct stat st;
+    if (stat(marker, &st) == 0) {
+        snprintf(s_dir, sizeof(s_dir), "%s/UserData", Plat_ExeDir());
+        return s_dir;
+    }
     Host_UserDataDir(s_dir, sizeof(s_dir));
     return s_dir;
 }
