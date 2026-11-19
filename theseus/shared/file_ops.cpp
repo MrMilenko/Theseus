@@ -200,6 +200,8 @@ void CGameCopier::CopyGame(int nCopyGame)
 	{
 		TitlePath(src, m_srcRoot, game.titleID, szTitleDataXBX);
 		CopyFile(src, dest);
+		// The save is across; a missing meta file doesn't undo that.
+		m_internalError = false;
 	}
 }
 
@@ -369,6 +371,7 @@ bool CGameCopier::DeleteDirectory(const TCHAR* szDir, bool RemoveSelf)
 		return true;
 
 	Ansi(narrow, szDir, MAX_PATH);
+	TheseusSetFileAttributes(narrow, FILE_ATTRIBUTE_NORMAL);
 	return TheseusRemoveDirectory(narrow) != FALSE;
 }
 

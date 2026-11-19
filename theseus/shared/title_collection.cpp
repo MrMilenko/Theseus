@@ -402,9 +402,15 @@ FILETIME CTitleArray::GetSavedGameTime(int nTitle, int nSavedGame)
 	return m_list[nTitle].m_saveList[nSavedGame].m_written;
 }
 
+static bool CancelSignaled(HANDLE cancel)
+{
+	return cancel != NULL && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0;
+}
+
 // CTitleArray::GetTitleTotalBlocks(n, cancel)
 // Reconstructed from 5960 retail XBE @ 0x43390. Counted once and cached:
 // the title's udata folder, plus its tdata folder on the hard drive.
+// A cancel during the count leaves it unknown.
 int CTitleArray::GetTitleTotalBlocks(int nTitle, HANDLE hCancelEvent)
 {
 	if (nTitle < 0 || nTitle >= m_count)
@@ -417,6 +423,9 @@ int CTitleArray::GetTitleTotalBlocks(int nTitle, HANDLE hCancelEvent)
 		if (m_root[0] == 'c' && t.m_blocks >= 0)
 			t.m_blocks += ComputeTitleTotalBlocks(GetTData(), t.m_titleID, hCancelEvent);
 	}
+	// A count cut short by cancel is taken again next time.
+	if (CancelSignaled(hCancelEvent))
+		t.m_blocks = -1;
 	return t.m_blocks;
 }
 
@@ -428,11 +437,6 @@ int ComputeTitleTotalBlocks(const TCHAR* szRoot, const TCHAR* szTitleID, HANDLE 
 	TCHAR dir[MAX_PATH];
 	MakePath(dir, szRoot, szTitleID);
 	return GetDirectoryBlocks(dir, BLOCK_SIZE, true, hCancelEvent);
-}
-
-static bool CancelSignaled(HANDLE cancel)
-{
-	return cancel != NULL && WaitForSingleObject(cancel, 0) == WAIT_OBJECT_0;
 }
 
 // ScanSavedGames(root, id, out, cancel)
