@@ -17,12 +17,12 @@
 // globals: file name @0x17ae90, line @0x17ae94, error flag @0x17ac80 and the
 // #file name buffer @0x17ac88.
 int g_nLine;
-const TCHAR* g_szFileName;
+const TCHAR* g_szCompileFile;
 static TCHAR g_szFileNameBuf[MAX_PATH];
-bool g_bParseError;
+bool g_bXapSyntaxError;
 
 // The class namespace, 5960's list head @0x17ae98.
-CNameSpace* g_classes;
+CNameSpace* g_classTable;
 
 // Every hard failure hands back an empty string so callers stop cleanly.
 // 5960 points at a shared L"" (0x201c4 / 0x21b98) the same way.
@@ -62,15 +62,15 @@ static inline bool IsKeyword(const TCHAR* pchTok, int cchTok, const TCHAR* szKey
 // after. Theseus splits that into a pair so the line can start elsewhere.
 void StartParse(const TCHAR* pch, const TCHAR* szFileName, int nLine)
 {
-	g_bParseError = false;
+	g_bXapSyntaxError = false;
 	g_nLine = nLine;
-	g_szFileName = szFileName;
+	g_szCompileFile = szFileName;
 }
 
 void EndParse()
 {
 	g_nLine = 0;
-	g_szFileName = NULL;
+	g_szCompileFile = NULL;
 }
 
 
@@ -78,7 +78,7 @@ void EndParse()
 // Reconstructed from 5960 retail XBE @ 0x00032cf0. Ghidra decompile:
 //     vswprintf(msg, 0x200, fmt, args); msg[511] = 0;
 //     swprintf(out, <"Syntax Error ... File: %s Line: %d ... %s">, file, line, msg);
-//     g_bParseError = 1;
+//     g_bXapSyntaxError = 1;
 // Retail builds the text and drops it; Theseus sends it to Trace so it shows up.
 void SyntaxError(const TCHAR* szMsg, ...)
 {
@@ -89,10 +89,10 @@ void SyntaxError(const TCHAR* szMsg, ...)
 	va_end(args);
 
 	TCHAR szReport[1024];
-	_stprintf(szReport, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), g_szFileName, g_nLine, szDetail);
+	_stprintf(szReport, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), g_szCompileFile, g_nLine, szDetail);
 	Trace(_T("\007%s\n"), szReport);
 
-	g_bParseError = true;
+	g_bXapSyntaxError = true;
 }
 
 
@@ -143,7 +143,7 @@ const TCHAR* SkipWhite(const TCHAR* pch, COMMENT_TYPE ct)
 					for (; *pch != '\0' && *pch != '\r' && *pch != '\n' && *pch != '"'; pch++)
 						*pchName++ = *pch;
 					*pchName = '\0';
-					g_szFileName = g_szFileNameBuf;
+					g_szCompileFile = g_szFileNameBuf;
 				}
 			}
 
@@ -640,21 +640,21 @@ const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbItems, int& cbArray, int n
 // The destructor @0x000346f0 frees the op buffer.
 CCompiler::CCompiler()
 {
-	m_ops = NULL;
-	m_nop = 0;
+	m_code = NULL;
+	m_opPos = 0;
 	m_opsSize = 0;
-	m_bError = false;
+	m_bFailed = false;
 }
 
 CCompiler::~CCompiler()
 {
-	delete[] m_ops;
+	delete[] m_code;
 }
 
 // CCompiler::GrowTo
 // Reconstructed from 5960 retail XBE @ 0x00034590. Ghidra decompile:
-//     cb = (n + 0xfff) & ~0xfff; p = new BYTE[cb]; memcpy(p, m_ops, m_nop);
-//     delete m_ops; m_opsSize = cb; m_ops = p;
+//     cb = (n + 0xfff) & ~0xfff; p = new BYTE[cb]; memcpy(p, m_code, m_opPos);
+//     delete m_code; m_opsSize = cb; m_code = p;
 // The buffer grows in whole 4 KB pages.
 void CCompiler::GrowTo(int nNewSize)
 {
@@ -662,16 +662,16 @@ void CCompiler::GrowTo(int nNewSize)
 	int cbNew = (nNewSize + cbPage - 1) / cbPage * cbPage;
 
 	BYTE* pbNew = new BYTE[cbNew];
-	CopyMemory(pbNew, m_ops, m_nop);
-	delete[] m_ops;
+	CopyMemory(pbNew, m_code, m_opPos);
+	delete[] m_code;
 
-	m_ops = pbNew;
+	m_code = pbNew;
 	m_opsSize = cbNew;
 }
 
 // CCompiler::SyntaxError
 // Reconstructed from 5960 retail XBE @ 0x000345e0. Same report as the free
-// SyntaxError, and it also marks this compiler: m_bError = 1; g_bParseError = 1.
+// SyntaxError, and it also marks this compiler: m_bFailed = 1; g_bXapSyntaxError = 1.
 // Theseus sends the text to Trace.
 void CCompiler::SyntaxError(const TCHAR* szMsg, ...)
 {
@@ -682,26 +682,26 @@ void CCompiler::SyntaxError(const TCHAR* szMsg, ...)
 	va_end(args);
 
 	TCHAR szReport[1024];
-	_stprintf(szReport, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), g_szFileName, g_nLine, szDetail);
+	_stprintf(szReport, _T("Syntax Error\n\nFile: %s\nLine: %d\n\n%s"), g_szCompileFile, g_nLine, szDetail);
 	Trace(_T("\007%s\n"), szReport);
 
-	m_bError = true;
-	g_bParseError = true;
+	m_bFailed = true;
+	g_bXapSyntaxError = true;
 }
 
 // CCompiler::CreateFunction
 // Reconstructed from 5960 retail XBE @ 0x00034670. Ghidra decompile:
-//     f = new(m_nop) CFunction; f->m_codeSize = m_nop; memcpy(f->m_rgop, m_ops, m_nop);
+//     f = new(m_opPos) CFunction; f->m_codeSize = m_opPos; memcpy(f->m_bytecode, m_code, m_opPos);
 // One allocation holds the function header and its ops.
 CFunction* CCompiler::CreateFunction()
 {
 #pragma push_macro("new")
 #undef new
-	CFunction* pFn = new(m_nop) CFunction;
+	CFunction* pFn = new(m_opPos) CFunction;
 #pragma pop_macro("new")
 
-	pFn->m_codeSize = m_nop;
-	CopyMemory(pFn->m_rgop, m_ops, m_nop);
+	pFn->m_codeSize = m_opPos;
+	CopyMemory(pFn->m_bytecode, m_code, m_opPos);
 	return pFn;
 }
 
@@ -713,8 +713,8 @@ CFunctionCompiler::CFunctionCompiler()
 {
 	m_nFrameSize = 0;
 	m_breaks = NULL;
-	m_nBreakables = 0;
-	m_nopTopOfLoop = 0;
+	m_breakDepth = 0;
+	m_loopStartOp = 0;
 	m_bBehavior = false;
 }
 
@@ -1039,11 +1039,11 @@ const TCHAR* CFunctionCompiler::ParseExpression(const TCHAR* pch)
 // CFunctionCompiler::ParseIF
 // Reconstructed from 5960 retail XBE @ 0x00034ea0. Ghidra decompile:
 //     '(' expr ')' or SyntaxError(L"expected '('" / L"expected ')'") and return;
-//     Write(opCond); fix = m_nop; WriteInteger(0); pch = ParseStatement(pch);
+//     Write(opCond); fix = m_opPos; WriteInteger(0); pch = ParseStatement(pch);
 //     pch = Token(pch, &tok, &cch);
-//     if (cch == 4 && !wcsncmp(tok, L"else", 4)) { Write(opJump); fix2 = m_nop; WriteInteger(0);
-//         patch(fix) = m_nop; pch = ParseStatement(pch); patch(fix2) = m_nop; return pch; }
-//     patch(fix) = m_nop; return tok;
+//     if (cch == 4 && !wcsncmp(tok, L"else", 4)) { Write(opJump); fix2 = m_opPos; WriteInteger(0);
+//         patch(fix) = m_opPos; pch = ParseStatement(pch); patch(fix2) = m_opPos; return pch; }
+//     patch(fix) = m_opPos; return tok;
 // With no else the cursor goes back to the start of the peeked token.
 const TCHAR* CFunctionCompiler::ParseIF(const TCHAR* pch)
 {
@@ -1096,7 +1096,7 @@ const TCHAR* CFunctionCompiler::ParseWHILE(const TCHAR* pch)
 {
 	BREAK* pOuterBreaks = m_breaks;
 	m_breaks = NULL;
-	m_nBreakables++;
+	m_breakDepth++;
 
 	pch = SkipWhite(pch);
 	if (*pch != '(')
@@ -1105,8 +1105,8 @@ const TCHAR* CFunctionCompiler::ParseWHILE(const TCHAR* pch)
 		return szGiveUp;
 	}
 
-	int nopOuterTop = m_nopTopOfLoop;
-	m_nopTopOfLoop = GetAddress();
+	int nopOuterTop = m_loopStartOp;
+	m_loopStartOp = GetAddress();
 
 	pch = SkipWhite(ParseExpression(pch + 1));
 	if (*pch != ')')
@@ -1122,14 +1122,14 @@ const TCHAR* CFunctionCompiler::ParseWHILE(const TCHAR* pch)
 	pch = ParseStatement(pch + 1);
 
 	Write(opJump);
-	WriteInteger(m_nopTopOfLoop);
+	WriteInteger(m_loopStartOp);
 
 	Fixup(nopExit, GetAddress());
 	FixupBreaks();
 
 	m_breaks = pOuterBreaks;
-	m_nBreakables--;
-	m_nopTopOfLoop = nopOuterTop;
+	m_breakDepth--;
+	m_loopStartOp = nopOuterTop;
 	return pch;
 }
 
@@ -1143,10 +1143,10 @@ const TCHAR* CFunctionCompiler::ParseDO(const TCHAR* pch)
 {
 	BREAK* pOuterBreaks = m_breaks;
 	m_breaks = NULL;
-	m_nBreakables++;
+	m_breakDepth++;
 
-	int nopOuterTop = m_nopTopOfLoop;
-	m_nopTopOfLoop = GetAddress();
+	int nopOuterTop = m_loopStartOp;
+	m_loopStartOp = GetAddress();
 
 	pch = ParseStatement(pch + 1);
 
@@ -1185,14 +1185,14 @@ const TCHAR* CFunctionCompiler::ParseDO(const TCHAR* pch)
 	WriteInteger(0);
 
 	Write(opJump);
-	WriteInteger(m_nopTopOfLoop);
+	WriteInteger(m_loopStartOp);
 
 	Fixup(nopExit, GetAddress());
 	FixupBreaks();
 
 	m_breaks = pOuterBreaks;
-	m_nBreakables--;
-	m_nopTopOfLoop = nopOuterTop;
+	m_breakDepth--;
+	m_loopStartOp = nopOuterTop;
 	return pch + 1;
 }
 
@@ -1207,7 +1207,7 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 {
 	BREAK* pOuterBreaks = m_breaks;
 	m_breaks = NULL;
-	m_nBreakables++;
+	m_breakDepth++;
 
 	pch = SkipWhite(pch);
 	if (*pch != '(')
@@ -1237,8 +1237,8 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 		pch++;
 	}
 
-	int nopOuterTop = m_nopTopOfLoop;
-	m_nopTopOfLoop = GetAddress();
+	int nopOuterTop = m_loopStartOp;
+	m_loopStartOp = GetAddress();
 
 	pch = SkipWhite(ParseExpression(pch));
 	if (*pch != ';')
@@ -1251,7 +1251,7 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 	UINT nopStep = GetAddress();
 	pch = ParseExpression(pchStep);
 	Write(opDrop);
-	m_nop = nopStep;
+	m_opPos = nopStep;
 
 	pch = SkipWhite(pch);
 	if (*pch != ')')
@@ -1269,27 +1269,27 @@ const TCHAR* CFunctionCompiler::ParseFOR(const TCHAR* pch)
 	ParseExpression(pchStep);
 	Write(opDrop);
 	Write(opJump);
-	WriteInteger(m_nopTopOfLoop);
+	WriteInteger(m_loopStartOp);
 
 	Fixup(nopExit, GetAddress());
 	FixupBreaks();
 
 	m_breaks = pOuterBreaks;
-	m_nBreakables--;
-	m_nopTopOfLoop = nopOuterTop;
+	m_breakDepth--;
+	m_loopStartOp = nopOuterTop;
 	return pch;
 }
 
 // CFunctionCompiler::FixupBreaks
 // Reconstructed from 5960 retail XBE @ 0x00035510. Ghidra decompile:
-//     for (b = m_breaks; b; b = next) { next = b->next; *(int*)(m_ops + b->nop) = m_nop; delete b; }
+//     for (b = m_breaks; b; b = next) { next = b->next; *(int*)(m_code + b->nop) = m_opPos; delete b; }
 void CFunctionCompiler::FixupBreaks()
 {
 	BREAK* pEntry = m_breaks;
 	while (pEntry != NULL)
 	{
 		BREAK* pNext = pEntry->m_next;
-		Fixup(pEntry->m_nop, GetAddress());
+		Fixup(pEntry->m_opPos, GetAddress());
 		delete pEntry;
 		pEntry = pNext;
 	}
@@ -1298,8 +1298,8 @@ void CFunctionCompiler::FixupBreaks()
 // CFunctionCompiler::ParseBREAK
 // Reconstructed from 5960 retail XBE @ 0x00035540. Ghidra decompile:
 //     pch = SkipWhite(pch); if (*pch != ';') { SyntaxError(L"Missing ';'"); return L""; }
-//     if (!m_nBreakables) { SyntaxError(L"unexpected 'break'"); return L""; }
-//     Write(opJump); b = new BREAK; b->next = m_breaks; m_breaks = b; b->nop = m_nop;
+//     if (!m_breakDepth) { SyntaxError(L"unexpected 'break'"); return L""; }
+//     Write(opJump); b = new BREAK; b->next = m_breaks; m_breaks = b; b->nop = m_opPos;
 //     WriteInteger(0); return pch + 1;
 const TCHAR* CFunctionCompiler::ParseBREAK(const TCHAR* pch)
 {
@@ -1309,7 +1309,7 @@ const TCHAR* CFunctionCompiler::ParseBREAK(const TCHAR* pch)
 		SyntaxError(_T("Missing ';'"));
 		return szGiveUp;
 	}
-	if (m_nBreakables == 0)
+	if (m_breakDepth == 0)
 	{
 		SyntaxError(_T("unexpected 'break'"));
 		return szGiveUp;
@@ -1318,7 +1318,7 @@ const TCHAR* CFunctionCompiler::ParseBREAK(const TCHAR* pch)
 	Write(opJump);
 
 	BREAK* pEntry = new BREAK;
-	pEntry->m_nop = GetAddress();
+	pEntry->m_opPos = GetAddress();
 	pEntry->m_next = m_breaks;
 	m_breaks = pEntry;
 
@@ -1328,7 +1328,7 @@ const TCHAR* CFunctionCompiler::ParseBREAK(const TCHAR* pch)
 
 // CFunctionCompiler::ParseCONTINUE
 // Reconstructed from 5960 retail XBE @ 0x00035610. Same checks as break
-// (L"unexpected 'continue'"), then: Write(opJump); WriteInteger(m_nopTopOfLoop).
+// (L"unexpected 'continue'"), then: Write(opJump); WriteInteger(m_loopStartOp).
 const TCHAR* CFunctionCompiler::ParseCONTINUE(const TCHAR* pch)
 {
 	pch = SkipWhite(pch);
@@ -1337,14 +1337,14 @@ const TCHAR* CFunctionCompiler::ParseCONTINUE(const TCHAR* pch)
 		SyntaxError(_T("Missing ';'"));
 		return szGiveUp;
 	}
-	if (m_nBreakables == 0)
+	if (m_breakDepth == 0)
 	{
 		SyntaxError(_T("unexpected 'continue'"));
 		return szGiveUp;
 	}
 
 	Write(opJump);
-	WriteInteger(m_nopTopOfLoop);
+	WriteInteger(m_loopStartOp);
 	return pch + 1;
 }
 
@@ -1389,7 +1389,7 @@ const TCHAR* CFunctionCompiler::ParseSLEEP(const TCHAR* pch)
 // CFunctionCompiler::ParseBlock
 // Reconstructed from 5960 retail XBE @ 0x00035800. Ghidra decompile:
 //     brace = (*pch == '{'); if (brace) pch++;
-//     base = m_nFrameSize; Write(opFrame); fix = m_nop; WriteInteger(0);
+//     base = m_nFrameSize; Write(opFrame); fix = m_opPos; WriteInteger(0);
 //     while (*pch && !(brace && *pch == '}')) pch = ParseStatement(pch);
 //     if (brace) { if (*pch != '}') { SyntaxError(L"expected '}'"); return pch; } pch++; }
 //     patch(fix) = m_nFrameSize - base; Write(opEndFrame); WriteInteger(m_nFrameSize - base);
@@ -1635,7 +1635,7 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 		pch = Token(pch, pchName, cchName, true);
 
 		CMember* pVar = (CMember*)m_targetClass->GetMember(pchName, cchName);
-		if (pVar == NULL || pVar->m_obj != objMember)
+		if (pVar == NULL || pVar->m_kind != objMember)
 		{
 			TCHAR szName[256];
 			CopyNameForMessage(szName, countof(szName), pchName, cchName);
@@ -1711,7 +1711,7 @@ const TCHAR* CClassCompiler::ParseNode(const TCHAR* pch)
 			return szGiveUp;
 		}
 
-		g_classes->Define(pchName, cchName, (CNode*)pImported);
+		g_classTable->Define(pchName, cchName, (CNode*)pImported);
 	}
 	else
 	{
@@ -2043,7 +2043,7 @@ const TCHAR* CClassCompiler::ParseFunction(const TCHAR* pch, CFunction*& pFn, bo
 // Reconstructed from 5960 retail XBE @ 0x00036e50. Ghidra decompile:
 //     Token(pch, &name, &cch); pch = SkipWhite(...); if (*pch != '{') { SyntaxError; return L""; }
 //     c = new CClass; pch = c->ParseClassBody(pch + 1);
-//     if (*pch != '}') { SyntaxError; return L""; } g_classes->Define(name, cch, c); return pch + 1;
+//     if (*pch != '}') { SyntaxError; return L""; } g_classTable->Define(name, cch, c); return pch + 1;
 const TCHAR* CClassCompiler::ParseClass(const TCHAR* pch)
 {
 	const TCHAR* pchName;
@@ -2065,21 +2065,21 @@ const TCHAR* CClassCompiler::ParseClass(const TCHAR* pch)
 		return szGiveUp;
 	}
 
-	g_classes->Define(pchName, cchName, (CNode*)pNewClass);
+	g_classTable->Define(pchName, cchName, (CNode*)pNewClass);
 	return pch + 1;
 }
 
 
 // Class_Init / Class_Exit
 // Reconstructed from 5960 retail XBE @ 0x00036f00 / 0x00036f30. Ghidra decompile:
-//     g_classes = new CNameSpace;        // one word: the list head, zeroed
-//     delete g_classes;                  // walks the list releasing each class
+//     g_classTable = new CNameSpace;        // one word: the list head, zeroed
+//     delete g_classTable;                  // walks the list releasing each class
 void Class_Init()
 {
-	g_classes = new CNameSpace;
+	g_classTable = new CNameSpace;
 }
 
 void Class_Exit()
 {
-	delete g_classes;
+	delete g_classTable;
 }

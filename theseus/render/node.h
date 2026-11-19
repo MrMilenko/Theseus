@@ -5,12 +5,12 @@
 //
 // Layouts below are checked against the 5960 retail XBE's constructors and
 // factories (sizes are the operator new argument, offsets are the stores):
-//   CObject 0x14: vtbl, m_nRefCount 0x04, m_obj 0x08, m_parent 0x0c, m_members 0x10
+//   CObject 0x14: vtbl, m_nRefCount 0x04, m_kind 0x08, m_parent 0x0c, m_pScope 0x10
 //   CNode 0x1c: m_behavior 0x14, m_visible 0x18
-//   CGroup 0x44: m_children 0x1c, m_bboxCenter 0x28, m_bboxSize 0x34, flags 0x40/0x41
-//   CInstance 0x54: m_class 0x44, m_vars 0x48
+//   CGroup 0x44: m_children 0x1c, m_boundsCenter 0x28, m_boundsSize 0x34, flags 0x40/0x41
+//   CInstance 0x54: m_classDef 0x44, m_vars 0x48
 //   CTimeDepNode 0x30: m_loop 0x1c, m_startTime 0x20, m_stopTime 0x24,
-//     m_isActive 0x28, m_lastStartTime 0x2c
+//     m_isActive 0x28, m_prevStartTime 0x2c
 //   CNodeClass 0x2c: name 0x14, size 0x18, factory 0x1c, base 0x20, props 0x24, next 0x28
 //   CClass: m_url 0x2c, m_file 0x30, m_nVarCount 0x68
 //   CProperty: m_node 0x14, m_pprd 0x18
@@ -41,7 +41,7 @@ class CFunction;
 class CRunner;
 struct TAGID;
 
-// What kind of value a CObject is (m_obj). Scripts and the VM switch on these.
+// What kind of value a CObject is (m_kind). Scripts and the VM switch on these.
 enum
 {
 	objUndefined,
@@ -304,7 +304,7 @@ public: \
 		className(); \
 		~className(); \
 		void SetSize(int nSize); \
-		int m_nAlloc; \
+		int m_reserved; \
 		int m_nSize; \
 		elemType* m_value; \
 	};
@@ -363,13 +363,13 @@ public:
 
 	CNode* GetNode(int iNode)
 	{
-		return (iNode >= 0 && iNode < m_length) ? m_rgpNode[iNode] : NULL;
+		return (iNode >= 0 && iNode < m_length) ? m_nodes[iNode] : NULL;
 	}
 
 	void SetNode(int iNode, CNode* pNode)
 	{
 		if (iNode >= 0 && iNode < m_length)
-			m_rgpNode[iNode] = pNode;
+			m_nodes[iNode] = pNode;
 	}
 
 	void AddNode(CNode* node);
@@ -381,13 +381,13 @@ public:
 
 	void Sort(int (__cdecl *compare)(const void*, const void*))
 	{
-		qsort(m_rgpNode, m_length, sizeof (CNode*), compare);
+		qsort(m_nodes, m_length, sizeof (CNode*), compare);
 	}
 
 protected:
 	int m_length;
-	int m_nAlloc;
-	CNode** m_rgpNode;
+	int m_reserved;
+	CNode** m_nodes;
 };
 
 // Root of everything the VM touches: nodes, numbers, strings, classes.
@@ -426,20 +426,20 @@ public:
 	CFunction* FindMemberFunction(const TCHAR* name, int nameLen);
 
 	int m_nRefCount;
-	int m_obj;
+	int m_kind;
 	CObject* m_parent;
-	CNameSpace* m_members;
+	CNameSpace* m_pScope;
 };
 
 // Runtime class record. Built-in node classes are static instances that
-// link themselves into c_pFirstClass at startup.
+// link themselves into c_pClassChain at startup.
 class CNodeClass : public CObject
 {
 public:
 	CNodeClass(const TCHAR* className, int objSize, CObject* (*factory)(), CNodeClass* base, const PRD* props);
 	~CNodeClass();
 
-	static CNodeClass* c_pFirstClass;
+	static CNodeClass* c_pClassChain;
 	static CNodeClass* FindByName(const TCHAR* className, int classNameLen);
 
 	CObject* CreateNode();
@@ -448,7 +448,7 @@ public:
 
 	const TCHAR* m_className;
 	int m_nObjectSize;
-	CObject* (*m_pfnCreateNode)();
+	CObject* (*m_pfnNew)();
 	CNodeClass* m_baseClass;
 	const PRD* m_rgprd;
 	CNodeClass* m_nextClass;
@@ -463,7 +463,7 @@ public:
 
 	TCHAR* m_name;
 	int m_codeSize;
-	BYTE m_rgop[ANYSIZE_ARRAY];
+	BYTE m_bytecode[ANYSIZE_ARRAY];
 
 #pragma push_macro("new")
 #undef new
@@ -544,9 +544,9 @@ public:
 	LPDIRECT3DTEXTURE8 GetTextureSurface();
 
 	CNodeArray m_children;
-	D3DXVECTOR3 m_bboxCenter;
-	D3DXVECTOR3 m_bboxSize;
-	bool m_bboxSpecified;
+	D3DXVECTOR3 m_boundsCenter;
+	D3DXVECTOR3 m_boundsSize;
+	bool m_bHasBounds;
 	bool m_bboxDirty;
 };
 
@@ -562,7 +562,7 @@ public:
 	void Render();
 	BYTE* Construct();
 
-	CClass* m_class;
+	CClass* m_classDef;
 	CNodeArray m_vars;
 };
 
@@ -583,7 +583,7 @@ public:
 	float m_startTime;
 	float m_stopTime;
 	bool m_isActive;
-	float m_lastStartTime;
+	float m_prevStartTime;
 };
 
 // "node.prop" as a script value: reads and writes go through the PRD.

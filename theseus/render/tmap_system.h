@@ -12,8 +12,8 @@ public:
 	DeltaFieldData();
 	~DeltaFieldData();
 
-	long mNegYExtents;
-	char* mField;
+	long m_negYSpan;
+	char* m_cells;
 };
 
 // 8-bit palettized drawing surface for the TMAP effects. Layout follows the
@@ -24,7 +24,7 @@ public:
 	CSurfx(int w, int h);
 	~CSurfx();
 
-	BYTE* Pixel(int x, int y) { return m_pels + (y * mBytesPerRow + x); }
+	BYTE* Pixel(int x, int y) { return m_pels + (y * m_rowBytes + x); }
 
 	void Line(int x, int y, int x2, int y2, unsigned char c);
 
@@ -41,9 +41,9 @@ public:
 	int m_nWidth;
 	int m_nHeight;
 	BYTE* m_pels;
-	int mBytesPerRow;
-	int mLineWidth;
-	RECT mClipRect;
+	int m_rowBytes;
+	int m_rowStride;
+	RECT m_clip;
 
 private:
 	// Owns its pixels, so no copies.
@@ -66,10 +66,10 @@ public:
 	// Computes the next row; returns how many are left.
 	int CalcSome();
 
-	// mCurrentY is -1 before sizing, counts up while building, ends at mHeight.
-	bool IsUninitialized() { return mCurrentY == -1; }
-	bool IsCalculating() { return mCurrentY >= 0 && mCurrentY != mHeight; }
-	bool IsCalculated() { return mCurrentY == mHeight; }
+	// m_rowCursor is -1 before sizing, counts up while building, ends at m_fieldH.
+	bool IsUninitialized() { return m_rowCursor == -1; }
+	bool IsCalculating() { return m_rowCursor >= 0 && m_rowCursor != m_fieldH; }
+	bool IsCalculated() { return m_rowCursor == m_fieldH; }
 
 	// The field, finished first if it wasn't; NULL if it was never sized.
 	DeltaFieldData* GetField();
@@ -80,14 +80,14 @@ public:
 	int m_nStyle;
 
 protected:
-	long mCurrentY;
-	long mNegYExtents;
-	float mX_Cord, mY_Cord, mR_Cord, mT_Cord;
-	float mXScale, mYScale;
-	bool mPolar, mHasRTerm, mHasThetaTerm;
-	long mWidth, mHeight;
+	long m_rowCursor;
+	long m_negYSpan;
+	float m_cx, m_cy, m_polarR, m_polarT;
+	float m_stretchX, m_stretchY;
+	bool m_bPolarStyle, m_bUsesR, m_bUsesTheta;
+	long m_fieldW, m_fieldH;
 	long mAspect1to1;
-	DeltaFieldData mFieldData;
+	DeltaFieldData m_grid;
 };
 
 extern void MakePalette(DWORD pal[256]);

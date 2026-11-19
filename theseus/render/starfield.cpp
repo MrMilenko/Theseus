@@ -27,7 +27,7 @@ public:
 
 protected:
 	int m_nAllocStars;
-	D3DXVECTOR3* m_rgstar;
+	D3DXVECTOR3* m_starPool;
 	void Update();
 
 	DECLARE_NODE_PROPS()
@@ -48,14 +48,14 @@ CStarField::CStarField()
 	m_stars = 20;
 	m_speed = 1.0f;
 	m_nAllocStars = 0;
-	m_rgstar = NULL;
+	m_starPool = NULL;
 }
 
 // CStarField::~CStarField()
 // Reconstructed from 5960 retail XBE @ 0x00060410: frees the array, then CNode.
 CStarField::~CStarField()
 {
-	delete [] m_rgstar;
+	delete [] m_starPool;
 }
 
 // CStarField::Update()
@@ -68,19 +68,19 @@ CStarField::~CStarField()
 // New stars start at z = 0, so the next Advance scatters them.
 void CStarField::Update()
 {
-	if (m_rgstar != NULL && m_stars <= m_nAllocStars)
+	if (m_starPool != NULL && m_stars <= m_nAllocStars)
 		return;
 
 	D3DXVECTOR3* grown = new D3DXVECTOR3 [m_stars];
 	memset(grown, 0, m_stars * sizeof (D3DXVECTOR3));
 
-	if (m_rgstar != NULL)
+	if (m_starPool != NULL)
 	{
-		memcpy(grown, m_rgstar, m_nAllocStars * sizeof (D3DXVECTOR3));
-		delete [] m_rgstar;
+		memcpy(grown, m_starPool, m_nAllocStars * sizeof (D3DXVECTOR3));
+		delete [] m_starPool;
 	}
 
-	m_rgstar = grown;
+	m_starPool = grown;
 	m_nAllocStars = m_stars;
 }
 
@@ -103,7 +103,7 @@ void CStarField::Advance(float nSeconds)
 
 	for (int i = 0; i < m_stars; i++)
 	{
-		D3DXVECTOR3& star = m_rgstar[i];
+		D3DXVECTOR3& star = m_starPool[i];
 		star.z -= m_speed * nSeconds;
 		if (star.z > 0.0f)
 			continue;
@@ -139,7 +139,7 @@ void CStarField::RenderDynamicTexture(CSurfx* pSurfx)
 
 	for (int i = 0; i < m_stars; i++)
 	{
-		D3DXVECTOR3& star = m_rgstar[i];
+		D3DXVECTOR3& star = m_starPool[i];
 		if (!(star.z > 0.0f))
 			continue;
 

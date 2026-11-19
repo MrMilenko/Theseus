@@ -603,7 +603,7 @@ void CCopyDestination::Render()
 		bool current = m_units[i] == m_curDevUnit;
 		(current ? m_panelMUHilite : m_panelMU)->Render();
 		(current ? m_panelTextHilite : m_panelText)->Render();
-		(m_selDevUnit == Dev0 ? m_console : m_memoryUnit)->Render();
+		(m_selDevUnit == SLOT_HDD ? m_console : m_memoryUnit)->Render();
 
 		TheseusPopWorld();
 	}
@@ -629,11 +629,11 @@ void CCopyDestination::Advance(float nSeconds)
 	m_unitCount = 0;
 	for (int i = 0; i < 9; i++)
 	{
-		int unit = (i == 0) ? Dev0 : i - 1;
+		int unit = (i == 0) ? SLOT_HDD : i - 1;
 		if (unit == m_sourceDevUnit)
 			continue;
 
-		if (unit != Dev0 && !g_titles[unit].IsValid())
+		if (unit != SLOT_HDD && !g_titles[unit].IsValid())
 		{
 			if (unit == m_curDevUnit)
 				curRemoved = true;

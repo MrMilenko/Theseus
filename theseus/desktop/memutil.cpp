@@ -9,7 +9,7 @@ extern bool CleanupTextureCache();
 extern bool CleanupMeshCache();
 
 // How far the out of memory recovery has got.
-int g_nNewFailedState;
+int g_allocRetryStage;
 
 // NewFailed(bytes)
 // Follows the 5960 retail XBE's out of memory handling (inlined around its
@@ -20,9 +20,9 @@ int g_nNewFailedState;
 int __cdecl NewFailed(size_t nBytes)
 {
 	bool freed = false;
-	if (g_nNewFailedState == 0)
+	if (g_allocRetryStage == 0)
 		freed = CleanupTextureCache();
-	else if (g_nNewFailedState == 1)
+	else if (g_allocRetryStage == 1)
 		freed = CleanupMeshCache();
 	else
 	{
@@ -31,7 +31,7 @@ int __cdecl NewFailed(size_t nBytes)
 	}
 
 	if (!freed)
-		g_nNewFailedState++;
+		g_allocRetryStage++;
 	return 1;
 }
 
@@ -52,5 +52,5 @@ void TheseusCreateMeshFVF(DWORD NumFaces, DWORD NumVertices, DWORD Options, DWOR
 
 void Memory_Init()
 {
-	g_nNewFailedState = 0;
+	g_allocRetryStage = 0;
 }

@@ -7,7 +7,7 @@
 #include "node.h"
 #include "runner.h"
 
-extern CObject **g_rgParam;
+extern CObject **g_scriptArgs;
 extern int g_nParam;
 extern CObject *Dereference(CObject *pObject);
 
@@ -34,9 +34,9 @@ protected:
 	void Grow(int nNewLength);
 	void Allocate(int nLength);
 
-	int m_nLength;
-	int m_nAlloc;
-	CObject **m_object;
+	int m_used;
+	int m_reserved;
+	CObject **m_items;
 
 	DECLARE_NODE_FUNCTIONS()
 
@@ -55,8 +55,8 @@ public:
 	void Assign(CObject *pObject);
 	CObject *Deref();
 
-	CArrayObject *m_pArray;
-	int m_nIndex;
+	CArrayObject *m_pOwner;
+	int m_elem;
 };
 
 // Takes a reference for the copy it stores.
@@ -73,15 +73,15 @@ static inline CObject *Share(CObject *obj)
 // reference) and the index.
 CArrayElementReference::CArrayElementReference(CArrayObject *pArray, int nIndex)
 {
-	m_pArray = pArray;
-	m_pArray->AddRef();
-	m_nIndex = nIndex;
+	m_pOwner = pArray;
+	m_pOwner->AddRef();
+	m_elem = nIndex;
 }
 
 // Reconstructed from 5960 retail XBE @ 0x000304c0.
 CArrayElementReference::~CArrayElementReference()
 {
-	m_pArray->Release();
+	m_pOwner->Release();
 }
 
 // CArrayElementReference::Assign(value)
@@ -90,15 +90,15 @@ CArrayElementReference::~CArrayElementReference()
 void CArrayElementReference::Assign(CObject *pObject)
 {
 	// 5960 writes a[-1] in front of the array; refuse it instead.
-	if (!CHECK(m_nIndex >= 0))
+	if (!CHECK(m_elem >= 0))
 	{
-		g_pRunner->Error(_T("Array reference out of bounds"));
+		g_pActiveRunner->Error(_T("Array reference out of bounds"));
 		return;
 	}
-	if (m_nIndex >= m_pArray->m_nLength)
-		m_pArray->Grow(m_nIndex + 1);
+	if (m_elem >= m_pOwner->m_used)
+		m_pOwner->Grow(m_elem + 1);
 
-	CObject *&slot = m_pArray->m_object[m_nIndex];
+	CObject *&slot = m_pOwner->m_items[m_elem];
 	if (slot != NULL)
 		slot->Release();
 	slot = Share(pObject);
@@ -110,12 +110,12 @@ void CArrayElementReference::Assign(CObject *pObject)
 // a reference), and the reference object lets go of itself.
 CObject *CArrayElementReference::Deref()
 {
-	if (m_nIndex < 0 || m_nIndex >= m_pArray->m_nLength)
+	if (m_elem < 0 || m_elem >= m_pOwner->m_used)
 	{
-		g_pRunner->Error(_T("Array reference out of bounds"));
+		g_pActiveRunner->Error(_T("Array reference out of bounds"));
 		return NULL;
 	}
-	CObject *value = Share(m_pArray->m_object[m_nIndex]);
+	CObject *value = Share(m_pOwner->m_items[m_elem]);
 	Release();
 	return value;
 }
@@ -136,13 +136,13 @@ END_NODE_FUN()
 // Sets up n empty slots (none at all for 0).
 void CArrayObject::Allocate(int nLength)
 {
-	m_nLength = nLength;
-	m_nAlloc = nLength;
-	m_object = NULL;
+	m_used = nLength;
+	m_reserved = nLength;
+	m_items = NULL;
 	if (nLength != 0)
 	{
-		m_object = new CObject *[nLength];
-		memset(m_object, 0, nLength * sizeof(CObject *));
+		m_items = new CObject *[nLength];
+		memset(m_items, 0, nLength * sizeof(CObject *));
 	}
 }
 
@@ -152,13 +152,13 @@ void CArrayObject::Allocate(int nLength)
 // elements, each with a reference; none makes an empty array.
 CArrayObject::CArrayObject()
 {
-	m_obj = objArray;
+	m_kind = objArray;
 
 	int length = 0;
 	if (g_nParam == 1)
 	{
-		g_rgParam[0] = Dereference(g_rgParam[0]);
-		CNumObject *count = g_rgParam[0]->ToNum();
+		g_scriptArgs[0] = Dereference(g_scriptArgs[0]);
+		CNumObject *count = g_scriptArgs[0]->ToNum();
 		length = (int)count->m_value;
 		count->Release();
 	}
@@ -171,7 +171,7 @@ CArrayObject::CArrayObject()
 	if (g_nParam > 1)
 	{
 		for (int i = 0; i < g_nParam; i++)
-			m_object[i] = Share(g_rgParam[i]);
+			m_items[i] = Share(g_scriptArgs[i]);
 	}
 }
 
@@ -184,12 +184,12 @@ CArrayObject::CArrayObject(int nLength)
 // Reconstructed from 5960 retail XBE @ 0x00030800: releases every element.
 CArrayObject::~CArrayObject()
 {
-	for (int i = 0; i < m_nLength; i++)
+	for (int i = 0; i < m_used; i++)
 	{
-		if (m_object[i] != NULL)
-			m_object[i]->Release();
+		if (m_items[i] != NULL)
+			m_items[i]->Release();
 	}
-	delete[] m_object;
+	delete[] m_items;
 }
 
 // CArrayObject::Grow(length)
@@ -199,21 +199,21 @@ CArrayObject::~CArrayObject()
 // don't copy every time.
 void CArrayObject::Grow(int nNewLength)
 {
-	if (nNewLength <= m_nLength)
+	if (nNewLength <= m_used)
 		return;
 
-	if (nNewLength > m_nAlloc)
+	if (nNewLength > m_reserved)
 	{
 		int room = nNewLength + nNewLength / 2 + 16;
 		CObject **grown = new CObject *[room];
-		if (m_nLength > 0)
-			memcpy(grown, m_object, m_nLength * sizeof(CObject *));
-		delete[] m_object;
-		m_object = grown;
-		m_nAlloc = room;
+		if (m_used > 0)
+			memcpy(grown, m_items, m_used * sizeof(CObject *));
+		delete[] m_items;
+		m_items = grown;
+		m_reserved = room;
 	}
-	memset(m_object + m_nLength, 0, (nNewLength - m_nLength) * sizeof(CObject *));
-	m_nLength = nNewLength;
+	memset(m_items + m_used, 0, (nNewLength - m_used) * sizeof(CObject *));
+	m_used = nNewLength;
 }
 
 // Reconstructed from 5960 retail XBE @ 0x00030960: join(",").
@@ -228,10 +228,10 @@ CStrObject *CArrayObject::ToStr()
 // CObject::Dot.
 CObject *CArrayObject::Dot(CObject *pObject)
 {
-	if (pObject->m_obj == objNumber)
+	if (pObject->m_kind == objNumber)
 		return new CArrayElementReference(this, (int)((CNumObject *)pObject)->m_value);
-	if (pObject->m_obj == objVariable && _tcscmp(((CVarObject *)pObject)->m_text, _T("length")) == 0)
-		return new CNumObject((float)m_nLength);
+	if (pObject->m_kind == objVariable && _tcscmp(((CVarObject *)pObject)->m_text, _T("length")) == 0)
+		return new CNumObject((float)m_used);
 	return CObject::Dot(pObject);
 }
 
@@ -248,15 +248,15 @@ static void CopyInto(CObject **dst, CObject *const *src, int count)
 // one's elements then other's; "object is not an array" for anything else.
 CObject *CArrayObject::concat(CObject *pObject)
 {
-	if (pObject->m_obj != objArray)
+	if (pObject->m_kind != objArray)
 	{
-		g_pRunner->Error(_T("object is not an array"));
+		g_pActiveRunner->Error(_T("object is not an array"));
 		return NULL;
 	}
 	CArrayObject *other = (CArrayObject *)pObject;
-	CArrayObject *result = new CArrayObject(m_nLength + other->m_nLength);
-	CopyInto(result->m_object, m_object, m_nLength);
-	CopyInto(result->m_object + m_nLength, other->m_object, other->m_nLength);
+	CArrayObject *result = new CArrayObject(m_used + other->m_used);
+	CopyInto(result->m_items, m_items, m_used);
+	CopyInto(result->m_items + m_used, other->m_items, other->m_used);
 	return result;
 }
 
@@ -266,16 +266,16 @@ CObject *CArrayObject::concat(CObject *pObject)
 CStrObject *CArrayObject::join(const TCHAR *szSeperator)
 {
 	CStrObject *text = new CStrObject;
-	for (int i = 0; i < m_nLength; i++)
+	for (int i = 0; i < m_used; i++)
 	{
 		if (i > 0)
 			text->Append(szSeperator);
-		if (m_object[i] == NULL)
+		if (m_items[i] == NULL)
 		{
 			text->Append(_T("[null]"));
 			continue;
 		}
-		CStrObject *part = m_object[i]->ToStr();
+		CStrObject *part = m_items[i]->ToStr();
 		text->Append(part->GetSz());
 		part->Release();
 	}
@@ -286,9 +286,9 @@ CStrObject *CArrayObject::join(const TCHAR *szSeperator)
 // Reconstructed from 5960 retail XBE @ 0x00030c40: a new array, back to front.
 CObject *CArrayObject::reverse()
 {
-	CArrayObject *result = new CArrayObject(m_nLength);
-	for (int i = 0; i < m_nLength; i++)
-		result->m_object[m_nLength - 1 - i] = Share(m_object[i]);
+	CArrayObject *result = new CArrayObject(m_used);
+	for (int i = 0; i < m_used; i++)
+		result->m_items[m_used - 1 - i] = Share(m_items[i]);
 	return result;
 }
 
@@ -301,26 +301,26 @@ CObject *CArrayObject::slice(CObject **rgparam, int nParam /*int nStart, int nEn
 {
 	if (nParam != 1 && nParam != 2)
 	{
-		g_pRunner->Error(_T("invalid number of parameters"));
+		g_pActiveRunner->Error(_T("invalid number of parameters"));
 		return NULL;
 	}
 
 	int start = (int)rgparam[0]->Deref()->ToNum()->m_value;
 	int end = nParam == 2 ? (int)rgparam[1]->Deref()->ToNum()->m_value : -1;
 	if (end < 0)
-		end += m_nLength + 1;
+		end += m_used + 1;
 	// 5960 reads past the array for a negative start or an end past the last
 	// element; keep both inside it.
 	if (start < 0)
 		start = 0;
-	if (end > m_nLength)
-		end = m_nLength;
+	if (end > m_used)
+		end = m_used;
 	int count = end - start;
 	if (count < 0)
 		count = 0;
 
 	CArrayObject *result = new CArrayObject(count);
-	CopyInto(result->m_object, m_object + start, count);
+	CopyInto(result->m_items, m_items + start, count);
 	return result;
 }
 
@@ -347,8 +347,8 @@ static int __cdecl CompareElements(const void *left, const void *right)
 // Reconstructed from 5960 retail XBE @ 0x00030e70: a sorted copy (qsort).
 CObject *CArrayObject::sort()
 {
-	CArrayObject *result = new CArrayObject(m_nLength);
-	CopyInto(result->m_object, m_object, m_nLength);
-	qsort(result->m_object, result->m_nLength, sizeof(CObject *), CompareElements);
+	CArrayObject *result = new CArrayObject(m_used);
+	CopyInto(result->m_items, m_items, m_used);
+	qsort(result->m_items, result->m_used, sizeof(CObject *), CompareElements);
 	return result;
 }

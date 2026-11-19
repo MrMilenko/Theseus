@@ -183,7 +183,7 @@ CMeshNode::load(file):                                // 0x0005c250
 
 Render stamps the time, loads on first use (the inlined `Initialize`: load if the url is
 set, then `Init`), and returns if there's still no mesh. Otherwise it draws with
-`bSetFVF = (g_pRenderMeshNode != this)`: the shape renderer sets the FVF itself for the
+`bSetFVF = (g_pDrawingShape != this)`: the shape renderer sets the FVF itself for the
 node it's drawing. The destructor `free`s an owned mesh without running its destructor,
 because the base class has no virtual one.
 

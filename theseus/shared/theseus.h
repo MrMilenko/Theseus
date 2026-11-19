@@ -863,13 +863,13 @@ const WCHAR TheseusTempWmaFileW[] = L"MUSIC:\\tempwma.wma";
 
 
 
-extern int g_nDiscType;
+extern int g_discKind;
 
 #define DISC_NONE   0
 #define DISC_BAD    1
 #define DISC_TITLE  2
 #define DISC_AUDIO  3
-#define DISC_VIDEO  4
+#define DISC_DVD  4
 
 
 

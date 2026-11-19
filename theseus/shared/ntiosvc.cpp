@@ -1,13 +1,13 @@
 // ntiosvc.cpp: the CD-ROM service behind audio CDs. Open, the table of
 // contents, raw reads and the track lengths are rebuilt from the 5960
-// retail XBE (0x64da0..0x650c0, g_cdrom at 0x188780); see
+// retail XBE (0x64da0..0x650c0, g_discIoctl at 0x188780); see
 // docs/decomp/NtIoSvc.md. The disc id and name strings are Theseus's.
 
 #include "std.h"
 #include "theseus.h"
 #include "ntiosvc.h"
 
-CNtIoctlCdromService g_cdrom;
+CNtIoctlCdromService g_discIoctl;
 
 // A TOC address is four bytes: unused, minute, second, frame.
 static DWORD AddressToFrames(const UCHAR* addr)
@@ -28,10 +28,10 @@ static void SplitFrames(DWORD dwFrames, int* pnMinutes, int* pnSeconds, int* pnF
 
 // CNtIoctlCdromService::CNtIoctlCdromService()
 // Reconstructed from 5960 retail XBE @ 0x00064da0:
-//     m_hDevice = -1; m_toc.LastTrack = 0;
+//     m_hDrive = -1; m_trackTable.LastTrack = 0;
 CNtIoctlCdromService::CNtIoctlCdromService()
 {
-	m_hDevice = INVALID_HANDLE_VALUE;
+	m_hDrive = INVALID_HANDLE_VALUE;
 }
 
 CNtIoctlCdromService::~CNtIoctlCdromService()
@@ -41,17 +41,17 @@ CNtIoctlCdromService::~CNtIoctlCdromService()
 
 // CNtIoctlCdromService::Close()
 // Reconstructed from 5960 retail XBE @ 0x00064db0:
-//     if (m_hDevice != -1) { CloseHandle(m_hDevice); m_hDevice = -1; }
-//     m_toc.LastTrack = 0;
+//     if (m_hDrive != -1) { CloseHandle(m_hDrive); m_hDrive = -1; }
+//     m_trackTable.LastTrack = 0;
 // Theseus also frees its name strings, which clears the track count too.
 void CNtIoctlCdromService::Close()
 {
-	if (m_hDevice != INVALID_HANDLE_VALUE)
+	if (m_hDrive != INVALID_HANDLE_VALUE)
 	{
-		CloseHandle(m_hDevice);
-		m_hDevice = INVALID_HANDLE_VALUE;
+		CloseHandle(m_hDrive);
+		m_hDrive = INVALID_HANDLE_VALUE;
 	}
-	m_toc.Delete();
+	m_trackTable.Delete();
 }
 
 // CNtIoctlCdromService::Open(drive)
@@ -63,8 +63,8 @@ void CNtIoctlCdromService::Close()
 // The drive number goes unused; there is only one drive.
 HRESULT CNtIoctlCdromService::Open(DWORD dwDriveNumber)
 {
-	m_hDevice = TheseusCreateFile(_T("CDROM0:"), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (m_hDevice == INVALID_HANDLE_VALUE)
+	m_hDrive = TheseusCreateFile(_T("CDROM0:"), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (m_hDrive == INVALID_HANDLE_VALUE)
 		return HRESULT_FROM_WIN32(GetLastError());
 
 	if (!GetTableOfContents())
@@ -93,7 +93,7 @@ bool CNtIoctlCdromService::GetTableOfContents()
 	for (;;)
 	{
 		UCHAR* addr = toc.TrackData[i].Address;
-		m_toc.TrackAddr[i] = AddressToFrames(addr);
+		m_trackTable.TrackAddr[i] = AddressToFrames(addr);
 
 		if (toc.TrackData[i].TrackNumber == 0xAA)
 			break;
@@ -108,7 +108,7 @@ bool CNtIoctlCdromService::GetTableOfContents()
 				addr[1] -= 1;
 			else
 				addr[2] -= 60;
-			m_toc.TrackAddr[i] = AddressToFrames(addr);
+			m_trackTable.TrackAddr[i] = AddressToFrames(addr);
 			break;
 		}
 
@@ -117,13 +117,13 @@ bool CNtIoctlCdromService::GetTableOfContents()
 		i += 1;
 	}
 
-	m_toc.LastTrack = i;
+	m_trackTable.LastTrack = i;
 
 	// Theseus: the disc id.
-	if (m_toc.LastTrack > 0)
-		m_toc.UpdateDiscID();
+	if (m_trackTable.LastTrack > 0)
+		m_trackTable.UpdateDiscID();
 
-	return m_toc.LastTrack > 0;
+	return m_trackTable.LastTrack > 0;
 }
 
 // CNtIoctlCdromService::Read(start, count, buffer, retries)
@@ -155,7 +155,7 @@ HRESULT CNtIoctlCdromService::Read(DWORD dwReadStart, DWORD dwReadLength, LPVOID
 HRESULT CNtIoctlCdromService::DeviceIoControl(DWORD dwControlCode, LPVOID pvInBuffer, DWORD dwInBufferSize, LPVOID pvOutBuffer, DWORD dwOutBufferSize, LPDWORD pdwBytesReturned)
 {
 	DWORD dwIgnored;
-	if (::DeviceIoControl(m_hDevice, dwControlCode, pvInBuffer, dwInBufferSize, pvOutBuffer, dwOutBufferSize,
+	if (::DeviceIoControl(m_hDrive, dwControlCode, pvInBuffer, dwInBufferSize, pvOutBuffer, dwOutBufferSize,
 	                      pdwBytesReturned != NULL ? pdwBytesReturned : &dwIgnored, NULL))
 		return S_OK;
 	return HRESULT_FROM_WIN32(GetLastError());
@@ -170,32 +170,32 @@ bool CNtIoctlCdromService::GetTotalLength(int* pnMinutes, int* pnSeconds, int* p
 {
 	if (!IsOpen())
 		return false;
-	SplitFrames(m_toc.TrackAddr[m_toc.LastTrack] - m_toc.TrackAddr[0], pnMinutes, pnSeconds, pnFrames);
+	SplitFrames(m_trackTable.TrackAddr[m_trackTable.LastTrack] - m_trackTable.TrackAddr[0], pnMinutes, pnSeconds, pnFrames);
 	return true;
 }
 
 bool CNtIoctlCdromService::GetTrackLength(int nTrack, int* pnMinutes, int* pnSeconds, int* pnFrames)
 {
-	if (!IsOpen() || nTrack < 0 || nTrack >= m_toc.LastTrack)
+	if (!IsOpen() || nTrack < 0 || nTrack >= m_trackTable.LastTrack)
 		return false;
-	SplitFrames(m_toc.TrackAddr[nTrack + 1] - m_toc.TrackAddr[nTrack], pnMinutes, pnSeconds, pnFrames);
+	SplitFrames(m_trackTable.TrackAddr[nTrack + 1] - m_trackTable.TrackAddr[nTrack], pnMinutes, pnSeconds, pnFrames);
 	return true;
 }
 
 // Theseus: name lookups. Nothing fills these in yet, so they stay NULL.
 const TCHAR* CNtIoctlCdromService::GetTitle()
 {
-	return IsOpen() ? m_toc.szTitle : NULL;
+	return IsOpen() ? m_trackTable.szTitle : NULL;
 }
 
 const TCHAR* CNtIoctlCdromService::GetArtist()
 {
-	return IsOpen() ? m_toc.szArtist : NULL;
+	return IsOpen() ? m_trackTable.szArtist : NULL;
 }
 
 const TCHAR* CNtIoctlCdromService::GetTrackName(int nTrack)
 {
-	return IsOpen() ? m_toc.rgszTrack[nTrack] : NULL;
+	return IsOpen() ? m_trackTable.rgszTrack[nTrack] : NULL;
 }
 
 // Theseus: the strings around the 5960 track list.

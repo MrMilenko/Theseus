@@ -22,7 +22,7 @@ CTitleArray g_titles [9];
 // from the memory monitor as they're mounted.
 void TitleArray_Init()
 {
-	g_titles[Dev0].SetRoot('c', false);
+	g_titles[SLOT_HDD].SetRoot('c', false);
 }
 
 // CTitleArray::CTitleArray

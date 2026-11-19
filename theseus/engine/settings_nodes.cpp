@@ -36,7 +36,7 @@ public:
 protected:
 	bool OpenCurrent();
 
-	CSettingsFile m_sfile;
+	CSettingsFile m_store;
 };
 
 // What settings.<name> evaluates to: reading it fetches the value,
@@ -95,7 +95,7 @@ CSettings::~CSettings()
 CObject* CSettings::Dot(CObject* member)
 {
 	CObject* own = CNode::Dot(member);
-	if (own != NULL || member->m_obj != objVariable)
+	if (own != NULL || member->m_kind != objVariable)
 		return own;
 
 	const TCHAR* name = ((CVarObject*)member)->m_text;
@@ -111,17 +111,17 @@ CObject* CSettings::Dot(CObject* member)
 // needed.
 bool CSettings::OpenCurrent()
 {
-	if (m_sfile.GetFileName() != NULL && _tcsicmp(m_sfile.GetFileName(), m_file) == 0)
+	if (m_store.GetFileName() != NULL && _tcsicmp(m_store.GetFileName(), m_file) == 0)
 		return true;
-	m_sfile.Close();
-	return m_sfile.Open(m_file);
+	m_store.Close();
+	return m_store.Open(m_file);
 }
 
 void CSettings::Reload()
 {
-	m_sfile.Close();
+	m_store.Close();
 	if (m_file != NULL)
-		m_sfile.Open(m_file);
+		m_store.Open(m_file);
 }
 
 // CSettings::SetValue(name, value)   [script fn 'SetValue', FND 0x00182028, sig 13]
@@ -130,7 +130,7 @@ void CSettings::Reload()
 void CSettings::SetValue(const TCHAR* name, const TCHAR* value)
 {
 	OpenCurrent();
-	m_sfile.SetValue(m_section, name, value);
+	m_store.SetValue(m_section, name, value);
 }
 
 // CSettings::GetValue(name)   [script fn 'GetValue', FND 0x00182010, sig 5]
@@ -142,7 +142,7 @@ CStrObject* CSettings::GetValue(const TCHAR* name)
 	if (!OpenCurrent())
 		return new CStrObject(_T(""));
 	TCHAR value[1024];
-	m_sfile.GetValue(m_section, name, value, countof(value));
+	m_store.GetValue(m_section, name, value, countof(value));
 	return new CStrObject(value);
 }
 
@@ -204,7 +204,7 @@ public:
 	void SetDelay2(float secs);
 	void SetDelay3(float secs);
 
-	static CScreenSaver* c_pTheScreenSaver;
+	static CScreenSaver* c_pSaver;
 
 	bool m_enabled;
 	bool m_isActive;
@@ -213,7 +213,7 @@ public:
 	float m_delay;
 	float m_delay2;
 	float m_delay3;
-	XTIME m_timeOfLastEvent;
+	XTIME m_lastInputTime;
 };
 
 IMPLEMENT_NODE("ScreenSaver", CScreenSaver, CNode)
@@ -239,7 +239,7 @@ START_NODE_FUN(CScreenSaver, CNode)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-CScreenSaver* CScreenSaver::c_pTheScreenSaver = NULL;     // 0x0017e738
+CScreenSaver* CScreenSaver::c_pSaver = NULL;     // 0x0017e738
 XTIME g_timeOfLastEvent;                                    // 0x0017c030
 
 // CScreenSaver::CScreenSaver()
@@ -255,15 +255,15 @@ CScreenSaver::CScreenSaver()
 	m_delay = 300.0f;
 	m_delay2 = 0.0f;
 	m_delay3 = 0.0f;
-	m_timeOfLastEvent = TheseusGetNow();
-	c_pTheScreenSaver = this;
+	m_lastInputTime = TheseusGetNow();
+	c_pSaver = this;
 }
 
 // Reconstructed from 5960 retail XBE @ 0x00040190.
 CScreenSaver::~CScreenSaver()
 {
-	if (c_pTheScreenSaver == this)
-		c_pTheScreenSaver = NULL;
+	if (c_pSaver == this)
+		c_pSaver = NULL;
 }
 
 void CScreenSaver::StartAfter(float secs) { m_delay = secs; }
@@ -289,18 +289,18 @@ void CScreenSaver::Advance(float dt)
 			CallFunction(this, _T("OnEnd"));
 		}
 	}
-	else if (!m_isActive && now >= m_timeOfLastEvent + m_delay)
+	else if (!m_isActive && now >= m_lastInputTime + m_delay)
 	{
 		m_isActive = true;
 		CallFunction(this, _T("OnStart"));
 	}
 
-	if (m_delay2 > 0.0f && !m_isActive2 && now >= m_timeOfLastEvent + m_delay2)
+	if (m_delay2 > 0.0f && !m_isActive2 && now >= m_lastInputTime + m_delay2)
 	{
 		m_isActive2 = true;
 		CallFunction(this, _T("OnDelay2"));
 	}
-	if (m_delay3 > 0.0f && !m_isActive3 && now >= m_timeOfLastEvent + m_delay3)
+	if (m_delay3 > 0.0f && !m_isActive3 && now >= m_lastInputTime + m_delay3)
 	{
 		m_isActive3 = true;
 		CallFunction(this, _T("OnDelay3"));
@@ -319,7 +319,7 @@ void CScreenSaver::reset()
 	}
 	m_isActive2 = false;
 	m_isActive3 = false;
-	m_timeOfLastEvent = TheseusGetNow();
+	m_lastInputTime = TheseusGetNow();
 }
 
 // CScreenSaver::OnSetProperty(prd, value)
@@ -345,7 +345,7 @@ bool ResetScreenSaver()
 {
 	g_timeOfLastEvent = TheseusGetNow();
 
-	CScreenSaver* saver = CScreenSaver::c_pTheScreenSaver;
+	CScreenSaver* saver = CScreenSaver::c_pSaver;
 	if (saver == NULL)
 		return false;
 

@@ -4,9 +4,9 @@
 // binary write-up.
 //
 // Layouts checked against the 5960 retail XBE:
-//   CRunner: m_wakeup 0x00 (double), m_nop 0x08, m_ops 0x0c, m_sp 0x10,
+//   CRunner: m_wakeup 0x00 (double), m_opPos 0x08, m_code 0x0c, m_sp 0x10,
 //     m_stack 0x14, m_spFrame 0x1a4, m_spBase 0x1a8, m_self 0x1ac,
-//     m_thisRef 0x1b0, m_bError 0x1b4, m_nLine 0x1b8, m_nextContext 0x1bc.
+//     m_thisRef 0x1b0, m_bFailed 0x1b4, m_nLine 0x1b8, m_nextContext 0x1bc.
 //     5960's stack holds 100 objects; Theseus gives it 256.
 //   RUNCONTEXT 0x1c: next, ops, nop, spFrame, self, thisRef, sp (PushContext 0x37690).
 //   CNumObject 0x18: m_value 0x14.
@@ -233,8 +233,8 @@ public:
 struct RUNCONTEXT
 {
 	RUNCONTEXT* m_nextContext;
-	BYTE* m_ops;
-	UINT m_nop;
+	BYTE* m_code;
+	UINT m_opPos;
 	UINT m_spFrame;
 	CObject* m_self;
 	CObject* m_thisRef;
@@ -250,7 +250,7 @@ public:
 	bool SetFunc(const TCHAR* funcName);
 	void SetFunc(CFunction* func);
 	void ResetFunc();
-	bool HasFunc() const { return m_ops != NULL; }
+	bool HasFunc() const { return m_code != NULL; }
 
 	void Push(float value);
 	void Push(int value);
@@ -289,24 +289,24 @@ protected:
 	inline int FetchInt()
 	{
 		int n;
-		memcpy(&n, m_ops + m_nop, sizeof (n));
-		m_nop += sizeof (n);
+		memcpy(&n, m_code + m_opPos, sizeof (n));
+		m_opPos += sizeof (n);
 		return n;
 	}
 
 	inline UINT FetchUInt()
 	{
 		UINT n;
-		memcpy(&n, m_ops + m_nop, sizeof (n));
-		m_nop += sizeof (n);
+		memcpy(&n, m_code + m_opPos, sizeof (n));
+		m_opPos += sizeof (n);
 		return n;
 	}
 
 	inline float FetchFloat()
 	{
 		float n;
-		memcpy(&n, m_ops + m_nop, sizeof (n));
-		m_nop += sizeof (n);
+		memcpy(&n, m_code + m_opPos, sizeof (n));
+		m_opPos += sizeof (n);
 		return n;
 	}
 
@@ -314,26 +314,26 @@ protected:
 	inline const TCHAR* FetchString(int& cch)
 	{
 		cch = FetchInt();
-		const TCHAR* pch = (const TCHAR*)(m_ops + m_nop);
-		m_nop += cch * sizeof (TCHAR);
+		const TCHAR* pch = (const TCHAR*)(m_code + m_opPos);
+		m_opPos += cch * sizeof (TCHAR);
 		return pch;
 	}
 
 	XTIME m_wakeup;			// sleep deadline, 0 when awake
-	UINT m_nop;				// offset into m_ops
-	BYTE* m_ops;			// bytecode being run
+	UINT m_opPos;				// offset into m_code
+	BYTE* m_code;			// bytecode being run
 	UINT m_sp;				// next free stack slot
 	CObject* m_stack [256];
 	UINT m_spFrame;			// first local of the current call
 	UINT m_spBase;
 	CObject* m_self;		// owner of the running function
 	CObject* m_thisRef;		// what "this" means in script
-	bool m_bError;
+	bool m_bFailed;
 	int m_nLine;
 	RUNCONTEXT* m_nextContext;
 };
 
-extern CRunner* g_pRunner;
+extern CRunner* g_pActiveRunner;
 extern CObject* g_pThis;
 
 extern bool ExecuteScript(CObject* obj, const TCHAR* funcName);

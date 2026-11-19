@@ -20,8 +20,8 @@
 // 5960 holds 550 pairs (0x0017aee8); the Theseus files can be longer.
 #define MAX_XLATE 1000
 
-int g_nCurLanguage;     // 0x0017c024
-int g_nCurRegion;       // 0x0017c020
+int g_language;     // 0x0017c024
+int g_region;       // 0x0017c020
 
 // 5960 names an XBE section per language (pointer table at 0x001745b0, nine
 // of them); Theseus ships a .dat file for the first six.
@@ -354,12 +354,12 @@ CTranslator::~CTranslator()
 // lists through DeleteAll so their names come back in the new language.
 void CTranslator::SetLanguage(int nNewLanguage)
 {
-	if (nNewLanguage == g_nCurLanguage && s_xlate[0].key != NULL)
+	if (nNewLanguage == g_language && s_xlate[0].key != NULL)
 		return;
 	if (nNewLanguage < 0 || nNewLanguage >= LANGUAGE_COUNT)
 		return;
 
-	g_nCurLanguage = nNewLanguage;
+	g_language = nNewLanguage;
 	FreeXlate();
 	LoadXlate(s_languageFiles[nNewLanguage]);
 
@@ -400,13 +400,13 @@ CStrObject* CTranslator::TranslateStripColon(const TCHAR* szString)
 // The binary lets 9 through, one past "BR"; this stops at the last code.
 const TCHAR* GetLanguageCode(TCHAR* sz)
 {
-	if (g_nCurLanguage < 0 || g_nCurLanguage >= LANGUAGE_CODE_COUNT)
+	if (g_language < 0 || g_language >= LANGUAGE_CODE_COUNT)
 	{
 		sz[0] = 0;
 		return sz;
 	}
-	sz[0] = s_languageCodes[g_nCurLanguage * 2];
-	sz[1] = s_languageCodes[g_nCurLanguage * 2 + 1];
+	sz[0] = s_languageCodes[g_language * 2];
+	sz[1] = s_languageCodes[g_language * 2 + 1];
 	sz[2] = 0;
 	return sz;
 }
@@ -416,9 +416,9 @@ const TCHAR* GetLanguageCode(TCHAR* sz)
 // string object, or an empty one out of range.
 CStrObject* CTranslator::GetLanguageCode()
 {
-	if (g_nCurLanguage < 0 || g_nCurLanguage >= LANGUAGE_CODE_COUNT)
+	if (g_language < 0 || g_language >= LANGUAGE_CODE_COUNT)
 		return new CStrObject;
-	return new CStrObject(s_languageCodes + g_nCurLanguage * 2, 2);
+	return new CStrObject(s_languageCodes + g_language * 2, 2);
 }
 
 // GetDateSeparator()
@@ -429,11 +429,11 @@ CStrObject* CTranslator::GetLanguageCode()
 // outside North America, and Korean dashes.
 TCHAR GetDateSeparator()
 {
-	int region = g_nCurRegion;
+	int region = g_region;
 	if (region != XC_GAME_REGION_NA && region != XC_GAME_REGION_JAPAN && region != XC_GAME_REGION_RESTOFWORLD)
 		return '/';
 
-	switch (g_nCurLanguage)
+	switch (g_language)
 	{
 	case LANGUAGE_GERMAN:
 	case LANGUAGE_ITALIAN:
@@ -457,7 +457,7 @@ CStrObject* CTranslator::GetDateSeparator()
 // FormatInteger(out, number, locale)
 // 5960 has no separate copy; the script call (@ 0x0003ccb0) and the block
 // counts (@ 0x0004ca90) print with swprintf(out, L"%d", n) in place.
-void FormatInteger(TCHAR* szBuf, int nNumber, int locale/*=LOCALE_CURRENT*/)
+void FormatInteger(TCHAR* szBuf, int nNumber, int locale/*=LOCALE_ACTIVE*/)
 {
 	_stprintf(szBuf, _T("%d"), nNumber);
 }
@@ -465,7 +465,7 @@ void FormatInteger(TCHAR* szBuf, int nNumber, int locale/*=LOCALE_CURRENT*/)
 // FormatBlocks(out, blocks, locale)
 // Reconstructed from the memory monitor's block text, 5960 retail XBE
 // @ 0x0004ca90: past 50000 it prints "50000+".
-void FormatBlocks(TCHAR* szBuf, int nBlocks, int locale/*=LOCALE_CURRENT*/)
+void FormatBlocks(TCHAR* szBuf, int nBlocks, int locale/*=LOCALE_ACTIVE*/)
 {
 	if (nBlocks <= MAX_BLOCKS_TO_SHOW)
 	{
@@ -521,10 +521,10 @@ static void PrintDate(TCHAR* out, int size, const SYSTEMTIME* st, int locale)
 // the three regions get "%d:%02d %s" on a 12 hour clock (0 shows as 12, AM
 // below 12); everyone else "%d:%02d" on 24. Both parts plus 2 must fit in
 // size or it returns false without writing.
-bool FormatTime(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE_CURRENT*/)
+bool FormatTime(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE_ACTIVE*/)
 {
-	if (locale == LOCALE_CURRENT)
-		locale = LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage);
+	if (locale == LOCALE_ACTIVE)
+		locale = LOCALE_BY_REGION(g_region, g_language);
 
 	TCHAR date[32];
 	PrintDate(date, countof(date), pst, locale);
@@ -561,10 +561,10 @@ bool FormatTime(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE
 //     anything else:                                "%02d%c%02d%c%d " day, month, year
 //     if (chLen < len + 2) return false; copy; return true;
 // The Text node's <date> prefix draws this.
-bool FormatDate(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE_CURRENT*/)
+bool FormatDate(TCHAR* szBuf, SIZE_T chLen, SYSTEMTIME* pst, int locale/*=LOCALE_ACTIVE*/)
 {
-	if (locale == LOCALE_CURRENT)
-		locale = LOCALE_FROM_REGION_LANGUAGE(g_nCurRegion, g_nCurLanguage);
+	if (locale == LOCALE_ACTIVE)
+		locale = LOCALE_BY_REGION(g_region, g_language);
 
 	TCHAR date[32];
 	PrintDate(date, countof(date), pst, locale);

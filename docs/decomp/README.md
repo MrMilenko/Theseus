@@ -33,7 +33,7 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x000147c8 | `_classCMemoryMonitor` | `CMemoryMonitor::class` (memory_monitor.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the storage-device watcher node. |
 | 0x00014b38 | `_classCLayout` | `CLayout::class` (scene_groups.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the radial layout container (used by the dashboard's main menu wheel). |
 | 0x00014b3c | `_classCBillboard` | `CBillboard::class` (scene_groups.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the camera-facing quad node. |
-| 0x0001a06c | `_classCXAppNode` | `CXAppNode::class` (main.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the application root node type. |
+| 0x0001a06c | `_classCAppShellNode` | `CAppShellNode::class` (main.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the application root node type. |
 | 0x0001a098 | `_classCTimeDepNode` | `CTimeDepNode::class` (animation_nodes.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for time-dependent node base. |
 | 0x0001a0f0 | `_classCArrayObject` | `CArrayObject::class` (array.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Array type. |
 | 0x0001a1b0 | `_classCDateObject` | `CDateObject::class` (date_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the script-visible Date type. |
@@ -58,18 +58,18 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0001f300 | `_classCMaxMaterial` | `CMaxMaterial::class` (materials.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the 3ds Max material translator node. |
 | 0x0001f33c | `_classCLayer` | `CLayer::class` (scene_groups.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the 2D-overlay layer node. |
 | 0x0001f368 | `_classCKeyboard` | `CKeyboard::class` (keyboard_node.cpp) | [Scene Graph](Node.md) | Static `CNodeClass` registration for the on-screen keyboard node. |
-| 0x0002c570 | `CXApp::CXApp` | globals init in `main.cpp` | [App Shell](#app-shell) | Constructor for the original `CXApp` singleton. Theseus replaced this with module-scope globals and free functions; the binary class is preserved for reference. |
+| 0x0002c570 | `CAppShell::CAppShell` | globals init in `main.cpp` | [App Shell](#app-shell) | Constructor for the original `CAppShell` singleton. Theseus replaced this with module-scope globals and free functions; the binary class is preserved for reference. |
 | 0x0002cc10 | `Xbox_Init` | `Xbox_Init` (main.cpp) | [App Shell](#app-shell) | Early-boot init: `XOnlineStartup`, drive-letter symlinks, `XSetFileCacheSize`, `XInitDevices`, region detection, network bring-up. Runs before scene graph creation. |
-| 0x0002d0e0 | `CXApp::Draw` | main loop in `main.cpp` | [App Shell](#app-shell) | Per-frame render entry. Calls scene graph traversal then `Present`. |
-| 0x0002d7e0 | `CXApp::InitApp` | `TheseusInit` in `main.cpp` | [App Shell](#app-shell) | Direct3D device creation, scene graph bootstrap, initial XIP load. |
-| 0x0002d930 | `CXApp::CleanupApp` | `TheseusShutdown` in `main.cpp` | [App Shell](#app-shell) | Tear-down: scene graph destruction, D3D device release. |
-| 0x0002da00 | `XApp` | (vtable / class registration) | [App Shell](#app-shell) | CXApp class-table thunk emitted by the compiler. Theseus's CTheseus equivalent was eliminated; the binary still has it. |
-| 0x0002dbc0 | `CXApp::GetStartupClassFile` | startup logic in `main.cpp` | [App Shell](#app-shell) | Resolves the boot XAP file from config. The dashboard's first scene is loaded by string lookup against this path. |
+| 0x0002d0e0 | `CAppShell::Draw` | main loop in `main.cpp` | [App Shell](#app-shell) | Per-frame render entry. Calls scene graph traversal then `Present`. |
+| 0x0002d7e0 | `CAppShell::InitApp` | `TheseusInit` in `main.cpp` | [App Shell](#app-shell) | Direct3D device creation, scene graph bootstrap, initial XIP load. |
+| 0x0002d930 | `CAppShell::CleanupApp` | `TheseusShutdown` in `main.cpp` | [App Shell](#app-shell) | Tear-down: scene graph destruction, D3D device release. |
+| 0x0002da00 | `AppShell_Run` | frame loop in `main.cpp` | [App Shell](#app-shell) | Runs `InitApp`, then the frame loop forever: clock, input, camera, lerpers, scene advance, `Draw`. |
+| 0x0002dbc0 | `CAppShell::GetStartupClassFile` | startup logic in `main.cpp` | [App Shell](#app-shell) | Resolves the boot XAP file from config. The dashboard's first scene is loaded by string lookup against this path. |
 | 0x0002dc50 | `CRecovery::StartRecovery` | `CReboot::Reboot` in `reboot_node.cpp` | [App Shell](#app-shell) | Original entry to factory recovery via `DashRecovery()`. Theseus replaced with `CReboot::Reboot()` returning to firmware; recovery as a concept does not apply on modded hardware. |
-| 0x0002dc80 | `main` | `main` (main.cpp) | [App Shell](#app-shell) | C entry point. Calls `Xbox_Init`, constructs the global `CXApp` (`theApp`), enters the per-frame `Draw` loop. |
-| 0x0002def0 | `XAppCreateFile` | `TheseusCreateFile` in `main.cpp` | [App Shell](#app-shell) | Wrapper around `CreateFileA` with dashboard-specific share/disposition defaults. |
+| 0x0002dc80 | `main` | `main` (main.cpp) | [App Shell](#app-shell) | C entry point. Calls `Xbox_Init`, constructs the global `CAppShell` (`theApp`), enters the per-frame `Draw` loop. |
+| 0x0002def0 | `AppShell_CreateFile` | `TheseusCreateFile` in `main.cpp` | [App Shell](#app-shell) | Wrapper around `CreateFileA` with dashboard-specific share/disposition defaults. |
 | 0x0002ea20 | `CNodeClass::FindByName` | `CNodeClass::FindByName` in `node_system.cpp` | [Scene Graph](Node.md) | Walks the static class registration list (built from `_classCXxxx_CXxxx__2VCNodeClass__A` entries in .data) looking for a UTF-16 class name match. The XAP compiler uses this when binding `DEF` declarations. |
-| 0x0002ee60 | `CXAppNode::Advance` | tick loop in `main.cpp` | [Scene Graph](Node.md) | Per-frame tick on the application root node. Drives the time-dependent node graph. |
+| 0x0002ee60 | `CAppShellNode::Advance` | tick loop in `main.cpp` | [Scene Graph](Node.md) | Per-frame tick on the application root node. Drives the time-dependent node graph. |
 | 0x00030440 | `CArrayElementReference_CArrayElementReference` | `CArrayElementReference::CArrayElementReference` (array.cpp) | [Script VM](VM.md) | Holds the array and index an `array[i]` expression names. |
 | 0x000304c0 | `CArrayElementReference_dtor` | `CArrayElementReference::~CArrayElementReference` (array.cpp) | [Script VM](VM.md) | Releases the array. |
 | 0x00030520 | `CArrayElementReference_Assign` | `CArrayElementReference::Assign` (array.cpp) | [Script VM](VM.md) | Stores into the slot, growing the array when the index is past the end. |
@@ -420,7 +420,7 @@ When in doubt about an entry, run the address through Ghidra and compare. The po
 | 0x0006a530 | `CLiveAccounts_GetResult` | `CLiveAccounts::GetResult` (live_accounts.cpp) | [Live Accounts](#live-accounts) | Returns the numeric result code from the most recent Live operation (logon, friends fetch, etc.). |
 | 0x0006a590 | `CLiveAccounts_ClearMOTDCache` | `CLiveAccounts::ClearMOTDCache` (live_accounts.cpp) | [Live Accounts](#live-accounts) | Invalidates the cached "message of the day" so the next Live update re-fetches it. |
 | 0x0006e6cb | `CFilePump::GetData` | `CFilePump::GetData` (audio_system.cpp) | [Audio](AudioSystem.md) | Reads the next chunk of compressed data from the file pump's source file. Called by the decoder when its input is empty. |
-| 0x0007967f | `CXAppNode::GetTextureSurface` | `CXAppNode::GetTextureSurface` (main.cpp) | [Render](#render) | Returns the underlying D3D `IDirect3DSurface8` for a node's bound texture. Used by render-to-texture nodes. |
+| 0x0007967f | `CAppShellNode::GetTextureSurface` | `CAppShellNode::GetTextureSurface` (main.cpp) | [Render](#render) | Returns the underlying D3D `IDirect3DSurface8` for a node's bound texture. Used by render-to-texture nodes. |
 | 0x000cfe09 | `CLayout::GetRadius` | `CLayout::GetRadius` (scene_groups.cpp) | [Scene Groups](SceneGroups.md) | Returns the layout's circular radius. Inlined in many .text use sites; this is the FND-bound wrapper. |
 | 0x0011bec2 | `CXo_XOnlineLogon` | `CXo::XOnlineLogon` (xbox_live.cpp) | [Live Accounts](#live-accounts) | Theseus-side facade over `XOnlineLogon`. Marshals the dashboard's account record into the kernel call's parameter shape. |
 

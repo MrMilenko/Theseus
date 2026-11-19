@@ -84,8 +84,8 @@ LPDIRECT3DTEXTURE8 CTexture::GetTextureSurface()
 //     this->surface = CreateTexture(&w, &h); return surface != NULL;
 bool CTexture::Create(int nWidth, int nHeight)
 {
-	m_nImageWidth = nWidth;
-	m_nImageHeight = nHeight;
+	m_texWidth = nWidth;
+	m_texHeight = nHeight;
 	m_surface = ::CreateTexture(nWidth, nHeight, m_format);
 	return m_surface != NULL;
 }
@@ -263,12 +263,12 @@ bool CBackgroundLoader::Fetch(const TCHAR* szURL)
 	return GetLastError() == ERROR_IO_PENDING;
 }
 
-// BackgroundLoader_Frame()
+// AssetLoader_Pump()
 // Inlined in the 5960 frame loop (main frame loop @ 0x0002da00, after the
 // lerpers advance and before Draw):
 //     for (p = first; p; p = next) { next = p->next;
 //         if (p->overlapped.Internal != STATUS_PENDING) { p->OnComplete(); delete p; } }
-void BackgroundLoader_Frame()
+void AssetLoader_Pump()
 {
 	CBackgroundLoader* pNext;
 	for (CBackgroundLoader* p = CBackgroundLoader::c_pFirst; p != NULL; p = pNext)
@@ -534,7 +534,7 @@ void CImageTexture::Load(const TCHAR* szURL)
 
 	m_surface = pSlot->m_texture;
 	m_surface->AddRef();
-	TheseusGetTextureSize(m_surface, m_nImageWidth, m_nImageHeight);
+	TheseusGetTextureSize(m_surface, m_texWidth, m_texHeight);
 }
 
 
@@ -823,9 +823,9 @@ LPDIRECT3DTEXTURE8 MyLoadImage(const TCHAR *szURL);
 struct IMGCACHE
 {
 	TCHAR *m_url;
-	LPDIRECT3DTEXTURE8 m_hImage;
+	LPDIRECT3DTEXTURE8 m_pTex;
 	SIZE m_size;
-	XTIME m_usage;
+	XTIME m_lastTouch;
 };
 
 static IMGCACHE imageCache[100];
@@ -840,7 +840,7 @@ IMGCACHE *FindImage(const TCHAR *szURL)
 	{
 		if (imageCache[i].m_url != NULL && _tcsicmp(imageCache[i].m_url, szURL) == 0)
 		{
-			imageCache[i].m_usage = TheseusGetNow();
+			imageCache[i].m_lastTouch = TheseusGetNow();
 			return &imageCache[i];
 		}
 
@@ -849,7 +849,7 @@ IMGCACHE *FindImage(const TCHAR *szURL)
 
 		if (imageCache[i].m_url == NULL)
 			pFreeOne = &imageCache[i];
-		else if (pOldOne == NULL || pOldOne->m_usage > imageCache[i].m_usage)
+		else if (pOldOne == NULL || pOldOne->m_lastTouch > imageCache[i].m_lastTouch)
 			pOldOne = &imageCache[i];
 	}
 
@@ -857,8 +857,8 @@ IMGCACHE *FindImage(const TCHAR *szURL)
 	{
 		delete[] pOldOne->m_url;
 
-		if (pOldOne->m_hImage != NULL)
-			pOldOne->m_hImage->Release();
+		if (pOldOne->m_pTex != NULL)
+			pOldOne->m_pTex->Release();
 
 		ZeroMemory(pOldOne, sizeof(IMGCACHE));
 		pFreeOne = pOldOne;
@@ -869,14 +869,14 @@ IMGCACHE *FindImage(const TCHAR *szURL)
 	pFreeOne->m_url = new TCHAR[_tcslen(szURL) + 1];
 	_tcscpy(pFreeOne->m_url, szURL);
 
-	pFreeOne->m_usage = TheseusGetNow();
+	pFreeOne->m_lastTouch = TheseusGetNow();
 
-	pFreeOne->m_hImage = MyLoadImage(szURL);
+	pFreeOne->m_pTex = MyLoadImage(szURL);
 
-	if (pFreeOne->m_hImage != NULL)
+	if (pFreeOne->m_pTex != NULL)
 	{
 		D3DSURFACE_DESC sd;
-		VERIFYHR(pFreeOne->m_hImage->GetLevelDesc(0, &sd));
+		VERIFYHR(pFreeOne->m_pTex->GetLevelDesc(0, &sd));
 		pFreeOne->m_size.cx = (int)sd.Width;
 		pFreeOne->m_size.cy = (int)sd.Height;
 	}
@@ -1035,11 +1035,11 @@ void PreloadSkinTextures()
 CMesh::CMesh()
 {
 	m_nFaceCount = 0;
-	m_nVertexCount = 0;
+	m_vertCount = 0;
 	m_nIndexCount = 0;
-	m_primitiveType = (D3DPRIMITIVETYPE)0;
+	m_drawMode = (D3DPRIMITIVETYPE)0;
 	m_fvf = 0;
-	m_nVertexStride = 0;
+	m_vertSize = 0;
 	m_vertexBuffer = NULL;
 	m_indexBuffer = NULL;
 }
@@ -1078,25 +1078,25 @@ bool CMesh::Create(HANDLE hFile)
 	ReadFile(hFile, &hdr, sizeof(hdr), &cbRead, NULL);
 
 	if (hdr.dwPrimitiveType == 4)
-		m_primitiveType = D3DPT_TRIANGLELIST;
+		m_drawMode = D3DPT_TRIANGLELIST;
 	else if (hdr.dwPrimitiveType == 5)
-		m_primitiveType = D3DPT_TRIANGLESTRIP;
+		m_drawMode = D3DPT_TRIANGLESTRIP;
 	else
 	{
 #ifdef _XBOX
 		return false;
 #else
-		m_primitiveType = (D3DPRIMITIVETYPE)hdr.dwPrimitiveType;	// desktop takes the file's word for it
+		m_drawMode = (D3DPRIMITIVETYPE)hdr.dwPrimitiveType;	// desktop takes the file's word for it
 #endif
 	}
 
 	m_nFaceCount = hdr.dwFaceCount;
 	m_fvf = hdr.dwFVF;
-	m_nVertexStride = hdr.dwVertexStride;
-	m_nVertexCount = hdr.dwVertexCount;
+	m_vertSize = hdr.dwVertexStride;
+	m_vertCount = hdr.dwVertexCount;
 	m_nIndexCount = hdr.dwIndexCount;
 
-	int cbVertices = m_nVertexCount * m_nVertexStride;
+	int cbVertices = m_vertCount * m_vertSize;
 	int cbIndices = m_nIndexCount * sizeof(WORD);
 
 	BYTE* pb;
@@ -1176,13 +1176,13 @@ void CMesh::Render(bool bSetFVF)
 	}
 #endif
 
-	TheseusSetStreamSource(0, m_vertexBuffer, m_nVertexStride);
+	TheseusSetStreamSource(0, m_vertexBuffer, m_vertSize);
 	TheseusSetIndices(m_indexBuffer, 0);
 	Frame_Count(FC_DRAW_SCENE);
-	TheseusDrawIndexedPrimitive(m_primitiveType, 0, m_nVertexCount, 0, m_nFaceCount);
+	TheseusDrawIndexedPrimitive(m_drawMode, 0, m_vertCount, 0, m_nFaceCount);
 
 #ifndef _XBOX
-	g_nVertPerFrame += m_nVertexCount;
+	g_nVertPerFrame += m_vertCount;
 	g_nTriPerFrame += m_nFaceCount;
 #endif
 }
@@ -1215,9 +1215,9 @@ CMesh* LoadMesh(const TCHAR* szFilePath)
 CMesh* MakeSphere(float nRadius, int nSlices, int nStacks)
 {
 	CMesh* pMesh = new CMesh;
-	pMesh->m_primitiveType = D3DPT_TRIANGLELIST;
+	pMesh->m_drawMode = D3DPT_TRIANGLELIST;
 	pMesh->m_fvf = D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_DIFFUSE;
-	pMesh->m_nVertexStride = sizeof(D3DXVECTOR3) * 2 + sizeof(DWORD);
+	pMesh->m_vertSize = sizeof(D3DXVECTOR3) * 2 + sizeof(DWORD);
 
 	LPD3DXMESH pSphere = NULL;
 	LPD3DXMESH pClone = NULL;
@@ -1238,7 +1238,7 @@ CMesh* MakeSphere(float nRadius, int nSlices, int nStacks)
 	{
 		pMesh->m_nFaceCount = pClone->GetNumFaces();
 		pMesh->m_nIndexCount = pMesh->m_nFaceCount * 3;
-		pMesh->m_nVertexCount = pClone->GetNumVertices();
+		pMesh->m_vertCount = pClone->GetNumVertices();
 	}
 
 	if (pClone != NULL)
@@ -1254,20 +1254,20 @@ CMesh* MakeSphere(float nRadius, int nSlices, int nStacks)
 
 	const int cbPacked = sizeof(D3DXVECTOR3) + sizeof(DWORD) * 2;
 	LPDIRECT3DVERTEXBUFFER8 pPacked;
-	TheseusCreateVertexBuffer(pMesh->m_nVertexCount * cbPacked, D3DUSAGE_DYNAMIC, 0, D3DPOOL_MANAGED, &pPacked);
+	TheseusCreateVertexBuffer(pMesh->m_vertCount * cbPacked, D3DUSAGE_DYNAMIC, 0, D3DPOOL_MANAGED, &pPacked);
 
 	BYTE* pbFrom;
 	BYTE* pbTo;
 	pMesh->m_vertexBuffer->Lock(0, 0, &pbFrom, 0);
 	pPacked->Lock(0, 0, &pbTo, 0);
-	for (int i = 0; i < pMesh->m_nVertexCount; i++)
+	for (int i = 0; i < pMesh->m_vertCount; i++)
 	{
 		const float* pf = (const float*)pbFrom;
 		DWORD* pdw = (DWORD*)pbTo;
 		CopyMemory(pbTo, pf, sizeof(D3DXVECTOR3));
 		pdw[3] = CompressNormal((float*)(pf + 3));
 		pdw[4] = ((const DWORD*)pf)[6];
-		pbFrom += pMesh->m_nVertexStride;
+		pbFrom += pMesh->m_vertSize;
 		pbTo += cbPacked;
 	}
 	pPacked->Unlock();
@@ -1276,14 +1276,14 @@ CMesh* MakeSphere(float nRadius, int nSlices, int nStacks)
 	pMesh->m_vertexBuffer->Release();
 	pMesh->m_vertexBuffer = pPacked;
 	pMesh->m_fvf = D3DFVF_XYZ | D3DFVF_NORMPACKED3 | D3DFVF_DIFFUSE;
-	pMesh->m_nVertexStride = cbPacked;
+	pMesh->m_vertSize = cbPacked;
 	return pMesh;
 }
 
 
 // ===== Mesh node ============================================================
 
-class CMeshNode* g_pRenderMeshNode = NULL;	// 0x0017e758
+class CMeshNode* g_pDrawingShape = NULL;	// 0x0017e758
 CMeshNode* CMeshNode::c_pFirst;			// 0x0017c8d4
 
 // Theseus: drops every node's mesh and marks it dirty, so the next Render
@@ -1378,7 +1378,7 @@ extern DWORD GetEffectShader(int nEffect, DWORD fvf);
 // Reconstructed from 5960 retail XBE @ 0x0005c200. Ghidra decompile:
 //     renderTime = now;
 //     if (dirty) { if (url && *url) load(url); Init(); if (!mesh) return; }
-//     if (mesh) mesh->Render(g_pRenderMeshNode != this);
+//     if (mesh) mesh->Render(g_pDrawingShape != this);
 // The shape renderer sets the FVF itself for the node it's drawing, so the
 // mesh only sets it when drawn some other way. The falloff branch is Theseus's.
 void CMeshNode::Render()
@@ -1390,7 +1390,7 @@ void CMeshNode::Render()
 	if (m_mesh == NULL)
 		return;
 
-	if (m_falloff > 0.0f && g_pRenderMeshNode != this)
+	if (m_falloff > 0.0f && g_pDrawingShape != this)
 	{
 		// Theseus: "Mesh { url "foo.xm" falloff 1 }" in alpha era XAPs draws
 		// the view angle fade the retail dash does with a MaxMaterial.
@@ -1412,7 +1412,7 @@ void CMeshNode::Render()
 		return;
 	}
 
-	m_mesh->Render(g_pRenderMeshNode != this);
+	m_mesh->Render(g_pDrawingShape != this);
 }
 
 // CMeshNode::load(file)   [script fn 'load', FND 0x00188418, sig 12]

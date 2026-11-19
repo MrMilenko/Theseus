@@ -12,17 +12,17 @@ extern "C" void WINAPI D3D_FreeNoncontiguousMemory(void* pMemory);
 extern bool CleanupTextureCache();
 extern bool CleanupMeshCache();
 
-int g_nNewFailedState;
+int g_allocRetryStage;
 
 int __cdecl NewFailed(size_t nBytes)
 {
-	switch (g_nNewFailedState)
+	switch (g_allocRetryStage)
 	{
 	case 0:
-		if (CleanupTextureCache()) { g_nNewFailedState = 0; return 1; }
+		if (CleanupTextureCache()) { g_allocRetryStage = 0; return 1; }
 		break;
 	case 1:
-		if (CleanupMeshCache()) { g_nNewFailedState = 0; return 1; }
+		if (CleanupMeshCache()) { g_allocRetryStage = 0; return 1; }
 		break;
 	default:
 		DbgPrint("xdash: out of memory (failed to allocate %d bytes)\n", nBytes);
@@ -32,7 +32,7 @@ int __cdecl NewFailed(size_t nBytes)
 		HalReturnToFirmware(HalRebootRoutine);
 	}
 
-	g_nNewFailedState++;
+	g_allocRetryStage++;
 	return 1;
 }
 
@@ -86,5 +86,5 @@ void Memory_Init()
 {
 	_set_new_handler(NewFailed);
 	_set_new_mode(1);
-	g_nNewFailedState = 0;
+	g_allocRetryStage = 0;
 }

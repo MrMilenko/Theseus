@@ -14,9 +14,9 @@
 #define REPEAT_DELAY 0.3f
 #define REPEAT_INTERVAL 0.12f
 
-#define KS_BEGIN 0x0001
-#define KS_VERIFIED 0x0002
-#define KS_END 0x0004
+#define COMBO_STARTED 0x0001
+#define COMBO_MATCHED 0x0002
+#define COMBO_FINISHED 0x0004
 
 float g_xaxis, g_yaxis;
 
@@ -41,7 +41,7 @@ public:
     CJoystick();
     ~CJoystick();
 
-    bool m_bNeedsInit;
+    bool m_bFirstPoll;
 
     bool m_isBound;
     float m_frequency;
@@ -68,8 +68,8 @@ public:
     float m_back;
 
     char *m_secretKey;
-    size_t m_secretKeyLength;
-    size_t m_secretKeyCurrentIndex;
+    size_t m_comboLen;
+    size_t m_comboPos;
     bool m_enableSecretKey;
     bool m_eatSecretKey;
 
@@ -93,14 +93,14 @@ public:
 
     static SDL_GameController* c_controller;
 
-    static CJoystick *c_pPreviousBoundJoystick;
-    static CJoystick *c_pBoundJoystick;
+    static CJoystick *c_pLastActivePad;
+    static CJoystick *c_pActivePad;
 
     JoySnapshot m_prevState;
     XTIME m_nextRepeatTime;
     float m_repeatInterval;
 
-    XTIME m_timeNextUpdate;
+    XTIME m_nextPollTime;
 
     uint32_t m_prevMediaKeys; // bitmask for edge detection
 
@@ -127,8 +127,8 @@ SDL_GameController* CJoystick::c_controller = NULL;
 // so ImGui's key state isn't fed.
 SDL_GameController* Joy_GetController() { return CJoystick::c_controller; }
 
-CJoystick *CJoystick::c_pBoundJoystick = NULL;
-CJoystick *CJoystick::c_pPreviousBoundJoystick = NULL;
+CJoystick *CJoystick::c_pActivePad = NULL;
+CJoystick *CJoystick::c_pLastActivePad = NULL;
 
 IMPLEMENT_NODE("Joystick", CJoystick, CNode)
 
@@ -176,7 +176,7 @@ END_NODE_FUN()
 // Theseus starts hat at -1 and adds the desktop poll state.
 CJoystick::CJoystick()
 {
-    m_bNeedsInit = true;
+    m_bFirstPoll = true;
     m_isBound = false;
     m_frequency = 20.0f;
     m_hat = -1.0f;
@@ -188,8 +188,8 @@ CJoystick::CJoystick()
     m_leftThumb = m_rightThumb = 0.0f;
     m_start = m_back = 0.0f;
     m_secretKey = NULL;
-    m_secretKeyLength = 0;
-    m_secretKeyCurrentIndex = 0;
+    m_comboLen = 0;
+    m_comboPos = 0;
     m_enableSecretKey = false;
     m_eatSecretKey = false;
     m_enableRemote = true;
@@ -197,11 +197,11 @@ CJoystick::CJoystick()
     m_LastActivePort = 0;
     m_nextRepeatTime = 0.0f;
     m_repeatInterval = 0.0f;
-    m_timeNextUpdate = 0.0f;
+    m_nextPollTime = 0.0f;
     m_prevMediaKeys = 0;
     memset(&m_prevState, 0, sizeof(m_prevState));
 
-    if (c_pBoundJoystick == NULL)
+    if (c_pActivePad == NULL)
         Bind();
 }
 
@@ -211,10 +211,10 @@ CJoystick::CJoystick()
 // it, and frees the secret key.
 CJoystick::~CJoystick()
 {
-    if (c_pPreviousBoundJoystick == this)
-        c_pPreviousBoundJoystick = NULL;
-    if (c_pBoundJoystick == this)
-        c_pBoundJoystick = c_pPreviousBoundJoystick;
+    if (c_pLastActivePad == this)
+        c_pLastActivePad = NULL;
+    if (c_pActivePad == this)
+        c_pActivePad = c_pLastActivePad;
     delete[] m_secretKey;
 }
 
@@ -223,7 +223,7 @@ CJoystick::~CJoystick()
 // count, and only remote events honor enableRemote.
 void CJoystick::CallFunction(const char *szFunc, bool bRemote /* = false */)
 {
-    if (c_pBoundJoystick != this)
+    if (c_pActivePad != this)
         return;
     if (bRemote && !m_enableRemote)
         return;
@@ -237,8 +237,8 @@ void BindJoystick(CNode *pJoystickNode)
 {
     if (pJoystickNode == NULL)
     {
-        CJoystick::c_pBoundJoystick = NULL;
-        CJoystick::c_pPreviousBoundJoystick = NULL;
+        CJoystick::c_pActivePad = NULL;
+        CJoystick::c_pLastActivePad = NULL;
         return;
     }
     if (pJoystickNode->IsKindOf(NODE_CLASS(CJoystick)))
@@ -268,9 +268,9 @@ void CJoystick::OnBDown()
 // it rereads the device so held buttons don't fire.
 void CJoystick::Bind()
 {
-    c_pPreviousBoundJoystick = c_pBoundJoystick;
-    c_pBoundJoystick = this;
-    if (m_bNeedsInit)
+    c_pLastActivePad = c_pActivePad;
+    c_pActivePad = this;
+    if (m_bFirstPoll)
         return;
     CheckDevice();
     PollSDL(c_controller, &m_prevState);
@@ -293,11 +293,11 @@ bool CJoystick::OnSetProperty(const PRD *pprd, const void *pvValue)
         {
             Bind();
         }
-        else if (c_pBoundJoystick == this)
+        else if (c_pActivePad == this)
         {
-            c_pBoundJoystick = NULL;
-            if (c_pPreviousBoundJoystick != NULL)
-                c_pPreviousBoundJoystick->Bind();
+            c_pActivePad = NULL;
+            if (c_pLastActivePad != NULL)
+                c_pLastActivePad->Bind();
         }
         return true;
     }
@@ -306,16 +306,16 @@ bool CJoystick::OnSetProperty(const PRD *pprd, const void *pvValue)
     {
         delete[] m_secretKey;
         m_secretKey = NULL;
-        m_secretKeyLength = 0;
-        if (m_secretKeyCurrentIndex != 0)
-            ProcessSecretKeySequence(KS_END);
-        m_secretKeyCurrentIndex = 0;
+        m_comboLen = 0;
+        if (m_comboPos != 0)
+            ProcessSecretKeySequence(COMBO_FINISHED);
+        m_comboPos = 0;
 
         const char *key = *(char *const *)pvValue;
         if (key != NULL)
         {
-            m_secretKeyLength = strlen(key);
-            m_secretKey = new char[m_secretKeyLength + 1];
+            m_comboLen = strlen(key);
+            m_secretKey = new char[m_comboLen + 1];
             strcpy(m_secretKey, key);
             m_enableSecretKey = true;
         }
@@ -325,9 +325,9 @@ bool CJoystick::OnSetProperty(const PRD *pprd, const void *pvValue)
     if (field == MEMBER_OFFSET(m_enableSecretKey))
     {
         m_enableSecretKey = *(const bool *)pvValue;
-        if (!m_enableSecretKey && m_secretKeyCurrentIndex != 0 && m_secretKeyCurrentIndex < m_secretKeyLength)
-            ProcessSecretKeySequence(KS_END);
-        m_secretKeyCurrentIndex = 0;
+        if (!m_enableSecretKey && m_comboPos != 0 && m_comboPos < m_comboLen)
+            ProcessSecretKeySequence(COMBO_FINISHED);
+        m_comboPos = 0;
         return true;
     }
 
@@ -832,19 +832,19 @@ void CJoystick::MoveEvent(char key, const char *name)
 void CJoystick::Advance(float nSeconds)
 {
     CNode::Advance(nSeconds);
-    if (!g_bInputEnable || this != c_pBoundJoystick)
+    if (!g_bInputEnable || this != c_pActivePad)
         return;
 
     CheckDevice();
-    if (m_bNeedsInit)
+    if (m_bFirstPoll)
     {
         PollSDL(c_controller, &m_prevState);
-        m_timeNextUpdate = TheseusGetNow();
-        m_bNeedsInit = false;
+        m_nextPollTime = TheseusGetNow();
+        m_bFirstPoll = false;
     }
-    if (TheseusGetNow() < m_timeNextUpdate)
+    if (TheseusGetNow() < m_nextPollTime)
         return;
-    m_timeNextUpdate = TheseusGetNow() + 1.0f / m_frequency;
+    m_nextPollTime = TheseusGetNow() + 1.0f / m_frequency;
 
     ProcessMediaKeys();
 
@@ -912,26 +912,26 @@ void CJoystick::Advance(float nSeconds)
 
 // CJoystick::CheckSecretKeySequence(key)
 // Reconstructed from 5960 retail XBE @ 0x00041790. With no key set (or
-// checking off) returns 0. A wrong press restarts the sequence (KS_END if
-// one was under way); a right one at the start adds KS_BEGIN, and the last
-// one adds KS_END | KS_VERIFIED and restarts.
+// checking off) returns 0. A wrong press restarts the sequence (COMBO_FINISHED if
+// one was under way); a right one at the start adds COMBO_STARTED, and the last
+// one adds COMBO_FINISHED | COMBO_MATCHED and restarts.
 int CJoystick::CheckSecretKeySequence(char key)
 {
-    if (!m_enableSecretKey || m_secretKeyLength == 0 || m_secretKey == NULL)
+    if (!m_enableSecretKey || m_comboLen == 0 || m_secretKey == NULL)
         return 0;
 
-    if (key != m_secretKey[m_secretKeyCurrentIndex])
+    if (key != m_secretKey[m_comboPos])
     {
-        int flags = m_secretKeyCurrentIndex != 0 ? KS_END : 0;
-        m_secretKeyCurrentIndex = 0;
+        int flags = m_comboPos != 0 ? COMBO_FINISHED : 0;
+        m_comboPos = 0;
         return flags;
     }
 
-    int flags = m_secretKeyCurrentIndex == 0 ? KS_BEGIN : 0;
-    if (++m_secretKeyCurrentIndex == m_secretKeyLength)
+    int flags = m_comboPos == 0 ? COMBO_STARTED : 0;
+    if (++m_comboPos == m_comboLen)
     {
-        flags |= KS_END | KS_VERIFIED;
-        m_secretKeyCurrentIndex = 0;
+        flags |= COMBO_FINISHED | COMBO_MATCHED;
+        m_comboPos = 0;
     }
     return flags;
 }
@@ -941,10 +941,10 @@ int CJoystick::CheckSecretKeySequence(char key)
 // OnKeyVerificationExit, OnKeyVerified, in that order, for the flags set.
 void CJoystick::ProcessSecretKeySequence(int flags)
 {
-    if (flags & KS_BEGIN)
+    if (flags & COMBO_STARTED)
         CallFunction("OnKeyVerificationEnter");
-    if (flags & KS_END)
+    if (flags & COMBO_FINISHED)
         CallFunction("OnKeyVerificationExit");
-    if (flags & KS_VERIFIED)
+    if (flags & COMBO_MATCHED)
         CallFunction("OnKeyVerified");
 }

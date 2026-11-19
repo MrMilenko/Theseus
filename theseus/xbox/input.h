@@ -8,8 +8,8 @@
 class CJoystick : public CNode
 {
 public:
-    static CJoystick* c_pBoundJoystick;
-    static CJoystick* c_pPreviousBoundJoystick;
+    static CJoystick* c_pActivePad;
+    static CJoystick* c_pLastActivePad;
 
     void Bind();
 

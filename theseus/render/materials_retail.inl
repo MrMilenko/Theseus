@@ -281,50 +281,50 @@ static void RecolourMat(CMatInfo *p, const RetailMat &m, D3DCOLOR a, D3DCOLOR b,
 	case MK_SOLID:
 		{
 			CSolidMatInfo *s = static_cast<CSolidMatInfo *>(p);
-			s->m_r = MAT_R(a); s->m_g = MAT_G(a); s->m_b = MAT_B(a); s->m_a = MAT_A(a);
+			s->m_red = MAT_R(a); s->m_green = MAT_G(a); s->m_blue = MAT_B(a); s->m_alpha = MAT_A(a);
 		}
 		break;
 
 	case MK_BACKING:
 		{
 			CBackingMatInfo *s = static_cast<CBackingMatInfo *>(p);
-			s->m_r = MAT_R(a); s->m_g = MAT_G(a); s->m_b = MAT_B(a); s->m_a = MAT_A(a);
+			s->m_red = MAT_R(a); s->m_green = MAT_G(a); s->m_blue = MAT_B(a); s->m_alpha = MAT_A(a);
 		}
 		break;
 
 	case MK_MODULATE:
 		{
 			CModulateTextureMatInfo *s = static_cast<CModulateTextureMatInfo *>(p);
-			s->m_r = MAT_R(a); s->m_g = MAT_G(a); s->m_b = MAT_B(a); s->m_a = MAT_A(a);
+			s->m_red = MAT_R(a); s->m_green = MAT_G(a); s->m_blue = MAT_B(a); s->m_alpha = MAT_A(a);
 		}
 		break;
 
 	case MK_FALLOFF:
-		static_cast<CFalloffMatInfo *>(p)->m_colorSide = a;
-		static_cast<CFalloffMatInfo *>(p)->m_colorFront = b;
+		static_cast<CFalloffMatInfo *>(p)->m_sideColor = a;
+		static_cast<CFalloffMatInfo *>(p)->m_faceColor = b;
 		break;
 
 	case MK_FALLOFFTEX:
-		static_cast<CFalloffTexInfo *>(p)->m_colorSide = a;
-		static_cast<CFalloffTexInfo *>(p)->m_colorFront = b;
+		static_cast<CFalloffTexInfo *>(p)->m_sideColor = a;
+		static_cast<CFalloffTexInfo *>(p)->m_faceColor = b;
 		break;
 
 	case MK_INNERWALL:
-		static_cast<CInnerWallMatInfo *>(p)->m_colorSide = a;
-		static_cast<CInnerWallMatInfo *>(p)->m_colorFront = b;
+		static_cast<CInnerWallMatInfo *>(p)->m_sideColor = a;
+		static_cast<CInnerWallMatInfo *>(p)->m_faceColor = b;
 		break;
 
 	case MK_ANISO:
-		static_cast<CAnisoMatInfo *>(p)->m_colorSide = a;
-		static_cast<CAnisoMatInfo *>(p)->m_colorFront = b;
+		static_cast<CAnisoMatInfo *>(p)->m_sideColor = a;
+		static_cast<CAnisoMatInfo *>(p)->m_faceColor = b;
 		break;
 
 	case MK_EGGGLOW:
 		{
 			// mirrors the shifted constructor: a lands in front, b in the flags
 			CEggGlowFadeMatInfo *e = static_cast<CEggGlowFadeMatInfo *>(p);
-			e->m_colorSide = m.dwFlags;
-			e->m_colorFront = a;
+			e->m_sideColor = m.dwFlags;
+			e->m_faceColor = a;
 			e->m_flags = b;
 			e->Color1 = ToCustomColor(b);
 		}

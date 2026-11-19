@@ -13,9 +13,9 @@
 #include "../xbox/xbox_private_types.h"
 #endif
 
-extern CObject** g_rgParam;
+extern CObject** g_scriptArgs;
 extern int g_nParam;
-extern CRunner* g_pRunner;
+extern CRunner* g_pActiveRunner;
 extern CObject* Dereference(CObject* pObject);
 
 IMPLEMENT_NODE("Date", CDateObject, CObject)
@@ -103,7 +103,7 @@ int CDateObject::getDaysInMonth(int nMonth, int nYear)
 
 static WORD ParamWord(int index)
 {
-	CNumObject* num = g_rgParam[index]->ToNum();
+	CNumObject* num = g_scriptArgs[index]->ToNum();
 	WORD value = (WORD)(int)num->m_value;
 	num->Release();
 	return value;
@@ -129,12 +129,12 @@ CDateObject::CDateObject()
 	}
 	if (g_nParam < 3 || g_nParam > 7)
 	{
-		g_pRunner->Error(_T("Wrong number of parameters to Date constructor\n"));
+		g_pActiveRunner->Error(_T("Wrong number of parameters to Date constructor\n"));
 		return;
 	}
 
 	for (int i = 0; i < g_nParam; i++)
-		g_rgParam[i] = Dereference(g_rgParam[i]);
+		g_scriptArgs[i] = Dereference(g_scriptArgs[i]);
 
 	memset(&parts, 0, sizeof(parts));
 	parts.wYear = ParamWord(0);

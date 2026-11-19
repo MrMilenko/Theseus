@@ -53,9 +53,9 @@ CScreen::CScreen()
 	m_letterbox = false;
 	m_wideScreen = false;
 	m_brightness = 1.0f;
-	m_lastBrightness = 1.0f;
-	m_bSizeDirty = false;
-	m_bTitleDirty = false;
+	m_appliedBrightness = 1.0f;
+	m_bResized = false;
+	m_bRetitled = false;
 
 	if (TheseusGetScreen() == NULL)
 		TheseusSetScreen(this);
@@ -81,11 +81,11 @@ bool CScreen::OnSetProperty(const PRD* prop, const void* value)
 	int field = PTR2INT(prop->pbOffset);
 	if (field == offsetof(m_width) || field == offsetof(m_height))
 	{
-		m_bSizeDirty = true;
+		m_bResized = true;
 	}
 	else if (field == offsetof(m_title))
 	{
-		m_bTitleDirty = true;
+		m_bRetitled = true;
 	}
 	else if (field == offsetof(m_brightness))
 	{
@@ -107,12 +107,12 @@ bool CScreen::OnSetProperty(const PRD* prop, const void* value)
 void CScreen::Advance(float dt)
 {
 	CNode::Advance(dt);
-	m_bSizeDirty = false;
-	m_bTitleDirty = false;
-	if (m_brightness != m_lastBrightness)
+	m_bResized = false;
+	m_bRetitled = false;
+	if (m_brightness != m_appliedBrightness)
 	{
 		SetBrightness(m_brightness);
-		m_lastBrightness = m_brightness;
+		m_appliedBrightness = m_brightness;
 	}
 }
 

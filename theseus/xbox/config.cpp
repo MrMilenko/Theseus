@@ -208,7 +208,7 @@ CStrObject *CConfig::GetAVRegion()
 CStrObject *CConfig::GetGameRegion()
 {
 	const TCHAR *szName = NULL;
-	switch (g_nCurRegion)
+	switch (g_region)
 	{
 	case XC_GAME_REGION_NA:          szName = _T("NA");          break;
 	case XC_GAME_REGION_JAPAN:       szName = _T("JAPAN");       break;
@@ -286,7 +286,7 @@ void CConfig::Set480Support(int bEnable)
 {
 	WriteSettingBit(XC_VIDEO_FLAGS, AV_FLAGS_HDTV_480p, bEnable != 0);
 
-	if (g_nDiscType != DISC_VIDEO || XGetAVPack() != XC_AV_PACK_HDTV ||
+	if (g_discKind != DISC_DVD || XGetAVPack() != XC_AV_PACK_HDTV ||
 	    !(XboxHardwareInfo->Flags & XBOX_480P_MACROVISION_ENABLED))
 		return;
 

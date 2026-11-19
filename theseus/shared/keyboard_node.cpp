@@ -14,11 +14,11 @@
 // Shared with the Text node: the keyboard lends it the edit string and cursor
 // (0x0017e748, 0x00175220), flags the highlighted key (0x0017e74d) and owns the
 // *heading* switch (0x0017e74c).
-extern TCHAR* g_szText;
-extern int g_nTextChar;
+extern TCHAR* g_szEditText;
+extern int g_editCursor;
 extern bool g_bActiveKey;
 extern bool g_bAsteriskFormatting;
-extern int g_nCurLanguage;
+extern int g_language;
 
 #ifndef _XBOX
 // Desktop: the keyboard drawn last takes the physical keyboard (sdl_main.cpp).
@@ -139,7 +139,7 @@ static const WORD* const s_layouts[2][3] =
 
 static inline bool JapaneseGrid()
 {
-	return g_nCurLanguage == 1;
+	return g_language == 1;
 }
 
 static inline int BottomRow()
@@ -921,10 +921,10 @@ static const TCHAR* FunctionKeyLabel(WORD key)
 
 // CKeyboard::Render()
 // Reconstructed from 5960 retail XBE @ 0x0005b9d0. Draws the frame, then the
-// text node with the edit string and cursor handed over through g_szText /
-// g_nTextChar. The key nodes only draw when the nodearray has exactly 45
+// text node with the edit string and cursor handed over through g_szEditText /
+// g_editCursor. The key nodes only draw when the nodearray has exactly 45
 // (western) or 99 (Japanese) entries. Each grid cell that starts a new key
-// gets the next node: its label goes in g_szText (the function key name, or
+// gets the next node: its label goes in g_szEditText (the function key name, or
 // the character, uppercased on western pages when shift and caps disagree),
 // g_bActiveKey says whether it is highlighted, and blanks are skipped.
 void CKeyboard::Render()
@@ -941,24 +941,24 @@ void CKeyboard::Render()
 	{
 		m_edit[m_editLen] = 0;
 #ifdef _XBOX
-		g_szText = m_edit;
-		g_nTextChar = m_cursor;
+		g_szEditText = m_edit;
+		g_editCursor = m_cursor;
 #else
 		// The text node counts bytes and puts the cursor before the character
-		// whose last byte is g_nTextChar, so the cursor moves into bytes too.
+		// whose last byte is g_editCursor, so the cursor moves into bytes too.
 		TCHAR text[EDIT_MAX * 3 + 1];
-		g_szText = text;
-		g_nTextChar = m_cursor;
+		g_szEditText = text;
+		g_editCursor = m_cursor;
 		if (m_cursor >= 0)
 		{
 			int len = KeyLen(m_edit);
 			int bytes = EncodeUTF8(m_edit, m_cursor < len ? m_cursor + 1 : len, text);
-			g_nTextChar = m_cursor < len ? bytes - 1 : bytes + m_cursor - len;
+			g_editCursor = m_cursor < len ? bytes - 1 : bytes + m_cursor - len;
 		}
 		EncodeUTF8(m_edit, m_editLen, text);
 #endif
 		m_text->Render();
-		g_nTextChar = -1;
+		g_editCursor = -1;
 	}
 
 	bool japanese = JapaneseGrid();
@@ -983,7 +983,7 @@ void CKeyboard::Render()
 		const TCHAR* name = FunctionKeyLabel(key);
 		if (name != NULL)
 		{
-			g_szText = (TCHAR*)name;
+			g_szEditText = (TCHAR*)name;
 		}
 		else
 		{
@@ -994,7 +994,7 @@ void CKeyboard::Render()
 #else
 			label[EncodeUTF8((KEYCHAR)ch, label)] = 0;
 #endif
-			g_szText = label;
+			g_szEditText = label;
 		}
 
 		g_bActiveKey = (cell == highlighted);

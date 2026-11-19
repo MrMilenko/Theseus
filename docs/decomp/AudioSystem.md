@@ -165,7 +165,7 @@ The threshold balances DSound buffer allocation cost (static is cheaper but hold
 | Address | Function | Notes |
 |---------|----------|-------|
 | 0x00062750 | DSound_Init | Skipped in DVD boot mode (boot type 4). Reads `XGetAudioFlags`, `DirectSoundCreate(0, &ds, 0)`, then `SetMixBinHeadroom(bin, 0)` for all 31 mix bins and starts the DoWork thread (0x62680) |
-| 0x000626b0 | XAppCreateSoundBuffer | Runs DSound_Init on first use, `CreateSoundBuffer` with a 0x18 byte desc, `SetHeadroom(1200)` |
+| 0x000626b0 | AppShell_CreateSoundBuffer | Runs DSound_Init on first use, `CreateSoundBuffer` with a 0x18 byte desc, `SetHeadroom(1200)` |
 | 0x00062960 | CAudioBuf dtor | Stop, Release |
 | 0x000629a0 / 0x000629d0 | Lock / Unlock | Whole buffer from 0 |
 | 0x00062a30 | CAudioBuf::Stop | Stop, then spins on GetStatus until it reports stopped |

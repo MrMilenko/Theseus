@@ -89,17 +89,17 @@ Special globals resolved by name string comparison: `Math`, `camera`.
 Compiled functions are allocated with trailing bytecode:
 
 ```
-[CFunction header][m_rgop bytecode bytes...]
+[CFunction header][m_bytecode bytecode bytes...]
 ```
 
-Created via placement new: `new(m_nop) CFunction` allocates `sizeof(CFunction) + m_nop` extra bytes.
+Created via placement new: `new(m_opPos) CFunction` allocates `sizeof(CFunction) + m_opPos` extra bytes.
 
 ### Key Globals
 
-- `g_pRunner`: current active VM instance
+- `g_pActiveRunner`: current active VM instance
 - `g_pThis`: current `this` object for property resolution
-- `g_classes`: CNameSpace for scripted class definitions
-- `g_rgParam` / `g_nParam`: constructor parameter passing
+- `g_classTable`: CNameSpace for scripted class definitions
+- `g_scriptArgs` / `g_nParam`: constructor parameter passing
 
 ### Comment / Whitespace Handling
 

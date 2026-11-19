@@ -21,11 +21,11 @@ at `0x0017aee4`; the node's type names are the table at `0x0017453c` (`none`, `u
 
 ```
 if (g_bHasLaunchData && reason == XLD_LAUNCH_DASHBOARD_DVDPLAYER && DoesFileExist("CDROM0:\video_ts\video_ts.ifo"))
-    g_BootType = DISC_VIDEO;
-if ((g_bHasLaunchData && reason != 0x0C) || g_BootType == DISC_VIDEO || g_BootType == DISC_BAD)
-    { m_nDiscType = g_BootType; HalReadSMCTrayState(&m_trayState, 0); }
+    g_BootType = DISC_DVD;
+if ((g_bHasLaunchData && reason != 0x0C) || g_BootType == DISC_DVD || g_BootType == DISC_BAD)
+    { m_discKind = g_BootType; HalReadSMCTrayState(&m_trayState, 0); }
 else
-    { m_nDiscType = DISC_NONE; m_trayState = 0x40; }      // the first poll reports the disc
+    { m_discKind = DISC_NONE; m_trayState = 0x40; }      // the first poll reports the disc
 ```
 
 Reason `0x0C` is a return from the online dashboard.
@@ -39,8 +39,8 @@ lastPoll = now;
 if (HalReadSMCTrayState(&tray, 0) < 0 || tray == m_trayState) return;
 m_trayState = tray; ResetScreenSaver();
 g_BootType = GetDiscType();
-if (g_BootType == m_nDiscType) return;
-m_nDiscType = g_BootType; replace discType string;
+if (g_BootType == m_discKind) return;
+m_discKind = g_BootType; replace discType string;
 if (m_locked) m_bDeferNotification = true; else fire OnDiscInserted (type != none) or OnDiscRemoved;
 ```
 

@@ -14,12 +14,12 @@
 #include "file_util.h"
 #include "scene_groups.h"
 
-extern D3DXMATRIX g_matView;
-extern D3DXMATRIX g_matPosition;
+extern D3DXMATRIX g_viewMatrix;
+extern D3DXMATRIX g_cameraWorld;
 extern D3DXMATRIX g_matProjection;
 extern D3DXMATRIX g_matIdentity;
 extern float g_nEffectAlpha;
-extern float g_transitionMotionBlur;
+extern float g_levelBlurAmount;
 extern void BindJoystick(CNode* pJoystickNode);
 
 
@@ -39,9 +39,9 @@ END_NODE_PROPS()
 // A size of -1 on every axis means "nobody gave us a box, work it out".
 CGroup::CGroup()
 {
-    m_bboxCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
-    m_bboxSize = D3DXVECTOR3(-1.0f, -1.0f, -1.0f);
-    m_bboxSpecified = true;
+    m_boundsCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+    m_boundsSize = D3DXVECTOR3(-1.0f, -1.0f, -1.0f);
+    m_bHasBounds = true;
     m_bboxDirty = true;
 }
 
@@ -67,16 +67,16 @@ CGroup::~CGroup()
 // the binary's behavior and we keep it. Dirty is never cleared here.
 void CGroup::GetBBox(BBox* pBBox)
 {
-    if (m_bboxSize.x == -1.0f && m_bboxSize.y == -1.0f && m_bboxSize.z == -1.0f)
-        m_bboxSpecified = false;
+    if (m_boundsSize.x == -1.0f && m_boundsSize.y == -1.0f && m_boundsSize.z == -1.0f)
+        m_bHasBounds = false;
 
-    if (m_bboxDirty && !m_bboxSpecified)
+    if (m_bboxDirty && !m_bHasBounds)
     {
         int count = m_children.GetLength();
         if (count == 0)
         {
-            m_bboxCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
-            m_bboxSize = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+            m_boundsCenter = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
+            m_boundsSize = D3DXVECTOR3(0.0f, 0.0f, 0.0f);
         }
         else
         {
@@ -99,15 +99,15 @@ void CGroup::GetBBox(BBox* pBBox)
                 if (far_.z < hi.z) hi.z = far_.z;
             }
 
-            m_bboxCenter.x = (hi.x + lo.x) * 0.5f;
-            m_bboxCenter.y = (hi.y + lo.y) * 0.5f;
-            m_bboxCenter.z = (hi.z + lo.z) * 0.5f;
-            m_bboxSize = hi - lo;
+            m_boundsCenter.x = (hi.x + lo.x) * 0.5f;
+            m_boundsCenter.y = (hi.y + lo.y) * 0.5f;
+            m_boundsCenter.z = (hi.z + lo.z) * 0.5f;
+            m_boundsSize = hi - lo;
         }
     }
 
-    pBBox->center = m_bboxCenter;
-    pBBox->size = m_bboxSize;
+    pBBox->center = m_boundsCenter;
+    pBBox->size = m_boundsSize;
 }
 
 // CGroup::GetRadius()
@@ -248,8 +248,8 @@ CTransform::CTransform() :
     m_timeScaleStart(0.0),
     m_timeRotationStart(0.0),
     m_timeTranslationStart(0.0),
-    m_timeAlphaStart(0.0),
-    m_timeToDisappear(0.0)
+    m_fadeStartTime(0.0),
+    m_hideTime(0.0)
 {
 }
 
@@ -259,7 +259,7 @@ CTransform::CTransform() :
 void CTransform::OnLoad()
 {
     CGroup::OnLoad();
-    D3DXQuaternionRotationAxis(&m_rotationQuat, (D3DXVECTOR3*)&m_rotation, m_rotation.w);
+    D3DXQuaternionRotationAxis(&m_orientQuat, (D3DXVECTOR3*)&m_rotation, m_rotation.w);
 }
 
 // CTransform::OnSetProperty(pprd, pvValue)
@@ -275,7 +275,7 @@ bool CTransform::OnSetProperty(const PRD* pprd, const void* pvValue)
     if (offset == offsetof(m_rotation))
     {
         const float* axisAngle = (const float*)pvValue;
-        D3DXQuaternionRotationAxis(&m_rotationQuat, (const D3DXVECTOR3*)axisAngle, axisAngle[3]);
+        D3DXQuaternionRotationAxis(&m_orientQuat, (const D3DXVECTOR3*)axisAngle, axisAngle[3]);
     }
     else if (offset == offsetof(m_alpha))
     {
@@ -309,15 +309,15 @@ void CTransform::Advance(float nSeconds)
 {
     CGroup::Advance(nSeconds);
 
-    if (m_timeAlphaStart > 0.0)
+    if (m_fadeStartTime > 0.0)
     {
-        float t = FadeStep(m_timeAlphaStart, m_fade);
-        m_alpha = m_alphaStart + (m_alphaEnd - m_alphaStart) * t;
+        float t = FadeStep(m_fadeStartTime, m_fade);
+        m_alpha = m_fadeFrom + (m_fadeTo - m_fadeFrom) * t;
     }
 
-    if (m_timeToDisappear > 0.0 && m_timeToDisappear <= TheseusGetNow())
+    if (m_hideTime > 0.0 && m_hideTime <= TheseusGetNow())
     {
-        m_timeToDisappear = 0.0;
+        m_hideTime = 0.0;
         m_alpha = 0.0f;
     }
 }
@@ -331,27 +331,27 @@ void CTransform::Advance(float nSeconds)
 // still running (sum of their clocks > 0).
 void CTransform::CalcMatrix()
 {
-    D3DXMatrixIdentity(&m_matrix);
+    D3DXMatrixIdentity(&m_xform);
 
     if (m_timeScaleStart > 0.0)
     {
         m_moving = true;
         float t = FadeStep(m_timeScaleStart, m_fade);
-        D3DXVec3Lerp(&m_scale, &m_scaleStart, &m_scaleEnd, t);
+        D3DXVec3Lerp(&m_scale, &m_scaleFrom, &m_scaleTo, t);
     }
 
     if (m_timeTranslationStart > 0.0)
     {
         m_moving = true;
         float t = FadeStep(m_timeTranslationStart, m_fade);
-        D3DXVec3Lerp(&m_translation, &m_translationStart, &m_translationEnd, t);
+        D3DXVec3Lerp(&m_translation, &m_moveFrom, &m_moveTo, t);
     }
 
     if (m_timeRotationStart > 0.0)
     {
         m_moving = true;
         float t = FadeStep(m_timeRotationStart, m_fade);
-        D3DXQuaternionSlerp(&m_rotationQuat, &m_rotationStart, &m_rotationEnd, t);
+        D3DXQuaternionSlerp(&m_orientQuat, &m_turnFrom, &m_turnTo, t);
     }
 
     D3DXMATRIX step;
@@ -359,19 +359,19 @@ void CTransform::CalcMatrix()
     if (m_scale.x != 1.0f || m_scale.y != 1.0f || m_scale.z != 1.0f)
     {
         D3DXMatrixScaling(&step, m_scale.x, m_scale.y, m_scale.z);
-        D3DXMatrixMultiply(&m_matrix, &m_matrix, &step);
+        D3DXMatrixMultiply(&m_xform, &m_xform, &step);
     }
 
-    if (m_rotationQuat.w != 0.0f)
+    if (m_orientQuat.w != 0.0f)
     {
-        D3DXMatrixRotationQuaternion(&step, &m_rotationQuat);
-        D3DXMatrixMultiply(&m_matrix, &m_matrix, &step);
+        D3DXMatrixRotationQuaternion(&step, &m_orientQuat);
+        D3DXMatrixMultiply(&m_xform, &m_xform, &step);
     }
 
     if (m_translation.x != 0.0f || m_translation.y != 0.0f || m_translation.z != 0.0f)
     {
         D3DXMatrixTranslation(&step, m_translation.x, m_translation.y, m_translation.z);
-        D3DXMatrixMultiply(&m_matrix, &m_matrix, &step);
+        D3DXMatrixMultiply(&m_xform, &m_xform, &step);
     }
 
     m_dirty = (m_timeScaleStart + m_timeTranslationStart + m_timeRotationStart) > 0.0;
@@ -389,8 +389,8 @@ void CTransform::SetScale(float sx, float sy, float sz)
     if (m_fade > 0.0f)
     {
         m_timeScaleStart = TheseusGetNow();
-        m_scaleStart = m_scale;
-        m_scaleEnd = target;
+        m_scaleFrom = m_scale;
+        m_scaleTo = target;
         m_moving = true;
     }
     else
@@ -419,8 +419,8 @@ void CTransform::SetTranslation(float x, float y, float z)
     if (m_fade > 0.0f)
     {
         m_timeTranslationStart = TheseusGetNow();
-        m_translationStart = m_translation;
-        m_translationEnd = target;
+        m_moveFrom = m_translation;
+        m_moveTo = target;
         m_moving = true;
     }
     else
@@ -456,14 +456,14 @@ void CTransform::SetRotation(float x, float y, float z, float a)
     if (m_fade > 0.0f)
     {
         m_timeRotationStart = TheseusGetNow();
-        m_rotationStart = m_rotationQuat;
-        m_rotationEnd = q;
+        m_turnFrom = m_orientQuat;
+        m_turnTo = q;
         m_moving = true;
     }
     else
     {
         m_rotation = D3DXQUATERNION(x, y, z, a);
-        m_rotationQuat = q;
+        m_orientQuat = q;
     }
     m_dirty = TRUE;
 }
@@ -476,9 +476,9 @@ void CTransform::SetAlpha(float a)
 {
     if (m_fade > 0.0f)
     {
-        m_timeAlphaStart = TheseusGetNow();
-        m_alphaStart = m_alpha;
-        m_alphaEnd = a;
+        m_fadeStartTime = TheseusGetNow();
+        m_fadeFrom = m_alpha;
+        m_fadeTo = a;
     }
     else
     {
@@ -492,7 +492,7 @@ void CTransform::SetAlpha(float a)
 // The binary adds in single precision; Theseus keeps the double clock.
 void CTransform::DisappearAfter(float t)
 {
-    m_timeToDisappear = t + TheseusGetNow();
+    m_hideTime = t + TheseusGetNow();
 }
 
 // CTransform::Render()
@@ -511,7 +511,7 @@ void CTransform::Render()
         CalcMatrix();
 
     TheseusPushWorld();
-    TheseusMultWorld(&m_matrix);
+    TheseusMultWorld(&m_xform);
     TheseusUpdateWorld();
 
     if (m_alpha > 0.0f)
@@ -543,7 +543,7 @@ public:
 
     TCHAR* m_url;
     bool m_preload;
-    bool m_bClassLoaded;
+    bool m_bClassReady;
     bool m_fadeInDelayLoad;
 
     void Render();
@@ -554,12 +554,12 @@ protected:
     void FinishLoad();
     bool m_dirty;
 
-    bool m_bLoading;
-    bool m_bFirstLoad;
+    bool m_bLoadPending;
+    bool m_bInitialLoad;
     CXipFile* m_xipFile;
     XTIME m_timeOfLoad;
 
-    CClass m_class;
+    CClass m_classDef;
 
     DECLARE_NODE_PROPS()
 
@@ -569,8 +569,8 @@ protected:
 #endif
 
 private:
-    HANDLE m_hClassLoaderThread;
-    TCHAR m_szAbsURL[MAX_PATH];
+    HANDLE m_hLoadThread;
+    TCHAR m_szFullUrl[MAX_PATH];
 };
 
 IMPLEMENT_NODE("Inline", CInline, CGroup)
@@ -588,14 +588,14 @@ END_NODE_PROPS()
 CInline::CInline() :
     m_url(NULL),
     m_preload(false),
-    m_bClassLoaded(false),
+    m_bClassReady(false),
     m_fadeInDelayLoad(true),
     m_dirty(true),
-    m_bLoading(false),
-    m_bFirstLoad(false),
+    m_bLoadPending(false),
+    m_bInitialLoad(false),
     m_xipFile(NULL),
     m_timeOfLoad(0.0),
-    m_hClassLoaderThread(NULL)
+    m_hLoadThread(NULL)
 {
 }
 
@@ -631,21 +631,21 @@ void CInline::Init()
     if (slash != NULL)
     {
         _tcscpy(slash, _T(".xip"));
-        m_bLoading = true;
-        m_bFirstLoad = true;
+        m_bLoadPending = true;
+        m_bInitialLoad = true;
         m_xipFile = LoadXIP(xipPath);
         if (m_xipFile != NULL)
             return;
-        m_bLoading = false;
+        m_bLoadPending = false;
     }
 
-    MakeAbsoluteURL(m_szAbsURL, m_url);
+    MakeAbsoluteURL(m_szFullUrl, m_url);
     FinishLoad();
 }
 
 // CInline::FinishLoad()
 // Reconstructed from 5960 retail XBE @ 0x0004e560. Ghidra decompile:
-//     if (m_class.LoadAbsURL(absURL)) { n = m_class.CreateNode();
+//     if (m_classDef.LoadAbsURL(absURL)) { n = m_classDef.CreateNode();
 //         CallFunction(n, "initialize"); children.AddNode(n); n->parent = this;
 //         CallFunction(this, "onLoad"); }
 //     firstLoad = 0; classLoaded = 1;
@@ -654,17 +654,17 @@ void CInline::FinishLoad()
 {
     long long started = Frame_Now();
 
-    if (m_class.LoadAbsURL(m_szAbsURL))
+    if (m_classDef.LoadAbsURL(m_szFullUrl))
     {
-        CNode* root = m_class.CreateNode();
+        CNode* root = m_classDef.CreateNode();
         CallFunction(root, _T("initialize"));
         m_children.AddNode(root);
         root->m_parent = this;
         CallFunction(this, _T("onLoad"));
     }
 
-    m_bFirstLoad = false;
-    m_bClassLoaded = true;
+    m_bInitialLoad = false;
+    m_bClassReady = true;
 
     Frame_NoteLoad(Frame_Ms(Frame_Now() - started));
 }
@@ -679,12 +679,12 @@ void CInline::FinishLoad()
 // directory. See docs/decomp/SceneGroups.md.
 void CInline::Render()
 {
-    if (m_url == NULL || m_bLoading)
+    if (m_url == NULL || m_bLoadPending)
         return;
 
     if (m_xipFile != NULL && m_xipFile->IsUnloaded())
     {
-        m_bLoading = true;
+        m_bLoadPending = true;
         m_xipFile->Reload();
         return;
     }
@@ -692,7 +692,7 @@ void CInline::Render()
     if (m_dirty)
         Init();
 
-    if (m_bLoading || !m_bClassLoaded)
+    if (m_bLoadPending || !m_bClassReady)
         return;
 
     float fadeIn = 1.0f;
@@ -730,26 +730,26 @@ void CInline::Advance(float nSeconds)
 
     if (m_xipFile != NULL && !m_xipFile->IsReady())
     {
-        m_bLoading = true;
+        m_bLoadPending = true;
         return;
     }
 
-    if (m_bLoading)
+    if (m_bLoadPending)
     {
-        m_bLoading = false;
-        if (m_bFirstLoad)
+        m_bLoadPending = false;
+        if (m_bInitialLoad)
         {
-            MakeAbsoluteURL(m_szAbsURL, m_url);
-            if (m_hClassLoaderThread == NULL)
+            MakeAbsoluteURL(m_szFullUrl, m_url);
+            if (m_hLoadThread == NULL)
                 FinishLoad();
         }
         m_timeOfLoad = TheseusGetNow();
     }
 
-    if (m_hClassLoaderThread != NULL && WaitForSingleObject(m_hClassLoaderThread, 0) == WAIT_OBJECT_0)
+    if (m_hLoadThread != NULL && WaitForSingleObject(m_hLoadThread, 0) == WAIT_OBJECT_0)
     {
-        CloseHandle(m_hClassLoaderThread);
-        m_hClassLoaderThread = NULL;
+        CloseHandle(m_hLoadThread);
+        m_hLoadThread = NULL;
     }
 
     CGroup::Advance(nSeconds);
@@ -1169,7 +1169,7 @@ public:
 
     void Render();
 
-    D3DXMATRIX m_matrix;
+    D3DXMATRIX m_xform;
     void CalcMatrix();
 
     DECLARE_NODE_PROPS()
@@ -1204,7 +1204,7 @@ void CBillboard::Render()
     CalcMatrix();
 
     TheseusPushWorld();
-    TheseusMultWorld(&m_matrix);
+    TheseusMultWorld(&m_xform);
     TheseusUpdateWorld();
 
     CGroup::Render();
@@ -1242,7 +1242,7 @@ void CBillboard::CalcMatrix()
         D3DXVec3Cross(&side, &up, &eye);
         D3DXVec3Normalize(&side, &side);
 
-        m_matrix = D3DXMATRIX(
+        m_xform = D3DXMATRIX(
             side.x, side.y, side.z, 0.0f,
             up.x,   up.y,   up.z,   0.0f,
             eye.x,  eye.y,  eye.z,  0.0f,
@@ -1261,7 +1261,7 @@ void CBillboard::CalcMatrix()
     if (side.z > 0.0f)
         angle = -angle;
 
-    D3DXMatrixRotationAxis(&m_matrix, &axis, angle);
+    D3DXMatrixRotationAxis(&m_xform, &axis, angle);
 }
 
 
@@ -1461,13 +1461,13 @@ void CLayer::Render()
     D3DXVECTOR3 eyeAt(viewpoint->m_position.x, viewpoint->m_position.y, -viewpoint->m_position.z);
     D3DXQUATERNION facing;
     D3DXQuaternionRotationAxis(&facing, (const D3DXVECTOR3*)&viewpoint->m_orientation, -viewpoint->m_orientation.w);
-    D3DXMatrixAffineTransformation(&g_matView, 1.0f, NULL, &facing, &eyeAt);
-    D3DXMatrixInverse(&g_matView, NULL, &g_matView);
-    g_matView._31 = -g_matView._31;
-    g_matView._32 = -g_matView._32;
-    g_matView._33 = -g_matView._33;
-    g_matView._34 = -g_matView._34;
-    TheseusSetTransform(D3DTS_VIEW, &g_matView);
+    D3DXMatrixAffineTransformation(&g_viewMatrix, 1.0f, NULL, &facing, &eyeAt);
+    D3DXMatrixInverse(&g_viewMatrix, NULL, &g_viewMatrix);
+    g_viewMatrix._31 = -g_viewMatrix._31;
+    g_viewMatrix._32 = -g_viewMatrix._32;
+    g_viewMatrix._33 = -g_viewMatrix._33;
+    g_viewMatrix._34 = -g_viewMatrix._34;
+    TheseusSetTransform(D3DTS_VIEW, &g_viewMatrix);
 
     TheseusPushWorld();
     TheseusIdentityWorld();
@@ -1476,7 +1476,7 @@ void CLayer::Render()
     TheseusPopWorld();
 
     g_matProjection = savedProjection;
-    g_matView = savedView;
+    g_viewMatrix = savedView;
     TheseusSetTransform(D3DTS_PROJECTION, &savedProjection);
     TheseusSetTransform(D3DTS_WORLD, &savedWorld);
     TheseusSetTransform(D3DTS_VIEW, &savedView);
@@ -1525,11 +1525,11 @@ CBackground::CBackground() :
     m_skyColor(0.0f, 0.0f, 0.0f),
     m_isBound(false),
     m_fade(0.0f),
-    m_timeAlphaStart(0.0),
-    m_alphaStart(0.0f),
-    m_alphaEnd(0.0f),
+    m_fadeStartTime(0.0),
+    m_fadeFrom(0.0f),
+    m_fadeTo(0.0f),
     m_alpha(1.0f),
-    m_timeToDisappear(0.0),
+    m_hideTime(0.0),
     m_vb(NULL)
 {
     if (TheseusGetBackground() == NULL)
@@ -1560,9 +1560,9 @@ void CBackground::SetAlpha(float a)
 {
     if (m_fade > 0.0f)
     {
-        m_timeAlphaStart = TheseusGetNow();
-        m_alphaStart = m_alpha;
-        m_alphaEnd = a;
+        m_fadeStartTime = TheseusGetNow();
+        m_fadeFrom = m_alpha;
+        m_fadeTo = a;
     }
     else
     {
@@ -1576,7 +1576,7 @@ void CBackground::SetAlpha(float a)
 // The sum is single precision in the binary, kept that way here.
 void CBackground::DisappearAfter(float t)
 {
-    m_timeToDisappear = (double)(t + (float)TheseusGetNow());
+    m_hideTime = (double)(t + (float)TheseusGetNow());
 }
 
 // CBackground::Advance(nSeconds)
@@ -1591,15 +1591,15 @@ void CBackground::Advance(float nSeconds)
 {
     CNode::Advance(nSeconds);
 
-    if (m_timeAlphaStart > 0.0)
+    if (m_fadeStartTime > 0.0)
     {
-        float t = FadeStep(m_timeAlphaStart, m_fade);
-        m_alpha = m_alphaStart + (m_alphaEnd - m_alphaStart) * t;
+        float t = FadeStep(m_fadeStartTime, m_fade);
+        m_alpha = m_fadeFrom + (m_fadeTo - m_fadeFrom) * t;
     }
 
-    if (m_timeToDisappear > 0.0 && m_timeToDisappear <= TheseusGetNow())
+    if (m_hideTime > 0.0 && m_hideTime <= TheseusGetNow())
     {
-        m_timeToDisappear = 0.0;
+        m_hideTime = 0.0;
         m_alpha = 0.0f;
     }
 
@@ -1745,11 +1745,11 @@ bool CBackground::OnSetProperty(const PRD* pprd, const void* pvValue)
 // to a level cross fades from the current one over a second, through the
 // tunnel and camera path between them.
 
-CLevel* g_pCurLevel;
-CLevel* g_pFromLevel;
-CNode* g_pCurTunnel;
+CLevel* g_pActiveLevel;
+CLevel* g_pLeavingLevel;
+CNode* g_pActiveTunnel;
 XTIME g_timeToNextLevel;
-bool g_bLevelTransition;
+bool g_bLevelSwitching;
 
 IMPLEMENT_NODE("Level", CLevel, CGroup)
 
@@ -1797,12 +1797,12 @@ CLevel::CLevel() :
 // archive name.
 CLevel::~CLevel()
 {
-    if (g_pCurLevel == this)
-        g_pCurLevel = NULL;
-    if (g_pFromLevel == this)
-        g_pFromLevel = NULL;
-    if (g_pCurTunnel == m_tunnel)
-        g_pCurTunnel = NULL;
+    if (g_pActiveLevel == this)
+        g_pActiveLevel = NULL;
+    if (g_pLeavingLevel == this)
+        g_pLeavingLevel = NULL;
+    if (g_pActiveTunnel == m_tunnel)
+        g_pActiveTunnel = NULL;
 
     if (m_tunnel != NULL)
         m_tunnel->Release();
@@ -1820,10 +1820,10 @@ CLevel::~CLevel()
 // Reconstructed from 5960 retail XBE @ 0x0005cd80. Ghidra decompile:
 //     a = 1;
 //     if (fade) { t = clamp((g_timeToNextLevel - now) * 1.3333334, 0, 1);
-//         if (this == g_pCurLevel) a = 1 - t; else if (this == g_pFromLevel) a = t;
+//         if (this == g_pActiveLevel) a = 1 - t; else if (this == g_pLeavingLevel) a = t;
 //         if (a == 0) return; }    // only reached for cur or from
 //     effectAlpha *= a; if (shell) shell->Render();
-//     if (this == g_pCurLevel) g_motionBlur = min(a * 1.3, 1);
+//     if (this == g_pActiveLevel) g_motionBlur = min(a * 1.3, 1);
 //     CGroup::Render(); effectAlpha restored;
 // The 1.3333334 is 1 / 0.75: the cross fade runs over the last 0.75 s.
 void CLevel::Render()
@@ -1838,9 +1838,9 @@ void CLevel::Render()
         else if (t < 0.0f)
             t = 0.0f;
 
-        if (this == g_pCurLevel)
+        if (this == g_pActiveLevel)
             a = 1.0f - t;
-        else if (this == g_pFromLevel)
+        else if (this == g_pLeavingLevel)
             a = t;
 
         if (a == 0.0f)
@@ -1853,8 +1853,8 @@ void CLevel::Render()
     if (m_shell != NULL)
         m_shell->Render();
 
-    if (this == g_pCurLevel)
-        g_transitionMotionBlur = a * 1.3f > 1.0f ? 1.0f : a * 1.3f;
+    if (this == g_pActiveLevel)
+        g_levelBlurAmount = a * 1.3f > 1.0f ? 1.0f : a * 1.3f;
 
     CGroup::Render();
 
@@ -1863,76 +1863,76 @@ void CLevel::Render()
 
 // CLevel::Activate()
 // Reconstructed from 5960 retail XBE @ 0x0005ce90. Ghidra decompile:
-//     g_bLevelTransition = 1;
+//     g_bLevelSwitching = 1;
 //     if (archive && !xip) xip = LoadXIP(archive);
-//     if (g_pFromLevel) { from->Deactivate() inlined; g_timeToNextLevel = 0; g_pFromLevel = 0; }
-//     else if (!g_pCurLevel || g_timeToNextLevel == 0) goto start;
-//     if (g_pCurLevel) { cur->visible = 0;
+//     if (g_pLeavingLevel) { from->Deactivate() inlined; g_timeToNextLevel = 0; g_pLeavingLevel = 0; }
+//     else if (!g_pActiveLevel || g_timeToNextLevel == 0) goto start;
+//     if (g_pActiveLevel) { cur->visible = 0;
 //         if (cur->xip && cur->unloadable && !cur->xip->locked) cur->xip->DeleteMeshBuffers(); }
-//     g_pCurLevel = 0;
-//     if (g_pCurTunnel) { g_pCurTunnel->visible = 0; g_pCurTunnel = 0; }
+//     g_pActiveLevel = 0;
+//     if (g_pActiveTunnel) { g_pActiveTunnel->visible = 0; g_pActiveTunnel = 0; }
 //   start:
 //     BindJoystick(0) inlined; g_timeToNextLevel = now + 1.0;
-//     g_pFromLevel = g_pCurLevel; visible = 1; g_pCurLevel = this;
+//     g_pLeavingLevel = g_pActiveLevel; visible = 1; g_pActiveLevel = this;
 // A transition still running is cut short: both its ends are hidden and the
 // new one fades in from nothing.
 void CLevel::Activate()
 {
-    g_bLevelTransition = true;
+    g_bLevelSwitching = true;
 
     if (m_archive != NULL && m_xipFile == NULL)
         m_xipFile = LoadXIP(m_archive);
 
-    bool midTransition = g_pFromLevel != NULL || (g_pCurLevel != NULL && g_timeToNextLevel != 0.0);
+    bool midTransition = g_pLeavingLevel != NULL || (g_pActiveLevel != NULL && g_timeToNextLevel != 0.0);
     if (midTransition)
     {
-        if (g_pFromLevel != NULL)
+        if (g_pLeavingLevel != NULL)
         {
-            g_pFromLevel->Deactivate();
-            g_pFromLevel = NULL;
+            g_pLeavingLevel->Deactivate();
+            g_pLeavingLevel = NULL;
         }
 
-        if (g_pCurLevel != NULL)
+        if (g_pActiveLevel != NULL)
         {
-            CLevel* cur = g_pCurLevel;
+            CLevel* cur = g_pActiveLevel;
             cur->m_visible = false;
             if (cur->m_xipFile != NULL && cur->m_unloadable && !cur->m_xipFile->m_locked)
                 cur->m_xipFile->DeleteMeshBuffers();
-            g_pCurLevel = NULL;
+            g_pActiveLevel = NULL;
         }
 
-        if (g_pCurTunnel != NULL)
+        if (g_pActiveTunnel != NULL)
         {
-            g_pCurTunnel->m_visible = false;
-            g_pCurTunnel = NULL;
+            g_pActiveTunnel->m_visible = false;
+            g_pActiveTunnel = NULL;
         }
     }
 
     BindJoystick(NULL);
     g_timeToNextLevel = TheseusGetNow() + 1.0;
-    g_pFromLevel = g_pCurLevel;
+    g_pLeavingLevel = g_pActiveLevel;
     m_visible = true;
-    g_pCurLevel = this;
+    g_pActiveLevel = this;
 }
 
 // CLevel::GoTo()   [script fn 'GoTo', FND 0x00188478, sig 1]
 // Reconstructed from 5960 retail XBE @ 0x0005cf90. Ghidra decompile:
-//     if (this == g_pCurLevel) return;
-//     Activate(); g_pCurTunnel = tunnel; if (tunnel) tunnel->visible = 1;
+//     if (this == g_pActiveLevel) return;
+//     Activate(); g_pActiveTunnel = tunnel; if (tunnel) tunnel->visible = 1;
 //     if (path is a Viewpoint) BindViewpoint(path);
 //     else if (path is a CameraPath) { active = 1; start = now; backward = 0; }
 //     CallFunction(this, "OnActivate");
 // The CameraPath start is its Activate(false), inlined.
 void CLevel::GoTo()
 {
-    if (this == g_pCurLevel)
+    if (this == g_pActiveLevel)
         return;
 
     Activate();
 
-    g_pCurTunnel = m_tunnel;
-    if (g_pCurTunnel != NULL)
-        g_pCurTunnel->m_visible = true;
+    g_pActiveTunnel = m_tunnel;
+    if (g_pActiveTunnel != NULL)
+        g_pActiveTunnel->m_visible = true;
 
     if (m_path != NULL)
     {
@@ -1947,24 +1947,24 @@ void CLevel::GoTo()
 
 // CLevel::GoBackTo()   [script fn 'GoBackTo', FND 0x00188490, sig 1]
 // Reconstructed from 5960 retail XBE @ 0x0005d040. Ghidra decompile:
-//     if (this == g_pCurLevel) return;
-//     Activate(); g_pCurTunnel = from ? from->tunnel : 0;
-//     if (g_pCurTunnel) g_pCurTunnel->visible = 1;
+//     if (this == g_pActiveLevel) return;
+//     Activate(); g_pActiveTunnel = from ? from->tunnel : 0;
+//     if (g_pActiveTunnel) g_pActiveTunnel->visible = 1;
 //     if (from && from->path is a CameraPath) { path: active = 1; start = now; backward = 1; }
 //     else if (path is a Viewpoint) BindViewpoint(path);
 //     CallFunction(this, "OnActivate");
 // Going back runs the level we're leaving's tunnel and path in reverse.
 void CLevel::GoBackTo()
 {
-    if (this == g_pCurLevel)
+    if (this == g_pActiveLevel)
         return;
 
     Activate();
 
-    CLevel* from = g_pFromLevel;
-    g_pCurTunnel = from != NULL ? from->m_tunnel : NULL;
-    if (g_pCurTunnel != NULL)
-        g_pCurTunnel->m_visible = true;
+    CLevel* from = g_pLeavingLevel;
+    g_pActiveTunnel = from != NULL ? from->m_tunnel : NULL;
+    if (g_pActiveTunnel != NULL)
+        g_pActiveTunnel->m_visible = true;
 
     if (from != NULL && from->m_path != NULL && from->m_path->IsKindOf(NODE_CLASS(CCameraPath)))
         ((CCameraPath*)from->m_path)->Activate(true);
@@ -1977,12 +1977,12 @@ void CLevel::GoBackTo()
 // CLevel::Advance(nSeconds)
 // Reconstructed from 5960 retail XBE @ 0x0005d120. Ghidra decompile:
 //     CGroup::Advance(dt); tunnel, path, control, shell ->Advance(dt) when set;
-//     if (this == g_pCurLevel && g_timeToNextLevel != 0 && g_timeToNextLevel <= now) {
-//         g_timeToNextLevel = 0; if (g_pCurTunnel) g_pCurTunnel->visible = 0;
-//         if (g_pFromLevel) { g_pFromLevel->Deactivate(); g_pFromLevel = 0; }
+//     if (this == g_pActiveLevel && g_timeToNextLevel != 0 && g_timeToNextLevel <= now) {
+//         g_timeToNextLevel = 0; if (g_pActiveTunnel) g_pActiveTunnel->visible = 0;
+//         if (g_pLeavingLevel) { g_pLeavingLevel->Deactivate(); g_pLeavingLevel = 0; }
 //         arrive = 1; }
 //     if (arrive && (!xip || xip->loaded)) { arrive = 0; BindJoystick(control);
-//         CallFunction(this, "OnArrival"); g_bLevelTransition = 0; }
+//         CallFunction(this, "OnArrival"); g_bLevelSwitching = 0; }
 // Arrival waits for the level's XIP before handing over the controller.
 void CLevel::Advance(float nSeconds)
 {
@@ -1997,15 +1997,15 @@ void CLevel::Advance(float nSeconds)
     if (m_shell != NULL)
         m_shell->Advance(nSeconds);
 
-    if (this == g_pCurLevel && g_timeToNextLevel != 0.0 && g_timeToNextLevel <= TheseusGetNow())
+    if (this == g_pActiveLevel && g_timeToNextLevel != 0.0 && g_timeToNextLevel <= TheseusGetNow())
     {
         g_timeToNextLevel = 0.0;
-        if (g_pCurTunnel != NULL)
-            g_pCurTunnel->m_visible = false;
-        if (g_pFromLevel != NULL)
+        if (g_pActiveTunnel != NULL)
+            g_pActiveTunnel->m_visible = false;
+        if (g_pLeavingLevel != NULL)
         {
-            g_pFromLevel->Deactivate();
-            g_pFromLevel = NULL;
+            g_pLeavingLevel->Deactivate();
+            g_pLeavingLevel = NULL;
         }
         m_bArrive = true;
     }
@@ -2015,7 +2015,7 @@ void CLevel::Advance(float nSeconds)
         m_bArrive = false;
         BindJoystick(m_control);
         CallFunction(this, _T("OnArrival"));
-        g_bLevelTransition = false;
+        g_bLevelSwitching = false;
     }
 }
 
@@ -2054,9 +2054,9 @@ static void CollectInlinesRecursive(CNode* pNode, CInstance* pRoot, InlineInfo* 
             out[*count].url = inl->m_url;
 
             out[*count].defName = NULL;
-            if (pRoot && pRoot->m_class && pRoot->m_class->m_members) {
-                for (CDefine* d = pRoot->m_class->m_members->m_firstDefine; d; d = d->m_next) {
-                    if (d->m_node && d->m_node->m_obj == objMember) {
+            if (pRoot && pRoot->m_classDef && pRoot->m_classDef->m_pScope) {
+                for (CDefine* d = pRoot->m_classDef->m_pScope->m_firstDefine; d; d = d->m_next) {
+                    if (d->m_node && d->m_node->m_kind == objMember) {
                         CMember* mem = (CMember*)d->m_node;
                         int idx = mem->m_memberIndex;
                         if (idx >= 0 && idx < pRoot->m_vars.GetLength()) {
@@ -2100,30 +2100,30 @@ bool CInline::ReloadFromText(const char* xapText) {
 
     m_children.ReleaseAll();
 
-    m_class.~CClass();
-    new (&m_class) CClass;
+    m_classDef.~CClass();
+    new (&m_classDef) CClass;
 
     char absURL[MAX_PATH];
     MakeAbsoluteURL(absURL, m_url);
 
     int cch = (int)strlen(absURL) + 1;
-    m_class.m_url = new char[cch];
-    memcpy(m_class.m_url, absURL, cch * sizeof(char));
+    m_classDef.m_url = new char[cch];
+    memcpy(m_classDef.m_url, absURL, cch * sizeof(char));
 
-    extern bool g_bParseError;
-    g_bParseError = false;
+    extern bool g_bXapSyntaxError;
+    g_bXapSyntaxError = false;
 
     size_t len = strlen(xapText);
     char* parseBuf = (char*)malloc(len + 1);
     memcpy(parseBuf, xapText, len + 1);
 
-    bool ok = m_class.ParseFile(absURL, (const char*)parseBuf);
+    bool ok = m_classDef.ParseFile(absURL, (const char*)parseBuf);
     free(parseBuf);
 
-    if (!ok || g_bParseError)
+    if (!ok || g_bXapSyntaxError)
         return false;
 
-    CNode* pNode = m_class.CreateNode();
+    CNode* pNode = m_classDef.CreateNode();
     if (!pNode)
         return false;
 
@@ -2132,8 +2132,8 @@ bool CInline::ReloadFromText(const char* xapText) {
     pNode->m_parent = this;
     CallFunction(this, "onLoad");
 
-    m_bClassLoaded = true;
-    m_bLoading = false;
+    m_bClassReady = true;
+    m_bLoadPending = false;
     m_timeOfLoad = TheseusGetNow();
 
     return true;
