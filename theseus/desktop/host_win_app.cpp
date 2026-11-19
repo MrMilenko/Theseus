@@ -414,9 +414,12 @@ bool Host_NativeWindow(SDL_Window* window, void** nwh, void** ndt, bool* wayland
 // URLs go through ShellExecute. Raw commands run through cmd /C; no /S, so
 // cmd preserves outer quotes for the 2-quote/exists case and strips
 // first/last otherwise.
+struct HostProc { HANDLE h; };
+
 bool Host_Spawn(const char* spec, bool isUrl, bool isSteamUrl, const char* workdir,
-                char* err, size_t errSize) {
+                char* err, size_t errSize, HostProc** proc) {
 	(void)isSteamUrl;
+	if (proc) *proc = NULL;
 	if (isUrl) {
 		HINSTANCE rc = ShellExecuteA(NULL, "open", spec, NULL, workdir, SW_SHOWNORMAL);
 		if ((INT_PTR)rc <= 32) {
@@ -452,9 +455,24 @@ bool Host_Spawn(const char* spec, bool isUrl, bool isSteamUrl, const char* workd
 		snprintf(err, errSize, "CreateProcess failed (error %lu): %s", e, spec);
 		return false;
 	}
-	CloseHandle(pi.hProcess);
 	CloseHandle(pi.hThread);
+	if (proc) {
+		*proc = new HostProc;
+		(*proc)->h = pi.hProcess;
+	} else {
+		CloseHandle(pi.hProcess);
+	}
 	return true;
+}
+
+bool Host_ProcDone(HostProc* proc) {
+	return !proc || WaitForSingleObject(proc->h, 0) != WAIT_TIMEOUT;
+}
+
+void Host_ProcFree(HostProc* proc) {
+	if (!proc) return;
+	CloseHandle(proc->h);
+	delete proc;
 }
 
 bool Host_PickFile(const char* title, char* out, size_t outSize) {
@@ -484,9 +502,15 @@ bool Host_RegistryString(const char* subKey, const char* value, char* out, size_
 	if (RegOpenKeyExA(HKEY_CURRENT_USER, subKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) return false;
 	DWORD size = (DWORD)outSize;
 	DWORD type = 0;
-	bool ok = RegQueryValueExA(hKey, value, NULL, &type, (BYTE*)out, &size) == ERROR_SUCCESS &&
-	          (type == REG_SZ || type == REG_EXPAND_SZ);
+	bool ok = RegQueryValueExA(hKey, value, NULL, &type, (BYTE*)out, &size) == ERROR_SUCCESS;
 	RegCloseKey(hKey);
+	if (ok && type == REG_DWORD && size == sizeof(DWORD)) {
+		DWORD n;
+		memcpy(&n, out, sizeof(n));
+		snprintf(out, outSize, "%lu", (unsigned long)n);
+		return true;
+	}
+	ok = ok && (type == REG_SZ || type == REG_EXPAND_SZ);
 	if (ok) out[outSize - 1] = '\0';
 	return ok;
 }

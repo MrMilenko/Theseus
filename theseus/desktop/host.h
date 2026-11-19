@@ -75,17 +75,23 @@ void Host_InstallCrashHandler(const char* userDataDir, const char* shippedDir);
 // What bgfx needs to draw into the SDL window. ndt is the display
 // connection (X11/Wayland), NULL elsewhere.
 bool Host_NativeWindow(SDL_Window* window, void** nwh, void** ndt, bool* wayland);
-// Fire and forget: a URL goes to the OS handler, anything else runs as a
-// shell command from workdir (may be NULL). err gets a line on failure.
+// A URL goes to the OS handler, anything else runs as a shell command from
+// workdir (may be NULL). err gets a line on failure. When proc isn't NULL it
+// gets the child to watch, or NULL when there's nothing to watch (a URL on
+// Windows); hand every one back to Host_ProcFree.
+struct HostProc;
 bool Host_Spawn(const char* spec, bool isUrl, bool isSteamUrl, const char* workdir,
-                char* err, size_t errSize);
+                char* err, size_t errSize, HostProc** proc);
+// True once the child has exited. Never blocks.
+bool Host_ProcDone(HostProc* proc);
+void Host_ProcFree(HostProc* proc);
 // Native "open file" dialog. False on cancel or when there isn't one.
 bool Host_PickFile(const char* title, char* out, size_t outSize);
 // Full path of the running executable.
 bool Host_ExePath(char* out, size_t outSize);
 // Show a folder in the OS file manager. Doesn't wait.
 void Host_OpenFolder(const char* dir);
-// A string value under HKEY_CURRENT_USER. Always false off Windows.
+// A value under HKEY_CURRENT_USER as text (numbers in decimal). Always false off Windows.
 bool Host_RegistryString(const char* subKey, const char* value, char* out, size_t outSize);
 // Audio CD in the first optical drive: track count and per-track lengths
 // in seconds. -1 when there's no readable disc.

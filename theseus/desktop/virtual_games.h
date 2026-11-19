@@ -43,6 +43,7 @@ struct VirtualGame {
     bool favorite;
     bool hidden;
     long long lastPlayed;  // unix time of the last launch that started, 0 for never
+    long long playTime;    // seconds, counted only when the launcher saw the game close
     // Another source has the same game and wins (VGames_FindDuplicates).
     bool duplicate;
 };
@@ -124,6 +125,8 @@ inline void VGames_Load() {
             cur->hidden = atoi(val) != 0;
         else if (strcmp(key, "LastPlayed") == 0)
             cur->lastPlayed = atoll(val);
+        else if (strcmp(key, "PlayTime") == 0)
+            cur->playTime = atoll(val);
     }
     fclose(fp);
     g_vgames.generation++;
@@ -192,6 +195,7 @@ inline void VGames_Save() {
         if (g.favorite) fprintf(fp, "Favorite=1\n");
         if (g.hidden) fprintf(fp, "Hidden=1\n");
         if (g.lastPlayed) fprintf(fp, "LastPlayed=%lld\n", g.lastPlayed);
+        if (g.playTime) fprintf(fp, "PlayTime=%lld\n", g.playTime);
         fprintf(fp, "\n");
     }
     save.Commit();
@@ -389,7 +393,7 @@ inline int VGames_MakeShortcutContent(int idx, char* buf, int bufSize) {
 
 // Favorites, hidden and last played for live rows (ES-DE, xCloud), which
 // never reach games.ini. Keyed by title id, which both keep stable.
-struct VGameMarks { bool favorite, hidden; long long lastPlayed; };
+struct VGameMarks { bool favorite, hidden; long long lastPlayed, playTime; };
 #define VGAMES_LIVE_INI AppPath("Configs/games_live.ini")
 
 inline std::map<std::string, VGameMarks>& VGames_LiveMarks() {
@@ -407,7 +411,7 @@ inline std::map<std::string, VGameMarks>& VGames_LiveMarks() {
             char* end = strrchr(line, ']');
             if (!end) { cur = NULL; continue; }
             *end = 0;
-            VGameMarks blank = { false, false, 0 };
+            VGameMarks blank = { false, false, 0, 0 };
             cur = &(s_marks[line + 1] = blank);
             continue;
         }
@@ -417,6 +421,7 @@ inline std::map<std::string, VGameMarks>& VGames_LiveMarks() {
         if (strcmp(line, "Favorite") == 0)        cur->favorite = atoi(eq + 1) != 0;
         else if (strcmp(line, "Hidden") == 0)     cur->hidden = atoi(eq + 1) != 0;
         else if (strcmp(line, "LastPlayed") == 0) cur->lastPlayed = atoll(eq + 1);
+        else if (strcmp(line, "PlayTime") == 0)   cur->playTime = atoll(eq + 1);
     }
     fclose(fp);
     return s_marks;
@@ -429,11 +434,12 @@ inline void VGames_SaveLiveMarks() {
     std::map<std::string, VGameMarks>& m = VGames_LiveMarks();
     for (std::map<std::string, VGameMarks>::iterator it = m.begin(); it != m.end(); ++it) {
         const VGameMarks& k = it->second;
-        if (!k.favorite && !k.hidden && !k.lastPlayed) continue;
+        if (!k.favorite && !k.hidden && !k.lastPlayed && !k.playTime) continue;
         fprintf(save.f, "[%s]\n", it->first.c_str());
         if (k.favorite) fprintf(save.f, "Favorite=1\n");
         if (k.hidden) fprintf(save.f, "Hidden=1\n");
         if (k.lastPlayed) fprintf(save.f, "LastPlayed=%lld\n", k.lastPlayed);
+        if (k.playTime) fprintf(save.f, "PlayTime=%lld\n", k.playTime);
         fprintf(save.f, "\n");
     }
     save.Commit();
@@ -449,6 +455,7 @@ inline void VGames_ApplyLiveMarks(int idx) {
     g.favorite = it->second.favorite;
     g.hidden = it->second.hidden;
     g.lastPlayed = it->second.lastPlayed;
+    g.playTime = it->second.playTime;
 }
 
 // Writes the row's marks wherever that row lives.
@@ -457,7 +464,7 @@ inline void VGames_StoreMarks(int idx) {
     VirtualGame& g = g_vgames.games[idx];
     g_vgames.generation++;
     if (!VGames_IsLive(g)) { VGames_Save(); return; }
-    VGameMarks k = { g.favorite, g.hidden, g.lastPlayed };
+    VGameMarks k = { g.favorite, g.hidden, g.lastPlayed, g.playTime };
     VGames_LiveMarks()[g.titleID] = k;
     VGames_SaveLiveMarks();
 }
@@ -484,6 +491,18 @@ inline void VGames_MarkPlayed(const char* launch) {
         VirtualGame& g = g_vgames.games[i];
         if (!g.valid || strcmp(g.launch, launch) != 0) continue;
         g.lastPlayed = now;
+        VGames_StoreMarks(i);
+    }
+}
+
+// The launcher calls this when it saw the game close.
+inline void VGames_AddPlayTime(const char* launch, long long seconds) {
+    if (!launch || !*launch || seconds <= 0) return;
+    VGames_Load();
+    for (int i = 0; i < g_vgames.count; i++) {
+        VirtualGame& g = g_vgames.games[i];
+        if (!g.valid || strcmp(g.launch, launch) != 0) continue;
+        g.playTime += seconds;
         VGames_StoreMarks(i);
     }
 }

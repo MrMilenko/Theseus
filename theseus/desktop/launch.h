@@ -46,6 +46,11 @@ void DesktopLaunchTitle(const char* devicePath);
 // through stderr to see why a spec didn't run.
 extern char g_launchLastResult[256];
 
+// A game started from the dashboard is still running. Steam games count from
+// when Steam reports them, other launches while their process lives.
+bool Launch_GameRunning();
+extern bool g_returnAfterGame;   // bring the dashboard back when it closes
+
 // Launch overlay (desktop-only fade transition emulating theLaunchGameLevel).
 // DesktopLaunchGame queues the spawn and arms the overlay; the SDL render loop
 // ticks every frame to advance the fade and fires the actual spawn + minimize

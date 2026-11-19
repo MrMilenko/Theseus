@@ -17,6 +17,9 @@
 #include "stb_image.h"
 #include "path_template.h"
 #include "launchers/launcher.h"
+#include "launchers/steam.h"
+
+#include <vector>
 
 extern "C" void DashAudio_MuteAll(void);
 extern SDL_Window* g_pSDLWindow;
@@ -133,7 +136,7 @@ static bool DeriveWorkDir(const char* cmd, char* out, size_t outSize)
 // e.g. Title Maker Test Launch) and SpawnLaunchSpec (overlay-driven game
 // launch) call this. Returns true if the OS handed us back a process /
 // shell-exec handle; the parent doesn't wait on the child either way.
-static bool Launch_DoSpawn(const char* expanded)
+static bool Launch_DoSpawn(const char* expanded, HostProc** proc)
 {
 	if (!expanded || !*expanded) return false;
 
@@ -147,7 +150,7 @@ static bool Launch_DoSpawn(const char* expanded)
 	bool haveWorkdir = DeriveWorkDir(spec, workdir, sizeof(workdir));
 
 	if (!Host_Spawn(spec, IsUrl(spec), IsSteamUrl(spec), haveWorkdir ? workdir : NULL,
-	                g_launchLastResult, sizeof(g_launchLastResult))) {
+	                g_launchLastResult, sizeof(g_launchLastResult), proc)) {
 		fprintf(stderr, "[launch] %s\n", g_launchLastResult);
 		return false;
 	}
@@ -162,7 +165,7 @@ static bool Launch_DoSpawn(const char* expanded)
 // through this so the trace, error reporting, and command-form rules
 // live in one place.
 static bool Launch_ExpandAndSpawn(const char* spec,
-                                  char* finalOut, size_t finalSize)
+                                  char* finalOut, size_t finalSize, HostProc** proc)
 {
 	if (!spec || !spec[0]) return false;
 	char expanded[2048];
@@ -173,13 +176,151 @@ static bool Launch_ExpandAndSpawn(const char* spec,
 		fprintf(stderr, "[launch] var: %s\n", expanded);
 	if (strcmp(expanded, finalOut) != 0)
 		fprintf(stderr, "[launch] cmd: %s\n", finalOut);
-	return Launch_DoSpawn(finalOut);
+	return Launch_DoSpawn(finalOut, proc);
+}
+
+// ============================================================================
+// The game that's running: its play time, and the trip back to the dashboard
+// when it closes.
+// ============================================================================
+
+bool g_returnAfterGame = true;   // desktop.ini ReturnAfterGame
+
+// A launcher that starts the real game and quits this fast was only a
+// doorway: the game is still up, so there's nothing to time or come back to.
+static const double kHandOff = 20.0;
+// How long a steam:// launch gets to show up as running. Updates, shader
+// caches and a cold Steam client all count against it.
+static const double kSteamStartWait = 300.0;
+
+enum { SESSION_NONE, SESSION_PROC, SESSION_STEAM_WAIT, SESSION_STEAM };
+static struct {
+	int kind;
+	HostProc* proc;
+	int appid;
+	double start;
+	char launch[1024];   // the games.ini Launch line, for the play time
+} s_session;
+
+// Children nobody watches, reaped as they finish.
+static std::vector<HostProc*> s_strays;
+
+static double SessionNow()
+{
+	return (double)SDL_GetPerformanceCounter() / (double)SDL_GetPerformanceFrequency();
+}
+
+static void Stray(HostProc* proc)
+{
+	if (proc) s_strays.push_back(proc);
+}
+
+// The app id in steam://rungameid/220 or steam://run/220. Shortcuts Steam
+// made for non-Steam games have 64-bit ids it never reports, so no.
+static int SteamAppId(const char* url)
+{
+	const char* p = strrchr(url, '/');
+	if (!p || !p[1]) return 0;
+	long long id = 0;
+	for (p++; *p >= '0' && *p <= '9'; p++) {
+		id = id * 10 + (*p - '0');
+		if (id > 0x7fffffff) return 0;
+	}
+	return *p == 0 ? (int)id : 0;
+}
+
+static void SessionDrop()
+{
+	Stray(s_session.proc);
+	s_session.proc = NULL;
+	s_session.kind = SESSION_NONE;
+}
+
+static void SessionBegin(const char* launch, const char* final, HostProc* proc)
+{
+	SessionDrop();
+	strncpy(s_session.launch, launch, sizeof(s_session.launch) - 1);
+	s_session.launch[sizeof(s_session.launch) - 1] = 0;
+	s_session.start = SessionNow();
+	if (IsSteamUrl(final)) {
+		// What we spawned only hands the URL to Steam, or is Steam itself.
+		Stray(proc);
+		s_session.appid = SteamAppId(final);
+		s_session.kind = s_session.appid ? SESSION_STEAM_WAIT : SESSION_NONE;
+	} else if (proc) {
+		s_session.proc = proc;
+		s_session.kind = SESSION_PROC;
+	}
+	if (s_session.kind == SESSION_STEAM_WAIT)
+		fprintf(stderr, "[launch] watching Steam app %d\n", s_session.appid);
+	else if (s_session.kind == SESSION_PROC)
+		fprintf(stderr, "[launch] watching the game\n");
+}
+
+static void SessionEnd()
+{
+	double played = SessionNow() - s_session.start;
+	SessionDrop();
+	if (played < kHandOff) {
+		fprintf(stderr, "[launch] closed after %.0fs, taken as a hand-off\n", played);
+		return;
+	}
+	fprintf(stderr, "[launch] game closed after %.0fs\n", played);
+	VGames_AddPlayTime(s_session.launch, (long long)played);
+	if (g_returnAfterGame && g_pSDLWindow) {
+		// Windows won't let a background app come forward without this.
+		SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, "1");
+		SDL_RestoreWindow(g_pSDLWindow);
+		SDL_RaiseWindow(g_pSDLWindow);
+	}
+}
+
+static void SessionTick()
+{
+	static double s_next = 0;
+	double now = SessionNow();
+	if (now < s_next) return;
+	s_next = now + 1.0;
+
+	for (size_t i = 0; i < s_strays.size();) {
+		if (Host_ProcDone(s_strays[i])) {
+			Host_ProcFree(s_strays[i]);
+			s_strays.erase(s_strays.begin() + i);
+		} else {
+			i++;
+		}
+	}
+
+	switch (s_session.kind) {
+	case SESSION_PROC:
+		if (Host_ProcDone(s_session.proc)) SessionEnd();
+		break;
+	case SESSION_STEAM_WAIT:
+		if (Steam_RunningAppId() == s_session.appid) {
+			s_session.kind = SESSION_STEAM;
+			s_session.start = now;
+		} else if (now - s_session.start > kSteamStartWait) {
+			fprintf(stderr, "[launch] Steam app %d never showed up as running\n", s_session.appid);
+			SessionDrop();
+		}
+		break;
+	case SESSION_STEAM:
+		if (Steam_RunningAppId() != s_session.appid) SessionEnd();
+		break;
+	}
+}
+
+bool Launch_GameRunning()
+{
+	return s_session.kind != SESSION_NONE;
 }
 
 void DesktopLaunch(const char* spec)
 {
 	char finalCmd[2048];
-	Launch_ExpandAndSpawn(spec, finalCmd, sizeof(finalCmd));
+	HostProc* proc = NULL;
+	Launch_ExpandAndSpawn(spec, finalCmd, sizeof(finalCmd), &proc);
+	Stray(proc);
 }
 
 // Spawn called by the launch overlay tick once the fade-in completes.
@@ -188,8 +329,10 @@ void DesktopLaunch(const char* spec)
 static void SpawnLaunchSpec(const char* spec)
 {
 	char finalCmd[2048];
-	if (!Launch_ExpandAndSpawn(spec, finalCmd, sizeof(finalCmd))) return;
+	HostProc* proc = NULL;
+	if (!Launch_ExpandAndSpawn(spec, finalCmd, sizeof(finalCmd), &proc)) return;
 	VGames_MarkPlayed(spec);
+	SessionBegin(spec, finalCmd, proc);
 
 	extern SDL_Window* g_pSDLWindow;
 	if (g_pSDLWindow) SDL_MinimizeWindow(g_pSDLWindow);
@@ -281,6 +424,7 @@ unsigned long long LaunchOverlay_LogoGLTex(int* outW, int* outH)
 
 void LaunchOverlay_Tick()
 {
+	SessionTick();
 	if (!s_overlayActive) return;
 
 	double t = LaunchOverlay_Now() - s_overlayStart;
