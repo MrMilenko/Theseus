@@ -879,6 +879,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/launchers/epic.cpp \
 	$(THESEUS_SRC)/desktop/launchers/gog.cpp \
 	$(THESEUS_SRC)/desktop/launchers/lutris.cpp \
+	$(THESEUS_SRC)/desktop/launchers/itch.cpp \
 	$(THESEUS_SRC)/desktop/title_sanitize.cpp \
 	$(THESEUS_SRC)/desktop/udata_synth.cpp \
 	$(THESEUS_SRC)/desktop/desktop_stubs.cpp \

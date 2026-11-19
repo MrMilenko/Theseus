@@ -34,6 +34,10 @@ void Gog_Scan(std::vector<StoreGame>& out);
 bool Lutris_Found();
 void Lutris_Scan(std::vector<StoreGame>& out);
 
+// itch.io app: installs from butler.db, launched straight from their folders.
+bool Itch_Found();
+void Itch_Scan(std::vector<StoreGame>& out);
+
 // Shared by the readers (stores.cpp).
 std::string Store_Home();
 std::string Store_Join(const std::string& dir, const std::string& name);
