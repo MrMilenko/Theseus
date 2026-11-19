@@ -32,8 +32,8 @@
 #     `port install clang-17 lld-17`. Apple clang from the Xcode CLT works
 #     on macOS too, as long as an lld-link is on PATH.
 #   - OXDK cloned and built: https://github.com/MrMilenko/OXDK
-#   - An Xbox SDK source tree (headers + libs the dashboard ABI needs at
-#     link time). Path passed via XDK_BASE.
+#   - Your own XDK's include/ and lib/ folders. Makefile.xbox reads them from
+#     XDK_DIR (theseus/xdk by default).
 #
 # Native desktop:
 #   - C++17 compiler (clang or gcc).
@@ -86,7 +86,7 @@
 # ------------------------------------------------------------------------
 # Configuration (override on command line or via environment)
 # ------------------------------------------------------------------------
-#   XDK_BASE=/path/to/xbox          MS XDK source tree (Xbox builds)
+#   XDK_DIR=/path/to/xdk            XDK include/ and lib/ (Xbox builds)
 #   OXDK_DIR=/path/to/OXDK          OXDK toolkit (Xbox builds)
 #   PKG_CONFIG=pkg-config           Override to use a wrapper or cross variant
 #   PKG_CONFIG_PATH=/path/pkgconfig Where to find .pc files off the default path
@@ -103,20 +103,9 @@
 
 THESEUS_SRC  = ../theseus
 
-# Xbox Development Kit source tree (private + public headers/libs)
-XDK_BASE    ?= ../theseus/xdk
-
 # OXDK toolkit (provides cxbe and xdk_compat.h)
 OXDK_DIR    ?= $(HOME)/OXDK
 
-XDK_PUB_INC  = $(THESEUS_SRC)/xdk/include
-XDK_PUB_LIB  = $(THESEUS_SRC)/xdk/lib
-XDK_PRV_INC  = $(XDK_BASE)/private/inc
-XDK_PRV_LIB  = $(XDK_BASE)/private/lib/i386
-NTOS_INC     = $(XDK_BASE)/private/ntos/inc
-NTOS_XAPI    = $(XDK_BASE)/private/ntos/xapi/inc
-SDK_INC      = $(XDK_BASE)/public/sdk/inc
-DDK_INC      = $(XDK_BASE)/public/ddk/inc
 # OXDK moved its Xbox bits under xbox/. Take the new path, fall back to the old.
 # Never leave this empty: the next token in the XBE recipe starts with '-', which
 # make would eat as the ignore-errors prefix and report a successful build that
