@@ -329,9 +329,31 @@ static std::string BuildAssetUrl(const std::string& serverUri,
     return out;
 }
 
+static void ParseDetails(const std::string& obj, PlexDetails& d)
+{
+    d.durationMs      = Json_GetInt(obj, "duration");
+    d.offsetMs        = Json_GetInt(obj, "viewOffset");
+    d.viewCount       = Json_GetInt(obj, "viewCount");
+    d.leafCount       = Json_GetInt(obj, "leafCount");
+    d.viewedLeafCount = Json_GetInt(obj, "viewedLeafCount");
+    d.rating          = Json_GetString(obj, "contentRating");
+    d.stars           = Json_GetFloat(obj, "audienceRating");
+    if (d.stars <= 0.0f) d.stars = Json_GetFloat(obj, "rating");
+    size_t g = Json_FindArray(obj, "Genre");
+    if (g != std::string::npos) {
+        int n = 0;
+        for (const auto& tag : Json_SplitArray(obj, g)) {
+            if (n++ == 3) break;
+            if (!d.genres.empty()) d.genres += ", ";
+            d.genres += Json_GetString(tag, "tag");
+        }
+    }
+}
+
 static PlexItem ParseItem(const std::string& obj, const std::string& serverUri)
 {
     PlexItem it;
+    ParseDetails(obj, it);
     it.ratingKey = Json_GetString(obj, "ratingKey");
     it.title     = Json_GetString(obj, "title");
     int y        = Json_GetInt(obj, "year");
@@ -406,6 +428,7 @@ static void SeasonsWorker(std::string serverUri, std::string showRk)
                 char ibuf[8]; snprintf(ibuf, sizeof(ibuf), "%d", idx);
                 s.index     = ibuf;
                 s.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
+                ParseDetails(obj, s);
                 if (!s.ratingKey.empty()) seasons.push_back(s);
             }
         }
@@ -449,6 +472,7 @@ static void EpisodesWorker(std::string serverUri, std::string seasonRk)
                 }
                 e.summary   = Json_GetString(obj, "summary");
                 e.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
+                ParseDetails(obj, e);
                 if (!e.ratingKey.empty()) episodes.push_back(e);
             }
         }

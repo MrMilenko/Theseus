@@ -11,7 +11,18 @@ struct JellyfinLibrary {
     std::string type;          // "movies" | "tvshows" | "music" | ...
 };
 
-struct JellyfinItem {
+// Watch state and the facts the info card shows, common to items and episodes.
+struct JellyfinDetails {
+    long long   runTicks = 0;      // length, 10,000,000 ticks a second
+    long long   posTicks = 0;      // resume point, 0 when not started
+    bool        played = false;
+    int         unplayed = 0;      // episodes left, for a series
+    std::string rating;            // "PG-13"
+    float       stars = 0.0f;      // community rating out of 10
+    std::string genres;            // "Horror, Thriller"
+};
+
+struct JellyfinItem : JellyfinDetails {
     std::string id;
     std::string name;
     std::string year;          // optional, as string
@@ -21,14 +32,14 @@ struct JellyfinItem {
     bool        isFolder = false;  // opens to more items (folders, box sets, albums)
 };
 
-struct JellyfinSeason {
+struct JellyfinSeason : JellyfinDetails {
     std::string id;
     std::string name;          // "Season 1"
     std::string index;         // season number as string
     std::string primaryTag;
 };
 
-struct JellyfinEpisode {
+struct JellyfinEpisode : JellyfinDetails {
     std::string id;
     std::string name;
     std::string index;         // episode number as string

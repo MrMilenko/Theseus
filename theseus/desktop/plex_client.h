@@ -17,7 +17,23 @@ struct PlexLibrary {
     std::string type;          // "movie" | "show" | "artist" | "photo"
 };
 
-struct PlexItem {
+// Watch state and the facts the info card shows, common to items, seasons
+// and episodes.
+struct PlexDetails {
+    int         durationMs = 0;
+    int         offsetMs = 0;      // resume point, 0 when not started
+    int         viewCount = 0;
+    int         leafCount = 0;     // episodes, for a show or season
+    int         viewedLeafCount = 0;
+    std::string rating;            // contentRating, "PG-13"
+    float       stars = 0.0f;      // out of 10
+    std::string genres;            // "Horror, Thriller"
+
+    bool Played() const { return leafCount > 0 ? viewedLeafCount >= leafCount : viewCount > 0; }
+    int  Unplayed() const { return leafCount > viewedLeafCount ? leafCount - viewedLeafCount : 0; }
+};
+
+struct PlexItem : PlexDetails {
     std::string ratingKey;     // numeric id, identifies the item
     std::string title;
     std::string year;          // optional, as string
@@ -27,14 +43,14 @@ struct PlexItem {
     std::string type;          // "movie" | "show" | "track" | "artist" | ...
 };
 
-struct PlexSeason {
+struct PlexSeason : PlexDetails {
     std::string ratingKey;
     std::string title;         // "Season 1"
     std::string index;         // season number as string
     std::string thumbUrl;
 };
 
-struct PlexEpisode {
+struct PlexEpisode : PlexDetails {
     std::string ratingKey;
     std::string title;
     std::string index;         // episode number as string

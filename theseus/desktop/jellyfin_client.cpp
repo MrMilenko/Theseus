@@ -68,6 +68,47 @@ static std::string ParsePrimaryTag(const std::string& obj)
 }
 
 
+static long long GetInt64(const std::string& obj, const char* key, size_t from = 0)
+{
+    size_t v = Json_FindKey(obj, key, from);
+    if (v == std::string::npos) return 0;
+    return strtoll(obj.c_str() + v, NULL, 10);
+}
+
+// "Genres": ["Horror", "Thriller"] as "Horror, Thriller".
+static std::string ParseGenres(const std::string& obj)
+{
+    size_t v = Json_FindKey(obj, "Genres");
+    if (v == std::string::npos || v >= obj.size() || obj[v] != '[') return "";
+    size_t end = obj.find(']', v);
+    if (end == std::string::npos) return "";
+    std::string out;
+    int n = 0;
+    for (size_t p = obj.find('"', v); p < end && n < 3; p = obj.find('"', p + 1), n++) {
+        size_t q = obj.find('"', p + 1);
+        if (q == std::string::npos || q > end) break;
+        if (!out.empty()) out += ", ";
+        out.append(obj, p + 1, q - p - 1);
+        p = q;
+    }
+    return out;
+}
+
+static void ParseDetails(const std::string& obj, JellyfinDetails& d)
+{
+    d.runTicks = GetInt64(obj, "RunTimeTicks");
+    d.rating   = Json_GetString(obj, "OfficialRating");
+    d.stars    = Json_GetFloat(obj, "CommunityRating");
+    d.genres   = ParseGenres(obj);
+    size_t ud = Json_FindKey(obj, "UserData");
+    if (ud != std::string::npos) {
+        d.posTicks = GetInt64(obj, "PlaybackPositionTicks", ud);
+        d.played   = Json_GetBool(obj, "Played", ud);
+        d.unplayed = Json_GetInt(obj, "UnplayedItemCount", ud);
+    }
+}
+
+
 // ============================================================================
 // State
 // ============================================================================
@@ -322,6 +363,7 @@ static JellyfinItem ParseItem(const std::string& obj)
     it.type      = Json_GetString(obj, "Type");
     it.primaryTag = ParsePrimaryTag(obj);
     it.isFolder  = Json_GetBool(obj, "IsFolder");
+    ParseDetails(obj, it);
     int y = Json_GetInt(obj, "ProductionYear");
     if (y > 0) {
         char buf[8]; snprintf(buf, sizeof(buf), "%d", y);
@@ -334,7 +376,7 @@ static std::vector<JellyfinItem> FetchItemsForLibrary(const std::string& library
 {
     char url[1024];
     snprintf(url, sizeof(url),
-        "%s/Users/%s/Items?ParentId=%s&Recursive=false&Fields=Overview,ProductionYear",
+        "%s/Users/%s/Items?ParentId=%s&Recursive=false&Fields=Overview,ProductionYear,Genres&EnableUserData=true",
         g_jellyfinUrl, g_jellyfinUserId, libraryId.c_str());
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
     std::vector<JellyfinItem> out;
@@ -454,7 +496,7 @@ std::vector<JellyfinItem> Jellyfin_Cache_GetItems(const std::string& libraryId)
 static std::vector<JellyfinSeason> FetchSeasonsForShow(const std::string& showId)
 {
     char url[1024];
-    snprintf(url, sizeof(url), "%s/Shows/%s/Seasons?UserId=%s",
+    snprintf(url, sizeof(url), "%s/Shows/%s/Seasons?UserId=%s&EnableUserData=true",
              g_jellyfinUrl, showId.c_str(), g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
     std::vector<JellyfinSeason> out;
@@ -470,6 +512,7 @@ static std::vector<JellyfinSeason> FetchSeasonsForShow(const std::string& showId
         char buf[8]; snprintf(buf, sizeof(buf), "%d", idx);
         s.index = buf;
         s.primaryTag = ParsePrimaryTag(obj);
+        ParseDetails(obj, s);
         if (!s.id.empty()) out.push_back(s);
     }
     return out;
@@ -480,7 +523,7 @@ static std::vector<JellyfinEpisode> FetchEpisodesForSeason(const std::string& se
 {
     char url[1024];
     snprintf(url, sizeof(url),
-             "%s/Shows/%s/Episodes?seasonId=%s&UserId=%s&Fields=Overview",
+             "%s/Shows/%s/Episodes?seasonId=%s&UserId=%s&Fields=Overview&EnableUserData=true",
              g_jellyfinUrl, showId.c_str(), seasonId.c_str(), g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
     std::vector<JellyfinEpisode> out;
@@ -498,6 +541,7 @@ static std::vector<JellyfinEpisode> FetchEpisodesForSeason(const std::string& se
             e.index = buf;
         }
         e.primaryTag = ParsePrimaryTag(obj);
+        ParseDetails(obj, e);
         if (!e.id.empty()) out.push_back(e);
     }
     return out;

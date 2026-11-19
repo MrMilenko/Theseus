@@ -3391,6 +3391,78 @@ static std::string EpisodeCode(const std::string& season, const std::string& epi
 	return buf;
 }
 
+// "1h 13m", "47m".
+static std::string RunLength(long long seconds)
+{
+	if (seconds <= 0) return "";
+	char buf[32];
+	long long m = (seconds + 30) / 60;
+	if (m >= 60) snprintf(buf, sizeof(buf), "%lldh %02lldm", m / 60, m % 60);
+	else         snprintf(buf, sizeof(buf), "%lldm", m < 1 ? 1 : m);
+	return buf;
+}
+
+// "47:41", "1:02:03".
+static std::string ClockTime(long long seconds)
+{
+	char buf[32];
+	if (seconds >= 3600) snprintf(buf, sizeof(buf), "%lld:%02lld:%02lld", seconds / 3600, (seconds / 60) % 60, seconds % 60);
+	else                 snprintf(buf, sizeof(buf), "%lld:%02lld", seconds / 60, seconds % 60);
+	return buf;
+}
+
+static void JoinDot(std::string& out, const std::string& part)
+{
+	if (part.empty()) return;
+	if (!out.empty()) out += "  \xC2\xB7  ";
+	out += part;
+}
+
+// "1931 · 1h 13m · NR · 7.2/10" for the info card.
+static std::string FactsLine(const std::string& year, long long runSeconds,
+                             const std::string& rating, float stars)
+{
+	std::string out;
+	JoinDot(out, year);
+	JoinDot(out, RunLength(runSeconds));
+	JoinDot(out, rating);
+	if (stars > 0.0f) {
+		char buf[16]; snprintf(buf, sizeof(buf), "%.1f/10", stars);
+		JoinDot(out, buf);
+	}
+	return out;
+}
+
+// "Watched", "Resume from 47:41 of 1:14:26", or nothing.
+static std::string WatchLine(bool played, long long posSeconds, long long runSeconds)
+{
+	if (posSeconds > 0) {
+		std::string s = "Resume from " + ClockTime(posSeconds);
+		if (runSeconds > 0) s += " of " + ClockTime(runSeconds);
+		return s;
+	}
+	return played ? "Watched" : "";
+}
+
+static void AppendLine(std::string& body, const std::string& line)
+{
+	if (line.empty()) return;
+	if (!body.empty()) body += "\n";
+	body += line;
+}
+
+static std::string ClipInfo(std::string body)
+{
+	const size_t kMax = 1200;
+	if (body.size() > kMax) {
+		size_t n = kMax - 1;
+		while (n > 0 && ((unsigned char)body[n] & 0xC0) == 0x80) n--;
+		body.resize(n);
+		body += "\xE2\x80\xA6";
+	}
+	return body;
+}
+
 class CPlexLibrary : public CNode
 {
 public:
@@ -3552,7 +3624,8 @@ public:
 		return new CStrObject;
 	}
 
-	// Y-button modal text: title + full plot. Seasons inherit the show plot.
+	// Y: the info card. Title, the facts line, genres, where you left off,
+	// then the plot. Seasons show the show's plot.
 	CStrObject* GetInfoText(int view, int i)
 	{
 		if (i < 0) return new CStrObject;
@@ -3563,18 +3636,23 @@ public:
 			if (i >= (int)items.size()) return new CStrObject;
 			const PlexItem& it = items[i];
 			body = it.title;
-			if (!it.year.empty()) { body += "  ("; body += it.year; body += ")"; }
+			AppendLine(body, FactsLine(it.year, it.durationMs / 1000, it.rating, it.stars));
+			AppendLine(body, it.genres);
+			if (it.leafCount > 0) AppendLine(body, LeftLine(it));
+			else AppendLine(body, WatchLine(it.Played(), it.offsetMs / 1000, it.durationMs / 1000));
 			if (!it.summary.empty()) { body += "\n\n"; body += it.summary; }
 		}
 		else if (view == 2) {
-			// Seasons have no summary. Surface the show's plot.
 			std::vector<PlexItem> items = CurrentItems();
 			if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return new CStrObject;
 			const PlexItem& sh = items[m_currentShow];
 			std::vector<PlexSeason> seasons;
 			Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
 			body = sh.title;
-			if (i < (int)seasons.size()) { body += "  -  "; body += seasons[i].title; }
+			if (i < (int)seasons.size()) { body += "  \xC2\xB7  "; body += seasons[i].title; }
+			AppendLine(body, FactsLine(sh.year, 0, sh.rating, sh.stars));
+			AppendLine(body, sh.genres);
+			if (i < (int)seasons.size()) AppendLine(body, LeftLine(seasons[i]));
 			if (!sh.summary.empty()) { body += "\n\n"; body += sh.summary; }
 		}
 		else if (view == 3) {
@@ -3582,17 +3660,15 @@ public:
 			Plex_Cache_GetEpisodes(CurrentSeasonKey(), eps);
 			if (i >= (int)eps.size()) return new CStrObject;
 			const PlexEpisode& e = eps[i];
-			body = "";
-			if (!e.index.empty()) { body += e.index; body += ".  "; }
-			body += e.title;
+			body = EpisodeLabel(e.index, e.title);
+			std::vector<PlexItem> items = CurrentItems();
+			if (m_currentShow >= 0 && m_currentShow < (int)items.size())
+				AppendLine(body, items[m_currentShow].title);
+			AppendLine(body, FactsLine("", e.durationMs / 1000, e.rating, e.stars));
+			AppendLine(body, WatchLine(e.Played(), e.offsetMs / 1000, e.durationMs / 1000));
 			if (!e.summary.empty()) { body += "\n\n"; body += e.summary; }
 		}
-		const size_t kMax = 1200;
-		if (body.size() > kMax) {
-			body.resize(kMax - 1);
-			body += "\xE2\x80\xA6";
-		}
-		return new CStrObject(_T(body.c_str()));
+		return new CStrObject(_T(ClipInfo(body).c_str()));
 	}
 
 	// Truncated plot blurb for inline display. Items + episodes only.
@@ -3812,6 +3888,13 @@ public:
 		m_currentSeason = i;
 		std::vector<PlexEpisode> dummy;
 		(void)Plex_Cache_GetEpisodes(seasons[i].ratingKey, dummy);
+	}
+
+	static std::string LeftLine(const PlexDetails& d)
+	{
+		if (d.Played() || d.Unplayed() <= 0) return d.Played() ? "Watched" : "";
+		char buf[48]; snprintf(buf, sizeof(buf), "%d episode%s left", d.Unplayed(), d.Unplayed() == 1 ? "" : "s");
+		return buf;
 	}
 
 	std::string EpisodeLabel(const std::string& index, const std::string& title)
@@ -4209,6 +4292,8 @@ public:
 		return ArtOrLogo(seasons[i].id, showId);
 	}
 
+	static long long Secs(long long ticks) { return ticks / 10000000; }
+
 	std::string EpisodeLabel(const std::string& index, const std::string& title)
 	{
 		std::vector<JellyfinSeason> seasons;
@@ -4353,6 +4438,8 @@ public:
 		return new CStrObject(_T(s.c_str()));
 	}
 
+	// Y: the info card. Title, the facts line, genres, where you left off,
+	// then the plot. Seasons show the show's plot.
 	CStrObject* GetInfoText(int view, int i)
 	{
 		if (i < 0) return new CStrObject;
@@ -4362,7 +4449,14 @@ public:
 			if (i >= (int)items.size()) return new CStrObject;
 			const JellyfinItem& it = items[i];
 			body = it.name;
-			if (!it.year.empty()) { body += "  ("; body += it.year; body += ")"; }
+			AppendLine(body, FactsLine(it.year, Secs(it.runTicks), it.rating, it.stars));
+			AppendLine(body, it.genres);
+			if (it.type == "Series" && it.unplayed > 0 && !it.played) {
+				char buf[48]; snprintf(buf, sizeof(buf), "%d episode%s left", it.unplayed, it.unplayed == 1 ? "" : "s");
+				AppendLine(body, buf);
+			} else {
+				AppendLine(body, WatchLine(it.played, Secs(it.posTicks), Secs(it.runTicks)));
+			}
 			if (!it.overview.empty()) { body += "\n\n"; body += it.overview; }
 		}
 		else if (view == 2) {
@@ -4372,7 +4466,15 @@ public:
 			std::vector<JellyfinSeason> seasons;
 			Jellyfin_Cache_GetSeasons(sh.id, seasons);
 			body = sh.name;
-			if (i < (int)seasons.size()) { body += "  -  "; body += seasons[i].name; }
+			if (i < (int)seasons.size()) { body += "  \xC2\xB7  "; body += seasons[i].name; }
+			AppendLine(body, FactsLine(sh.year, 0, sh.rating, sh.stars));
+			AppendLine(body, sh.genres);
+			if (i < (int)seasons.size() && seasons[i].unplayed > 0 && !seasons[i].played) {
+				char buf[48]; snprintf(buf, sizeof(buf), "%d episode%s left", seasons[i].unplayed, seasons[i].unplayed == 1 ? "" : "s");
+				AppendLine(body, buf);
+			} else if (i < (int)seasons.size() && seasons[i].played) {
+				AppendLine(body, "Watched");
+			}
 			if (!sh.overview.empty()) { body += "\n\n"; body += sh.overview; }
 		}
 		else if (view == 3) {
@@ -4382,17 +4484,15 @@ public:
 			Jellyfin_Cache_GetEpisodes(seasonId, eps);
 			if (i >= (int)eps.size()) return new CStrObject;
 			const JellyfinEpisode& e = eps[i];
-			body = "";
-			if (!e.index.empty()) { body += e.index; body += ".  "; }
-			body += e.name;
+			body = EpisodeLabel(e.index, e.name);
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (m_currentShow >= 0 && m_currentShow < (int)items.size())
+				AppendLine(body, items[m_currentShow].name);
+			AppendLine(body, FactsLine("", Secs(e.runTicks), e.rating, e.stars));
+			AppendLine(body, WatchLine(e.played, Secs(e.posTicks), Secs(e.runTicks)));
 			if (!e.overview.empty()) { body += "\n\n"; body += e.overview; }
 		}
-		const size_t kMax = 1200;
-		if (body.size() > kMax) {
-			body.resize(kMax - 1);
-			body += "\xE2\x80\xA6";
-		}
-		return new CStrObject(_T(body.c_str()));
+		return new CStrObject(_T(ClipInfo(body).c_str()));
 	}
 
 	int IsSignedIn() { return Jellyfin_HasToken() ? 1 : 0; }
