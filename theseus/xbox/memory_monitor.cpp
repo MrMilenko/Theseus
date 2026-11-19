@@ -281,10 +281,10 @@ int CMemoryMonitor::HaveDeviceBottom(int nDevice)
 // a unit its mount letter (unmounted fails). Both sizes are rounded up to
 // 16 KB blocks and one block comes off the total for the root directory.
 // If the drive can't be asked, a unit is marked gone and both read 0.
-// Theseus range checks devUnit first.
+// Theseus range checks devUnit first; the hard drive (Dev0) is in range.
 bool CMemoryMonitor::GetTotalAndFreeBlocks(int devUnit, int *pnTotalBlocks, int *pnFreeBlocks)
 {
-	if (devUnit < Dev1Unit1 || devUnit > Dev4Unit2)
+	if (devUnit < Dev1Unit1 || devUnit > Dev0)
 		return false;
 
 	char szRoot[4] = { 'C', ':', '\\', 0 };
