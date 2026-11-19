@@ -58,6 +58,8 @@ Launch it and you land on the dashboard. On first run UIX Desktop creates your *
 | Linux | `$XDG_DATA_HOME/theseus/`, which is usually `~/.local/share/theseus/` |
 | Windows | `%APPDATA%\Theseus\` |
 
+**Portable mode:** put an empty `portable.txt` next to the app (beside `theseus.exe` on Windows, beside `theseus` in the Linux tarball) and everything lives in a `UserData` folder right there instead, handy for a USB stick or one folder per setup. An AppImage does the same with a folder named after it plus `.home` (`UIX-Desktop-v0.4.1-x86_64.AppImage.home`). Setting `THESEUS_DATA_DIR` points the user data folder anywhere you like and beats both.
+
 **Settings (F4) > General > Open User Directory** takes you straight there. Inside:
 
 | Path | What's there |
