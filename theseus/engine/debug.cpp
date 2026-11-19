@@ -1,6 +1,6 @@
-// debug.cpp: debug-build-only diagnostic helpers (CRT alloc hook, trace
-// stream gate, kernel-debugger present check). Most of this compiles to
-// nothing in retail.
+// debug.cpp: the Xbox debug build's trace, assert and error-text helpers.
+// None of this is in the 5960 retail XBE: retail formats its alerts
+// (0x0002c520) and throws them away. Theseus's own, and empty in retail.
 
 #include "std.h"
 #include "theseus.h"
@@ -8,205 +8,94 @@
 
 #ifdef _DEBUG
 
-long _dbgBreakAlloc = -1;
+#ifdef _XBOX
+// Untagged trace lines are chatter; flip this to see them.
+bool bShowComments = false;
+#endif
 
-
-int __cdecl DebugAllocHook(int nAllocType, void *pvData, size_t nSize, int nBlockUse, long lRequest, const unsigned char* szFileName, int nLine)
+// A message may start with a 1..7 tag byte (its color on the debug
+// console). Tagged lines always print; on Xbox untagged ones are optional.
+EXTERN_C void Trace(const TCHAR* szMsg, ...)
 {
-	if (lRequest == _dbgBreakAlloc)
-		_CrtDbgBreak();
+	if (*szMsg >= 1 && *szMsg <= 7)
+		szMsg++;
+#ifdef _XBOX
+	else if (!bShowComments)
+		return;
+#endif
 
-	return TRUE;
+	TCHAR szLine[512];
+	va_list args;
+	va_start(args, szMsg);
+	_vsntprintf(szLine, countof(szLine), szMsg, args);
+	va_end(args);
+	szLine[countof(szLine) - 1] = 0;
+	OutputDebugString(szLine);
 }
 
-const TCHAR* GetFacilityName(int nFacility)
+static const TCHAR* FacilityName(int nFacility)
 {
-	const TCHAR* szFacility;
-
 	switch (nFacility)
 	{
-	default:
-		szFacility = _T("Unknown Facility");
-		break;
-
-	case FACILITY_NULL:
-		szFacility = _T("null");
-		break;
-
-	case FACILITY_RPC:
-		szFacility = _T("RPC");
-		break;
-
-	case FACILITY_DISPATCH:
-		szFacility = _T("Dispatch");
-		break;
-
-	case FACILITY_STORAGE:
-		szFacility = _T("Storage");
-		break;
-
-	case FACILITY_ITF:
-		szFacility = _T("ITF");
-		break;
-
-	case FACILITY_WIN32:
-		szFacility = _T("Win32");
-		break;
-
-	case FACILITY_WINDOWS:
-		szFacility = _T("Windows");
-		break;
-
-	case FACILITY_SSPI:
-		szFacility = _T("SSPI");
-		break;
-
-	case FACILITY_CONTROL:
-		szFacility = _T("Control");
-		break;
-
-	case FACILITY_CERT:
-		szFacility = _T("Cert");
-		break;
-
-	case FACILITY_INTERNET:
-		szFacility = _T("Internet");
-		break;
-
-	case FACILITY_MEDIASERVER:
-		szFacility = _T("Media Server");
-		break;
-
-	case FACILITY_MSMQ:
-		szFacility = _T("MSMQ");
-		break;
-
-	case FACILITY_SETUPAPI:
-		szFacility = _T("Setup API");
-		break;
-
-	case 0x15: // _FACDPV
-		szFacility = _T("DirectPlayVoice");
-		break;
-
-	case 0x876: // _FACDD, _FACD3D
-		szFacility = _T("Direct3D");
-		break;
-
-	case 0x877: // _FACDP
-		szFacility = _T("DirectPlay");
-		break;
-
-	case 0x878: // _FACDS
-		szFacility = _T("DirectSound");
-		break;
+	case FACILITY_NULL:     return _T("null");
+	case FACILITY_WIN32:    return _T("Win32");
+	case FACILITY_WINDOWS:  return _T("Windows");
+	case FACILITY_ITF:      return _T("ITF");
+	case 0x876:             return _T("Direct3D");
+	case 0x878:             return _T("DirectSound");
 	}
-
-	return szFacility;
+	return _T("Unknown Facility");
 }
 
-void TheseusGetErrorString(HRESULT hr, TCHAR* szErrorBuf, int cchErrorBuf)
+// "<facility>: <D3DX text>", cut to fit.
+void TheseusGetErrorString(HRESULT hr, TCHAR* szBuf, int cchBuf)
 {
-	int nCode = HRESULT_CODE(hr);
-	int nFacility = HRESULT_FACILITY(hr);
-
-	const TCHAR* szFacility = GetFacilityName(nFacility);
-	_tcsncpy(szErrorBuf, szFacility, cchErrorBuf);
-	int cchFacility = _tcslen(szFacility);
-	szErrorBuf += cchFacility;
-	cchErrorBuf -= cchFacility;
-
-	if (cchErrorBuf > 2)
-	{
-		*szErrorBuf++ = ':';
-		*szErrorBuf++ = ' ';
-		cchErrorBuf -= 2;
-	}
-
-	D3DXGetErrorString(hr, szErrorBuf, cchErrorBuf);
+	if (cchBuf <= 0)
+		return;
+	_sntprintf(szBuf, cchBuf, _T("%s: "), FacilityName(HRESULT_FACILITY(hr)));
+	szBuf[cchBuf - 1] = 0;
+	int used = (int)_tcslen(szBuf);
+	if (used < cchBuf - 1)
+		D3DXGetErrorString(hr, szBuf + used, cchBuf - used);
 }
 
 const TCHAR* TheseusGetErrorString(HRESULT hr)
 {
-	static TCHAR szBuf [100];
-	TheseusGetErrorString(hr, szBuf, countof(szBuf));
-	return szBuf;
+	static TCHAR szText[100];
+	TheseusGetErrorString(hr, szText, countof(szText));
+	return szText;
 }
 
 void LogComError(HRESULT hr, const char* szFunc)
 {
-	TCHAR szError [100];
-	TheseusGetErrorString(hr, szError, countof(szError));
-
-#ifdef _UNICODE
-	TCHAR szFunction [100];
-	Unicode(szFunction, szFunc, 100);
-
-	Trace(_T("\001Error in function: %s\n\001%s\n"), szFunc == NULL ? _T("unknown") : szFunction, szError);
-#else
-	Trace(_T("\001Error in function: %s\n\001%s\n"), szFunc == NULL ? _T("unknown") : szFunc, szError);
-#endif
+	TCHAR szFuncW[100];
+	Unicode(szFuncW, szFunc != NULL ? szFunc : "unknown", countof(szFuncW));
+	Trace(_T("\001%s failed: %s\n"), szFuncW, TheseusGetErrorString(hr));
 }
 
 void LogError(const char* szFunc)
 {
-	Trace(_T("\001Error in function: %s\n"), szFunc);
+	Trace(_T("\001%hs failed\n"), szFunc);
 }
 
+// ASSERTHR lands here. True asks the caller to break into the debugger,
+// which only makes sense with one attached.
 EXTERN_C bool AssertFailed(const TCHAR* szFile, int nLine, HRESULT hr)
 {
-	TCHAR szBuffer [256];
-
 	if (hr == 0)
-	{
-		_stprintf(szBuffer, _T("Assertion failed in %s at line %d (last error code is 0x%x)."), szFile, nLine, GetLastError());
-	}
+		Trace(_T("\001Assert failed: %s(%d), last error %u\n"), szFile, nLine, GetLastError());
 	else
-	{
-		TCHAR szComError [100];
-		TheseusGetErrorString(hr, szComError, countof(szComError));
-		_stprintf(szBuffer, _T("COM Failure in %s at line %d.\n\nFacility: %d %s\nCode %d (0x%04x)\n\n%s"),
-			szFile, nLine, HRESULT_FACILITY(hr), GetFacilityName(HRESULT_FACILITY(hr)), HRESULT_CODE(hr), HRESULT_CODE(hr), szComError);
-	}
-
-	Trace(_T("\001Theseus: %s\n"), szBuffer);
+		Trace(_T("\001HRESULT 0x%08x at %s(%d): %s\n"), hr, szFile, nLine, TheseusGetErrorString(hr));
 #ifdef _MAC_CROSS_COMPILE
-	return false; // don't break; no debugger attached
+	return false;
 #else
 	return true;
 #endif
 }
 
-#ifdef _XBOX
-bool bShowComments = false;
-#endif
-
-EXTERN_C void Trace(const TCHAR* szMsg, ...)
-{
-	va_list args;
-	va_start(args, szMsg);
-
-#ifdef _XBOX
-	if (*szMsg > 0 && *szMsg < 8)
-		szMsg += 1; // skip over message type (color) specifier
-	else if (!bShowComments)
-		return;
-#endif
-
-	TCHAR szBuffer [512];
-	_vsntprintf(szBuffer, countof(szBuffer), szMsg, args);
-
-	const TCHAR* szODS = szBuffer;
-	OutputDebugString(szODS);
-
-	va_end(args);
-}
-
 void Debug_Init()
 {
-	TRACE(_T("This is a debug version of Theseus!\n"));
-
-	_CrtSetAllocHook(DebugAllocHook);
+	Trace(_T("\001Theseus debug build\n"));
 }
 
 void Debug_Exit()
@@ -214,86 +103,19 @@ void Debug_Exit()
 	_CrtDumpMemoryLeaks();
 }
 
-void DumpHex(const BYTE* pbData, int cbData, int cbMax)
-{
-	TCHAR szBuf [256];
-	TCHAR szBuf2 [32];
-
-	bool bTruncated = false;
-	if (cbMax != 0 && cbData > cbMax)
-	{
-		bTruncated = true;
-		cbData = cbMax;
-	}
-
-	TCHAR* pch = szBuf;
-	TCHAR* pch2 = szBuf2;
-	for (int i = 0; i < cbData; i += 1)
-	{
-		BYTE b = *pbData++;
-
-		pch += _stprintf(pch, _T("%02x "), b);
-
-		if (b >= ' ' && b < 128)
-			*pch2++ = b;
-		else
-			*pch2++ = '.';
-
-		if ((i & 15) == 15 || i == cbData - 1)
-		{
-			*pch2 = '\0';
-			Trace(_T("%-48s %s\n"), szBuf, szBuf2);
-			pch = szBuf;
-			pch2 = szBuf2;
-		}
-	}
-
-	if (bTruncated)
-		Trace(_T("...\n"));
-}
-
+// Walk the heap every five seconds and stop on the first sign of damage.
 void Debug_Frame()
 {
-	static XTIME nextHeapCheckTime;
-	if (TheseusGetNow() < nextHeapCheckTime)
+	static XTIME nextCheck;
+	if (TheseusGetNow() < nextCheck)
 		return;
+	nextCheck = TheseusGetNow() + 5.0f;
 
-	nextHeapCheckTime = TheseusGetNow() + 5.0f; // every 5 seconds...
-
-	// Check heap consistency...
-	switch (_heapchk())
+	int status = _heapchk();
+	if (status != _HEAPOK)
 	{
-	case _HEAPBADBEGIN:
-		TRACE(_T("\001HEAPCHK: Initial header information is bad or cannot be found\n"));
+		Trace(_T("\001Heap check failed (%d)\n"), status);
 		_CrtDbgBreak();
-		break;
-
-	case _HEAPBADNODE:
-		TRACE(_T("\001HEAPCHK: Bad node has been found or heap is damaged\n"));
-		_CrtDbgBreak();
-		break;
-
-	case _HEAPBADPTR:
-		TRACE(_T("\001HEAPCHK: Pointer into heap is not valid\n"));
-		_CrtDbgBreak();
-		break;
-
-	case _HEAPEMPTY:
-		TRACE(_T("\001HEAPCHK: Heap has not been initialized\n"));
-		_CrtDbgBreak();
-		break;
-
-	case _HEAPOK:
-		break;
-	}
-}
-
-void DumpRegisteredClasses()
-{
-	TRACE(_T("Registered Classes:\n"));
-	for (CNodeClass* pClass = CNodeClass::c_pFirstClass; pClass != NULL; pClass = pClass->m_nextClass)
-	{
-		TRACE(_T("\t%s\n"), pClass->m_className);
 	}
 }
 
