@@ -41,6 +41,9 @@ struct PlexItem : PlexDetails {
     std::string artUrl;        // absolute URL (hero/fanart)
     std::string summary;       // plot synopsis
     std::string type;          // "movie" | "show" | "track" | "artist" | ...
+    std::string showTitle;     // episodes on the On Deck shelf
+    std::string seasonIndex;
+    std::string episodeIndex;
 };
 
 struct PlexSeason : PlexDetails {

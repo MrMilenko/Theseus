@@ -3717,23 +3717,39 @@ public:
 
 	int GetItemCount() { return (int)CurrentItems().size(); }
 
+	// "Dracula (1931)", or "Show · S1E02 · Title" for an episode out on the
+	// On Deck shelf.
+	static std::string ItemLabel(const PlexItem& it)
+	{
+		if (it.type == "episode" && !it.showTitle.empty()) {
+			std::string s = it.showTitle;
+			std::string code = EpisodeCode(it.seasonIndex, it.episodeIndex);
+			if (!code.empty()) { s += " \xC2\xB7 "; s += code; }
+			return s + " \xC2\xB7 " + it.title;
+		}
+		std::string s = it.title;
+		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		return s;
+	}
+
 	// Title and year without the watch mark, for the header.
 	CStrObject* GetItemName(int i)
 	{
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
-		std::string s = items[i].title;
-		if (!items[i].year.empty()) { s += " ("; s += items[i].year; s += ")"; }
-		return new CStrObject(_T(s.c_str()));
+		return new CStrObject(_T(ItemLabel(items[i]).c_str()));
 	}
+
+	// X plays from the top instead of the resume point.
+	bool m_startOver = false;
+	void SetStartOver(int on) { m_startOver = on != 0; }
 
 	CStrObject* GetItemTitle(int i)
 	{
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
 		const PlexItem& it = items[i];
-		std::string s = it.title;
-		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		std::string s = ItemLabel(it);
 		if (!IsFolderType(it.type)) s = Mark(it) + s;
 		return new CStrObject(_T(s.c_str()));
 	}
@@ -3819,7 +3835,8 @@ public:
 
 	void PlayRatingKey(const std::string& ratingKey,
 	                   const std::string& title,
-	                   const std::string& subtitle)
+	                   const std::string& subtitle,
+	                   int offsetMs = 0)
 	{
 		if (m_serverUri.empty()) m_serverUri = Plex_GetActiveServerUri();
 		if (m_serverUri.empty() || ratingKey.empty()) return;
@@ -3829,7 +3846,8 @@ public:
 				ratingKey.c_str());
 			return;
 		}
-		if (!MediaPlayer_Open(url.c_str())) {
+		double start = m_startOver ? 0.0 : offsetMs / 1000.0;
+		if (!MediaPlayer_OpenAt(url.c_str(), start)) {
 			fprintf(stderr, "[Plex] MediaPlayer_Open failed for %s\n",
 				ratingKey.c_str());
 			return;
@@ -3853,9 +3871,14 @@ public:
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return;
 		const PlexItem& it = items[i];
+		if (IsFolderType(it.type)) return;
 		std::string sub = "Plex";
-		if (!it.year.empty()) { sub += "  \xC2\xB7  "; sub += it.year; }
-		PlayRatingKey(it.ratingKey, it.title, sub);
+		if (it.type == "episode" && !it.showTitle.empty()) {
+			sub = it.showTitle;
+			std::string code = EpisodeCode(it.seasonIndex, it.episodeIndex);
+			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
+		} else if (!it.year.empty()) { sub += "  \xC2\xB7  "; sub += it.year; }
+		PlayRatingKey(it.ratingKey, it.title, sub, it.offsetMs);
 	}
 
 	// ----- TV drill: show -> seasons -> episodes -----
@@ -3980,7 +4003,7 @@ public:
 			std::string code = EpisodeCode(seasons[m_currentSeason].index, e.index);
 			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
 		}
-		PlayRatingKey(e.ratingKey, e.title, sub);
+		PlayRatingKey(e.ratingKey, e.title, sub, e.offsetMs);
 	}
 
 	int IsSignedIn() { return Plex_HasToken() ? 1 : 0; }
@@ -4078,6 +4101,7 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_SI(GetLibraryRow)
 	NODE_FUN_SI(GetStatus)
 	NODE_FUN_SI(GetItemName)
+	NODE_FUN_VI(SetStartOver)
 END_NODE_FUN()
 
 
@@ -4208,23 +4232,39 @@ public:
 
 	int GetItemCount() { return (int)CurrentItems().size(); }
 
+	// "Dracula (1931)", or "Pioneer One · S1E02 · The Man From Mars" for an
+	// episode out on the Continue Watching or Next Up shelf.
+	static std::string ItemLabel(const JellyfinItem& it)
+	{
+		if (it.type == "Episode" && !it.seriesName.empty()) {
+			std::string s = it.seriesName;
+			std::string code = EpisodeCode(it.seasonIndex, it.episodeIndex);
+			if (!code.empty()) { s += " \xC2\xB7 "; s += code; }
+			return s + " \xC2\xB7 " + it.name;
+		}
+		std::string s = it.name;
+		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		return s;
+	}
+
 	// Title and year without the watch mark, for the header.
 	CStrObject* GetItemName(int i)
 	{
 		std::vector<JellyfinItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
-		std::string s = items[i].name;
-		if (!items[i].year.empty()) { s += " ("; s += items[i].year; s += ")"; }
-		return new CStrObject(_T(s.c_str()));
+		return new CStrObject(_T(ItemLabel(items[i]).c_str()));
 	}
+
+	// X plays from the top instead of the resume point.
+	bool m_startOver = false;
+	void SetStartOver(int on) { m_startOver = on != 0; }
 
 	CStrObject* GetItemTitle(int i)
 	{
 		std::vector<JellyfinItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
 		const JellyfinItem& it = items[i];
-		std::string s = it.name;
-		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		std::string s = ItemLabel(it);
 		if (!it.isFolder || it.type == "Series") s = Mark(it) + s;
 		return new CStrObject(_T(s.c_str()));
 	}
@@ -4295,14 +4335,16 @@ public:
 
 	void PlayRatingKey(const std::string& itemId,
 	                   const std::string& title,
-	                   const std::string& subtitle)
+	                   const std::string& subtitle,
+	                   long long posTicks = 0)
 	{
 		std::string url = Jellyfin_StreamUrl(itemId, m_playAudio);
 		if (url.empty()) {
 			fprintf(stderr, "[Jellyfin] stream URL build failed for %s\n", itemId.c_str());
 			return;
 		}
-		if (!MediaPlayer_Open(url.c_str())) {
+		double start = m_startOver ? 0.0 : (double)Secs(posTicks);
+		if (!MediaPlayer_OpenAt(url.c_str(), start)) {
 			fprintf(stderr, "[Jellyfin] MediaPlayer_Open failed\n");
 			return;
 		}
@@ -4330,8 +4372,12 @@ public:
 		if (it.isFolder) return;
 		m_playAudio = (it.type == "Audio");
 		std::string sub = "Jellyfin";
-		if (!it.year.empty()) { sub += "  \xC2\xB7  "; sub += it.year; }
-		PlayRatingKey(it.id, it.name, sub);
+		if (it.type == "Episode" && !it.seriesName.empty()) {
+			sub = it.seriesName;
+			std::string code = EpisodeCode(it.seasonIndex, it.episodeIndex);
+			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
+		} else if (!it.year.empty()) { sub += "  \xC2\xB7  "; sub += it.year; }
+		PlayRatingKey(it.id, it.name, sub, it.posTicks);
 	}
 
 	void DrillIntoShow(int i)
@@ -4455,7 +4501,7 @@ public:
 			std::string code = EpisodeCode(seasons[m_currentSeason].index, e.index);
 			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
 		}
-		PlayRatingKey(e.id, e.name, sub);
+		PlayRatingKey(e.id, e.name, sub, e.posTicks);
 	}
 
 	void QueueEpisodeArt(int i)
@@ -4701,6 +4747,7 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_SI(GetLibraryRow)
 	NODE_FUN_SI(GetStatus)
 	NODE_FUN_SI(GetItemName)
+	NODE_FUN_VI(SetStartOver)
 END_NODE_FUN()
 
 

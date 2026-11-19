@@ -30,6 +30,9 @@ struct JellyfinItem : JellyfinDetails {
     std::string type;          // "Movie" | "Series" | "Audio" | ...
     std::string primaryTag;    // image tag for Primary image URL
     bool        isFolder = false;  // opens to more items (folders, box sets, albums)
+    std::string seriesName;    // episodes in Continue Watching / Next Up
+    std::string seasonIndex;
+    std::string episodeIndex;
 };
 
 struct JellyfinSeason : JellyfinDetails {

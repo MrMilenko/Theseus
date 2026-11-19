@@ -170,12 +170,22 @@ void MediaPlayer_Shutdown() {
 // ============================================================================
 
 bool MediaPlayer_Open(const char* path) {
+    return MediaPlayer_OpenAt(path, 0.0);
+}
+
+bool MediaPlayer_OpenAt(const char* path, double startSeconds) {
     // Re-init if a previous Stop tore mpv down. This is the normal path
     // for any playback after the first one in the session.
     if (!s_mpv) {
         if (!MediaPlayer_Init()) return false;
     }
 
+    // start is a global option, so it's put back once the file loads.
+    if (startSeconds > 0.0) {
+        char start[32];
+        snprintf(start, sizeof(start), "%.0f", startSeconds);
+        mpv_set_property_string(s_mpv, "start", start);
+    }
     const char* cmd[] = { "loadfile", path, NULL };
     mpv_command(s_mpv, cmd);
 
@@ -417,6 +427,7 @@ void MediaPlayer_Update() {
             }
             case MPV_EVENT_FILE_LOADED:
                 s_state = MP_PLAYING;
+                mpv_set_property_string(s_mpv, "start", "none");
                 break;
             default:
                 break;

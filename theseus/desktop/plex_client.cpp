@@ -369,6 +369,12 @@ static PlexItem ParseItem(const std::string& obj, const std::string& serverUri)
     it.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
     it.artUrl    = BuildAssetUrl(serverUri, Json_GetString(obj, "art"));
     it.type      = Json_GetString(obj, "type");
+    if (it.type == "episode") {
+        it.showTitle = Json_GetString(obj, "grandparentTitle");
+        int sn = Json_GetInt(obj, "parentIndex"), en = Json_GetInt(obj, "index");
+        if (sn > 0) it.seasonIndex  = std::to_string(sn);
+        if (en > 0) it.episodeIndex = std::to_string(en);
+    }
     return it;
 }
 
@@ -651,6 +657,21 @@ static void SyncWorker()
         std::vector<PlexItem> items;
         if (ir.ok()) items = ParseItems(ir.body, serverUri);
         itemsByKey[lib.sectionKey] = std::move(items);
+    }
+
+    // On Deck (what you're partway through and the next episodes) goes above
+    // the libraries when there's anything on it.
+    HttpResponse dr = Http_Get(serverUri + "/library/onDeck", PlexHeaders(true, true));
+    if (dr.ok()) {
+        std::vector<PlexItem> deck = ParseItems(dr.body, serverUri);
+        if (!deck.empty() && !libs.empty()) {
+            PlexLibrary shelf;
+            shelf.sectionKey = "uix-ondeck";
+            shelf.title      = "On Deck";
+            shelf.type       = "ondeck";
+            libs.insert(libs.begin(), shelf);
+            itemsByKey[shelf.sectionKey] = std::move(deck);
+        }
     }
 
     // Publish atomically. Readers see old snapshot or whole new one.

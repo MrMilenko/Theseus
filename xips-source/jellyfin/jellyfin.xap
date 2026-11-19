@@ -437,7 +437,39 @@ DEF theJellyfinMenu Level
 			UpdateJellyfinList();
 		}
 
-		function OnXDown()    { PlaySoundError(); }
+		// X: play from the beginning instead of the resume point.
+		function OnXDown()
+		{
+			if ((nJfCount <= 0) | (theJellyfinLibrary.IsSyncReady() == 0))
+			{
+				PlaySoundError();
+				return;
+			}
+			if (nJfView == 1)
+			{
+				var type = theJellyfinLibrary.GetItemType(nJfCursor);
+				if ((type == "folder") | (type == "show"))
+				{
+					PlaySoundError();
+					return;
+				}
+				PlaySoundA();
+				theJellyfinLibrary.SetStartOver(1);
+				theJellyfinLibrary.PlayItem(nJfCursor);
+				theJellyfinLibrary.SetStartOver(0);
+			}
+			else if (nJfView == 3)
+			{
+				PlaySoundA();
+				theJellyfinLibrary.SetStartOver(1);
+				theJellyfinLibrary.PlayEpisode(nJfCursor);
+				theJellyfinLibrary.SetStartOver(0);
+			}
+			else
+			{
+				PlaySoundError();
+			}
+		}
 		function OnYDown()
 		{
 			// Y: modal info with full plot. No-op at library view.

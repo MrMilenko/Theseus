@@ -369,12 +369,32 @@ static JellyfinItem ParseItem(const std::string& obj)
     it.primaryTag = ParsePrimaryTag(obj);
     it.isFolder  = Json_GetBool(obj, "IsFolder");
     ParseDetails(obj, it);
+    if (it.type == "Episode") {
+        it.seriesName = Json_GetString(obj, "SeriesName");
+        int sn = Json_GetInt(obj, "ParentIndexNumber"), en = Json_GetInt(obj, "IndexNumber");
+        if (sn > 0) it.seasonIndex  = std::to_string(sn);
+        if (en > 0) it.episodeIndex = std::to_string(en);
+    }
     int y = Json_GetInt(obj, "ProductionYear");
     if (y > 0) {
         char buf[8]; snprintf(buf, sizeof(buf), "%d", y);
         it.year = buf;
     }
     return it;
+}
+
+static bool FetchItemList(const std::string& url, std::vector<JellyfinItem>& out)
+{
+    HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
+    out.clear();
+    if (!r.ok()) return false;
+    size_t arr = Json_FindArray(r.body, "Items");
+    if (arr == std::string::npos) return true;
+    for (const auto& obj : Json_SplitArray(r.body, arr)) {
+        JellyfinItem it = ParseItem(obj);
+        if (!it.id.empty()) out.push_back(it);
+    }
+    return true;
 }
 
 static bool FetchItemsForLibrary(const std::string& libraryId, std::vector<JellyfinItem>& out)
@@ -448,6 +468,25 @@ static void SyncWorker()
         SetSyncPhase(gen, phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
         FetchItemsForLibrary(lib.id, itemsById[lib.id]);
     }
+
+    // Continue Watching and Next Up go above the libraries, when there's
+    // anything in them.
+    SetSyncPhase(gen, "Loading Continue Watching", 950);
+    std::string base = std::string(g_jellyfinUrl);
+    const char* fields = "Fields=Overview,ProductionYear,Genres&EnableUserData=true";
+    std::vector<JellyfinItem> resume, nextUp;
+    FetchItemList(base + "/Users/" + g_jellyfinUserId + "/Items/Resume?Limit=24&MediaTypes=Video&" + fields, resume);
+    FetchItemList(base + "/Shows/NextUp?UserId=" + g_jellyfinUserId + "&Limit=24&" + fields, nextUp);
+    std::vector<JellyfinLibrary> shelves;
+    if (!resume.empty()) {
+        shelves.push_back({ "uix-resume", "Continue Watching", "resume" });
+        itemsById["uix-resume"] = std::move(resume);
+    }
+    if (!nextUp.empty()) {
+        shelves.push_back({ "uix-nextup", "Next Up", "nextup" });
+        itemsById["uix-nextup"] = std::move(nextUp);
+    }
+    if (!libs.empty()) libs.insert(libs.begin(), shelves.begin(), shelves.end());
 
     size_t nLibs = libs.size();
     SetSyncPhase(gen, "Jellyfin library ready", 1000);

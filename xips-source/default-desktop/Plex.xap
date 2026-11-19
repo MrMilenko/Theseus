@@ -437,7 +437,39 @@ DEF thePlexMenu Level
 			UpdatePlexList();
 		}
 
-		function OnXDown()    { PlaySoundError(); }
+		// X: play from the beginning instead of the resume point.
+		function OnXDown()
+		{
+			if ((nPlexCount <= 0) | (thePlexLibrary.IsSyncReady() == 0))
+			{
+				PlaySoundError();
+				return;
+			}
+			if (nPlexView == 1)
+			{
+				var type = thePlexLibrary.GetItemType(nPlexCursor);
+				if ((type == "folder") | (type == "show"))
+				{
+					PlaySoundError();
+					return;
+				}
+				PlaySoundA();
+				thePlexLibrary.SetStartOver(1);
+				thePlexLibrary.PlayItem(nPlexCursor);
+				thePlexLibrary.SetStartOver(0);
+			}
+			else if (nPlexView == 3)
+			{
+				PlaySoundA();
+				thePlexLibrary.SetStartOver(1);
+				thePlexLibrary.PlayEpisode(nPlexCursor);
+				thePlexLibrary.SetStartOver(0);
+			}
+			else
+			{
+				PlaySoundError();
+			}
+		}
 		function OnYDown()
 		{
 			// Y: modal info with full plot. No-op at library view.
