@@ -3475,13 +3475,14 @@ class CPlexLibrary : public CNode
 {
 public:
 	CPlexLibrary()
-		: m_currentLib(-1), m_currentShow(-1), m_currentSeason(-1) {}
+		: m_currentShow(-1), m_currentSeason(-1) {}
 
 	DECLARE_NODE(CPlexLibrary, CNode)
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS()
 
-	int  m_currentLib;
+	// The library open, by key: the shelves above the libraries come and go.
+	std::string m_libKey, m_libName;
 	int  m_currentShow;
 	int  m_currentSeason;
 	std::string m_serverUri;
@@ -3537,8 +3538,11 @@ public:
 	void SetCurrent(int i)
 	{
 		m_folders.clear();
-		if (i == m_currentLib) return;
-		m_currentLib    = i;
+		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return;
+		m_libName = libs[i].title;
+		if (libs[i].sectionKey == m_libKey) return;
+		m_libKey        = libs[i].sectionKey;
 		m_currentShow   = -1;
 		m_currentSeason = -1;
 	}
@@ -3555,14 +3559,13 @@ public:
 
 	std::vector<PlexItem> CurrentItems()
 	{
-		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
-		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		if (m_libKey.empty()) return {};
 		if (!m_folders.empty()) {
 			std::vector<PlexItem> kids;
 			Plex_Cache_GetChildren(m_folders.back().key, kids);
 			return kids;
 		}
-		return Plex_Cache_GetItems(libs[m_currentLib].sectionKey);
+		return Plex_Cache_GetItems(m_libKey);
 	}
 
 	void DrillIntoFolder(int i)
@@ -3594,7 +3597,7 @@ public:
 	CStrObject* GetListTitle()
 	{
 		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
-		return GetName(m_currentLib);
+		return new CStrObject(_T(m_libName.c_str()));
 	}
 
 	CStrObject* GetItemType(int i)
@@ -3833,6 +3836,16 @@ public:
 		return ArtOrLogo(eps[i].ratingKey, seasonKey, CurrentShowKey());
 	}
 
+	// What's playing, for the server's playback reports.
+	static std::string s_playing;
+	static void Report(int event, double pos, double dur, bool paused)
+	{
+		Plex_ReportPlayback(s_playing, event, (int)(pos * 1000.0), (int)(dur * 1000.0), paused);
+	}
+
+	// Bumps when a playback report or a mark changes watch state.
+	int GetWatchStamp() { return (int)Plex_WatchStamp(); }
+
 	void PlayRatingKey(const std::string& ratingKey,
 	                   const std::string& title,
 	                   const std::string& subtitle,
@@ -3847,11 +3860,14 @@ public:
 			return;
 		}
 		double start = m_startOver ? 0.0 : offsetMs / 1000.0;
+		MediaUI_SetReporter(NULL);
 		if (!MediaPlayer_OpenAt(url.c_str(), start)) {
 			fprintf(stderr, "[Plex] MediaPlayer_Open failed for %s\n",
 				ratingKey.c_str());
 			return;
 		}
+		s_playing = ratingKey;
+		MediaUI_SetReporter(Report);
 		extern bool g_mediaFullscreen;
 		extern char g_mediaFullscreenTitle[256];
 		extern char g_mediaFullscreenSubtitle[256];
@@ -4057,6 +4073,8 @@ public:
 	}
 };
 
+std::string CPlexLibrary::s_playing;
+
 IMPLEMENT_NODE("PlexLibrary", CPlexLibrary, CNode)
 
 START_NODE_PROPS(CPlexLibrary, CNode)
@@ -4102,6 +4120,7 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_SI(GetStatus)
 	NODE_FUN_SI(GetItemName)
 	NODE_FUN_VI(SetStartOver)
+	NODE_FUN_IV(GetWatchStamp)
 END_NODE_FUN()
 
 
@@ -4115,13 +4134,14 @@ class CJellyfinLibrary : public CNode
 {
 public:
 	CJellyfinLibrary()
-		: m_currentLib(-1), m_currentShow(-1), m_currentSeason(-1) {}
+		: m_currentShow(-1), m_currentSeason(-1) {}
 
 	DECLARE_NODE(CJellyfinLibrary, CNode)
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS()
 
-	int  m_currentLib;
+	// The library open, by key: the shelves above the libraries come and go.
+	std::string m_libKey, m_libName;
 	int  m_currentShow;
 	int  m_currentSeason;
 	// Folders opened inside the library, innermost last, with the row to
@@ -4168,8 +4188,11 @@ public:
 	void SetCurrent(int i)
 	{
 		m_folders.clear();
-		if (i == m_currentLib) return;
-		m_currentLib    = i;
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return;
+		m_libName = libs[i].name;
+		if (libs[i].id == m_libKey) return;
+		m_libKey        = libs[i].id;
 		m_currentShow   = -1;
 		m_currentSeason = -1;
 	}
@@ -4188,14 +4211,13 @@ public:
 
 	std::vector<JellyfinItem> CurrentItems()
 	{
-		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
-		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		if (m_libKey.empty()) return {};
 		if (!m_folders.empty()) {
 			std::vector<JellyfinItem> kids;
 			Jellyfin_Cache_GetChildren(m_folders.back().id, kids);
 			return kids;
 		}
-		return Jellyfin_Cache_GetItems(libs[m_currentLib].id);
+		return Jellyfin_Cache_GetItems(m_libKey);
 	}
 
 	void DrillIntoFolder(int i)
@@ -4227,7 +4249,7 @@ public:
 	CStrObject* GetListTitle()
 	{
 		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
-		return GetName(m_currentLib);
+		return new CStrObject(_T(m_libName.c_str()));
 	}
 
 	int GetItemCount() { return (int)CurrentItems().size(); }
@@ -4333,6 +4355,17 @@ public:
 		return seasons[m_currentSeason].id;
 	}
 
+	// What's playing, for the server's playback reports.
+	static std::string s_playing;
+	static void Report(int event, double pos, double dur, bool paused)
+	{
+		(void)dur;
+		Jellyfin_ReportPlayback(s_playing, event, (long long)(pos * 10000000.0), paused);
+	}
+
+	// Bumps when a playback report or a mark changes watch state.
+	int GetWatchStamp() { return (int)Jellyfin_WatchStamp(); }
+
 	void PlayRatingKey(const std::string& itemId,
 	                   const std::string& title,
 	                   const std::string& subtitle,
@@ -4344,10 +4377,13 @@ public:
 			return;
 		}
 		double start = m_startOver ? 0.0 : (double)Secs(posTicks);
+		MediaUI_SetReporter(NULL);
 		if (!MediaPlayer_OpenAt(url.c_str(), start)) {
 			fprintf(stderr, "[Jellyfin] MediaPlayer_Open failed\n");
 			return;
 		}
+		s_playing = itemId;
+		MediaUI_SetReporter(Report);
 		extern bool g_mediaFullscreen;
 		extern char g_mediaFullscreenTitle[256];
 		extern char g_mediaFullscreenSubtitle[256];
@@ -4703,6 +4739,8 @@ public:
 	}
 };
 
+std::string CJellyfinLibrary::s_playing;
+
 IMPLEMENT_NODE("JellyfinLibrary", CJellyfinLibrary, CNode)
 
 START_NODE_PROPS(CJellyfinLibrary, CNode)
@@ -4748,6 +4786,7 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_SI(GetStatus)
 	NODE_FUN_SI(GetItemName)
 	NODE_FUN_VI(SetStartOver)
+	NODE_FUN_IV(GetWatchStamp)
 END_NODE_FUN()
 
 

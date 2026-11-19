@@ -17,6 +17,7 @@ var nPlexCursorBackup2;   // saved cursor when drilling season -> episodes
 var sPlexPoster;          // poster url on the CD now; behavior swaps it when art lands
 var bPlexLoaded;          // the chrome scene is in, so the behavior can touch it
 var sPlexStatus;          // what the empty list says (loading, can't reach); "" with rows
+var nPlexStamp;           // watch state we drew; playback reports and marks bump it
 
 
 function initialize()
@@ -32,6 +33,7 @@ function initialize()
 	nPlexCursorBackup2  = 0;
 	sPlexPoster         = "";
 	sPlexStatus         = "";
+	nPlexStamp          = -1;
 }
 
 
@@ -120,6 +122,11 @@ function UpdatePlexList()
 {
 	var c = thePlexMenu.children[0].children[0];
 	var status = thePlexLibrary.GetStatus(nPlexView);
+	nPlexStamp = thePlexLibrary.GetWatchStamp();
+
+	// A shelf can shrink under the cursor once watch state reloads.
+	if ((nPlexCursor >= nPlexCount) & (nPlexCount > 0))
+		nPlexCursor = nPlexCount - 1;
 
 	if (nPlexCursor < nPlexScroll)
 		nPlexScroll = nPlexCursor;
@@ -512,7 +519,7 @@ DEF thePlexMenu Level
 		BindActiveList();
 		if (bPlexLoaded == 1)
 		{
-			if ((nPlexCount != nPlexLastCount) | (GetPosterArt() != sPlexPoster) | (thePlexLibrary.GetStatus(nPlexView) != sPlexStatus))
+			if ((nPlexCount != nPlexLastCount) | (GetPosterArt() != sPlexPoster) | (thePlexLibrary.GetStatus(nPlexView) != sPlexStatus) | (thePlexLibrary.GetWatchStamp() != nPlexStamp))
 				UpdatePlexList();
 		}
 		else if (nPlexCount != nPlexLastCount)

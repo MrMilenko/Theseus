@@ -56,6 +56,55 @@ void MediaUI_ToggleTrackMenu()
 }
 
 // ============================================================================
+// Server playback reports. Position is kept every frame because it's gone
+// by the time the player has stopped.
+// ============================================================================
+
+static MediaReportFn s_report = NULL;
+static bool   s_reportStarted = false;
+static bool   s_reportPaused = false;
+static double s_reportLast = 0.0;
+static double s_reportPos = 0.0, s_reportDur = 0.0;
+
+static void EndReport()
+{
+    if (s_report && s_reportStarted)
+        s_report(MEDIA_REPORT_STOP, s_reportPos, s_reportDur, false);
+    s_report = NULL;
+    s_reportStarted = false;
+}
+
+void MediaUI_SetReporter(MediaReportFn fn)
+{
+    EndReport();
+    s_report = fn;
+    s_reportPos = s_reportDur = 0.0;
+}
+
+static void ReportFrame()
+{
+    if (!s_report) return;
+    MediaPlayerState st = MediaPlayer_GetState();
+    if (st != MP_PLAYING && st != MP_PAUSED) return;
+    double dur = MediaPlayer_GetDuration();
+    if (dur <= 0.0) return;
+    s_reportPos = MediaPlayer_GetPosition();
+    s_reportDur = dur;
+    bool paused = st == MP_PAUSED;
+    double now = NowSeconds();
+    if (!s_reportStarted) {
+        s_report(MEDIA_REPORT_START, s_reportPos, dur, paused);
+        s_reportStarted = true;
+    } else if (paused != s_reportPaused || now - s_reportLast >= 10.0) {
+        s_report(MEDIA_REPORT_PROGRESS, s_reportPos, dur, paused);
+    } else {
+        return;
+    }
+    s_reportPaused = paused;
+    s_reportLast = now;
+}
+
+// ============================================================================
 // Playback queue. Snapshot of a playlist captured at PlayPlaylist time so
 // edits to the source playlist while playing don't change what's queued.
 // ============================================================================
@@ -68,6 +117,7 @@ static int                    s_queueIdx = -1;
 static void OpenCurrentQueueItem() {
     if (s_queueIdx < 0 || s_queueIdx >= (int)s_queue.size()) return;
     const QueueItem& it = s_queue[s_queueIdx];
+    MediaUI_SetReporter(NULL);
     if (!MediaPlayer_Open(it.path.c_str())) return;
 
     g_mediaFullscreen = true;
@@ -240,6 +290,7 @@ void MediaUI_RenderOSD()
 
     // Auto-end: when libmpv reports stopped/idle (track finished), advance the
     // playlist queue if active, otherwise bail back to dashboard.
+    ReportFrame();
     MediaPlayerState st = MediaPlayer_GetState();
     if (st == MP_IDLE || st == MP_STOPPED) {
         if (MediaUI_PlaylistActive() && s_queueIdx + 1 < (int)s_queue.size()) {
@@ -432,6 +483,7 @@ void MediaUI_RenderOSD()
 void MediaUI_StopFullscreen()
 {
     if (!g_mediaFullscreen) return;
+    EndReport();
     MediaPlayer_Stop();
     g_mediaFullscreen = false;
     s_queue.clear();

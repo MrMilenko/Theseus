@@ -7,6 +7,7 @@
 #include "json_util.h"
 #include "client_util.h"
 #include "log_redact.h"
+#include "media_player.h"
 
 #include <cstdio>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <algorithm>
 
 extern char g_plexToken[256];
 extern char g_plexClientId[64];
@@ -115,8 +117,11 @@ void Plex_Init()
             g_plexToken[0] ? "yes" : "no", g_plexClientId);
 }
 
+static SerialWorker s_reports;
+
 void Plex_Shutdown()
 {
+    s_reports.Stop();
     s_pinCancel = true;
     JoinIf(s_pinThread);
     JoinIf(s_serversThread);
@@ -422,28 +427,34 @@ bool Plex_Cache_GetChildren(const std::string& ratingKey, std::vector<PlexItem>&
 // TV drill: /library/metadata/{rk}/children returns seasons or episodes.
 // ============================================================================
 
+static std::vector<PlexSeason> ParseSeasons(const std::string& body, const std::string& serverUri)
+{
+    std::vector<PlexSeason> seasons;
+    size_t arr = Json_FindArray(body, "Metadata");
+    if (arr == std::string::npos) return seasons;
+    for (const auto& obj : Json_SplitArray(body, arr)) {
+        // Skip Plex's synthetic "All episodes" pseudo-season (idx 0).
+        int idx = Json_GetInt(obj, "index");
+        if (idx <= 0) continue;
+        PlexSeason s;
+        s.ratingKey = Json_GetString(obj, "ratingKey");
+        s.title     = Json_GetString(obj, "title");
+        char ibuf[8]; snprintf(ibuf, sizeof(ibuf), "%d", idx);
+        s.index     = ibuf;
+        s.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
+        ParseDetails(obj, s);
+        if (!s.ratingKey.empty()) seasons.push_back(s);
+    }
+    return seasons;
+}
+
 static void SeasonsWorker(std::string serverUri, std::string showRk)
 {
     std::string url = serverUri + "/library/metadata/" + showRk + "/children";
     HttpResponse r = Http_Get(url, PlexHeaders(true, true));
     std::vector<PlexSeason> seasons;
     if (r.ok()) {
-        size_t arr = Json_FindArray(r.body, "Metadata");
-        if (arr != std::string::npos) {
-            for (const auto& obj : Json_SplitArray(r.body, arr)) {
-                // Skip Plex's synthetic "All episodes" pseudo-season (idx 0).
-                int idx = Json_GetInt(obj, "index");
-                if (idx <= 0) continue;
-                PlexSeason s;
-                s.ratingKey = Json_GetString(obj, "ratingKey");
-                s.title     = Json_GetString(obj, "title");
-                char ibuf[8]; snprintf(ibuf, sizeof(ibuf), "%d", idx);
-                s.index     = ibuf;
-                s.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
-                ParseDetails(obj, s);
-                if (!s.ratingKey.empty()) seasons.push_back(s);
-            }
-        }
+        seasons = ParseSeasons(r.body, serverUri);
     } else {
         fprintf(stderr, "[Plex] seasons fetch failed (status %ld)\n", r.status);
     }
@@ -575,6 +586,23 @@ static void FinishSync(unsigned gen, const char* phase)
     s_syncRunning = false;
 }
 
+static PlexLibrary OnDeckShelf()
+{
+    PlexLibrary shelf;
+    shelf.sectionKey = "uix-ondeck";
+    shelf.title      = "On Deck";
+    shelf.type       = "ondeck";
+    return shelf;
+}
+
+static bool FetchOnDeck(const std::string& serverUri, std::vector<PlexItem>& out)
+{
+    HttpResponse r = Http_Get(serverUri + "/library/onDeck", PlexHeaders(true, true));
+    if (!r.ok()) return false;
+    out = ParseItems(r.body, serverUri);
+    return true;
+}
+
 static void SyncWorker()
 {
     const unsigned gen = s_syncGen;
@@ -661,17 +689,10 @@ static void SyncWorker()
 
     // On Deck (what you're partway through and the next episodes) goes above
     // the libraries when there's anything on it.
-    HttpResponse dr = Http_Get(serverUri + "/library/onDeck", PlexHeaders(true, true));
-    if (dr.ok()) {
-        std::vector<PlexItem> deck = ParseItems(dr.body, serverUri);
-        if (!deck.empty() && !libs.empty()) {
-            PlexLibrary shelf;
-            shelf.sectionKey = "uix-ondeck";
-            shelf.title      = "On Deck";
-            shelf.type       = "ondeck";
-            libs.insert(libs.begin(), shelf);
-            itemsByKey[shelf.sectionKey] = std::move(deck);
-        }
+    std::vector<PlexItem> deck;
+    if (FetchOnDeck(serverUri, deck) && !deck.empty() && !libs.empty()) {
+        libs.insert(libs.begin(), OnDeckShelf());
+        itemsByKey[OnDeckShelf().sectionKey] = std::move(deck);
     }
 
     // Publish atomically. Readers see old snapshot or whole new one.
@@ -767,6 +788,114 @@ bool Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
     std::string uri = Plex_GetActiveServerUri();
     if (!uri.empty()) Plex_FetchEpisodes(uri, seasonRatingKey);
     return false;
+}
+
+
+// ============================================================================
+// Playback reports + watch state refresh
+// ============================================================================
+
+static std::atomic<unsigned> s_watchStamp{0};
+
+unsigned Plex_WatchStamp() { return s_watchStamp; }
+
+template <typename T>
+static void PatchList(std::vector<T>& list, const std::string& rk, const PlexDetails& d)
+{
+    for (auto& e : list)
+        if (e.ratingKey == rk) static_cast<PlexDetails&>(e) = d;
+}
+
+static void PatchDetails(const std::string& rk, const PlexDetails& d)
+{
+    for (auto& kv : s_cacheItems)    PatchList(kv.second, rk, d);
+    for (auto& kv : s_cacheChildren) PatchList(kv.second, rk, d);
+    for (auto& kv : s_cacheSeasons)  PatchList(kv.second, rk, d);
+    for (auto& kv : s_cacheEpisodes) PatchList(kv.second, rk, d);
+}
+
+static bool FetchDetails(const std::string& uri, const std::string& rk, PlexDetails& d,
+                         std::string* showRk = NULL)
+{
+    HttpResponse r = Http_Get(uri + "/library/metadata/" + rk, PlexHeaders(true, true));
+    if (!r.ok()) return false;
+    size_t arr = Json_FindArray(r.body, "Metadata");
+    if (arr == std::string::npos) return false;
+    std::vector<std::string> objs = Json_SplitArray(r.body, arr);
+    if (objs.empty()) return false;
+    ParseDetails(objs[0], d);
+    if (showRk) *showRk = Json_GetString(objs[0], "grandparentRatingKey");
+    return true;
+}
+
+// After playback or a mark: the item, its show and seasons, and On Deck.
+static void RefreshWatchState(unsigned gen, const std::string& uri, const std::string& rk)
+{
+    PlexDetails d, show;
+    std::string showRk;
+    bool haveItem = FetchDetails(uri, rk, d, &showRk);
+    bool haveShow = false, haveSeasons = false;
+    std::vector<PlexSeason> seasons;
+    if (!showRk.empty()) {
+        haveShow = FetchDetails(uri, showRk, show);
+        HttpResponse r = Http_Get(uri + "/library/metadata/" + showRk + "/children", PlexHeaders(true, true));
+        if (r.ok()) { seasons = ParseSeasons(r.body, uri); haveSeasons = true; }
+    }
+    std::vector<PlexItem> deck;
+    bool haveDeck = FetchOnDeck(uri, deck);
+
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen != s_syncGen) return;
+    if (haveItem) PatchDetails(rk, d);
+    if (haveShow) PatchDetails(showRk, show);
+    if (haveSeasons && s_cacheSeasons.count(showRk)) s_cacheSeasons[showRk] = std::move(seasons);
+    if (haveDeck && !s_cacheLibs.empty()) {
+        const std::string key = OnDeckShelf().sectionKey;
+        s_cacheLibs.erase(std::remove_if(s_cacheLibs.begin(), s_cacheLibs.end(),
+                          [&](const PlexLibrary& l) { return l.sectionKey == key; }), s_cacheLibs.end());
+        s_cacheItems.erase(key);
+        if (!deck.empty()) {
+            s_cacheLibs.insert(s_cacheLibs.begin(), OnDeckShelf());
+            s_cacheItems[key] = std::move(deck);
+        }
+    }
+    s_watchStamp++;
+}
+
+static void GetReport(const std::string& url)
+{
+    HttpResponse r = Http_Get(url, PlexHeaders(true, true));
+    if (!r.ok()) {
+        std::string path = url.substr(0, url.find('?'));
+        size_t at = path.find("/:/");
+        fprintf(stderr, "[Plex] %s failed (status %ld)\n",
+                at == std::string::npos ? "report" : path.c_str() + at, r.status);
+    }
+}
+
+void Plex_ReportPlayback(const std::string& ratingKey, int event, int timeMs, int durationMs, bool paused)
+{
+    std::string uri = Plex_GetActiveServerUri();
+    if (ratingKey.empty() || uri.empty() || !Plex_HasToken()) return;
+    if (timeMs < 0) timeMs = 0;
+    const char* state = event == MEDIA_REPORT_STOP ? "stopped" : paused ? "paused" : "playing";
+    char q[256];
+    snprintf(q, sizeof(q),
+             "/:/timeline?ratingKey=%s&key=%%2Flibrary%%2Fmetadata%%2F%s&state=%s&time=%d&duration=%d",
+             ratingKey.c_str(), ratingKey.c_str(), state, timeMs, durationMs);
+    std::string url = uri + q;
+    if (event != MEDIA_REPORT_STOP) {
+        s_reports.Post([url] { GetReport(url); });
+        return;
+    }
+    bool finished = durationMs > 0 && timeMs >= durationMs * 0.9;
+    std::string scrobble = uri + "/:/scrobble?identifier=com.plexapp.plugins.library&key=" + ratingKey;
+    unsigned gen = s_syncGen;
+    s_reports.Post([=] {
+        GetReport(url);
+        if (finished) GetReport(scrobble);
+        RefreshWatchState(gen, uri, ratingKey);
+    });
 }
 
 

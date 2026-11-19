@@ -6,6 +6,7 @@
 #include "json_util.h"
 #include "client_util.h"
 #include "log_redact.h"
+#include "media_player.h"
 
 #include <cstdio>
 #include <cstring>
@@ -15,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <algorithm>
 #include <sys/stat.h>
 
 extern char g_jellyfinUrl[512];
@@ -166,8 +168,11 @@ void Jellyfin_Init()
             g_jellyfinUrl[0] ? g_jellyfinUrl : "(unset)");
 }
 
+static SerialWorker s_reports;
+
 void Jellyfin_Shutdown()
 {
+    s_reports.Stop();
     s_qcCancel = true;
     JoinIf(s_qcThread);
     JoinIf(s_syncThread);
@@ -432,6 +437,9 @@ static void SetSyncPhase(unsigned gen, const std::string& phase, int progressOf1
     s_syncProgress = progressOf1000;
 }
 
+static void FetchShelves(std::vector<JellyfinLibrary>& shelves,
+                         std::map<std::string, std::vector<JellyfinItem>>& items);
+
 static void SyncWorker()
 {
     const unsigned gen = s_syncGen;
@@ -472,20 +480,8 @@ static void SyncWorker()
     // Continue Watching and Next Up go above the libraries, when there's
     // anything in them.
     SetSyncPhase(gen, "Loading Continue Watching", 950);
-    std::string base = std::string(g_jellyfinUrl);
-    const char* fields = "Fields=Overview,ProductionYear,Genres&EnableUserData=true";
-    std::vector<JellyfinItem> resume, nextUp;
-    FetchItemList(base + "/Users/" + g_jellyfinUserId + "/Items/Resume?Limit=24&MediaTypes=Video&" + fields, resume);
-    FetchItemList(base + "/Shows/NextUp?UserId=" + g_jellyfinUserId + "&Limit=24&" + fields, nextUp);
     std::vector<JellyfinLibrary> shelves;
-    if (!resume.empty()) {
-        shelves.push_back({ "uix-resume", "Continue Watching", "resume" });
-        itemsById["uix-resume"] = std::move(resume);
-    }
-    if (!nextUp.empty()) {
-        shelves.push_back({ "uix-nextup", "Next Up", "nextup" });
-        itemsById["uix-nextup"] = std::move(nextUp);
-    }
+    FetchShelves(shelves, itemsById);
     if (!libs.empty()) libs.insert(libs.begin(), shelves.begin(), shelves.end());
 
     size_t nLibs = libs.size();
@@ -695,6 +691,120 @@ bool Jellyfin_Cache_GetChildren(const std::string& parentId, std::vector<Jellyfi
     if (ClaimFetch(parentId))
         std::thread(ChildrenWorker, (unsigned)s_syncGen, parentId).detach();
     return false;
+}
+
+
+// ============================================================================
+// Playback reports + watch state refresh
+// ============================================================================
+
+static std::atomic<unsigned> s_watchStamp{0};
+
+unsigned Jellyfin_WatchStamp() { return s_watchStamp; }
+
+// New watch state for every cached copy of this id.
+template <typename T>
+static void PatchList(std::vector<T>& list, const std::string& id, const JellyfinDetails& d)
+{
+    for (auto& e : list)
+        if (e.id == id) static_cast<JellyfinDetails&>(e) = d;
+}
+
+static void PatchDetails(const std::string& id, const JellyfinDetails& d)
+{
+    for (auto& kv : s_cacheItems)    PatchList(kv.second, id, d);
+    for (auto& kv : s_cacheChildren) PatchList(kv.second, id, d);
+    for (auto& kv : s_cacheSeasons)  PatchList(kv.second, id, d);
+    for (auto& kv : s_cacheEpisodes) PatchList(kv.second, id, d);
+}
+
+static bool FetchDetails(const std::string& id, JellyfinDetails& d, std::string* seriesId = NULL)
+{
+    HttpResponse r = Http_Get(std::string(g_jellyfinUrl) + "/Users/" + g_jellyfinUserId + "/Items/" + id,
+                              JellyfinHeaders(g_jellyfinToken));
+    if (!r.ok()) return false;
+    ParseDetails(r.body, d);
+    if (seriesId) *seriesId = Json_GetString(r.body, "SeriesId");
+    return true;
+}
+
+static void FetchShelves(std::vector<JellyfinLibrary>& shelves,
+                         std::map<std::string, std::vector<JellyfinItem>>& items)
+{
+    std::string base = std::string(g_jellyfinUrl);
+    const char* fields = "Fields=Overview,ProductionYear,Genres&EnableUserData=true";
+    std::vector<JellyfinItem> resume, nextUp;
+    FetchItemList(base + "/Users/" + g_jellyfinUserId + "/Items/Resume?Limit=24&MediaTypes=Video&" + fields, resume);
+    FetchItemList(base + "/Shows/NextUp?UserId=" + g_jellyfinUserId + "&Limit=24&" + fields, nextUp);
+    if (!resume.empty()) {
+        shelves.push_back({ "uix-resume", "Continue Watching", "resume" });
+        items["uix-resume"] = std::move(resume);
+    }
+    if (!nextUp.empty()) {
+        shelves.push_back({ "uix-nextup", "Next Up", "nextup" });
+        items["uix-nextup"] = std::move(nextUp);
+    }
+}
+
+static bool IsShelf(const std::string& id) { return id == "uix-resume" || id == "uix-nextup"; }
+
+// After playback: the item, its series and seasons, and the shelves.
+static void RefreshWatchState(unsigned gen, const std::string& id)
+{
+    JellyfinDetails d, series;
+    std::string seriesId;
+    bool haveItem = FetchDetails(id, d, &seriesId);
+    bool haveSeries = false, haveSeasons = false;
+    std::vector<JellyfinSeason> seasons;
+    if (!seriesId.empty()) {
+        haveSeries  = FetchDetails(seriesId, series);
+        haveSeasons = FetchSeasonsForShow(seriesId, seasons);
+    }
+    std::vector<JellyfinLibrary> shelves;
+    std::map<std::string, std::vector<JellyfinItem>> shelfItems;
+    FetchShelves(shelves, shelfItems);
+
+    std::lock_guard<std::mutex> lk(g_mtx);
+    if (gen != s_syncGen) return;
+    if (haveItem)   PatchDetails(id, d);
+    if (haveSeries) PatchDetails(seriesId, series);
+    if (haveSeasons && s_cacheSeasons.count(seriesId)) s_cacheSeasons[seriesId] = std::move(seasons);
+    if (!s_cacheLibs.empty()) {
+        s_cacheLibs.erase(std::remove_if(s_cacheLibs.begin(), s_cacheLibs.end(),
+                          [](const JellyfinLibrary& l) { return IsShelf(l.id); }), s_cacheLibs.end());
+        s_cacheItems.erase("uix-resume");
+        s_cacheItems.erase("uix-nextup");
+        s_cacheLibs.insert(s_cacheLibs.begin(), shelves.begin(), shelves.end());
+        for (auto& kv : shelfItems) s_cacheItems[kv.first] = std::move(kv.second);
+    }
+    s_watchStamp++;
+}
+
+static void PostReport(const std::string& path, const std::string& body)
+{
+    HttpResponse r = Http_Post(std::string(g_jellyfinUrl) + path, body, JellyfinHeaders(g_jellyfinToken));
+    if (!r.ok()) fprintf(stderr, "[Jellyfin] %s failed (status %ld)\n", path.c_str(), r.status);
+}
+
+void Jellyfin_ReportPlayback(const std::string& itemId, int event, long long posTicks, bool paused)
+{
+    if (itemId.empty() || !Jellyfin_HasToken()) return;
+    if (posTicks < 0) posTicks = 0;
+    char body[256];
+    snprintf(body, sizeof(body),
+             "{\"ItemId\":\"%s\",\"PositionTicks\":%lld,\"IsPaused\":%s,\"CanSeek\":true,\"PlayMethod\":\"DirectPlay\"}",
+             itemId.c_str(), posTicks, paused ? "true" : "false");
+    std::string b = body;
+    unsigned gen = s_syncGen;
+    if (event == MEDIA_REPORT_START)
+        s_reports.Post([b] { PostReport("/Sessions/Playing", b); });
+    else if (event == MEDIA_REPORT_PROGRESS)
+        s_reports.Post([b] { PostReport("/Sessions/Playing/Progress", b); });
+    else
+        s_reports.Post([b, gen, itemId] {
+            PostReport("/Sessions/Playing/Stopped", b);
+            RefreshWatchState(gen, itemId);
+        });
 }
 
 

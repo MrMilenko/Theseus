@@ -122,3 +122,11 @@ void        Plex_QueueArtDownload(const std::string& ratingKey,
 // The poster is on disk. Only hand the scene a path once this is true: the
 // texture cache remembers a miss for the rest of the session.
 bool        Plex_ArtReady(const std::string& ratingKey);
+
+// Playback reports (MEDIA_REPORT_* from media_player.h) through /:/timeline,
+// with a scrobble once it's played past 90%. Sent in order, off the main
+// thread; a stop also reloads the item and the On Deck shelf.
+void Plex_ReportPlayback(const std::string& ratingKey, int event,
+                         int timeMs, int durationMs, bool paused);
+// Bumped whenever watch state in the cache changes, so the scene redraws.
+unsigned Plex_WatchStamp();
