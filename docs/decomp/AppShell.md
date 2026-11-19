@@ -44,7 +44,7 @@ load y:\default.xap, create it, D3DXCreateMatrixStack, call its initialize
 DirectSound is not touched here. `DSound_Init` runs the first time a sound buffer is asked for:
 
 ```
-if (g_BootType == DISC_VIDEO) return false;
+if (g_BootType == DISC_DVD) return false;
 speaker override = (XGetAudioFlags() low word == mono);
 DirectSoundCreate(0, &g_pDirectSound, 0);
 SetMixBinHeadroom(bin, 0) for all 31 mix bins;

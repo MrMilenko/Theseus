@@ -11,8 +11,8 @@
 
 extern "C" extern DWORD g_dwDirectSoundOverrideSpeakerConfig;
 
-#define DISC_VIDEO 4
-extern int g_nDiscType;
+#define DISC_DVD 4
+extern int g_discKind;
 
 DSoundManager* DSoundManager::pinstance = NULL;
 
@@ -52,7 +52,7 @@ static DWORD WINAPI DirectSoundWorker(LPVOID pvParameter)
 
 // DSoundManager::Initialize()
 // Reconstructed from 5960 retail XBE @ 0x00062750:
-//     if (g_BootType == DISC_VIDEO) return false;
+//     if (g_BootType == DISC_DVD) return false;
 //     g_dwDirectSoundOverrideSpeakerConfig = (XGetAudioFlags() basic == MONO);
 //     if (DirectSoundCreate(0, &g_pDirectSound, 0) < 0) return false;
 //     for (bin = 0; bin < 31; bin++) SetMixBinHeadroom(bin, 0);
@@ -64,7 +64,7 @@ HRESULT DSoundManager::Initialize()
 	if (m_directSound != NULL)
 		return S_FALSE;
 
-	if (g_nDiscType == DISC_VIDEO)
+	if (g_discKind == DISC_DVD)
 		return E_FAIL;
 
 	// Mono stays mono; everything else mixes as stereo and lets the

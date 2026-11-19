@@ -239,11 +239,11 @@ private:
 	bool GetDLCImagePath(int nTitle, int dlcIndex, TCHAR *out);
 
 	// Device-unit classification. Dev units 0..7 are physical storage
-	// (Dev0 = HDD, 1..7 = MU slots). Dev unit 8 is the synthetic
+	// (SLOT_HDD = HDD, 1..7 = MU slots). Dev unit 8 is the synthetic
 	// "memory unit selector" view shown when the user is choosing which
 	// MU to copy to/from.
-	inline bool IsHDD() const         { return m_curDevUnit == Dev0; }
-	inline bool IsMUSlot() const      { return m_curDevUnit > Dev0 && m_curDevUnit < 8; }
+	inline bool IsHDD() const         { return m_curDevUnit == SLOT_HDD; }
+	inline bool IsMUSlot() const      { return m_curDevUnit > SLOT_HDD && m_curDevUnit < 8; }
 	inline bool IsMUSelector() const  { return m_curDevUnit == 8; }
 	inline bool IsValidDevUnit() const { return m_curDevUnit >= 0 && m_curDevUnit <= 8; }
 
@@ -2053,7 +2053,7 @@ static int ScanDLContentCount(const char *titleID)
 
 int CSavedGameGrid::GetDLContentCount(int nTitle)
 {
-	if (nTitle < 0 || m_curDevUnit != Dev0)
+	if (nTitle < 0 || m_curDevUnit != SLOT_HDD)
 		return 0;
 
 	if (m_dlcCountCacheSize == 0)

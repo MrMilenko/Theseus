@@ -34,13 +34,13 @@ static const TCHAR *rgszDiscType[] =
     _T("Video"),
 };
 
-int g_nDiscType;
+int g_discKind;
 
 // Theseus: 5960 does this inline in CAppShell::InitApp (0x0002d7e0).
 void DiscDrive_Init()
 {
-    g_cdrom.Open(1);
-    g_nDiscType = GetDiscType();
+    g_discIoctl.Open(1);
+    g_discKind = GetDiscType();
 }
 
 class CDiscDrive : public CNode
@@ -66,7 +66,7 @@ public:
     CStrObject *getTitle();
     CStrObject *getTrackName(int nTrack);
 
-    int m_nDiscType;
+    int m_discKind;
     bool m_locked;
 
     DECLARE_NODE_PROPS()
@@ -111,17 +111,17 @@ NODE_FUN_SI(getTrackName)
 END_NODE_FUN()
 #undef _FND_CLASS
 
-// Copies the name for m_nDiscType into the discType property.
+// Copies the name for m_discKind into the discType property.
 void CDiscDrive::SetDiscTypeString()
 {
-    const TCHAR *szName = rgszDiscType[m_nDiscType];
+    const TCHAR *szName = rgszDiscType[m_discKind];
     m_discType = new TCHAR[_tcslen(szName) + 1];
     _tcscpy(m_discType, szName);
 }
 
 void CDiscDrive::NotifyDiscChange()
 {
-    CallFunction(this, m_nDiscType != DISC_NONE ? _T("OnDiscInserted") : _T("OnDiscRemoved"));
+    CallFunction(this, m_discKind != DISC_NONE ? _T("OnDiscInserted") : _T("OnDiscRemoved"));
 }
 
 // CDiscDrive::CDiscDrive()
@@ -139,14 +139,14 @@ CDiscDrive::CDiscDrive()
     c_drives.AddNode(this);
     AddRef();
 
-    if (TheseusHasLaunchData() || g_nDiscType == DISC_VIDEO || g_nDiscType == DISC_BAD)
+    if (TheseusHasLaunchData() || g_discKind == DISC_DVD || g_discKind == DISC_BAD)
     {
-        m_nDiscType = g_nDiscType;
+        m_discKind = g_discKind;
         HalReadSMCTrayState(&m_trayState, NULL);
     }
     else
     {
-        m_nDiscType = DISC_NONE;
+        m_discKind = DISC_NONE;
         m_trayState = SMC_TRAY_STATE_NO_MEDIA;
     }
 
@@ -191,11 +191,11 @@ void CDiscDrive::Advance(float nSeconds)
 
     ResetScreenSaver();
 
-    g_nDiscType = GetDiscType();
-    if (g_nDiscType == m_nDiscType)
+    g_discKind = GetDiscType();
+    if (g_discKind == m_discKind)
         return;
 
-    m_nDiscType = g_nDiscType;
+    m_discKind = g_discKind;
     delete[] m_discType;
     SetDiscTypeString();
 
@@ -207,10 +207,10 @@ void CDiscDrive::Advance(float nSeconds)
 
 // CDiscDrive::getTrackCount()   [script fn 'getTrackCount', FND 0x0017fd48, sig 2]
 // Reconstructed from 5960 retail XBE @ 0x0003a030:
-//     return g_BootType == DISC_AUDIO ? g_cdrom.GetTrackCount() : 0;
+//     return g_BootType == DISC_AUDIO ? g_discIoctl.GetTrackCount() : 0;
 int CDiscDrive::getTrackCount()
 {
-    return g_nDiscType == DISC_AUDIO ? g_cdrom.GetTrackCount() : 0;
+    return g_discKind == DISC_AUDIO ? g_discIoctl.GetTrackCount() : 0;
 }
 
 // "mm:ss", or "" when there's nothing to time.
@@ -231,14 +231,14 @@ static CStrObject *FormatMinutesSeconds(bool bHave, int nMinutes, int nSeconds)
 CStrObject *CDiscDrive::FormatTotalTime()
 {
     int nMinutes, nSeconds;
-    bool bHave = g_cdrom.GetTotalLength(&nMinutes, &nSeconds, NULL);
+    bool bHave = g_discIoctl.GetTotalLength(&nMinutes, &nSeconds, NULL);
     return FormatMinutesSeconds(bHave, nMinutes, nSeconds);
 }
 
 CStrObject *CDiscDrive::FormatTrackTime(int nTrack)
 {
     int nMinutes, nSeconds;
-    bool bHave = g_cdrom.GetTrackLength(nTrack, &nMinutes, &nSeconds, NULL);
+    bool bHave = g_discIoctl.GetTrackLength(nTrack, &nMinutes, &nSeconds, NULL);
     return FormatMinutesSeconds(bHave, nMinutes, nSeconds);
 }
 
@@ -250,17 +250,17 @@ static CStrObject *StrOrEmpty(const TCHAR *sz)
 
 CStrObject *CDiscDrive::getArtist()
 {
-    return StrOrEmpty(g_cdrom.GetArtist());
+    return StrOrEmpty(g_discIoctl.GetArtist());
 }
 
 CStrObject *CDiscDrive::getTitle()
 {
-    return StrOrEmpty(g_cdrom.GetTitle());
+    return StrOrEmpty(g_discIoctl.GetTitle());
 }
 
 CStrObject *CDiscDrive::getTrackName(int nTrack)
 {
-    return StrOrEmpty(g_cdrom.GetTrackName(nTrack));
+    return StrOrEmpty(g_discIoctl.GetTrackName(nTrack));
 }
 
 // CDiscDrive::LaunchDisc()   [script fn 'LaunchDisc', FND 0x0017fd90, sig 1]
@@ -285,7 +285,7 @@ void CDiscDrive::LaunchDisc()
         delete pTitleId;
     }
 
-    XLaunchNewImage(g_nDiscType == DISC_TITLE ? "d:\\default.xbe" : NULL, NULL);
+    XLaunchNewImage(g_discKind == DISC_TITLE ? "d:\\default.xbe" : NULL, NULL);
 }
 
 // Theseus: the tray, through the SMC's tray register.
@@ -312,7 +312,7 @@ struct DISCTYPECHECK
 static const DISCTYPECHECK rgddc[] =
 {
     {_T("CDROM0:\\default.xbe"), _T("Title"), DISC_TITLE},
-    {_T("CDROM0:\\video_ts\\video_ts.ifo"), _T("Video"), DISC_VIDEO},
+    {_T("CDROM0:\\video_ts\\video_ts.ifo"), _T("Video"), DISC_DVD},
     {_T("CDROM0:\\track01.cda"), _T("Audio"), DISC_AUDIO},
 };
 
@@ -328,8 +328,8 @@ static const DISCTYPECHECK rgddc[] =
 // means the disc went away. See docs/decomp/Disc.md for the instruction walk.
 int GetDiscType()
 {
-    if (g_cdrom.IsOpen())
-        g_cdrom.Close();
+    if (g_discIoctl.IsOpen())
+        g_discIoctl.Close();
 
     OBJECT_STRING cdrom;
     RtlInitObjectString(&cdrom, "\\??\\CdRom0:");
@@ -352,8 +352,8 @@ int GetDiscType()
         return bBad ? DISC_BAD : DISC_NONE;
     }
 
-    g_cdrom.Open(1);
-    if (g_cdrom.IsOpen())
+    g_discIoctl.Open(1);
+    if (g_discIoctl.IsOpen())
         return DISC_AUDIO;
 
     bool bMayRetry = true;

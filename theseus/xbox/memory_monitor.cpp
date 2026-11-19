@@ -23,14 +23,14 @@ enum { PATH_UP, PATH_DOWN, PATH_LEFT, PATH_RIGHT };
 static const BYTE s_paths[8][4][3] =
 {
 	//  up                          down                        left                        right
-	{ { PATH_END },               { Dev2Unit1, Dev2Unit2, PATH_END }, { PATH_END },               { Dev1Unit2, Dev0, PATH_END } },
-	{ { PATH_END },               { Dev2Unit2, Dev2Unit1, PATH_END }, { Dev1Unit1, PATH_END },    { Dev0, PATH_END } },
-	{ { Dev1Unit1, Dev1Unit2, PATH_END }, { PATH_END },               { PATH_END },               { Dev2Unit2, Dev0, PATH_END } },
-	{ { Dev1Unit2, Dev1Unit1, PATH_END }, { PATH_END },               { Dev2Unit1, PATH_END },    { Dev0, PATH_END } },
-	{ { Dev4Unit1, Dev4Unit2, PATH_END }, { PATH_END },               { Dev0, PATH_END },         { Dev3Unit2, PATH_END } },
-	{ { Dev4Unit2, Dev4Unit1, PATH_END }, { PATH_END },               { Dev3Unit1, Dev0, PATH_END }, { PATH_END } },
-	{ { PATH_END },               { Dev3Unit1, Dev3Unit2, PATH_END }, { Dev0, PATH_END },         { Dev4Unit2, PATH_END } },
-	{ { PATH_END },               { Dev3Unit2, Dev3Unit1, PATH_END }, { Dev4Unit1, Dev0, PATH_END }, { PATH_END } },
+	{ { PATH_END },               { SLOT_P2A, SLOT_P2B, PATH_END }, { PATH_END },               { SLOT_P1B, SLOT_HDD, PATH_END } },
+	{ { PATH_END },               { SLOT_P2B, SLOT_P2A, PATH_END }, { SLOT_P1A, PATH_END },    { SLOT_HDD, PATH_END } },
+	{ { SLOT_P1A, SLOT_P1B, PATH_END }, { PATH_END },               { PATH_END },               { SLOT_P2B, SLOT_HDD, PATH_END } },
+	{ { SLOT_P1B, SLOT_P1A, PATH_END }, { PATH_END },               { SLOT_P2A, PATH_END },    { SLOT_HDD, PATH_END } },
+	{ { SLOT_P4A, SLOT_P4B, PATH_END }, { PATH_END },               { SLOT_HDD, PATH_END },         { SLOT_P3B, PATH_END } },
+	{ { SLOT_P4B, SLOT_P4A, PATH_END }, { PATH_END },               { SLOT_P3A, SLOT_HDD, PATH_END }, { PATH_END } },
+	{ { PATH_END },               { SLOT_P3A, SLOT_P3B, PATH_END }, { SLOT_HDD, PATH_END },         { SLOT_P4B, PATH_END } },
+	{ { PATH_END },               { SLOT_P3B, SLOT_P3A, PATH_END }, { SLOT_P4A, SLOT_HDD, PATH_END }, { PATH_END } },
 };
 
 class CMemoryMonitor : public CNode
@@ -82,9 +82,9 @@ protected:
 	int m_nPrefCol;
 	int m_nPrefUnit;
 
-	DWORD m_dwPendingDevUnits;
-	bool m_rgbValidDevUnit[8];
-	char m_rgchMount[8];
+	DWORD m_muArrivals;
+	bool m_slotMounted[8];
+	char m_driveLetter[8];
 
 	DECLARE_NODE_PROPS();
 	DECLARE_NODE_FUNCTIONS();
@@ -98,7 +98,7 @@ private:
 	int FreeSlotsOf(int devUnit);
 };
 
-CMemoryMonitor *g_pMemoryMonitor;
+CMemoryMonitor *g_pStorageWatch;
 
 IMPLEMENT_NODE("MemoryMonitor", CMemoryMonitor, CNode)
 
@@ -144,9 +144,9 @@ static DWORD DeviceBit(int devUnit) { return (SlotOf(devUnit) ? 0x10000u : 1u) <
 // starts out pending.
 CMemoryMonitor::CMemoryMonitor()
 {
-	g_pMemoryMonitor = this;
+	g_pStorageWatch = this;
 
-	m_curDevUnit = Dev0;
+	m_curDevUnit = SLOT_HDD;
 	m_invalidDevUnit = -1;
 	m_blockInsertion = false;
 	m_enumerationOn = false;
@@ -157,10 +157,10 @@ CMemoryMonitor::CMemoryMonitor()
 	m_nPrefCol = 0;
 	m_nPrefUnit = 0;
 
-	memset(m_rgbValidDevUnit, 0, sizeof(m_rgbValidDevUnit));
-	memset(m_rgchMount, 0, sizeof(m_rgchMount));
+	memset(m_slotMounted, 0, sizeof(m_slotMounted));
+	memset(m_driveLetter, 0, sizeof(m_driveLetter));
 
-	m_dwPendingDevUnits = XGetDevices(XDEVICE_TYPE_MEMORY_UNIT);
+	m_muArrivals = XGetDevices(XDEVICE_TYPE_MEMORY_UNIT);
 	UpdateValidDeviceFlags();
 }
 
@@ -174,16 +174,16 @@ bool XboxFormatMemoryUnit(UINT nDevicePort, UINT nMemoryUnit);
 // drive if it was selected. A bad unit that leaves stops being the bad one.
 void CMemoryMonitor::HandleRemoval(int devUnit)
 {
-	if (m_rgbValidDevUnit[devUnit])
+	if (m_slotMounted[devUnit])
 	{
 		XUnmountMU(PortOf(devUnit), SlotOf(devUnit));
-		m_rgchMount[devUnit] = 0;
+		m_driveLetter[devUnit] = 0;
 		g_titles[devUnit].SetRoot(0, false);
-		m_rgbValidDevUnit[devUnit] = false;
+		m_slotMounted[devUnit] = false;
 
 		if (m_curDevUnit == devUnit)
 		{
-			m_curDevUnit = Dev0;
+			m_curDevUnit = SLOT_HDD;
 			CallFunction(this, _T("OnCurDevUnitChange"));
 		}
 	}
@@ -202,21 +202,21 @@ void CMemoryMonitor::HandleRemoval(int devUnit)
 // hears OnInvalidMU(devUnit, mounted now).
 void CMemoryMonitor::MountPending(int devUnit)
 {
-	m_dwPendingDevUnits &= ~DeviceBit(devUnit);
+	m_muArrivals &= ~DeviceBit(devUnit);
 
 	DWORD dwError = ERROR_SUCCESS;
 	for (int attempt = 0; attempt < 3; attempt++)
 	{
-		dwError = XMountMURoot(PortOf(devUnit), SlotOf(devUnit), &m_rgchMount[devUnit]);
+		dwError = XMountMURoot(PortOf(devUnit), SlotOf(devUnit), &m_driveLetter[devUnit]);
 		if (dwError == ERROR_SUCCESS)
 			break;
 	}
 
 	if (dwError == ERROR_SUCCESS)
 	{
-		XCleanMUFromRoot(m_rgchMount[devUnit], 0);
-		m_rgbValidDevUnit[devUnit] = true;
-		g_titles[devUnit].SetRoot(m_rgchMount[devUnit], false);
+		XCleanMUFromRoot(m_driveLetter[devUnit], 0);
+		m_slotMounted[devUnit] = true;
+		g_titles[devUnit].SetRoot(m_driveLetter[devUnit], false);
 		CallFunction(this, _T("OnDeviceChange"));
 		return;
 	}
@@ -227,7 +227,7 @@ void CMemoryMonitor::MountPending(int devUnit)
 
 	CObject *rgArgs[2];
 	rgArgs[0] = new CNumObject((float)devUnit);
-	rgArgs[1] = new CNumObject(m_rgbValidDevUnit[devUnit] ? 1.0f : 0.0f);
+	rgArgs[1] = new CNumObject(m_slotMounted[devUnit] ? 1.0f : 0.0f);
 	CallFunction(this, _T("OnInvalidMU"), 2, rgArgs);
 }
 
@@ -243,12 +243,12 @@ void CMemoryMonitor::UpdateValidDeviceFlags()
 		return;
 
 	DWORD dwInserted, dwRemoved;
-	if (!XGetDeviceChanges(XDEVICE_TYPE_MEMORY_UNIT, &dwInserted, &dwRemoved) && m_dwPendingDevUnits == 0)
+	if (!XGetDeviceChanges(XDEVICE_TYPE_MEMORY_UNIT, &dwInserted, &dwRemoved) && m_muArrivals == 0)
 		return;
 
 	ResetScreenSaver();
 
-	m_dwPendingDevUnits = (m_dwPendingDevUnits & ~dwRemoved) | dwInserted;
+	m_muArrivals = (m_muArrivals & ~dwRemoved) | dwInserted;
 
 	for (int devUnit = 0; devUnit < 8; devUnit++)
 	{
@@ -257,7 +257,7 @@ void CMemoryMonitor::UpdateValidDeviceFlags()
 		if (dwRemoved & dwBit)
 			HandleRemoval(devUnit);
 
-		if (!m_blockInsertion && (m_dwPendingDevUnits & dwBit))
+		if (!m_blockInsertion && (m_muArrivals & dwBit))
 			MountPending(devUnit);
 	}
 }
@@ -268,12 +268,12 @@ void CMemoryMonitor::UpdateValidDeviceFlags()
 // that port's top or bottom slot holds a mounted unit; 0 for a bad port.
 int CMemoryMonitor::HaveDeviceTop(int nDevice)
 {
-	return (nDevice >= 0 && nDevice < 4) ? m_rgbValidDevUnit[nDevice * 2] : 0;
+	return (nDevice >= 0 && nDevice < 4) ? m_slotMounted[nDevice * 2] : 0;
 }
 
 int CMemoryMonitor::HaveDeviceBottom(int nDevice)
 {
-	return (nDevice >= 0 && nDevice < 4) ? m_rgbValidDevUnit[nDevice * 2 + 1] : 0;
+	return (nDevice >= 0 && nDevice < 4) ? m_slotMounted[nDevice * 2 + 1] : 0;
 }
 
 // CMemoryMonitor::GetTotalAndFreeBlocks(devUnit, &total, &free)
@@ -281,16 +281,16 @@ int CMemoryMonitor::HaveDeviceBottom(int nDevice)
 // a unit its mount letter (unmounted fails). Both sizes are rounded up to
 // 16 KB blocks and one block comes off the total for the root directory.
 // If the drive can't be asked, a unit is marked gone and both read 0.
-// Theseus range checks devUnit first; the hard drive (Dev0) is in range.
+// Theseus range checks devUnit first; the hard drive (SLOT_HDD) is in range.
 bool CMemoryMonitor::GetTotalAndFreeBlocks(int devUnit, int *pnTotalBlocks, int *pnFreeBlocks)
 {
-	if (devUnit < Dev1Unit1 || devUnit > Dev0)
+	if (devUnit < SLOT_P1A || devUnit > SLOT_HDD)
 		return false;
 
 	char szRoot[4] = { 'C', ':', '\\', 0 };
-	if (devUnit != Dev0)
+	if (devUnit != SLOT_HDD)
 	{
-		szRoot[0] = m_rgchMount[devUnit];
+		szRoot[0] = m_driveLetter[devUnit];
 		if (szRoot[0] == 0)
 			return false;
 	}
@@ -298,8 +298,8 @@ bool CMemoryMonitor::GetTotalAndFreeBlocks(int devUnit, int *pnTotalBlocks, int 
 	ULARGE_INTEGER qwAvail, qwTotal, qwFree;
 	if (!GetDiskFreeSpaceEx(szRoot, &qwAvail, &qwTotal, &qwFree))
 	{
-		if (devUnit != Dev0)
-			m_rgbValidDevUnit[devUnit] = false;
+		if (devUnit != SLOT_HDD)
+			m_slotMounted[devUnit] = false;
 		if (pnTotalBlocks != NULL)
 			*pnTotalBlocks = 0;
 		if (pnFreeBlocks != NULL)
@@ -324,9 +324,9 @@ void CMemoryMonitor::Advance(float nSeconds)
 
 	UpdateValidDeviceFlags();
 
-	if (m_curDevUnit != Dev0 && !m_rgbValidDevUnit[m_curDevUnit])
+	if (m_curDevUnit != SLOT_HDD && !m_slotMounted[m_curDevUnit])
 	{
-		m_curDevUnit = Dev0;
+		m_curDevUnit = SLOT_HDD;
 		CallFunction(this, _T("OnCurDevUnitChange"));
 	}
 
@@ -345,7 +345,7 @@ void CMemoryMonitor::FollowPath(int direction)
 {
 	for (const BYTE *pNext = s_paths[m_curDevUnit][direction]; *pNext != PATH_END; pNext++)
 	{
-		if (*pNext == Dev0 || m_rgbValidDevUnit[*pNext])
+		if (*pNext == SLOT_HDD || m_slotMounted[*pNext])
 		{
 			m_curDevUnit = *pNext;
 			return;
@@ -366,11 +366,11 @@ void CMemoryMonitor::SelectionChanged()
 // and 4 are the right side), and fire OnCurDevUnitChange.
 void CMemoryMonitor::selectUp()
 {
-	if (m_curDevUnit == Dev0)
+	if (m_curDevUnit == SLOT_HDD)
 		return;
 	FollowPath(PATH_UP);
 	m_nPrefRow = 0;
-	if (m_curDevUnit != Dev0)
+	if (m_curDevUnit != SLOT_HDD)
 	{
 		m_nPrefUnit = SlotOf(m_curDevUnit);
 		m_nPrefCol = PortOf(m_curDevUnit) > 1;
@@ -380,11 +380,11 @@ void CMemoryMonitor::selectUp()
 
 void CMemoryMonitor::selectDown()
 {
-	if (m_curDevUnit == Dev0)
+	if (m_curDevUnit == SLOT_HDD)
 		return;
 	FollowPath(PATH_DOWN);
 	m_nPrefRow = 1;
-	if (m_curDevUnit != Dev0)
+	if (m_curDevUnit != SLOT_HDD)
 	{
 		m_nPrefUnit = SlotOf(m_curDevUnit);
 		m_nPrefCol = PortOf(m_curDevUnit) > 1;
@@ -401,17 +401,17 @@ void CMemoryMonitor::selectDown()
 // and 3 are the bottom row) and fire OnCurDevUnitChange.
 void CMemoryMonitor::selectLeft()
 {
-	if (m_curDevUnit == Dev0)
+	if (m_curDevUnit == SLOT_HDD)
 	{
-		int nearPort = m_nPrefRow == 0 ? Dev1Unit1 : Dev2Unit1;
-		int farPort = m_nPrefRow == 0 ? Dev2Unit1 : Dev1Unit1;
+		int nearPort = m_nPrefRow == 0 ? SLOT_P1A : SLOT_P2A;
+		int farPort = m_nPrefRow == 0 ? SLOT_P2A : SLOT_P1A;
 		const int tries[4] = { nearPort + 1, nearPort, farPort + 1, farPort };
 		int i = 0;
-		while (i < 4 && !m_rgbValidDevUnit[tries[i]])
+		while (i < 4 && !m_slotMounted[tries[i]])
 			i++;
 		if (i == 4)
 		{
-			m_curDevUnit = Dev0;
+			m_curDevUnit = SLOT_HDD;
 			return;
 		}
 		m_curDevUnit = tries[i];
@@ -422,7 +422,7 @@ void CMemoryMonitor::selectLeft()
 	}
 
 	m_nPrefCol = 0;
-	if (m_curDevUnit != Dev0)
+	if (m_curDevUnit != SLOT_HDD)
 	{
 		m_nPrefUnit = SlotOf(m_curDevUnit);
 		m_nPrefRow = PortOf(m_curDevUnit) == 1 || PortOf(m_curDevUnit) == 2;
@@ -432,17 +432,17 @@ void CMemoryMonitor::selectLeft()
 
 void CMemoryMonitor::selectRight()
 {
-	if (m_curDevUnit == Dev0)
+	if (m_curDevUnit == SLOT_HDD)
 	{
-		int nearPort = m_nPrefRow == 0 ? Dev4Unit1 : Dev3Unit1;
-		int farPort = m_nPrefRow == 0 ? Dev3Unit1 : Dev4Unit1;
+		int nearPort = m_nPrefRow == 0 ? SLOT_P4A : SLOT_P3A;
+		int farPort = m_nPrefRow == 0 ? SLOT_P3A : SLOT_P4A;
 		const int tries[4] = { nearPort, nearPort + 1, farPort, farPort + 1 };
 		int i = 0;
-		while (i < 4 && !m_rgbValidDevUnit[tries[i]])
+		while (i < 4 && !m_slotMounted[tries[i]])
 			i++;
 		if (i == 4)
 		{
-			m_curDevUnit = Dev0;
+			m_curDevUnit = SLOT_HDD;
 			return;
 		}
 		m_curDevUnit = tries[i];
@@ -453,7 +453,7 @@ void CMemoryMonitor::selectRight()
 	}
 
 	m_nPrefCol = 1;
-	if (m_curDevUnit != Dev0)
+	if (m_curDevUnit != SLOT_HDD)
 	{
 		m_nPrefUnit = SlotOf(m_curDevUnit);
 		m_nPrefRow = PortOf(m_curDevUnit) == 1 || PortOf(m_curDevUnit) == 2;
@@ -471,7 +471,7 @@ int CMemoryMonitor::selectDevUnit(int DriveLetter)
 	int letter = toupper(DriveLetter);
 	int devUnit;
 	if (letter == 'T' || letter == 'U')
-		devUnit = Dev0;
+		devUnit = SLOT_HDD;
 	else if (letter >= 'H' && letter <= 'O')
 		devUnit = letter - 'H';
 	else
@@ -482,7 +482,7 @@ int CMemoryMonitor::selectDevUnit(int DriveLetter)
 	UpdateValidDeviceFlags();
 	m_enumerationOn = bWasOn;
 
-	if (devUnit != Dev0 && !m_rgbValidDevUnit[devUnit])
+	if (devUnit != SLOT_HDD && !m_slotMounted[devUnit])
 		return false;
 
 	m_curDevUnit = devUnit;
@@ -492,7 +492,7 @@ int CMemoryMonitor::selectDevUnit(int DriveLetter)
 // Name lookup for the save grid; an unmounted unit gives "".
 void FormatDeviceName(int devUnit, TCHAR *szBuf)
 {
-	if (!g_pMemoryMonitor->FormatDeviceName2(devUnit, szBuf))
+	if (!g_pStorageWatch->FormatDeviceName2(devUnit, szBuf))
 		szBuf[0] = 0;
 }
 
@@ -512,11 +512,11 @@ bool CMemoryMonitor::FormatDeviceName2(int devUnit, TCHAR *szBuf)
 {
 	if (devUnit == -1)
 		devUnit = m_curDevUnit;
-	if (devUnit < Dev1Unit1 || devUnit > Dev4Unit2 || m_rgchMount[devUnit] == 0)
+	if (devUnit < SLOT_P1A || devUnit > SLOT_P4B || m_driveLetter[devUnit] == 0)
 		return false;
 
 	TCHAR szName[MAX_MUNAME];
-	if (XMUNameFromDriveLetter(m_rgchMount[devUnit], szName, MAX_MUNAME) != ERROR_SUCCESS)
+	if (XMUNameFromDriveLetter(m_driveLetter[devUnit], szName, MAX_MUNAME) != ERROR_SUCCESS)
 		return false;
 	_tcscpy(szBuf, szName);
 	return true;
@@ -604,11 +604,11 @@ float CMemoryMonitor::GetFreeTotalRatio(int devUnit)
 // when the name fits in MAX_MUNAME with its terminator.
 void CMemoryMonitor::SetMUName(int devUnit, const TCHAR *szName)
 {
-	if (devUnit < Dev1Unit1 || devUnit > Dev4Unit2 || m_rgchMount[devUnit] == 0)
+	if (devUnit < SLOT_P1A || devUnit > SLOT_P4B || m_driveLetter[devUnit] == 0)
 		return;
 	if (_tcslen(szName) + 1 > MAX_MUNAME)
 		return;
-	XMUWriteNameToDriveLetter(m_rgchMount[devUnit], szName);
+	XMUWriteNameToDriveLetter(m_driveLetter[devUnit], szName);
 }
 
 // CMemoryMonitor::FormatMemoryUnit(devUnit)   [script fn 'FormatMemoryUnit', FND 0x00187bc0, sig 14]
@@ -616,25 +616,25 @@ void CMemoryMonitor::SetMUName(int devUnit, const TCHAR *szName)
 // titles), format, mount again. On a good mount the titles are rescanned
 // at once, so the save grid doesn't see the unit as dirty a frame later.
 // Theseus refuses anything that isn't a memory unit: scripts reach this,
-// and Dev0 sits one past the end of the mount arrays.
+// and SLOT_HDD sits one past the end of the mount arrays.
 void CMemoryMonitor::FormatMemoryUnit(int devUnit)
 {
-	if (devUnit < Dev1Unit1 || devUnit > Dev4Unit2)
+	if (devUnit < SLOT_P1A || devUnit > SLOT_P4B)
 		return;
 
-	if (m_rgchMount[devUnit] != 0)
+	if (m_driveLetter[devUnit] != 0)
 	{
 		XUnmountMU(PortOf(devUnit), SlotOf(devUnit));
-		m_rgchMount[devUnit] = 0;
+		m_driveLetter[devUnit] = 0;
 		g_titles[devUnit].SetRoot(0, false);
 	}
 
-	m_rgbValidDevUnit[devUnit] = false;
+	m_slotMounted[devUnit] = false;
 	XboxFormatMemoryUnit(PortOf(devUnit), SlotOf(devUnit));
 
-	if (XMountMURoot(PortOf(devUnit), SlotOf(devUnit), &m_rgchMount[devUnit]) == ERROR_SUCCESS)
+	if (XMountMURoot(PortOf(devUnit), SlotOf(devUnit), &m_driveLetter[devUnit]) == ERROR_SUCCESS)
 	{
-		m_rgbValidDevUnit[devUnit] = true;
-		g_titles[devUnit].SetRoot(m_rgchMount[devUnit], true);
+		m_slotMounted[devUnit] = true;
+		g_titles[devUnit].SetRoot(m_driveLetter[devUnit], true);
 	}
 }

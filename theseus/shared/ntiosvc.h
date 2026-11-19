@@ -40,7 +40,7 @@ typedef XCDROM_TOC* PXCDROM_TOC;
 class CNtIoctlCdromService
 {
 private:
-	HANDLE m_hDevice;
+	HANDLE m_hDrive;
 
 public:
 	CNtIoctlCdromService();
@@ -50,8 +50,8 @@ public:
 	void Close();
 	HRESULT Read(DWORD dwReadStart, DWORD dwReadLength, LPVOID pvBuffer, DWORD dwRetries = 0);
 
-	bool IsOpen() const { return m_hDevice != INVALID_HANDLE_VALUE; }
-	int GetTrackCount() const { return IsOpen() ? m_toc.LastTrack : 0; }
+	bool IsOpen() const { return m_hDrive != INVALID_HANDLE_VALUE; }
+	int GetTrackCount() const { return IsOpen() ? m_trackTable.LastTrack : 0; }
 
 	bool GetTotalLength(int* pnMinutes, int* pnSeconds, int* pnFrames);
 	bool GetTrackLength(int nTrack, int* pnMinutes, int* pnSeconds, int* pnFrames);
@@ -60,13 +60,13 @@ public:
 	const TCHAR* GetArtist();
 	const TCHAR* GetTrackName(int nTrack);
 
-	DWORD GetTrackFrame(int nTrack) const { return IsOpen() ? m_toc.TrackAddr[nTrack] : 0; }
-	int GetTrackFromFrame(DWORD dwFrame) const { return m_toc.GetTrackFromFrame(dwFrame); }
+	DWORD GetTrackFrame(int nTrack) const { return IsOpen() ? m_trackTable.TrackAddr[nTrack] : 0; }
+	int GetTrackFromFrame(DWORD dwFrame) const { return m_trackTable.GetTrackFromFrame(dwFrame); }
 
 protected:
-	XCDROM_TOC m_toc;
+	XCDROM_TOC m_trackTable;
 	bool GetTableOfContents();
 	HRESULT DeviceIoControl(DWORD dwControlCode, LPVOID pvInBuffer = NULL, DWORD dwInBufferSize = 0, LPVOID pvOutBuffer = NULL, DWORD dwOutBufferSize = 0, LPDWORD pdwBytesReturned = NULL);
 };
 
-extern CNtIoctlCdromService g_cdrom;
+extern CNtIoctlCdromService g_discIoctl;

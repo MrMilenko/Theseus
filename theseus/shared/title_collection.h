@@ -6,15 +6,15 @@
 #pragma once
 
 // Device slots, as the memory screens and g_titles index them.
-#define Dev1Unit1	0
-#define Dev1Unit2	1
-#define Dev2Unit1	2
-#define Dev2Unit2	3
-#define Dev3Unit1	4
-#define Dev3Unit2	5
-#define Dev4Unit1	6
-#define Dev4Unit2	7
-#define Dev0		8
+#define SLOT_P1A	0
+#define SLOT_P1B	1
+#define SLOT_P2A	2
+#define SLOT_P2B	3
+#define SLOT_P3A	4
+#define SLOT_P3B	5
+#define SLOT_P4A	6
+#define SLOT_P4B	7
+#define SLOT_HDD		8
 
 // The dashboard counts space in 16 KB blocks on every device.
 #define BLOCK_SIZE	16384

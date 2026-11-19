@@ -286,7 +286,7 @@ static void Theseus_Init()
 	g_dwMainThreadId = GetCurrentThreadId();
 }
 
-extern CNtIoctlCdromService g_cdrom;
+extern CNtIoctlCdromService g_discIoctl;
 extern int GetDiscType();
 
 HRESULT InitAudio()
@@ -295,8 +295,8 @@ HRESULT InitAudio()
 	do
 	{
 		// retreive the status of DVD/CD Rom
-		g_cdrom.Open(1);
-		g_nDiscType = GetDiscType();
+		g_discIoctl.Open(1);
+		g_discKind = GetDiscType();
 
 		// initialize DSound
 		if (!DSoundManager::Instance())
@@ -491,16 +491,16 @@ bool InitD3D()
 		case XC_AV_PACK_SVIDEO:
 		case XC_AV_PACK_RFU:
 		case XC_AV_PACK_SCART:
-			g_pp.BackBufferWidth = (g_nDiscType == DISC_VIDEO) ? 720 : 640;
+			g_pp.BackBufferWidth = (g_discKind == DISC_DVD) ? 720 : 640;
 			g_pp.BackBufferHeight = isPAL ? 576 : 480;
 			break;
 
 		case XC_AV_PACK_HDTV:
-			g_pp.BackBufferWidth = (g_nDiscType == DISC_VIDEO) ? 720 : 640;
+			g_pp.BackBufferWidth = (g_discKind == DISC_DVD) ? 720 : 640;
 			g_pp.BackBufferHeight = 480;
 
 			// Check for DVD 480p override
-			if ((XBOX_480P_MACROVISION_ENABLED & XboxHardwareInfo->Flags) && g_nDiscType == DISC_VIDEO)
+			if ((XBOX_480P_MACROVISION_ENABLED & XboxHardwareInfo->Flags) && g_discKind == DISC_DVD)
 			{
 				DWORD dvdFlags = 0, dvdType = 0;
 				if (XQueryValue(XC_VIDEO_FLAGS, &dvdType, &dvdFlags, sizeof(dvdFlags), NULL) == ERROR_SUCCESS)
