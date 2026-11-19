@@ -439,6 +439,25 @@ static VirtualGame* PickedGame()
     return vg->valid ? vg : NULL;
 }
 
+// Button names in help text, as this pad prints them.
+static const char* Shoulders()
+{
+    switch (Pads_Style()) {
+    case UI_PAD_PLAYSTATION: return "L1 and R1";
+    case UI_PAD_NINTENDO:    return "L and R";
+    default:                 return "LB and RB";
+    }
+}
+
+static const char* GuideCombo()
+{
+    switch (Pads_Style()) {
+    case UI_PAD_PLAYSTATION: return "PS button, L2+Circle or F7";
+    case UI_PAD_NINTENDO:    return "Home button, ZL+A or F7";
+    default:                 return "Guide button, LT+B or F7";
+    }
+}
+
 static const char* kGameListNames[] = { "Favorites", "Recently Played", "Hidden Games", "All Games", "", "" };
 
 // Emulators the guide can look for, each under its path setting.
@@ -488,7 +507,8 @@ static void Build()
         Add("And everyone who contributed", "", NULL);
         break;
     case GV_WELCOME: {
-        const char* intro = g_welcomeDone ? "A or B starts the dashboard."
+        const char* intro = g_welcomeDone
+            ? (Pads_Style() == UI_PAD_PLAYSTATION ? "Cross or Circle starts the dashboard." : "A or B starts the dashboard.")
             : "Nothing here is required. It's all in the guide later too.";
         Add("Start the Dashboard", "", intro, GA_RESUME);
         Add("Development Mode", "", "Edit the scenes live. Restarts UIX Desktop.", GA_DEVMODE);
@@ -519,12 +539,14 @@ static void Build()
             "Games you starred. They get their own spot in the launcher too.",
             "The last games you started, newest first.",
             "Games kept out of the launcher. Pick one to bring it back.",
-            "Everything in the launcher, A to Z. LB and RB jump a letter.",
+            "Everything in the launcher, A to Z.",
         };
         for (int l = GL_FAVORITES; l <= GL_ALL; l++) {
             GameListRows(l, list);
             snprintf(n, sizeof(n), "%d", (int)list.size());
-            Add(kGameListNames[l], n, kListHelp[l], GA_GAMELIST, l);
+            std::string help = kListHelp[l];
+            if (l == GL_ALL) help = help + " " + Shoulders() + " jump a letter.";
+            Add(kGameListNames[l], n, help.c_str(), GA_GAMELIST, l);
         }
         snprintf(n, sizeof(n), "%d", Playlist_Count());
         Add("Playlists", n, "Made in the Playlist Maker.", GA_VIEW, GV_PLAYLISTS);
@@ -688,7 +710,7 @@ static void Build()
         Add("Report a Problem", "", "Paste the version and the log into an issue on GitHub.");
         break;
     case GV_SHORTCUTS:
-        Add("Guide button, LT+B or F7", "Guide", "Opens and closes this guide.");
+        Add(GuideCombo(), "Guide", "Opens and closes this guide.");
         Add("F3",  "Title Maker", NULL);
         Add("F4",  "Settings Window", NULL);
         Add("F5",  "HDD Browser", NULL);
@@ -1830,7 +1852,7 @@ static void DrawEditor()
 
     ui_style_text(UI_TEXT_LINE, left, BODY_B + 8, UI_ALIGN_LEFT,
                   ui_overlay_keyboard() ? "Type away. Enter saves, Esc cancels."
-                                        : "LB and RB move the cursor.");
+                                        : (std::string(Shoulders()) + " move the cursor.").c_str());
 }
 
 static void Prompt(ui_style_prompt* p, int* n, int button, const char* key, const char* word, unsigned bits)
