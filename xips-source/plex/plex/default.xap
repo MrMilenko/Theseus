@@ -1512,10 +1512,8 @@ DEF Group06 Transform
             //scaleOrientation 0.000000 0.000000 1.000000 -0.005973
             translation 1.183300 2.156 -0.409200
         }
-        // Y cluster -- mirror of B's probearm + probe + pod + tube +
-        // label, shifted down by ~1.6 units so it forms a second row
-        // below B/BACK. Reuses the same mesh URLs since they're the
-        // same physical button parts. delta_y vs B = -1.622.
+        // Y cluster: a copy of B's probearm, probe, pod and tube, set beside
+        // B with INFO on its right so a 720p window doesn't clip it.
         DEF MU_y_probearm Transform
         {
             children
@@ -1529,7 +1527,7 @@ DEF Group06 Transform
             rotation 0.753300 0.386200 -0.532400 -1.747000
             scale 0.465000 0.465000 0.465000
             scaleOrientation 0.981300 0.180300 0.067500 -0.715500
-            translation 20.680000 13.660000 6.071000
+            translation 22.280000 14.960000 6.071000
         }
         DEF MU_y_probe Transform
         {
@@ -1544,7 +1542,7 @@ DEF Group06 Transform
             rotation 0.753300 0.386200 -0.532400 -1.747000
             scale 0.465000 0.465000 0.465000
             scaleOrientation 0.981300 0.180300 0.067500 -0.715500
-            translation 19.790001 12.810000 6.235000
+            translation 21.390001 14.110000 6.235000
         }
         DEF MU_y_pod_inner Transform
         {
@@ -1558,7 +1556,7 @@ DEF Group06 Transform
             ]
             rotation -1.000000 0.000000 0.000000 -3.142000
             scale 0.465000 0.465000 0.465000
-            translation 11.010000 -12.590000 3.150000
+            translation 12.610000 -11.290000 3.150000
         }
         DEF MU_y_pod_outer Transform
         {
@@ -1572,7 +1570,7 @@ DEF Group06 Transform
             ]
             rotation -1.000000 0.000000 0.000000 -3.142000
             scale 0.465000 0.465000 0.465000
-            translation 11.010000 -12.590000 3.150000
+            translation 12.610000 -11.290000 3.150000
         }
         DEF MU_y_pod_HL Transform
         {
@@ -1586,7 +1584,7 @@ DEF Group06 Transform
             ]
             rotation -1.000000 0.000000 0.000000 -3.142000
             scale 0.465000 0.465000 0.465000
-            translation 11.010000 -12.590000 3.150000
+            translation 12.610000 -11.290000 3.150000
         }
         DEF MU_y_tube Transform
         {
@@ -1601,7 +1599,7 @@ DEF Group06 Transform
             rotation 0.990900 -0.095410 -0.095410 -1.580000
             scale 0.465000 0.465000 0.465000
             scaleOrientation 0.010380 -0.285600 0.958300 -0.080610
-            translation -22.030001 -29.050000 9.817000
+            translation -20.430001 -27.750000 9.817000
         }
         DEF MU_Text_y Transform
         {
@@ -1614,7 +1612,7 @@ DEF Group06 Transform
                 }
             ]
             scale 0.605000 0.605000 0.000
-            translation 1.889000 1.122000 -0.409200
+            translation 3.489000 2.422000 -0.409200
         }
         DEF MU_Text_info Transform
         {
@@ -1623,11 +1621,11 @@ DEF Group06 Transform
                 Shape
                 {
                     appearance Appearance { material MaxMaterial { name "XBOXgreen" } }
-                    geometry Text { font "Body" text "INFO" justify "end" }
+                    geometry Text { font "Body" text "INFO" }
                 }
             ]
             scale 0.375000 0.475000 0.00
-            translation 1.183300 0.856000 -0.409200
+            translation 4.129000 2.156000 -0.409200
         }
         DEF MU_back_pod_outer Transform
         {
