@@ -13,9 +13,9 @@ Start up and the frame loop of the 5960 retail binary. The app object lives at `
 | 0x0002d0e0 | Draw | Below |
 | 0x0002d7e0 | InitApp | Below |
 | 0x0002d930 | CleanupApp | XOnline cleanup, matrix stack, scene, class, `Class_Exit`, XIP sections, `Text_Exit`, DirectSound, app dir |
-| 0x0002da00 | XApp | `InitApp`, then forever: clock, keyboard poll, camera, lerpers, scene advance, deferred deletes, `Draw` |
+| 0x0002da00 | AppShell_Run | `InitApp`, then forever: clock, keyboard poll, camera, lerpers, scene advance, deferred deletes, `Draw` |
 | 0x0002dbc0 | GetStartupClassFile | `y:\default.xap`, current dir `y:/default.xap` |
-| 0x0002dc80 | main | Crash handler unless the hardware is a debug kit, then `XApp` |
+| 0x0002dc80 | main | Crash handler unless the hardware is a debug kit, then `AppShell_Run` |
 | 0x0002dcc0 | XboxFormatMemoryUnit | Device object into a 32 byte name, `XapiFormatFATVolume`, close |
 | 0x0002dd20 | Xbox_Init | Below |
 | 0x00062750 | DSound_Init | Below |

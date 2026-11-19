@@ -36,7 +36,7 @@ static const TCHAR *rgszDiscType[] =
 
 int g_nDiscType;
 
-// Theseus: 5960 does this inline in CXApp::InitApp (0x0002d7e0).
+// Theseus: 5960 does this inline in CAppShell::InitApp (0x0002d7e0).
 void DiscDrive_Init()
 {
     g_cdrom.Open(1);

@@ -63,7 +63,7 @@ Entry types, from the `CreateObjects` switch:
 | 4 | a 0x14 byte CMeshRef: archive, `offset >> 24` as the buffer, `offset & 0xffffff` as the first index, `size` as the primitive count |
 | 5 | an index buffer, in the slot of the vertex buffer count at that moment |
 | 6 | a vertex buffer: a 4 byte vertex count and a 4 byte FVF lead the vertices |
-| anything else | `size` raw bytes from `XAppAllocMemory` |
+| anything else | `size` raw bytes from `AppShell_AllocMemory` |
 
 Entries are read back to back with no seeking, so the data has to be in table order. The
 directory is sorted, because `Find` binary searches it.
@@ -163,7 +163,7 @@ the GPU if the buffer is still in use. The stride is `(size - 8) / count`, with 
 count. `ReloadMeshBuffers` seeks to each buffer entry in table order and reads it again, numbering
 index buffers and vertex buffers separately.
 
-Under memory pressure `XAppAllocMemory` and the block allocator call `CleanupTextureCache` first,
+Under memory pressure `AppShell_AllocMemory` and the block allocator call `CleanupTextureCache` first,
 then `CleanupMeshCache`, which frees the buffers of the unlocked, loaded archive with the oldest
 cache time that still has some. The next `CMeshRef::Render` of that archive sees a NULL vertex
 buffer and calls `Reload`; `CInline_Render` (`0x0004e5d0`) checks the same thing inline

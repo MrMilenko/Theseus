@@ -1166,7 +1166,7 @@ void CleanupApp()
 }
 
 // Advance()
-// Reconstructed from the frame loop in 5960 XApp @ 0x0002da00: the clock is
+// Reconstructed from the frame loop in 5960 AppShell_Run @ 0x0002da00: the clock is
 // GetTickCount in seconds, the step is the change since last frame (never
 // zero: 5960 uses one millisecond's worth), then the camera, every lerper
 // and the scene advance. Theseus also feeds its background loader; 5960

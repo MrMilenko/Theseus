@@ -4,7 +4,7 @@
 // soundtrack MP3s (Theseus's, 5960 streams WMA). On top sit the AudioClip
 // and PeriodicAudioGroup nodes. Rebuilt from the 5960 retail XBE
 // (0x61890..0x63320); see docs/decomp/AudioSystem.md. Theseus creates
-// buffers through DSoundManager instead of 5960's XAppCreateSoundBuffer.
+// buffers through DSoundManager instead of 5960's AppShell_CreateSoundBuffer.
 
 #include "std.h"
 #include "theseus.h"

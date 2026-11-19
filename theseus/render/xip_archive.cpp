@@ -749,7 +749,7 @@ static LPDIRECT3DTEXTURE8 ReadTexture(CFileBuffer& file, int cbEntry)
 //             r->first = offset & 0xffffff; r->count = size; objects[i] = r; break;
 //     case 5: ReadIndexBuffer(i, vbCount); ibCount++; break;
 //     case 6: ReadVertexBuffer(i, vbCount); vbCount++; break;
-//     default: objects[i] = XAppAllocMemory(size); read size bytes; break;
+//     default: objects[i] = AppShell_AllocMemory(size); read size bytes; break;
 //     }
 //     locked = 0;
 // Entries sit in file order, so this reads straight through. An index buffer
