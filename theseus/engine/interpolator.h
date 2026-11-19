@@ -1,42 +1,36 @@
-// interpolator.h: keyframe-driven interpolators following VRML97 semantics.
-//
-// Each instance stores a parallel pair of arrays: m_key holds the parameter
-// values (typically 0..1) at which a sample is defined, and m_keyValue
-// holds the sampled output. Interpolate(t) finds the bracketing key pair
-// and returns a linear blend (vec3) or shortest-arc slerp (quaternion) of
-// the values. Both classes are scene-graph nodes so they can be DEF'd in
-// .xap content and wired up as the value source for a TimeSensor->Transform
-// animation.
+// interpolator.h: VRML style key/keyValue interpolators. Interpolate(t)
+// finds the two keys around t and blends their values (lerp for positions,
+// slerp for orientations). Camera paths and scripts both drive them.
+// Bodies in render/animation_nodes.cpp, see docs/decomp/AnimationNodes.md.
 
 #pragma once
 
 class CPositionInterpolator : public CNode
 {
 	DECLARE_NODE(CPositionInterpolator, CNode)
+	DECLARE_NODE_PROPS()
 public:
 	CPositionInterpolator();
 	~CPositionInterpolator();
 
-	D3DXVECTOR3 Interpolate(float key);
+	D3DXVECTOR3 Interpolate(float t);
 
 	CNumArray m_key;
 	CVec3Array m_keyValue;
-
-	DECLARE_NODE_PROPS()
 };
 
+// Key values come in as axis + angle; OnLoad turns them into quaternions.
 class COrientationInterpolator : public CNode
 {
 	DECLARE_NODE(COrientationInterpolator, CNode)
+	DECLARE_NODE_PROPS()
 public:
 	COrientationInterpolator();
 	~COrientationInterpolator();
 
 	void OnLoad();
-	D3DXQUATERNION Interpolate(float key);
+	D3DXQUATERNION Interpolate(float t);
 
 	CNumArray m_key;
 	CVec4Array m_keyValue;
-
-	DECLARE_NODE_PROPS()
 };

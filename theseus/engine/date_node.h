@@ -1,43 +1,45 @@
-// date_node.h: CDateObject, the JavaScript-style Date object exposed to
-// XAP scripts. Backed by Win32 FILETIME for nanosecond precision; getter
-// methods mirror the JS spec. Companion to shared/date_node.cpp.
+// date_node.h: the script Date object. Holds one FILETIME and answers the
+// usual JavaScript getters from it, local or UTC. Bodies in
+// shared/date_node.cpp, binary notes in docs/decomp/Date.md.
 
 #pragma once
 
 class CDateObject : public CObject
 {
 	DECLARE_NODE(CDateObject, CObject)
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CDateObject();
 
+	// Local time.
+	int getFullYear();
+	int getYear();
+	int getMonth();
 	int getDate();
 	int getDay();
-	int getFullYear();
 	int getHours();
-	int getMilliseconds();
 	int getMinutes();
-	int getMonth();
 	int getSeconds();
+	int getMilliseconds();
+
+	// Same fields in UTC.
+	int getUTCFullYear();
+	int getUTCMonth();
 	int getUTCDate();
 	int getUTCDay();
-	int getUTCFullYear();
 	int getUTCHours();
-	int getUTCMilliseconds();
 	int getUTCMinutes();
-	int getUTCMonth();
 	int getUTCSeconds();
-	int getYear();
+	int getUTCMilliseconds();
 
-	int isLeapYear(int nYear);
-	int getDaysInMonth(int nMonth, int nYear);
+	int isLeapYear(int year);
+	int getDaysInMonth(int month, int year);
+
+	CStrObject* toGMTString();
+	CStrObject* toUTCString();
+	CStrObject* toLocaleString();
 
 	void SetSystemClock();
 
-	CStrObject* toGMTString();
-	CStrObject* toLocaleString();
-	CStrObject* toUTCString();
-
-	FILETIME m_time; // 100-nanosecond intervals since January 1, 1601
-
-	DECLARE_NODE_FUNCTIONS()
+	FILETIME m_time;	// 100 ns ticks since 1601
 };

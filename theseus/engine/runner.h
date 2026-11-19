@@ -1,150 +1,132 @@
-// runner.h: VM runtime stack machine, value object hierarchy, and built-ins.
+// runner.h: the script VM. CRunner executes compiled bytecode on an object
+// stack; the C*Object classes are the values it pushes. Bodies are in
+// xap_vm.cpp, string_util.cpp and math_node.cpp; docs/decomp/VM.md has the
+// binary write-up.
 //
-// The dashboard's XAP VM is a register-stack machine that walks bytecode
-// produced by xap_compile.cpp. CRunner holds the per-execution state
-// (stack, frame pointer, current bytecode position, sleep clock) and
-// drives the dispatch loop in xap_vm.cpp. Every value the VM pushes is a
-// CObject subclass: numbers wrap CNumObject, strings wrap CStrObject,
-// "this is a member of <instance>" wraps CMemberVarObject, and so on.
-// Math built-ins live on a global CMathClass instance the runner finds by
-// name when scripts call Math.foo().
-//
-// None of these classes export properties via NODE_PROP. The only
-// node-system surface here is CStrObject's NODE_FUN entries (charAt,
-// indexOf, etc.) and CMathClass's NODE_FUN entries (sin, cos, etc.). All
-// member fields below are pure VM internals and are renamable.
+// Layouts checked against the 5960 retail XBE:
+//   CRunner: m_wakeup 0x00 (double), m_nop 0x08, m_ops 0x0c, m_sp 0x10,
+//     m_stack 0x14, m_spFrame 0x1a4, m_spBase 0x1a8, m_self 0x1ac,
+//     m_thisRef 0x1b0, m_bError 0x1b4, m_nLine 0x1b8, m_nextContext 0x1bc.
+//     5960's stack holds 100 objects; Theseus gives it 256.
+//   RUNCONTEXT 0x1c: next, ops, nop, spFrame, self, thisRef, sp (PushContext 0x37690).
+//   CNumObject 0x18: m_value 0x14.
+//   CVarObject: m_length 0x14, m_capacity 0x18, m_text 0x1c.
+//   CStrObject: 5960 has length 0x14, capacity 0x18, text 0x1c; Theseus puts
+//     m_text first. Nothing reads these by offset.
+//   CMathClass: the eight constants follow the CNodeClass part at 0x2c.
 
 class CInstance;
 class CFunction;
 
-// One slot in CObject::m_members -- a named entry in an instance's
-// scripted member table. m_memberIndex is the index back into the
-// owning class's variable table.
-class CMember : public CObject
+CClass* LookupClass(const TCHAR* name, int nameLen);
+
+// Bytecode. 0..49 are statement/expression ops, 100..108 build the node tree.
+enum
 {
-public:
-	CMember();
-	~CMember();
+	opNull,
+	opNew,
+	opVar,
+	opJump,
+	opCond,
+	opCall,
+	opRet,
+	opStr,
+	opNum,
+	opAdd,
+	opSub,
+	opMul,
+	opDiv,
+	opDot,
+	opAssign,
+	opLocal,
+	opEQ,
+	opNE,
+	opLT,
+	opGT,
+	opLE,
+	opGE,
+	opMod,
+	opSHL,
+	opSHR,
+	opSHRU,
+	opAnd,
+	opOr,
+	opXor,
+	opLAnd,
+	opLOr,
+	opQuest,
+	opAddAssign,
+	opSubAssign,
+	opMulAssign,
+	opDivAssign,
+	opModAssign,
+	opAndAssign,
+	opOrAssign,
+	opXorAssign,
+	opSHLAssign,
+	opSHRAssign,
+	opArray,
+	opThis,
+	opFrame,
+	opStatement,
+	opNeg,
+	opDrop,
+	opEndFrame,
+	opSleep,
 
-	void Assign(CObject* pObject);
-	CObject* Deref();
-
-	int m_memberIndex;
+	opNewNode = 100,
+	opNewNodeProp,
+	opDefNode,
+	opUseNode,
+	opEndNode,
+	opInitProp,
+	opInitArray,
+	opEndArray,
+	opFunction
 };
 
-// Run-time reference to "instance.member" -- the value pushed onto
-// the VM stack when bytecode dereferences a class member. Deref reads
-// through to the actual variable; Assign writes through.
-class CMemberVarObject : public CObject
-{
-public:
-	CMemberVarObject(CInstance* pInstance, int memberIndex);
-	~CMemberVarObject();
-
-	CInstance* m_owner;
-	int m_memberIndex;
-
-	CObject* Deref();
-	void Assign(CObject* pObject);
-};
-
-
-// Run-time reference to a method bound to a particular instance --
-// what gets pushed when a script does instance.foo (without calling).
-class CMemberFunctionObject : public CObject
-{
-public:
-	CMemberFunctionObject(CObject* pOwner, CFunction* pFunction);
-	~CMemberFunctionObject();
-	CObject* Deref();
-	CObject* m_owner;
-	CFunction* m_function;
-};
-
-
-CClass* LookupClass(const TCHAR* pchName, int cchName);
-
-// Identifier-token value: holds the literal name of a variable that
-// hasn't been resolved yet. The compiler emits these for unbound
-// references; the runner resolves them lazily on Deref.
-class CVarObject : public CObject
-{
-public:
-	CVarObject(const TCHAR* pch, int cch);
-	~CVarObject();
-
-	int m_length;
-	int m_capacity;
-	TCHAR* m_text;
-
-	CObject* Deref();
-	void Assign(CObject* pObject);
-
-private:
-    // Need this to prevent the compiler from using default copy ctor
-    CVarObject(const CVarObject&);
-    CVarObject& operator=(const CVarObject& rhs);
-};
-
+// A number on the stack.
 class CNumObject : public CObject
 {
 public:
 	CNumObject();
 	CNumObject(float n);
-	CNumObject(const TCHAR* szNum);
+	CNumObject(const TCHAR* text);
 
+	CNumObject* ToNum() { AddRef(); return this; }
 	CStrObject* ToStr();
-
-	CNumObject* ToNum()
-	{
-		AddRef();
-		return this;
-	}
 
 	float m_value;
 };
 
-
-// Script-visible string object. Owns a TCHAR buffer and exposes the
-// JavaScript-style string API (charAt, indexOf, slice, etc.) via the
-// FND table in string_util.cpp. The buffer grows on Append.
+// A string on the stack, plus the script String methods (FND table in
+// string_util.cpp). Append grows the buffer.
 class CStrObject : public CObject
 {
 public:
 	CStrObject();
-	CStrObject(const TCHAR* sz);
-	CStrObject(const TCHAR* pch, int cch);
+	CStrObject(const TCHAR* text);
+	CStrObject(const TCHAR* src, int len);
 	~CStrObject();
 
-	inline const TCHAR* GetSz()
-	{
-		if (m_text == NULL)
-			return _T("");
-		return m_text;
-	}
+	inline const TCHAR* GetSz() { return m_text != NULL ? m_text : _T(""); }
+	inline int GetLength() { return m_length; }
 
-	inline int GetLength()
-	{
-		return m_length;
-	}
-
-	CStrObject* ToStr();
 	CNumObject* ToNum();
+	CStrObject* ToStr();
 
-	TCHAR* SetLength(int nLength);
-	void Append(const TCHAR* szAppend);
+	TCHAR* SetLength(int len);
+	void Append(const TCHAR* more);
 
-
-	// JavaScript-style String methods exposed via the FND table.
 	int length();
-	CStrObject* charAt(int index);
-	int charCodeAt(int index);
-	CStrObject* concat(const TCHAR* sz);
-	CObject* indexOf(CObject** rgparam, int nParam);
-	CObject* lastIndexOf(CObject** rgparam, int nParam);
-	CStrObject* slice(int start, int end);
-	CObject* substr(CObject** rgparam, int nParam);
-	CObject* substring(CObject** rgparam, int nParam);
+	CStrObject* charAt(int i);
+	int charCodeAt(int i);
+	CStrObject* concat(const TCHAR* text);
+	CObject* indexOf(CObject** args, int argc);
+	CObject* lastIndexOf(CObject** args, int argc);
+	CStrObject* slice(int from, int to);
+	CObject* substr(CObject** args, int argc);
+	CObject* substring(CObject** args, int argc);
 	CStrObject* toLowerCase();
 	CStrObject* toUpperCase();
 
@@ -157,109 +139,100 @@ protected:
 	DECLARE_NODE_FUNCTIONS()
 
 private:
-    // Need this to prevent the compiler from using default copy ctor
-    CStrObject(const CStrObject&);
-    CStrObject& operator=(const CStrObject& rhs);
+	// Owns its buffer; no copies.
+	CStrObject(const CStrObject&);
+	CStrObject& operator=(const CStrObject&);
 };
 
-// Script-visible wrapper around a CNodeArray. Lets scenes treat a
-// node array property as a JavaScript-ish array (length, push, splice).
-class CNodeArrayObject : public CObject
+// A name the compiler couldn't bind. Deref looks it up when it runs.
+class CVarObject : public CObject
 {
 public:
-	CNodeArrayObject(CNodeArray* pNodeArray);
+	CVarObject(const TCHAR* src, int len);
+	~CVarObject();
 
-	CObject* Call(int nFunction, CObject** rgparam, int nParam);
-	CObject* Dot(CObject* pObject);
+	CObject* Deref();
+	void Assign(CObject* obj);
 
-	CNodeArray* m_nodeArray;
+	int m_length;
+	int m_capacity;
+	TCHAR* m_text;
+
+private:
+	CVarObject(const CVarObject&);
+	CVarObject& operator=(const CVarObject&);
 };
 
-// Reference to a function bound to a particular owning object --
-// what bytecode pushes when it pulls "this.foo" off an instance.
+// An entry in an object's member name space; m_memberIndex is the slot in
+// the owning class's variables.
+class CMember : public CObject
+{
+public:
+	CMember();
+	~CMember();
+
+	CObject* Deref();
+	void Assign(CObject* obj);
+
+	int m_memberIndex;
+};
+
+// "instance.var": reads and writes go to that instance's variable slot.
+class CMemberVarObject : public CObject
+{
+public:
+	CMemberVarObject(CInstance* inst, int slot);
+	~CMemberVarObject();
+
+	CObject* Deref();
+	void Assign(CObject* obj);
+
+	CInstance* m_owner;
+	int m_memberIndex;
+};
+
+// "instance.method" without the call: the method bound to its owner.
+class CMemberFunctionObject : public CObject
+{
+public:
+	CMemberFunctionObject(CObject* owner, CFunction* func);
+	~CMemberFunctionObject();
+
+	CObject* Deref();
+
+	CObject* m_owner;
+	CFunction* m_function;
+};
+
+// An FND function bound to the object it was looked up on.
 class CFunctionObject : public CObject
 {
 public:
 	CFunctionObject();
 	~CFunctionObject();
 
+	CObject* Call(CObject** args, int argc);
+
 	int m_functionIndex;
 	CObject* m_owner;
-
-	CObject* Call(CObject** rgparam, int nParam);
 };
 
+// A node array property seen from script (length, indexing, push...).
+class CNodeArrayObject : public CObject
+{
+public:
+	CNodeArrayObject(CNodeArray* array);
 
-#define opNull		0
-#define opNew		1
-#define opVar		2
-#define opJump		3
-#define opCond		4
-#define opCall		5
-#define opRet		6
-#define opStr		7
-#define opNum		8
-#define opAdd		9
-#define opSub		10
-#define opMul		11
-#define opDiv		12
-#define opDot		13
-#define opAssign	14
-#define opLocal		15
-#define opEQ		16
-#define opNE		17
-#define opLT		18
-#define opGT		19
-#define opLE		20
-#define opGE		21
-#define opMod		22
-#define opSHL		23
-#define opSHR		24
-#define opSHRU		25
-#define opAnd		26
-#define opOr		27
-#define opXor		28
-#define opLAnd		29
-#define opLOr		30
-#define opQuest		31
-#define opAddAssign	32
-#define opSubAssign	33
-#define opMulAssign	34
-#define opDivAssign	35
-#define opModAssign	36
-#define opAndAssign	37
-#define opOrAssign	38
-#define opXorAssign	39
-#define opSHLAssign	40
-#define opSHRAssign	41
-#define opArray		42
-#define opThis		43
-#define opFrame		44
-#define opStatement	45
-#define opNeg		46
-#define opDrop		47
-#define opEndFrame	48
-#define opSleep		49
+	CObject* Call(int index, CObject** args, int argc);
+	CObject* Dot(CObject* obj);
 
+	CNodeArray* m_nodeArray;
+};
 
-#define opNewNode		100
-#define opNewNodeProp	101
-#define opDefNode		102
-#define opUseNode		103
-#define opEndNode		104
-#define opInitProp		105
-#define opInitArray		106
-#define opEndArray		107
-#define opFunction		108
-
-// Saved CRunner state across a function call. PushContext spills the
-// outer frame here when bytecode steps into a callee, PopContext
-// restores it on Ret. The field names mirror CRunner exactly so the
-// push/pop code can move state with one assignment per slot.
+// The caller's state, saved while a called function runs.
 struct RUNCONTEXT
 {
 	RUNCONTEXT* m_nextContext;
-
 	BYTE* m_ops;
 	UINT m_nop;
 	UINT m_spFrame;
@@ -271,123 +244,105 @@ struct RUNCONTEXT
 class CRunner
 {
 public:
-	CRunner(CObject* pThis);
+	CRunner(CObject* self);
 	~CRunner();
 
-	bool SetFunc(const TCHAR* szFunc);
+	bool SetFunc(const TCHAR* funcName);
+	void SetFunc(CFunction* func);
+	void ResetFunc();
+	bool HasFunc() const { return m_ops != NULL; }
 
-
-	void Push(float nValue);
-	void Push(int nValue);
-	void Push(const TCHAR* szValue, int nLen = -1);
-
-	void Push(CObject* pObject);
+	void Push(float value);
+	void Push(int value);
+	void Push(const TCHAR* value, int len = -1);
+	void Push(CObject* obj);
 	CObject* Pop();
 
-	bool HasFunc() const { return m_ops != NULL; }
-	void SetFunc(CFunction* pFunction);
-	void ResetFunc();
-
 	CObject* Run();
-	bool Step(CObject** ppRetObj = NULL);
-	void Error(const TCHAR* szFmt, ...);
+	bool Step(CObject** ret = NULL);
+	void Error(const TCHAR* fmt, ...);
 
-	BYTE* LookupFunction(const TCHAR* pchName, int cchName, CObject*& pOwner);
-	CObject* LookupVariable(const TCHAR* pchName, int cchName);
+	BYTE* LookupFunction(const TCHAR* name, int nameLen, CObject*& owner);
+	CObject* LookupVariable(const TCHAR* name, int nameLen);
 
+	// A sleep that has run out clears itself here.
 	bool IsSleeping()
 	{
-		if (m_wakeup != 0.0f)
+		if (m_wakeup)
 		{
 			if (m_wakeup > TheseusGetNow())
 				return true;
-
 			m_wakeup = 0.0f;
 		}
-
 		return false;
 	}
 
 	void DumpStack();
 
 protected:
-	XTIME m_wakeup;          // sleep deadline (0 = not sleeping)
-	UINT m_nop;              // bytecode offset within m_ops
-	BYTE* m_ops;             // currently executing bytecode buffer
-	UINT m_sp;               // stack pointer (top-of-stack index)
-	CObject* m_stack [256];  // operand stack
-	UINT m_spFrame;          // frame pointer for the current call
-	UINT m_spBase;           // bottom of the locals region
-	CObject* m_self;         // current 'self' (callable owner)
-	CObject* m_thisRef;        // current 'this' (script-visible binding)
-
-	bool m_bError;
-	int m_nLine;
-
 	bool BinaryOperator(BYTE op);
-
-	void PushContext(UINT nPopStack);
+	void PushContext(UINT argc);
 	void PopContext();
-	BOOL ExecuteBuiltIn(const TCHAR* pchName, int cchName, int nParam, CObject** rgParam, CObject*& pRetObj);
+	BOOL ExecuteBuiltIn(const TCHAR* name, int nameLen, int argc, CObject** args, CObject*& ret);
 
+	// Operands sit unaligned in the op stream.
 	inline int FetchInt()
 	{
-#if defined(_WIN32_WCE)
 		int n;
-		CopyMemory(&n, &m_ops[m_nop], sizeof (int));
-#else
-		int n = *((int*)&m_ops[m_nop]);
-#endif
-		m_nop += sizeof (int);
+		memcpy(&n, m_ops + m_nop, sizeof (n));
+		m_nop += sizeof (n);
 		return n;
 	}
 
 	inline UINT FetchUInt()
 	{
-#if defined(_WIN32_WCE)
 		UINT n;
-		CopyMemory(&n, &m_ops[m_nop], sizeof (UINT));
-#else
-		UINT n = *((UINT*)&m_ops[m_nop]);
-#endif
-		m_nop += sizeof (UINT);
+		memcpy(&n, m_ops + m_nop, sizeof (n));
+		m_nop += sizeof (n);
 		return n;
 	}
 
 	inline float FetchFloat()
 	{
-#if defined(_WIN32_WCE)
 		float n;
-		CopyMemory(&n, &m_ops[m_nop], sizeof (float));
-#else
-		float n = *((float*)&m_ops[m_nop]);
-#endif
-		m_nop += sizeof (float);
+		memcpy(&n, m_ops + m_nop, sizeof (n));
+		m_nop += sizeof (n);
 		return n;
 	}
 
+	// Length first, then that many characters in place.
 	inline const TCHAR* FetchString(int& cch)
 	{
 		cch = FetchInt();
-		const TCHAR* pch = (const TCHAR*)&m_ops[m_nop];
+		const TCHAR* pch = (const TCHAR*)(m_ops + m_nop);
 		m_nop += cch * sizeof (TCHAR);
 		return pch;
 	}
 
+	XTIME m_wakeup;			// sleep deadline, 0 when awake
+	UINT m_nop;				// offset into m_ops
+	BYTE* m_ops;			// bytecode being run
+	UINT m_sp;				// next free stack slot
+	CObject* m_stack [256];
+	UINT m_spFrame;			// first local of the current call
+	UINT m_spBase;
+	CObject* m_self;		// owner of the running function
+	CObject* m_thisRef;		// what "this" means in script
+	bool m_bError;
+	int m_nLine;
 	RUNCONTEXT* m_nextContext;
 };
 
 extern CRunner* g_pRunner;
 extern CObject* g_pThis;
 
-extern bool ExecuteScript(CObject* pObject, const TCHAR* szFunc);
-
-
-
+extern bool ExecuteScript(CObject* obj, const TCHAR* funcName);
 
 #undef min
 #undef max
 
+// The global Math object: a class whose functions and constants scripts
+// reach as Math.name.
 class CMathClass : public CNodeClass
 {
 public:
@@ -396,27 +351,26 @@ public:
 	void AddRef();
 	void Release();
 
-	// Static-style helpers exposed to scripts via the NODE_FUN table.
-	float abs(float number);
-	float acos(float number);
-	float asin(float number);
-	float atan(float number);
+	float abs(float x);
+	float acos(float x);
+	float asin(float x);
+	float atan(float x);
 	float atan2(float y, float x);
-	float ceil(float number);
-	float cos(float number);
-	float exp(float number);
-	float floor(float number);
-	float log(float number);
-	float max(float number1, float number2);
-	float min(float number1, float number2);
-	float pow(float base, float exponent);
+	float ceil(float x);
+	float cos(float x);
+	float exp(float x);
+	float floor(float x);
+	float log(float x);
+	float max(float a, float b);
+	float min(float a, float b);
+	float pow(float x, float y);
 	float random();
-	float round(float number);
-	float sin(float number);
-	float sqrt(float number);
-	float tan(float number);
-	float projectMEnabled(); // returns 1.0 if desktop has g_useMilkdropViz set
-	CStrObject* itoa(int number);
+	float round(float x);
+	float sin(float x);
+	float sqrt(float x);
+	float tan(float x);
+	float projectMEnabled();	// Theseus: 1 when the desktop milkdrop visualizer is on
+	CStrObject* itoa(int x);
 
 	float m_E;
 	float m_LN2;

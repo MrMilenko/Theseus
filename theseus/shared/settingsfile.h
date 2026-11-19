@@ -1,15 +1,12 @@
-// settingsfile.h: CSettingsFile, the in-memory model of an .xbx /
-// .ini settings file (sections + key=value entries, parse on Open,
-// lazy save in destructor). Companion to shared/settingsfile.cpp.
+// settingsfile.h: .xbx / .ini style settings files held in memory as
+// [section] lists of name=value pairs. Bodies in shared/settingsfile.cpp.
 
 #pragma once
 
-// Returns the directory the running XBE was launched from, with the
-// trailing filename component stripped. Used by the settings code to
-// locate sibling .xbx files relative to the dashboard image.
-void XI_GetProgramPath(char* szBuffer);
+// Folder the running program was started from, without the file name.
+void XI_GetProgramPath(char* out);
 
-// One key=value entry inside an .xbx settings section.
+// name=value, one link in its section's list.
 class CSettingsFileValue
 {
 public:
@@ -21,46 +18,39 @@ public:
 	TCHAR* m_value;
 };
 
-// One [section] block inside an .xbx settings file. Each section owns
-// a singly-linked list of CSettingsFileValue entries.
 class CSettingsFileSection
 {
 public:
 	CSettingsFileSection();
 	~CSettingsFileSection();
 
-	CSettingsFileValue* FindValue(const TCHAR* szName);
-	bool SetValue(const TCHAR* szName, const TCHAR* szValue);
+	CSettingsFileValue* FindValue(const TCHAR* name);
+	bool SetValue(const TCHAR* name, const TCHAR* value);
 
 	CSettingsFileSection* m_next;
 	TCHAR* m_name;
 	CSettingsFileValue* m_values;
 };
 
-// In-memory model of an .xbx settings file. Parses on Open, mutates
-// in memory via SetValue, lazily writes back on Save (which the
-// destructor calls automatically). Top-level entries that have no
-// preceding [section] header land in a synthetic "default" section.
+// Open parses the whole file into memory. Pairs before the first [section]
+// go to "default".
 class CSettingsFile
 {
 public:
 	CSettingsFile();
 	~CSettingsFile();
 
-	bool OpenDir(const TCHAR* szDir);
-	bool Open(const TCHAR* szFile);
+	bool Open(const TCHAR* path);
+	bool OpenDir(const TCHAR* dir);
+	bool Save();
 	bool Close();
 	void Cancel();
-	bool Save();
 
-	inline const TCHAR* GetFileName() const
-	{
-		return m_filePath;
-	}
+	inline const TCHAR* GetFileName() const { return m_filePath; }
 
-	bool GetValue(const TCHAR* szSection, const TCHAR* szName, TCHAR* szValueBuf, int cchValueBuf);
-	void SetValue(const TCHAR* szSection, const TCHAR* szName, const TCHAR* szValue);
-	CSettingsFileSection* FindSection(const TCHAR* szSection, bool bCreate = false);
+	CSettingsFileSection* FindSection(const TCHAR* section, bool create = false);
+	bool GetValue(const TCHAR* section, const TCHAR* name, TCHAR* buf, int bufLen);
+	void SetValue(const TCHAR* section, const TCHAR* name, const TCHAR* value);
 
 	// SetValue writes the whole file every time it changes a key, which is
 	// fine for a setting the user just toggled and ruinous for a loop. Bracket
@@ -74,7 +64,7 @@ public:
 	bool m_batching;
 
 protected:
-	int WriteTo(const TCHAR* szPath);
+	int WriteTo(const TCHAR* path);
 
 #ifdef _UNICODE
 	bool m_unicode;

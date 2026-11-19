@@ -1,85 +1,83 @@
-// scene_groups.h: CBackground, CLevel, CViewpoint, CNavigationInfo
-// declarations. CGroup is declared in node.h, CTransform in shape_render.h.
-// CLayer, CInline, CSpinner, CWaver, CLayout, CSwitch, CBillboard are
-// defined entirely within scene_groups.cpp.
+// scene_groups.h: the scene-level nodes other files reach into: Background,
+// Level, Viewpoint and NavigationInfo. The rest of scene_groups.cpp's nodes
+// (Layer, Inline, Spinner, Waver, Layout, Switch, Billboard) are private to
+// it. Binary notes in docs/decomp/SceneGroups.md.
 
 #pragma once
 
+class CXipFile;
+
+// Backdrop behind the scene. The fade fields are Theseus's SetAlpha.
 class CBackground : public CNode
 {
 	DECLARE_NODE(CBackground, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CBackground();
 	~CBackground();
 
-	void Advance(float nSeconds);
-	bool OnSetProperty(const PRD* pprd, const void* pvValue);
-
+	void Advance(float dt);
+	bool OnSetProperty(const PRD* prop, const void* value);
 	void Bind();
 	void RenderBackdrop();
-
 	void SetAlpha(float a);
-	void DisappearAfter(float t);
+	void DisappearAfter(float secs);
 
 	CNode* m_backdrop;
 	D3DXVECTOR3 m_skyColor;
 	bool m_isBound;
-
 	float m_fade;			// seconds SetAlpha takes to get there
 	XTIME m_timeAlphaStart;
 	float m_alphaStart;
 	float m_alphaEnd;
-	float m_alpha;			// backdrop opacity
+	float m_alpha;
 	XTIME m_timeToDisappear;
-
 	LPDIRECT3DVERTEXBUFFER8 m_vb;
-
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
 };
 
+// One dashboard area, loaded from its own XIP while you're in it.
 class CLevel : public CGroup
 {
 	DECLARE_NODE(CLevel, CGroup)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CLevel();
 	~CLevel();
 
-	CNode* m_control;	// joystick bound to this level
-	CNode* m_tunnel;	// tunnel geometry leading here
-	CNode* m_path;		// camera path through the tunnel
-	CNode* m_shell;		// sphere around the level
-	TCHAR* m_archive;
-	bool m_unloadable;
-	bool m_fade;
-
-	float m_timeToNextLevel;
-
+	void Advance(float dt);
+	void Render();
 	void GoTo();
 	void GoBackTo();
 
-	void Advance(float nSeconds);
-	void Render();
+	CNode* m_control;		// joystick for this level
+	CNode* m_tunnel;		// geometry on the way in
+	CNode* m_path;			// camera path through it
+	CNode* m_shell;
+	TCHAR* m_archive;
+	bool m_unloadable;
+	bool m_fade;
+	float m_timeToNextLevel;
 
 protected:
 	void Activate();
 	void Deactivate();
 
-	class CXipFile* m_xipFile;
+	CXipFile* m_xipFile;
 	bool m_bArrive;
-
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
 };
 
 class CViewpoint : public CNode
 {
 	DECLARE_NODE(CViewpoint, CNode)
+	DECLARE_NODE_PROPS()
 public:
 	CViewpoint();
 	~CViewpoint();
 
 	void OnLoad();
+	bool OnSetProperty(const PRD* prop, const void* value);
 	void Bind();
 
 	bool m_isBound;
@@ -88,23 +86,21 @@ public:
 	D3DXQUATERNION m_orientation;
 	D3DXVECTOR3 m_position;
 	TCHAR* m_description;
-
-	bool OnSetProperty(const PRD* pprd, const void* pvValue);
-
-	DECLARE_NODE_PROPS()
 };
 
-extern void BindViewpoint(CNode* pViewpontNode);
+extern void BindViewpoint(CNode* viewpoint);
 
 class CNavigationInfo : public CNode
 {
 	DECLARE_NODE(CNavigationInfo, CNode)
+	DECLARE_NODE_PROPS()
 public:
 	CNavigationInfo();
 	~CNavigationInfo();
 
-	bool OnSetProperty(const PRD* pprd, const void* pvValue);
 	void OnLoad();
+	bool OnSetProperty(const PRD* prop, const void* value);
+	void Bind();
 
 	bool m_isBound;
 	D3DXVECTOR3 m_avatarSize;
@@ -113,8 +109,4 @@ public:
 	TCHAR* m_type;
 	float m_visibilityLimit;
 	CNode* m_shape;
-
-	void Bind();
-
-	DECLARE_NODE_PROPS()
 };
