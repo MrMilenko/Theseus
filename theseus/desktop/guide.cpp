@@ -30,6 +30,7 @@
 #include "launchers/pcsx2.h"
 #include "xiso.h"
 #include "exe_icon.h"
+#include "xdg_apps.h"
 #include "guide.h"
 #include "ui_overlay.h"
 #include <algorithm>
@@ -258,7 +259,7 @@ static const char* kSections[SEC_COUNT] = {
 };
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
-            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS };
+            GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS, GV_APPS };
 
 // What a game list shows.
 enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH };
@@ -276,7 +277,7 @@ enum Act {
     GA_PLEX, GA_PLEXOUT, GA_JELLYFIN, GA_JELLYFINOUT, GA_XBOX, GA_XBOXOUT,
     GA_TEXT, GA_NAME, GA_JELLYFINURL,
     GA_GAMELIST, GA_GAME, GA_LAUNCH, GA_FAVORITE, GA_HIDE, GA_LETTER, GA_SEARCH,
-    GA_FINDEMU, GA_RUNNER,
+    GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES,
     GA_COUNT
 };
 
@@ -348,6 +349,7 @@ static struct Guide {
     std::string result[GA_COUNT];
     std::string browseDir, pickedPath, pickedName, added;
     std::string found[4];   // what each Find row turned up
+    std::vector<XdgApp> apps;   // the Linux app menu, read when its list opens
     std::vector<BrowseEntry> entries;
     bool browseStale;
     int category, playlist, runner;
@@ -505,6 +507,8 @@ static void Build()
         Add("Import Steam Library", g.result[GA_STEAM].c_str(), "Adds installed Steam games with their icons.", GA_STEAM);
         Add("Import RetroArch Recent", g.result[GA_RETROARCH].c_str(), "Adds what RetroArch's playlists list.", GA_RETROARCH);
         Add("Refresh ES-DE", g.result[GA_ESDE].c_str(), "Reads your ES-DE game lists again.", GA_ESDE);
+        if (strcmp(Host_Name(), "Linux") == 0)
+            Add("Import Linux Apps", "", "Games and apps from your app menu, Flatpak and your Desktop.", GA_APPS);
         char n[32];
         std::vector<int> list;
         static const char* kListHelp[] = {
@@ -587,6 +591,17 @@ static void Build()
             "Counted when the game closes. Games another launcher starts for us can't be timed.");
         std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
         Add("Category", where.c_str(), NULL);
+        break;
+    }
+    case GV_APPS: {
+        Add("Add All Games", g.result[GA_APPGAMES].c_str(), "Everything marked as a game, with its icon.", GA_APPGAMES);
+        for (size_t i = 0; i < g.apps.size(); i++) {
+            char clean[128];
+            Title_SanitizeName(g.apps[i].name.c_str(), clean, sizeof(clean));
+            const char* state = VGames_FindByName(clean) >= 0 ? "In Library" : g.apps[i].game ? "Game" : "App";
+            Add(g.apps[i].name.c_str(), state, g.apps[i].exec.c_str(), GA_APP, (int)i);
+        }
+        if (g.apps.empty()) Add("Nothing found", "", "No .desktop entries in the app menu folders or on the Desktop.");
         break;
     }
     case GV_PLAYLISTS:
@@ -704,6 +719,7 @@ static const char* ViewTitle()
     case GV_BROWSE:    return "Choose a File";
     case GV_PLAYLISTS: return "Playlists";
     case GV_LETTERS:   return "Find a Game";
+    case GV_APPS:      return "Linux Apps";
     case GV_GAMES: {
         static char title[32];
         if (g.gameList == GL_SEARCH) snprintf(title, sizeof(title), "Search: %.20s", g.search.c_str());
@@ -1162,6 +1178,13 @@ static void Select()
         g.pickedPath = full;
         g.pickedName = NameFromPath(full);
         g.runner = RUN_SELF;
+        XdgApp entry;
+        if (e.name.size() > 8 && strcasecmp(e.name.c_str() + e.name.size() - 8, ".desktop") == 0 &&
+            XdgApps_Parse(full.c_str(), &entry)) {
+            char clean[128];
+            Title_SanitizeName(entry.name.c_str(), clean, sizeof(clean));
+            if (clean[0]) g.pickedName = clean;
+        }
         if (Pcsx2_IsDisc(full.c_str())) {
             // An Xbox disc names itself; anything else is a PS2 guess.
             XisoTitleInfo xiso = XisoGetTitleInfo(full.c_str());
@@ -1175,9 +1198,49 @@ static void Select()
         Back();
         break;
     }
+    case GA_APPS: {
+        std::vector<std::string> dirs;
+        XdgApps_Dirs(dirs);
+        XdgApps_Scan(dirs, g.apps);
+        g.result[GA_APPGAMES].clear();
+        Push(GV_APPS);
+        break;
+    }
+    case GA_APP:
+    case GA_APPGAMES: {
+        int added = 0, had = 0;
+        for (size_t i = 0; i < g.apps.size(); i++) {
+            const XdgApp& app = g.apps[i];
+            if (r.act == GA_APP ? (int)i != r.arg : !app.game) continue;
+            if (XdgApps_Add(app, app.game ? "Games" : "Applications")) added++; else had++;
+        }
+        if (added) { VGames_Save(); UDataSynth_RebuildAll(); }
+        if (r.act == GA_APPGAMES) {
+            char msg[64];
+            snprintf(msg, sizeof(msg), "%d new, %d already in", added, had);
+            g.result[GA_APPGAMES] = msg;
+        }
+        Build();
+        break;
+    }
     case GA_ADDGAME: {
         if (g.pickedPath.empty() || g.pickedName.empty()) break;
         if (VGames_FindByName(g.pickedName.c_str()) >= 0) { g.added = "Already there"; Build(); break; }
+        // A .desktop shortcut runs its Exec line, not the file.
+        XdgApp entry;
+        if (g.runner == RUN_SELF && XdgApps_Parse(g.pickedPath.c_str(), &entry) &&
+            g.pickedPath.size() > 8 && strcasecmp(g.pickedPath.c_str() + g.pickedPath.size() - 8, ".desktop") == 0) {
+            entry.name = g.pickedName;
+            g.added = XdgApps_Add(entry, kCategories[g.category]) ? "Added" : "Already there";
+            if (g.added == "Added") {
+                VGames_Save();
+                UDataSynth_RebuildAll();
+                g.pickedPath.clear();
+                g.pickedName.clear();
+            }
+            Build();
+            break;
+        }
         char genID[16];
         snprintf(genID, sizeof(genID), "%08x", (unsigned)time(NULL));
         char launch[sizeof(VirtualGame::launch)];
