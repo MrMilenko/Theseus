@@ -149,6 +149,12 @@ static CSave* ScanSavesToFit(const TCHAR* root, const TCHAR* titleID, HANDLE can
 {
 	CSave* scratch = new CSave [MAX_SAVED_GAMES];
 	*count = ScanSavedGames(root, titleID, scratch, cancel);
+	if (*count < 0)
+	{
+		// Cancelled: stays unscanned (-1) with no list.
+		delete [] scratch;
+		return NULL;
+	}
 	CSave* saves = new CSave [*count];
 	CopyMemory(saves, scratch, *count * sizeof (CSave));
 	delete [] scratch;
@@ -271,7 +277,7 @@ int CTitleArray::GetSavedGameCount(int nTitle, HANDLE hCancelEvent)
 	CTitle& t = m_list[nTitle];
 	if (t.m_saveCount == -1)
 		t.m_saveList = ScanSavesToFit(GetUData(), t.m_titleID, hCancelEvent, &t.m_saveCount);
-	return t.m_saveCount;
+	return t.m_saveCount < 0 ? 0 : t.m_saveCount;
 }
 
 // Fills one save record; false when the folder name won't fit (16 chars
