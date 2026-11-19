@@ -186,6 +186,12 @@ function UpdatePlexList()
 
 	UpdatePoster(c);
 
+	// X FROM START shows while the row has a resume point to skip.
+	if (thePlexLibrary.CanStartOver(nPlexView, nPlexCursor) == 1)
+		c.MU_x_cluster.visible = true;
+	else
+		c.MU_x_cluster.visible = false;
+
 	nPlexLastCount = nPlexCount;
 }
 

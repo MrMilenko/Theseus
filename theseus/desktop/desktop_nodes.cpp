@@ -3846,6 +3846,25 @@ public:
 	// Bumps when a playback report or a mark changes watch state.
 	int GetWatchStamp() { return (int)Plex_WatchStamp(); }
 
+	// The row has a resume point, so X has a start to go back to.
+	int CanStartOver(int view, int i)
+	{
+		if (i < 0) return 0;
+		if (view == 1) {
+			std::vector<PlexItem> items = CurrentItems();
+			if (i >= (int)items.size() || IsFolderType(items[i].type) || items[i].type == "show") return 0;
+			return items[i].offsetMs > 0 ? 1 : 0;
+		}
+		if (view == 3) {
+			std::vector<PlexEpisode> eps;
+			std::string seasonKey = CurrentSeasonKey();
+			if (seasonKey.empty()) return 0;
+			Plex_Cache_GetEpisodes(seasonKey, eps);
+			return i < (int)eps.size() && eps[i].offsetMs > 0 ? 1 : 0;
+		}
+		return 0;
+	}
+
 	void PlayRatingKey(const std::string& ratingKey,
 	                   const std::string& title,
 	                   const std::string& subtitle,
@@ -4121,6 +4140,7 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_SI(GetItemName)
 	NODE_FUN_VI(SetStartOver)
 	NODE_FUN_IV(GetWatchStamp)
+	NODE_FUN_III(CanStartOver)
 END_NODE_FUN()
 
 
@@ -4365,6 +4385,25 @@ public:
 
 	// Bumps when a playback report or a mark changes watch state.
 	int GetWatchStamp() { return (int)Jellyfin_WatchStamp(); }
+
+	// The row has a resume point, so X has a start to go back to.
+	int CanStartOver(int view, int i)
+	{
+		if (i < 0) return 0;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size() || items[i].isFolder) return 0;
+			return items[i].posTicks > 0 ? 1 : 0;
+		}
+		if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return 0;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			return i < (int)eps.size() && eps[i].posTicks > 0 ? 1 : 0;
+		}
+		return 0;
+	}
 
 	void PlayRatingKey(const std::string& itemId,
 	                   const std::string& title,
@@ -4787,6 +4826,7 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_SI(GetItemName)
 	NODE_FUN_VI(SetStartOver)
 	NODE_FUN_IV(GetWatchStamp)
+	NODE_FUN_III(CanStartOver)
 END_NODE_FUN()
 
 

@@ -323,7 +323,7 @@ void ui_overlay_set_pad_style(int style)
 void ui_overlay_set_pad_swap(int swap) { ov.padSwap = swap != 0; }
 
 static const char* const kKeyLabels[UI_BUTTON_COUNT] = {
-    "ENTER", "ESC", "X", "Y", "F7", "BKSP", "Q", "E", "\xE2\x86\x90", "\xE2\x86\x92",
+    "ENTER", "ESC", "X", "Y", "F7", "BKSP", "Q", "E", "\xE2\x80\xB9", "\xE2\x80\xBA",
 };
 // PlayStation's face buttons are symbols, drawn below.
 static const char* const kPadLabels[UI_PAD_STYLE_COUNT][UI_BUTTON_COUNT] = {

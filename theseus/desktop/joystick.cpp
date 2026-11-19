@@ -347,6 +347,17 @@ void CJoystick::EnableGlobalInput(int bEnable)
 static bool GuideChord();
 static void DevPadScript(JoySnapshot* out);
 
+// 1 when the pad was used last, 0 for the keyboard.
+static int s_lastDevice = 0;
+int Joy_LastDevice() { return s_lastDevice; }
+
+static bool AnyHeld(const JoySnapshot* s)
+{
+    JoySnapshot none;
+    memset(&none, 0, sizeof(none));
+    return memcmp(s, &none, sizeof(none)) != 0;
+}
+
 // Every pad's buttons and sticks as one snapshot. holdB drops the B of LT+B.
 static void ReadPad(bool holdB, JoySnapshot* out)
 {
@@ -403,6 +414,7 @@ void CJoystick::PollSDL(JoySnapshot* out)
     const bool guideHoldsB = GuideChord();
 
     ReadPad(guideHoldsB, out);
+    const bool padHeld = AnyHeld(out);
 
     // --- Keyboard overlay (OR on top) ---
     extern bool ImGui_WantsKeyboard();
@@ -467,8 +479,12 @@ void CJoystick::PollSDL(JoySnapshot* out)
             else if (keys[SDL_SCANCODE_S]) out->thumbLY = -1.0f;
         }
     }
+    const bool keysHeld = !padHeld && AnyHeld(out);
 
+    JoySnapshot before = *out;
     DevPadScript(out);
+    if (padHeld || memcmp(&before, out, sizeof(before)) != 0) s_lastDevice = 1;
+    else if (keysHeld) s_lastDevice = 0;
 }
 
 // Guide button, LT+B or F7 asks for the guide. The B of LT+B never reaches

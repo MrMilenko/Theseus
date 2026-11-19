@@ -1701,6 +1701,108 @@ DEF Group07 Transform
             cycleInterval 14.300000
             loop TRUE
         }
+        // X cluster: a copy of A's, set to its left, shown while the row
+        // under the cursor has a resume point.
+        DEF MU_x_cluster Transform
+        {
+            children
+            [
+                Transform
+                {
+                    children
+                    [
+                        Shape
+                        {
+                            appearance Appearance { material MaxMaterial { name "FlatSurfaces" } }
+                            geometry Mesh { url "MU_select_probearm-FACES.xm" }
+                        }
+                    ]
+                    rotation -0.786500 0.499900 0.362600 -1.910000
+                    scale 0.465000 0.465000 0.465000
+                    scaleOrientation 0.000000 0.005536 1.000000 -0.474500
+                    translation -11.089000 15.920000 6.071000
+                }
+                Transform
+                {
+                    children
+                    [
+                        Shape
+                        {
+                            appearance Appearance { material MaxMaterial { name "FlatSurfaces" } }
+                            geometry Mesh { url "MU_select_probe-FACES.xm" }
+                        }
+                    ]
+                    rotation -0.786500 0.499900 0.362600 -1.910000
+                    scale 0.465000 0.465000 0.465000
+                    scaleOrientation 0.000000 0.005536 1.000000 -0.474500
+                    translation -10.203000 15.060000 6.235000
+                }
+                Transform
+                {
+                    children
+                    [
+                        Shape
+                        {
+                            appearance Appearance { material MaxMaterial { name "CellEgg/Parts" } }
+                            geometry Mesh { url "MU_select_pod_inner-FACES.xm" }
+                        }
+                        Shape
+                        {
+                            appearance Appearance { material MaxMaterial { name "CellEgg/Parts" } }
+                            geometry Mesh { url "MU_select_pod_outer-FACES.xm" }
+                        }
+                        Shape
+                        {
+                            appearance Appearance { material MaxMaterial { name "EggGlow" } }
+                            geometry Mesh { url "MU_select_pod_HL-FACES.xm" }
+                        }
+                    ]
+                    scale 0.465000 0.465000 0.465000
+                    translation -1.422000 -10.330000 3.150000
+                }
+                Transform
+                {
+                    children
+                    [
+                        Shape
+                        {
+                            appearance Appearance { material MaxMaterial { name "TubesFade" } }
+                            geometry Mesh { url "MU_select_tube-FACES.xm" }
+                        }
+                    ]
+                    rotation -0.990900 0.095410 -0.095410 -1.580000
+                    scale 0.465000 0.465000 0.465000
+                    scaleOrientation -0.011110 0.412400 0.911000 -0.088980
+                    translation 31.620001 -26.790001 9.817000
+                }
+                Transform
+                {
+                    children
+                    [
+                        Shape
+                        {
+                            appearance Appearance { material MaxMaterial { name "NavType" } }
+                            geometry Text { font "heading" justify "middle" translate false text "X" }
+                        }
+                    ]
+                    scale 0.605000 0.605000 0.000
+                    translation -3.559000 2.391000 -0.443200
+                }
+                Transform
+                {
+                    children
+                    [
+                        Shape
+                        {
+                            appearance Appearance { material MaxMaterial { name "XBOXgreen" } }
+                            geometry Text { font "Body" text "FROM START" justify "end" }
+                        }
+                    ]
+                    scale 0.375000 0.475000 0.00
+                    translation -4.265000 2.156000 -0.409300
+                }
+            ]
+        }
         DEF MU_Text_a Transform
         {
             children
