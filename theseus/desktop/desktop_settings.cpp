@@ -17,7 +17,7 @@ extern char s_steamPath[512];
 extern char s_retroarchPath[512];
 extern char s_esdePath[512];
 extern bool g_showRetroArchTab, g_showSteamTab, g_showEsdeTab;
-extern bool g_retroarchFullscreen;
+extern bool g_retroarchFullscreen, g_returnAfterGame;
 extern int  g_audioBufferFrames;
 extern int  g_startupMode;
 extern bool g_bUseOnScreenKeyboard, g_bShowBootAnimation;
@@ -116,6 +116,7 @@ static const SettingDef kDefs[] = {
     S_PATH("EsdePath",      "Desktop", "Games",   "ES-DE Folder",     s_esdePath, 0),
     S_BOOL("ShowEsdeTab",   "Desktop", "Games",   "ES-DE Import Tab", g_showEsdeTab, "1", 0),
     S_BOOL("RetroArchFullscreen", "Desktop", "Games", "RetroArch Fullscreen", g_retroarchFullscreen, "1", 0),
+    S_BOOL("ReturnAfterGame", "Desktop", "Games", "Back to UIX When a Game Closes", g_returnAfterGame, "1", 0),
     { "AudioBufferFrames", "Desktop", "Audio", "Audio Buffer", SK_INT, &g_audioBufferFrames, 0, "1024",
       SF_RESTART | SF_HIDDEN, NOENUM, 0, 0, 256, NULL, NULL },
     S_BOOL("ShowRetroArchTab", "Desktop", "Games", "RetroArch Tab", g_showRetroArchTab, "1", 0),

@@ -216,3 +216,39 @@ int Steam_DiscoverLibraries(const char* userOverride,
 
 	return n;
 }
+
+// Steam keeps RunningAppID in the registry on Windows and in registry.vdf
+// everywhere else. Native, Flatpak and macOS homes are all tried.
+int Steam_RunningAppId()
+{
+	char val[64];
+	if (Host_RegistryString("Software\\Valve\\Steam", "RunningAppID", val, sizeof(val)))
+		return atoi(val);
+
+	const char* home = getenv("HOME");
+	if (!home) return -1;
+	static const char* kFiles[] = {
+		"/.steam/registry.vdf",
+		"/.var/app/com.valvesoftware.Steam/.steam/registry.vdf",
+		"/Library/Application Support/Steam/registry.vdf",
+	};
+	for (size_t i = 0; i < sizeof(kFiles) / sizeof(kFiles[0]); i++) {
+		char path[1024];
+		snprintf(path, sizeof(path), "%s%s", home, kFiles[i]);
+		FILE* f = fopen(path, "r");
+		if (!f) continue;
+		char line[512];
+		int id = -1;
+		while (fgets(line, sizeof(line), f)) {
+			// "RunningAppID"		"220"
+			const char* k = strstr(line, "\"RunningAppID\"");
+			if (!k) continue;
+			const char* v = strchr(k + 14, '"');
+			if (v) id = atoi(v + 1);
+			break;
+		}
+		fclose(f);
+		if (id >= 0) return id;
+	}
+	return -1;
+}

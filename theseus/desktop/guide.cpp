@@ -397,6 +397,15 @@ static void GameListRows(int list, std::vector<int>& out)
     });
 }
 
+static std::string PlayTime(long long s)
+{
+    char buf[32];
+    if (s <= 0) return "None yet";
+    if (s < 3600) snprintf(buf, sizeof(buf), "%lld min", s < 60 ? 1 : s / 60);
+    else snprintf(buf, sizeof(buf), "%lld h %02lld min", s / 3600, (s % 3600) / 60);
+    return buf;
+}
+
 static std::string PlayedOn(long long t)
 {
     if (!t) return "Never";
@@ -543,6 +552,8 @@ static void Build()
         Add("Hidden", vg->hidden ? "Yes" : "No", "Hidden games stay out of the launcher until you bring them back.",
             GA_HIDE);
         Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
+        Add("Time Played", PlayTime(vg->playTime).c_str(),
+            "Counted when the game closes. Games another launcher starts for us can't be timed.");
         std::string where = vg->group[0] ? std::string(vg->category) + "/" + vg->group : std::string(vg->category);
         Add("Category", where.c_str(), NULL);
         break;

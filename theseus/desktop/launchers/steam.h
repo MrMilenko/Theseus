@@ -36,3 +36,7 @@ int Steam_DiscoverInstallRoots(const char* userOverride,
 // Returns the count written into `outLibraries`, capped at maxLibs.
 int Steam_DiscoverLibraries(const char* userOverride,
                              char outLibraries[][512], int maxLibs);
+
+// The app Steam says is running: 0 for none, -1 when Steam's state can't be
+// read (not installed, or not started yet this session).
+int Steam_RunningAppId();

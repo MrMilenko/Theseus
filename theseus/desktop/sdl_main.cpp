@@ -1775,6 +1775,9 @@ int main(int argc, char* argv[]) {
         if (IDirect3DDevice8::s_preSwapCB) IDirect3DDevice8::s_preSwapCB();
         Frame_PhaseEnd(FP_IMGUI);
 
+        // A game we started is up and we're behind it: stay out of its way.
+        if (!g_windowFocused && Launch_GameRunning()) SDL_Delay(100);
+
         // FPS cap: sleep until budget elapsed. 0 = unlimited.
         if (g_fpsCap > 0) {
             Uint64 budget = perfFreq / (Uint64)g_fpsCap;

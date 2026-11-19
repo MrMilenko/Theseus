@@ -23,6 +23,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <sys/utsname.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -493,8 +494,11 @@ static void ExecLaunch(const char* spec, bool isUrl, bool isSteamUrl) {
 	}
 }
 
+struct HostProc { pid_t pid; bool done; };
+
 bool Host_Spawn(const char* spec, bool isUrl, bool isSteamUrl, const char* workdir,
-                char* err, size_t errSize) {
+                char* err, size_t errSize, HostProc** proc) {
+	if (proc) *proc = NULL;
 	pid_t pid = fork();
 	if (pid == 0) {
 		if (workdir) (void)chdir(workdir);
@@ -506,8 +510,24 @@ bool Host_Spawn(const char* spec, bool isUrl, bool isSteamUrl, const char* workd
 		snprintf(err, errSize, "fork() failed: %s", strerror(errno));
 		return false;
 	}
-	// Parent: don't wait. Fire-and-forget.
+	if (proc) {
+		*proc = new HostProc;
+		(*proc)->pid = pid;
+		(*proc)->done = false;
+	}
 	return true;
+}
+
+bool Host_ProcDone(HostProc* proc) {
+	if (!proc || proc->done) return true;
+	int status;
+	pid_t r = waitpid(proc->pid, &status, WNOHANG);
+	if (r == proc->pid || (r < 0 && errno == ECHILD)) proc->done = true;
+	return proc->done;
+}
+
+void Host_ProcFree(HostProc* proc) {
+	delete proc;
 }
 
 bool Host_PickFile(const char* title, char* out, size_t outSize) {
