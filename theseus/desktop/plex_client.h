@@ -122,3 +122,20 @@ void        Plex_QueueArtDownload(const std::string& ratingKey,
 // The poster is on disk. Only hand the scene a path once this is true: the
 // texture cache remembers a miss for the rest of the session.
 bool        Plex_ArtReady(const std::string& ratingKey);
+
+// Playback reports (MEDIA_REPORT_* from media_player.h) through /:/timeline,
+// with a scrobble once it's played past 90%. Sent in order, off the main
+// thread; a stop also reloads the item and the On Deck shelf.
+void Plex_ReportPlayback(const std::string& ratingKey, int event,
+                         int timeMs, int durationMs, bool paused);
+// Bumped whenever watch state in the cache changes, so the scene redraws.
+unsigned Plex_WatchStamp();
+// Scrobbles or unscrobbles it on the server; the cache shows it straight away.
+void Plex_SetPlayed(const std::string& ratingKey, bool played);
+
+// Search across the server, in the background. Results show up as the items
+// of the "uix-search" library at the end of the list.
+enum { PLEX_SEARCH_NONE, PLEX_SEARCH_BUSY, PLEX_SEARCH_DONE, PLEX_SEARCH_FAILED };
+void        Plex_Search(const std::string& term);
+std::string Plex_SearchTerm();
+int         Plex_SearchState();

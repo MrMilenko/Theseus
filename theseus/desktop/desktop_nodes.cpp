@@ -3381,6 +3381,8 @@ END_NODE_FUN()
 // ============================================================================
 
 #include "plex_client.h"
+#include "guide.h"
+#include "pads.h"
 
 // "S2E05 · Title" for an episode row. No number, just the title.
 static std::string EpisodeCode(const std::string& season, const std::string& episode)
@@ -3471,17 +3473,33 @@ static std::string ClipInfo(std::string body)
 	return body;
 }
 
+// The info card's last line: which button flips the watched mark, named for
+// the pad or the keyboard used last.
+static std::string MarkHint(bool played)
+{
+	const char* key = "`";
+	if (Joy_LastDevice() == 1) {
+		switch (Pads_Style()) {
+		case PAD_STYLE_PLAYSTATION: key = "R1"; break;
+		case PAD_STYLE_NINTENDO:    key = "R"; break;
+		default:                    key = "RB"; break;
+		}
+	}
+	return std::string("Press ") + key + (played ? " to mark unwatched" : " to mark watched");
+}
+
 class CPlexLibrary : public CNode
 {
 public:
 	CPlexLibrary()
-		: m_currentLib(-1), m_currentShow(-1), m_currentSeason(-1) {}
+		: m_currentShow(-1), m_currentSeason(-1) {}
 
 	DECLARE_NODE(CPlexLibrary, CNode)
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS()
 
-	int  m_currentLib;
+	// The library open, by key: the shelves above the libraries come and go.
+	std::string m_libKey, m_libName;
 	int  m_currentShow;
 	int  m_currentSeason;
 	std::string m_serverUri;
@@ -3522,6 +3540,10 @@ public:
 		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
 		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
 		char buf[32];
+		if (libs[i].type == "search") {
+			std::string term = Plex_SearchTerm();
+			return new CStrObject(_T((term.empty() ? libs[i].title : libs[i].title + "  \xC2\xB7  " + term).c_str()));
+		}
 		snprintf(buf, sizeof(buf), "  \xC2\xB7  %d", (int)Plex_Cache_GetItems(libs[i].sectionKey).size());
 		return new CStrObject(_T((libs[i].title + buf).c_str()));
 	}
@@ -3537,8 +3559,11 @@ public:
 	void SetCurrent(int i)
 	{
 		m_folders.clear();
-		if (i == m_currentLib) return;
-		m_currentLib    = i;
+		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return;
+		m_libName = libs[i].title;
+		if (libs[i].sectionKey == m_libKey) return;
+		m_libKey        = libs[i].sectionKey;
 		m_currentShow   = -1;
 		m_currentSeason = -1;
 	}
@@ -3555,14 +3580,13 @@ public:
 
 	std::vector<PlexItem> CurrentItems()
 	{
-		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
-		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		if (m_libKey.empty()) return {};
 		if (!m_folders.empty()) {
 			std::vector<PlexItem> kids;
 			Plex_Cache_GetChildren(m_folders.back().key, kids);
 			return kids;
 		}
-		return Plex_Cache_GetItems(libs[m_currentLib].sectionKey);
+		return Plex_Cache_GetItems(m_libKey);
 	}
 
 	void DrillIntoFolder(int i)
@@ -3594,7 +3618,8 @@ public:
 	CStrObject* GetListTitle()
 	{
 		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
-		return GetName(m_currentLib);
+		if (m_libKey == "uix-search") return new CStrObject(_T(("\xE2\x80\x9C" + SearchTerm() + "\xE2\x80\x9D").c_str()));
+		return new CStrObject(_T(m_libName.c_str()));
 	}
 
 	CStrObject* GetItemType(int i)
@@ -3659,6 +3684,7 @@ public:
 			AppendLine(body, it.genres);
 			if (it.leafCount > 0) AppendLine(body, LeftLine(it));
 			else AppendLine(body, WatchLine(it.Played(), it.offsetMs / 1000, it.durationMs / 1000));
+			if (!IsFolderType(it.type)) AppendLine(body, MarkHint(it.Played()));
 			if (!it.summary.empty()) { body += "\n\n"; body += it.summary; }
 		}
 		else if (view == 2) {
@@ -3672,6 +3698,7 @@ public:
 			AppendLine(body, FactsLine(sh.year, 0, sh.rating, sh.stars));
 			AppendLine(body, sh.genres);
 			if (i < (int)seasons.size()) AppendLine(body, LeftLine(seasons[i]));
+			if (i < (int)seasons.size()) AppendLine(body, MarkHint(seasons[i].Played()));
 			if (!sh.summary.empty()) { body += "\n\n"; body += sh.summary; }
 		}
 		else if (view == 3) {
@@ -3685,6 +3712,7 @@ public:
 				AppendLine(body, items[m_currentShow].title);
 			AppendLine(body, FactsLine("", e.durationMs / 1000, e.rating, e.stars));
 			AppendLine(body, WatchLine(e.Played(), e.offsetMs / 1000, e.durationMs / 1000));
+			AppendLine(body, MarkHint(e.Played()));
 			if (!e.summary.empty()) { body += "\n\n"; body += e.summary; }
 		}
 		return new CStrObject(_T(ClipInfo(body).c_str()));
@@ -3833,6 +3861,76 @@ public:
 		return ArtOrLogo(eps[i].ratingKey, seasonKey, CurrentShowKey());
 	}
 
+	// What's playing, for the server's playback reports.
+	static std::string s_playing;
+	static void Report(int event, double pos, double dur, bool paused)
+	{
+		Plex_ReportPlayback(s_playing, event, (int)(pos * 1000.0), (int)(dur * 1000.0), paused);
+	}
+
+	// Bumps when a playback report or a mark changes watch state.
+	int GetWatchStamp() { return (int)Plex_WatchStamp(); }
+
+	// The search row at the end of the libraries: the keyboard's text goes
+	// here, and the results open as that library's items.
+	static std::string SearchTerm() { return Plex_SearchTerm(); }
+	void Search(const TCHAR* term)
+	{
+		std::string t = term ? term : "";
+		while (!t.empty() && t.back() == ' ') t.pop_back();
+		while (!t.empty() && t.front() == ' ') t.erase(0, 1);
+		Plex_Search(t);
+	}
+	CStrObject* GetSearchTerm() { return new CStrObject(_T(SearchTerm().c_str())); }
+
+	// RB: watched becomes unwatched and the other way round. The new state,
+	// or -1 when the row can't be marked.
+	int ToggleWatched(int view, int i)
+	{
+		if (i < 0) return -1;
+		std::string key;
+		bool played = false;
+		if (view == 1) {
+			std::vector<PlexItem> items = CurrentItems();
+			if (i >= (int)items.size() || IsFolderType(items[i].type)) return -1;
+			key = items[i].ratingKey; played = items[i].Played();
+		} else if (view == 2) {
+			std::vector<PlexSeason> seasons;
+			Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
+			if (i >= (int)seasons.size()) return -1;
+			key = seasons[i].ratingKey; played = seasons[i].Played();
+		} else if (view == 3) {
+			std::vector<PlexEpisode> eps;
+			std::string seasonKey = CurrentSeasonKey();
+			if (seasonKey.empty()) return -1;
+			Plex_Cache_GetEpisodes(seasonKey, eps);
+			if (i >= (int)eps.size()) return -1;
+			key = eps[i].ratingKey; played = eps[i].Played();
+		}
+		if (key.empty()) return -1;
+		Plex_SetPlayed(key, !played);
+		return played ? 0 : 1;
+	}
+
+	// The row has a resume point, so X has a start to go back to.
+	int CanStartOver(int view, int i)
+	{
+		if (i < 0) return 0;
+		if (view == 1) {
+			std::vector<PlexItem> items = CurrentItems();
+			if (i >= (int)items.size() || IsFolderType(items[i].type) || items[i].type == "show") return 0;
+			return items[i].offsetMs > 0 ? 1 : 0;
+		}
+		if (view == 3) {
+			std::vector<PlexEpisode> eps;
+			std::string seasonKey = CurrentSeasonKey();
+			if (seasonKey.empty()) return 0;
+			Plex_Cache_GetEpisodes(seasonKey, eps);
+			return i < (int)eps.size() && eps[i].offsetMs > 0 ? 1 : 0;
+		}
+		return 0;
+	}
+
 	void PlayRatingKey(const std::string& ratingKey,
 	                   const std::string& title,
 	                   const std::string& subtitle,
@@ -3847,11 +3945,14 @@ public:
 			return;
 		}
 		double start = m_startOver ? 0.0 : offsetMs / 1000.0;
+		MediaUI_SetReporter(NULL);
 		if (!MediaPlayer_OpenAt(url.c_str(), start)) {
 			fprintf(stderr, "[Plex] MediaPlayer_Open failed for %s\n",
 				ratingKey.c_str());
 			return;
 		}
+		s_playing = ratingKey;
+		MediaUI_SetReporter(Report);
 		extern bool g_mediaFullscreen;
 		extern char g_mediaFullscreenTitle[256];
 		extern char g_mediaFullscreenSubtitle[256];
@@ -4037,6 +4138,12 @@ public:
 			return Plex_Cache_GetLibraries().empty() ? "No libraries" : "";
 		}
 		if (view == 1) {
+			if (m_folders.empty() && m_libKey == "uix-search") {
+				int state = Plex_SearchState();
+				if (state == PLEX_SEARCH_BUSY) return "Searching...";
+				if (state == PLEX_SEARCH_FAILED) return Unreachable();
+				return CurrentItems().empty() ? "Nothing found" : "";
+			}
 			if (m_folders.empty()) return CurrentItems().empty() ? "Nothing here" : "";
 			std::vector<PlexItem> kids;
 			bool cached = Plex_Cache_GetChildren(m_folders.back().key, kids);
@@ -4056,6 +4163,8 @@ public:
 		return Pending(cached, eps, seasonKey, "No episodes");
 	}
 };
+
+std::string CPlexLibrary::s_playing;
 
 IMPLEMENT_NODE("PlexLibrary", CPlexLibrary, CNode)
 
@@ -4102,6 +4211,11 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_SI(GetStatus)
 	NODE_FUN_SI(GetItemName)
 	NODE_FUN_VI(SetStartOver)
+	NODE_FUN_IV(GetWatchStamp)
+	NODE_FUN_III(CanStartOver)
+	NODE_FUN_III(ToggleWatched)
+	NODE_FUN_VS(Search)
+	NODE_FUN_SV(GetSearchTerm)
 END_NODE_FUN()
 
 
@@ -4115,13 +4229,14 @@ class CJellyfinLibrary : public CNode
 {
 public:
 	CJellyfinLibrary()
-		: m_currentLib(-1), m_currentShow(-1), m_currentSeason(-1) {}
+		: m_currentShow(-1), m_currentSeason(-1) {}
 
 	DECLARE_NODE(CJellyfinLibrary, CNode)
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS()
 
-	int  m_currentLib;
+	// The library open, by key: the shelves above the libraries come and go.
+	std::string m_libKey, m_libName;
 	int  m_currentShow;
 	int  m_currentSeason;
 	// Folders opened inside the library, innermost last, with the row to
@@ -4154,6 +4269,10 @@ public:
 		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
 		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
 		char buf[32];
+		if (libs[i].type == "search") {
+			std::string term = Jellyfin_SearchTerm();
+			return new CStrObject(_T((term.empty() ? libs[i].name : libs[i].name + "  \xC2\xB7  " + term).c_str()));
+		}
 		snprintf(buf, sizeof(buf), "  \xC2\xB7  %d", (int)Jellyfin_Cache_GetItems(libs[i].id).size());
 		return new CStrObject(_T((libs[i].name + buf).c_str()));
 	}
@@ -4168,8 +4287,11 @@ public:
 	void SetCurrent(int i)
 	{
 		m_folders.clear();
-		if (i == m_currentLib) return;
-		m_currentLib    = i;
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return;
+		m_libName = libs[i].name;
+		if (libs[i].id == m_libKey) return;
+		m_libKey        = libs[i].id;
 		m_currentShow   = -1;
 		m_currentSeason = -1;
 	}
@@ -4188,14 +4310,13 @@ public:
 
 	std::vector<JellyfinItem> CurrentItems()
 	{
-		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
-		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		if (m_libKey.empty()) return {};
 		if (!m_folders.empty()) {
 			std::vector<JellyfinItem> kids;
 			Jellyfin_Cache_GetChildren(m_folders.back().id, kids);
 			return kids;
 		}
-		return Jellyfin_Cache_GetItems(libs[m_currentLib].id);
+		return Jellyfin_Cache_GetItems(m_libKey);
 	}
 
 	void DrillIntoFolder(int i)
@@ -4227,7 +4348,8 @@ public:
 	CStrObject* GetListTitle()
 	{
 		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
-		return GetName(m_currentLib);
+		if (m_libKey == "uix-search") return new CStrObject(_T(("\xE2\x80\x9C" + SearchTerm() + "\xE2\x80\x9D").c_str()));
+		return new CStrObject(_T(m_libName.c_str()));
 	}
 
 	int GetItemCount() { return (int)CurrentItems().size(); }
@@ -4333,6 +4455,83 @@ public:
 		return seasons[m_currentSeason].id;
 	}
 
+	// What's playing, for the server's playback reports.
+	static std::string s_playing;
+	static void Report(int event, double pos, double dur, bool paused)
+	{
+		(void)dur;
+		Jellyfin_ReportPlayback(s_playing, event, (long long)(pos * 10000000.0), paused);
+	}
+
+	// Bumps when a playback report or a mark changes watch state.
+	int GetWatchStamp() { return (int)Jellyfin_WatchStamp(); }
+
+	// The search row at the end of the libraries: the keyboard's text goes
+	// here, and the results open as that library's items.
+	static std::string SearchTerm() { return Jellyfin_SearchTerm(); }
+	void Search(const TCHAR* term)
+	{
+		std::string t = term ? term : "";
+		while (!t.empty() && t.back() == ' ') t.pop_back();
+		while (!t.empty() && t.front() == ' ') t.erase(0, 1);
+		Jellyfin_Search(t);
+	}
+	CStrObject* GetSearchTerm() { return new CStrObject(_T(SearchTerm().c_str())); }
+
+	// Movies, episodes, tracks and whole series take a watched mark; other
+	// folders don't.
+	static bool Markable(const JellyfinItem& it) { return !it.isFolder || it.type == "Series"; }
+
+	// RB: watched becomes unwatched and the other way round. The new state,
+	// or -1 when the row can't be marked.
+	int ToggleWatched(int view, int i)
+	{
+		if (i < 0) return -1;
+		std::string id;
+		bool played = false;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size() || !Markable(items[i])) return -1;
+			id = items[i].id; played = items[i].played;
+		} else if (view == 2) {
+			std::vector<JellyfinSeason> seasons;
+			std::string showId = CurrentShowId();
+			if (showId.empty()) return -1;
+			Jellyfin_Cache_GetSeasons(showId, seasons);
+			if (i >= (int)seasons.size()) return -1;
+			id = seasons[i].id; played = seasons[i].played;
+		} else if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return -1;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			if (i >= (int)eps.size()) return -1;
+			id = eps[i].id; played = eps[i].played;
+		}
+		if (id.empty()) return -1;
+		Jellyfin_SetPlayed(id, !played);
+		return played ? 0 : 1;
+	}
+
+	// The row has a resume point, so X has a start to go back to.
+	int CanStartOver(int view, int i)
+	{
+		if (i < 0) return 0;
+		if (view == 1) {
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (i >= (int)items.size() || items[i].isFolder) return 0;
+			return items[i].posTicks > 0 ? 1 : 0;
+		}
+		if (view == 3) {
+			std::vector<JellyfinEpisode> eps;
+			std::string seasonId = CurrentSeasonId();
+			if (seasonId.empty()) return 0;
+			Jellyfin_Cache_GetEpisodes(seasonId, eps);
+			return i < (int)eps.size() && eps[i].posTicks > 0 ? 1 : 0;
+		}
+		return 0;
+	}
+
 	void PlayRatingKey(const std::string& itemId,
 	                   const std::string& title,
 	                   const std::string& subtitle,
@@ -4344,10 +4543,13 @@ public:
 			return;
 		}
 		double start = m_startOver ? 0.0 : (double)Secs(posTicks);
+		MediaUI_SetReporter(NULL);
 		if (!MediaPlayer_OpenAt(url.c_str(), start)) {
 			fprintf(stderr, "[Jellyfin] MediaPlayer_Open failed\n");
 			return;
 		}
+		s_playing = itemId;
+		MediaUI_SetReporter(Report);
 		extern bool g_mediaFullscreen;
 		extern char g_mediaFullscreenTitle[256];
 		extern char g_mediaFullscreenSubtitle[256];
@@ -4613,6 +4815,7 @@ public:
 			} else {
 				AppendLine(body, WatchLine(it.played, Secs(it.posTicks), Secs(it.runTicks)));
 			}
+			if (Markable(it)) AppendLine(body, MarkHint(it.played));
 			if (!it.overview.empty()) { body += "\n\n"; body += it.overview; }
 		}
 		else if (view == 2) {
@@ -4631,6 +4834,7 @@ public:
 			} else if (i < (int)seasons.size() && seasons[i].played) {
 				AppendLine(body, "Watched");
 			}
+			if (i < (int)seasons.size()) AppendLine(body, MarkHint(seasons[i].played));
 			if (!sh.overview.empty()) { body += "\n\n"; body += sh.overview; }
 		}
 		else if (view == 3) {
@@ -4646,6 +4850,7 @@ public:
 				AppendLine(body, items[m_currentShow].name);
 			AppendLine(body, FactsLine("", Secs(e.runTicks), e.rating, e.stars));
 			AppendLine(body, WatchLine(e.played, Secs(e.posTicks), Secs(e.runTicks)));
+			AppendLine(body, MarkHint(e.played));
 			if (!e.overview.empty()) { body += "\n\n"; body += e.overview; }
 		}
 		return new CStrObject(_T(ClipInfo(body).c_str()));
@@ -4685,6 +4890,12 @@ public:
 			return Jellyfin_Cache_GetLibraries().empty() ? "No libraries" : "";
 		}
 		if (view == 1) {
+			if (m_folders.empty() && m_libKey == "uix-search") {
+				int state = Jellyfin_SearchState();
+				if (state == JELLYFIN_SEARCH_BUSY) return "Searching...";
+				if (state == JELLYFIN_SEARCH_FAILED) return Unreachable();
+				return CurrentItems().empty() ? "Nothing found" : "";
+			}
 			if (m_folders.empty()) return CurrentItems().empty() ? "Nothing here" : "";
 			std::vector<JellyfinItem> kids;
 			bool cached = Jellyfin_Cache_GetChildren(m_folders.back().id, kids);
@@ -4702,6 +4913,8 @@ public:
 		return Pending(cached, eps, seasonId, "No episodes");
 	}
 };
+
+std::string CJellyfinLibrary::s_playing;
 
 IMPLEMENT_NODE("JellyfinLibrary", CJellyfinLibrary, CNode)
 
@@ -4748,6 +4961,11 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_SI(GetStatus)
 	NODE_FUN_SI(GetItemName)
 	NODE_FUN_VI(SetStartOver)
+	NODE_FUN_IV(GetWatchStamp)
+	NODE_FUN_III(CanStartOver)
+	NODE_FUN_III(ToggleWatched)
+	NODE_FUN_VS(Search)
+	NODE_FUN_SV(GetSearchTerm)
 END_NODE_FUN()
 
 

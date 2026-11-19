@@ -2,8 +2,25 @@
 #include "host.h"
 #include <curl/curl.h>
 #include <stdio.h>
+#include <ctype.h>
 #include <mutex>
 #include <atomic>
+
+std::string Http_UrlEncode(const std::string& s)
+{
+    static const char* hex = "0123456789ABCDEF";
+    std::string out;
+    for (unsigned char c : s) {
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back((char)c);
+        } else {
+            out.push_back('%');
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 0xF]);
+        }
+    }
+    return out;
+}
 
 static std::once_flag s_initOnce;
 static void EnsureGlobalInit() {

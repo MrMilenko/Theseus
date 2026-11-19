@@ -103,3 +103,20 @@ void        Jellyfin_QueueArtDownload(const std::string& itemId,
 // The poster is on disk. Only hand the scene a path once this is true: the
 // texture cache remembers a miss for the rest of the session.
 bool        Jellyfin_ArtReady(const std::string& itemId);
+
+// Playback reports (MEDIA_REPORT_* from media_player.h), so the server keeps
+// the resume point and marks it watched. Sent in order, off the main thread;
+// a stop also reloads the item and the Continue Watching and Next Up shelves.
+void Jellyfin_ReportPlayback(const std::string& itemId, int event,
+                             long long posTicks, bool paused);
+// Bumped whenever watch state in the cache changes, so the scene redraws.
+unsigned Jellyfin_WatchStamp();
+// Marks it watched or not on the server; the cache shows it straight away.
+void Jellyfin_SetPlayed(const std::string& itemId, bool played);
+
+// Search across the libraries, in the background. Results show up as the
+// items of the "uix-search" library at the end of the list.
+enum { JELLYFIN_SEARCH_NONE, JELLYFIN_SEARCH_BUSY, JELLYFIN_SEARCH_DONE, JELLYFIN_SEARCH_FAILED };
+void        Jellyfin_Search(const std::string& term);
+std::string Jellyfin_SearchTerm();
+int         Jellyfin_SearchState();

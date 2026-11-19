@@ -444,6 +444,7 @@ extern bool g_xcloudClosed;
 void RenderXcloudOverlay();
 void MediaPlayer_Update();
 void MediaUI_NoteActivity();
+void MediaUI_NoteKey();
 bool MediaUI_OsdVisible();
 
 static void PreSwapOverlays() {
@@ -1512,7 +1513,7 @@ int main(int argc, char* argv[]) {
                             break;
                         }
                     }
-                    if (g_mediaFullscreen) MediaUI_NoteActivity();
+                    if (g_mediaFullscreen) MediaUI_NoteKey();
                     // Esc / Q / Backspace exits fullscreen video, before any
                     // other key handling (so it works even when keyboard is
                     // captured by an XAP keyboard widget).

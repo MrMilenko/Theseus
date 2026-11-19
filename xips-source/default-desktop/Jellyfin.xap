@@ -17,6 +17,7 @@ var nJfCursorBackup2;   // saved cursor when drilling season -> episodes
 var sJfPoster;          // poster url on the CD now; behavior swaps it when art lands
 var bJfLoaded;          // the chrome scene is in, so the behavior can touch it
 var sJfStatus;          // what the empty list says (loading, can't reach); "" with rows
+var nJfStamp;           // watch state we drew; playback reports and marks bump it
 
 
 function initialize()
@@ -32,6 +33,7 @@ function initialize()
 	nJfCursorBackup2  = 0;
 	sJfPoster         = "";
 	sJfStatus         = "";
+	nJfStamp          = -1;
 }
 
 
@@ -120,6 +122,11 @@ function UpdateJellyfinList()
 {
 	var c = theJellyfinMenu.children[0].children[0];
 	var status = theJellyfinLibrary.GetStatus(nJfView);
+	nJfStamp = theJellyfinLibrary.GetWatchStamp();
+
+	// A shelf can shrink under the cursor once watch state reloads.
+	if ((nJfCursor >= nJfCount) & (nJfCount > 0))
+		nJfCursor = nJfCount - 1;
 
 	if (nJfCursor < nJfScroll)
 		nJfScroll = nJfCursor;
@@ -179,6 +186,12 @@ function UpdateJellyfinList()
 
 	UpdatePoster(c);
 
+	// X FROM START shows while the row has a resume point to skip.
+	if (theJellyfinLibrary.CanStartOver(nJfView, nJfCursor) == 1)
+		c.MU_x_cluster.visible = true;
+	else
+		c.MU_x_cluster.visible = false;
+
 	nJfLastCount = nJfCount;
 }
 
@@ -211,7 +224,20 @@ function GetPosterArt()
 }
 
 
+// The Search row asks for words first; the results open like a library.
 function EnterLibrary()
+{
+	if (theJellyfinLibrary.GetMeta(nJfCursor) == "search")
+	{
+		nJfCursorBackup0 = nJfCursor;
+		ShowKeyboard("SEARCH JELLYFIN", theJellyfinLibrary.GetSearchTerm(), "theJellyfinInline.children[0].JellyfinSearchDone()", "");
+		return;
+	}
+	OpenLibrary();
+}
+
+
+function OpenLibrary()
 {
 	theJellyfinLibrary.SetCurrent(nJfCursor);
 	nJfCursorBackup0 = nJfCursor;
@@ -220,6 +246,16 @@ function EnterLibrary()
 	nJfScroll        = 0;
 	BindActiveList();
 	UpdateJellyfinList();
+}
+
+
+function JellyfinSearchDone()
+{
+	if (strKeyboardEdit == "")
+		return;
+	theJellyfinLibrary.Search(strKeyboardEdit);
+	nJfCursor = nJfCursorBackup0;
+	OpenLibrary();
 }
 
 
@@ -491,7 +527,22 @@ DEF theJellyfinMenu Level
 			mc.MessageText.scrollDelay  = 2;
 		}
 		function OnWhiteDown(){ PlaySoundError(); }
-		function OnBlackDown(){ PlaySoundError(); }
+		// Black (RB): flip the row's watched mark.
+		function OnBlackDown()
+		{
+			if ((nJfView == 0) | (nJfCount <= 0) | (theJellyfinLibrary.IsSyncReady() == 0))
+			{
+				PlaySoundError();
+				return;
+			}
+			if (theJellyfinLibrary.ToggleWatched(nJfView, nJfCursor) < 0)
+			{
+				PlaySoundError();
+				return;
+			}
+			PlaySoundA();
+			UpdateJellyfinList();
+		}
 	}
 
 	function OnArrival()
@@ -512,7 +563,7 @@ DEF theJellyfinMenu Level
 		BindActiveList();
 		if (bJfLoaded == 1)
 		{
-			if ((nJfCount != nJfLastCount) | (GetPosterArt() != sJfPoster) | (theJellyfinLibrary.GetStatus(nJfView) != sJfStatus))
+			if ((nJfCount != nJfLastCount) | (GetPosterArt() != sJfPoster) | (theJellyfinLibrary.GetStatus(nJfView) != sJfStatus) | (theJellyfinLibrary.GetWatchStamp() != nJfStamp))
 				UpdateJellyfinList();
 		}
 		else if (nJfCount != nJfLastCount)

@@ -20,6 +20,8 @@ unsigned Joy_PadButtons();
 // The scene's next poll only records what's held, so a button or key still
 // down when fullscreen video closes doesn't land in the menu underneath.
 void Joy_Rebaseline();
+// What the scene heard last: 1 the pad, 0 the keyboard.
+int Joy_LastDevice();
 
 extern bool g_guideRequested;   // set by the Guide button, LT+B or F7
 extern bool g_welcomeDone;      // desktop.ini WelcomeDone

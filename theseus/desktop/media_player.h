@@ -104,3 +104,11 @@ int         MediaPlayer_GetSubtitleTrack();  // 0 = off, >0 = track index
 // Master volume (0.0 - 1.0). Applies immediately if a session is live and
 // is re-applied on every Open so subsequent playbacks inherit the value.
 void MediaPlayer_SetMasterVolume(float vol);
+
+// Playback reports for a media server (media_ui.cpp). Whoever opens a stream
+// hands over a callback: it hears START once the stream knows its length,
+// PROGRESS every 10 seconds and on pause or resume, and STOP with the last
+// position when the video closes. Any other playback clears it.
+enum { MEDIA_REPORT_START, MEDIA_REPORT_PROGRESS, MEDIA_REPORT_STOP };
+typedef void (*MediaReportFn)(int event, double position, double duration, bool paused);
+void MediaUI_SetReporter(MediaReportFn fn);
