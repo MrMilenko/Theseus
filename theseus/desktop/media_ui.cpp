@@ -10,6 +10,7 @@
 #include "audio_sdl.h"
 #include "imgui.h"
 #include "playlist.h"
+#include "guide.h"
 #include "d3d8_sdl.h"  // for g_bgfxProgBlit / g_bgfxSamplerBlit on bgfx path
 
 #include <string>
@@ -106,6 +107,29 @@ void MediaUI_PlaylistPrev() {
 
 bool MediaUI_PlaylistActive() { return s_queueIdx >= 0 && !s_queue.empty(); }
 
+// The scene is frozen while video is up, so the pad is read here: B or Back
+// stops, A or Start pauses, left and right seek, LB and RB step a playlist.
+void MediaUI_PadFrame()
+{
+    static unsigned s_prev = ~0u;
+    if (!g_mediaFullscreen) { s_prev = ~0u; return; }
+    // Show the title for a moment as playback starts.
+    if (s_prev == ~0u) MediaUI_NoteActivity();
+    unsigned pad = Joy_PadButtons();
+    // The A that started playback is usually still held on the first frame.
+    unsigned pressed = (s_prev == ~0u) ? 0 : (pad & ~s_prev);
+    s_prev = pad;
+    if (!pressed) return;
+    MediaUI_NoteActivity();
+    extern void MediaUI_StopFullscreen();
+    if (pressed & (GUIDE_B | GUIDE_BACK)) { MediaUI_StopFullscreen(); return; }
+    if (pressed & (GUIDE_A | GUIDE_START)) MediaPlayer_TogglePause();
+    if (pressed & GUIDE_LEFT)  MediaPlayer_SeekRelative(-10.0);
+    if (pressed & GUIDE_RIGHT) MediaPlayer_SeekRelative(10.0);
+    if (pressed & GUIDE_LB) MediaUI_PlaylistPrev();
+    if (pressed & GUIDE_RB) MediaUI_PlaylistNext();
+}
+
 // 0.0 = hidden, 1.0 = fully visible. Smoothly fades.
 static float OsdAlpha()
 {
@@ -153,12 +177,6 @@ void MediaUI_DrawFullscreenVideo()
     // through outside the aspect-fit rect.
     (void)boundFBO;
 
-    int vw = 0, vh = 0;
-    unsigned int texIdx = MediaPlayer_GetVideoTexture(&vw, &vh);
-    if (!bgfx::isValid(g_bgfxProgBlit) || texIdx == 0 || vw <= 0 || vh <= 0) return;
-    bgfx::TextureHandle vidTex; vidTex.idx = (uint16_t)texIdx;
-    if (!bgfx::isValid(vidTex)) return;
-
     int dw = (ww > 0) ? ww : 1;
     int dh = (wh > 0) ? wh : 1;
 
@@ -169,6 +187,14 @@ void MediaUI_DrawFullscreenVideo()
     if (pw <= 0 || ph <= 0) { pw = dw; ph = dh; }
     bgfx::setViewRect(0, 0, 0, (uint16_t)pw, (uint16_t)ph);
     bgfx::setViewClear(0, BGFX_CLEAR_COLOR | BGFX_CLEAR_DEPTH, 0x000000ff, 1.0f, 0);
+    // Black until the first frame decodes, not the menu frozen underneath.
+    bgfx::touch(0);
+
+    int vw = 0, vh = 0;
+    unsigned int texIdx = MediaPlayer_GetVideoTexture(&vw, &vh);
+    if (!bgfx::isValid(g_bgfxProgBlit) || texIdx == 0 || vw <= 0 || vh <= 0) return;
+    bgfx::TextureHandle vidTex; vidTex.idx = (uint16_t)texIdx;
+    if (!bgfx::isValid(vidTex)) return;
 
     float qw, qh;
     Bgfx_AspectFitNDC(vw, vh, dw, dh, qw, qh);
@@ -434,4 +460,6 @@ void MediaUI_StopFullscreen()
         SDL_ShowCursor(SDL_ENABLE);
         s_cursorVisible = true;
     }
+    // Whatever closed the video (Esc, B) is still held as the menu wakes up.
+    Joy_Rebaseline();
 }

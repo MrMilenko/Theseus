@@ -1,4 +1,4 @@
-// log_redact.cpp: home folder, IP address and sign-in token masking for copied logs.
+// log_redact.cpp: sign-in token, home folder and IP address masking for logs.
 
 #include "log_redact.h"
 #include <string.h>
@@ -51,6 +51,59 @@ static size_t MatchV6(const char* p, bool* keep)
     return (size_t)(s - p);
 }
 
+static bool EndsWithKey(const std::string& s, size_t end, const char* key)
+{
+    size_t n = strlen(key);
+    if (end < n) return false;
+    for (size_t i = 0; i < n; i++)
+        if (tolower((unsigned char)s[end - n + i]) != key[i]) return false;
+    return true;
+}
+
+// A key that names a secret: anything ending in token, plus api_key / apikey.
+static bool SecretKeyEndsAt(const std::string& s, size_t end)
+{
+    return EndsWithKey(s, end, "token") || EndsWithKey(s, end, "api_key") ||
+           EndsWithKey(s, end, "apikey") || EndsWithKey(s, end, "secret");
+}
+
+std::string Log_RedactSecrets(const std::string& in)
+{
+    std::string out;
+    out.reserve(in.size());
+    size_t i = 0;
+    while (i < in.size()) {
+        char c = in[i];
+        size_t v = std::string::npos;
+        // key=value (query strings, Token="..." in auth headers)
+        if (c == '=' && SecretKeyEndsAt(in, i)) v = i + 1;
+        // "key": "value" (JSON)
+        if (c == '"' && i > 0 && SecretKeyEndsAt(in, i)) {
+            size_t j = i + 1;
+            while (j < in.size() && in[j] == ' ') j++;
+            if (j < in.size() && in[j] == ':') {
+                j++;
+                while (j < in.size() && in[j] == ' ') j++;
+                if (j < in.size() && in[j] == '"') v = j;
+            }
+        }
+        if (v == std::string::npos) { out += c; i++; continue; }
+        out.append(in, i, v - i);
+        bool quoted = v < in.size() && in[v] == '"';
+        size_t e = v + (quoted ? 1 : 0);
+        while (e < in.size()) {
+            char d = in[e];
+            if (quoted ? d == '"' : (d == '&' || d == '"' || d == '\'' || d == ',' || isspace((unsigned char)d))) break;
+            e++;
+        }
+        size_t start = v + (quoted ? 1 : 0);
+        if (quoted) out += '"';
+        if (e > start) out += "[redacted]";
+        i = e;
+    }
+    return out;
+}
+
 // Sign-in tokens in URLs and auth headers: api_key=..., X-Plex-Token=...,
 // Token="...". The name stays so a log still says what was sent.
 static const char* const kTokenKeys[] = {
@@ -97,7 +150,7 @@ static std::string MaskTokens(const std::string& in)
 
 std::string Log_Redact(const std::string& raw, const char* home)
 {
-    std::string in = MaskTokens(raw);
+    std::string in = MaskTokens(Log_RedactSecrets(raw));
     std::string text;
     size_t hl = home ? strlen(home) : 0;
     while (hl > 1 && (home[hl - 1] == '/' || home[hl - 1] == '\\')) hl--;

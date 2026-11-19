@@ -3382,6 +3382,95 @@ END_NODE_FUN()
 
 #include "plex_client.h"
 
+// "S2E05 · Title" for an episode row. No number, just the title.
+static std::string EpisodeCode(const std::string& season, const std::string& episode)
+{
+	if (episode.empty()) return "";
+	char buf[32];
+	snprintf(buf, sizeof(buf), "S%sE%02d", season.empty() ? "?" : season.c_str(), atoi(episode.c_str()));
+	return buf;
+}
+
+// "1h 13m", "47m".
+static std::string RunLength(long long seconds)
+{
+	if (seconds <= 0) return "";
+	char buf[32];
+	long long m = (seconds + 30) / 60;
+	if (m >= 60) snprintf(buf, sizeof(buf), "%lldh %02lldm", m / 60, m % 60);
+	else         snprintf(buf, sizeof(buf), "%lldm", m < 1 ? 1 : m);
+	return buf;
+}
+
+// "47:41", "1:02:03".
+static std::string ClockTime(long long seconds)
+{
+	char buf[32];
+	if (seconds >= 3600) snprintf(buf, sizeof(buf), "%lld:%02lld:%02lld", seconds / 3600, (seconds / 60) % 60, seconds % 60);
+	else                 snprintf(buf, sizeof(buf), "%lld:%02lld", seconds / 60, seconds % 60);
+	return buf;
+}
+
+static void JoinDot(std::string& out, const std::string& part)
+{
+	if (part.empty()) return;
+	if (!out.empty()) out += "  \xC2\xB7  ";
+	out += part;
+}
+
+// "1931 · 1h 13m · NR · 7.2/10" for the info card.
+static std::string FactsLine(const std::string& year, long long runSeconds,
+                             const std::string& rating, float stars)
+{
+	std::string out;
+	JoinDot(out, year);
+	JoinDot(out, RunLength(runSeconds));
+	JoinDot(out, rating);
+	if (stars > 0.0f) {
+		char buf[16]; snprintf(buf, sizeof(buf), "%.1f/10", stars);
+		JoinDot(out, buf);
+	}
+	return out;
+}
+
+// "Watched", "Resume from 47:41 of 1:14:26", or nothing.
+static std::string WatchLine(bool played, long long posSeconds, long long runSeconds)
+{
+	if (posSeconds > 0) {
+		std::string s = "Resume from " + ClockTime(posSeconds);
+		if (runSeconds > 0) s += " of " + ClockTime(runSeconds);
+		return s;
+	}
+	return played ? "Watched" : "";
+}
+
+// Row prefix: a check once watched, a chevron while part watched.
+static std::string WatchMark(bool played, long long posSeconds, long long runSeconds)
+{
+	(void)runSeconds;
+	if (posSeconds > 0) return "\xC2\xBB ";
+	return played ? "\xE2\x88\x9A " : "";
+}
+
+static void AppendLine(std::string& body, const std::string& line)
+{
+	if (line.empty()) return;
+	if (!body.empty()) body += "\n";
+	body += line;
+}
+
+static std::string ClipInfo(std::string body)
+{
+	const size_t kMax = 1200;
+	if (body.size() > kMax) {
+		size_t n = kMax - 1;
+		while (n > 0 && ((unsigned char)body[n] & 0xC0) == 0x80) n--;
+		body.resize(n);
+		body += "\xE2\x80\xA6";
+	}
+	return body;
+}
+
 class CPlexLibrary : public CNode
 {
 public:
@@ -3396,6 +3485,15 @@ public:
 	int  m_currentShow;
 	int  m_currentSeason;
 	std::string m_serverUri;
+	// Artists, albums and collections opened inside the library, innermost
+	// last, with the row to put the cursor back on when B leaves each one.
+	struct Folder { std::string key, name; int cursor; };
+	std::vector<Folder> m_folders;
+
+	static bool IsFolderType(const std::string& t)
+	{
+		return t == "artist" || t == "album" || t == "collection" || t == "playlist";
+	}
 
 	void EnsureLibrariesPending()
 	{
@@ -3418,6 +3516,16 @@ public:
 		return new CStrObject(_T(libs[i].title.c_str()));
 	}
 
+	// Library row: "Movies  \xC2\xB7  12".
+	CStrObject* GetLibraryRow(int i)
+	{
+		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		char buf[32];
+		snprintf(buf, sizeof(buf), "  \xC2\xB7  %d", (int)Plex_Cache_GetItems(libs[i].sectionKey).size());
+		return new CStrObject(_T((libs[i].title + buf).c_str()));
+	}
+
 	CStrObject* GetMeta(int i)
 	{
 		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
@@ -3428,6 +3536,7 @@ public:
 
 	void SetCurrent(int i)
 	{
+		m_folders.clear();
 		if (i == m_currentLib) return;
 		m_currentLib    = i;
 		m_currentShow   = -1;
@@ -3448,13 +3557,51 @@ public:
 	{
 		std::vector<PlexLibrary> libs = Plex_Cache_GetLibraries();
 		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		if (!m_folders.empty()) {
+			std::vector<PlexItem> kids;
+			Plex_Cache_GetChildren(m_folders.back().key, kids);
+			return kids;
+		}
 		return Plex_Cache_GetItems(libs[m_currentLib].sectionKey);
+	}
+
+	void DrillIntoFolder(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size() || !IsFolderType(items[i].type)) return;
+		m_folders.push_back({ items[i].ratingKey, items[i].title, i });
+		Plex_RetryFetch(items[i].ratingKey);
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+		std::vector<PlexItem> dummy;
+		(void)Plex_Cache_GetChildren(items[i].ratingKey, dummy);
+	}
+
+	int GetFolderDepth() { return (int)m_folders.size(); }
+
+	// Steps out of the innermost folder; the row it was opened from.
+	int LeaveFolder()
+	{
+		if (m_folders.empty()) return 0;
+		int cursor = m_folders.back().cursor;
+		m_folders.pop_back();
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+		return cursor;
+	}
+
+	// The library's name, or the folder's once one is open.
+	CStrObject* GetListTitle()
+	{
+		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
+		return GetName(m_currentLib);
 	}
 
 	CStrObject* GetItemType(int i)
 	{
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		if (IsFolderType(items[i].type)) return new CStrObject(_T("folder"));
 		return new CStrObject(_T(items[i].type.c_str()));
 	}
 
@@ -3470,7 +3617,7 @@ public:
 			const PlexItem& it = items[i];
 			s = it.type;
 			for (auto& c : s) c = (char)toupper((unsigned char)c);
-			if (!it.year.empty()) { s += "  \xE2\x80\xA2  "; s += it.year; }
+			if (!it.year.empty()) { s += "  \xC2\xB7  "; s += it.year; }
 			return new CStrObject(_T(s.c_str()));
 		}
 		if (view == 2) {
@@ -3496,7 +3643,8 @@ public:
 		return new CStrObject;
 	}
 
-	// Y-button modal text: title + full plot. Seasons inherit the show plot.
+	// Y: the info card. Title, the facts line, genres, where you left off,
+	// then the plot. Seasons show the show's plot.
 	CStrObject* GetInfoText(int view, int i)
 	{
 		if (i < 0) return new CStrObject;
@@ -3507,18 +3655,23 @@ public:
 			if (i >= (int)items.size()) return new CStrObject;
 			const PlexItem& it = items[i];
 			body = it.title;
-			if (!it.year.empty()) { body += "  ("; body += it.year; body += ")"; }
+			AppendLine(body, FactsLine(it.year, it.durationMs / 1000, it.rating, it.stars));
+			AppendLine(body, it.genres);
+			if (it.leafCount > 0) AppendLine(body, LeftLine(it));
+			else AppendLine(body, WatchLine(it.Played(), it.offsetMs / 1000, it.durationMs / 1000));
 			if (!it.summary.empty()) { body += "\n\n"; body += it.summary; }
 		}
 		else if (view == 2) {
-			// Seasons have no summary. Surface the show's plot.
 			std::vector<PlexItem> items = CurrentItems();
 			if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return new CStrObject;
 			const PlexItem& sh = items[m_currentShow];
 			std::vector<PlexSeason> seasons;
 			Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
 			body = sh.title;
-			if (i < (int)seasons.size()) { body += "  -  "; body += seasons[i].title; }
+			if (i < (int)seasons.size()) { body += "  \xC2\xB7  "; body += seasons[i].title; }
+			AppendLine(body, FactsLine(sh.year, 0, sh.rating, sh.stars));
+			AppendLine(body, sh.genres);
+			if (i < (int)seasons.size()) AppendLine(body, LeftLine(seasons[i]));
 			if (!sh.summary.empty()) { body += "\n\n"; body += sh.summary; }
 		}
 		else if (view == 3) {
@@ -3526,17 +3679,15 @@ public:
 			Plex_Cache_GetEpisodes(CurrentSeasonKey(), eps);
 			if (i >= (int)eps.size()) return new CStrObject;
 			const PlexEpisode& e = eps[i];
-			body = "";
-			if (!e.index.empty()) { body += e.index; body += ".  "; }
-			body += e.title;
+			body = EpisodeLabel(e.index, e.title);
+			std::vector<PlexItem> items = CurrentItems();
+			if (m_currentShow >= 0 && m_currentShow < (int)items.size())
+				AppendLine(body, items[m_currentShow].title);
+			AppendLine(body, FactsLine("", e.durationMs / 1000, e.rating, e.stars));
+			AppendLine(body, WatchLine(e.Played(), e.offsetMs / 1000, e.durationMs / 1000));
 			if (!e.summary.empty()) { body += "\n\n"; body += e.summary; }
 		}
-		const size_t kMax = 1200;
-		if (body.size() > kMax) {
-			body.resize(kMax - 1);
-			body += "\xE2\x80\xA6";
-		}
-		return new CStrObject(_T(body.c_str()));
+		return new CStrObject(_T(ClipInfo(body).c_str()));
 	}
 
 	// Truncated plot blurb for inline display. Items + episodes only.
@@ -3566,13 +3717,40 @@ public:
 
 	int GetItemCount() { return (int)CurrentItems().size(); }
 
+	// "Dracula (1931)", or "Show · S1E02 · Title" for an episode out on the
+	// On Deck shelf.
+	static std::string ItemLabel(const PlexItem& it)
+	{
+		if (it.type == "episode" && !it.showTitle.empty()) {
+			std::string s = it.showTitle;
+			std::string code = EpisodeCode(it.seasonIndex, it.episodeIndex);
+			if (!code.empty()) { s += " \xC2\xB7 "; s += code; }
+			return s + " \xC2\xB7 " + it.title;
+		}
+		std::string s = it.title;
+		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		return s;
+	}
+
+	// Title and year without the watch mark, for the header.
+	CStrObject* GetItemName(int i)
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		return new CStrObject(_T(ItemLabel(items[i]).c_str()));
+	}
+
+	// X plays from the top instead of the resume point.
+	bool m_startOver = false;
+	void SetStartOver(int on) { m_startOver = on != 0; }
+
 	CStrObject* GetItemTitle(int i)
 	{
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
 		const PlexItem& it = items[i];
-		std::string s = it.title;
-		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		std::string s = ItemLabel(it);
+		if (!IsFolderType(it.type)) s = Mark(it) + s;
 		return new CStrObject(_T(s.c_str()));
 	}
 
@@ -3584,11 +3762,31 @@ public:
 		if (!it.thumbUrl.empty()) Plex_QueueArtDownload(it.ratingKey, it.thumbUrl);
 	}
 
+	// First poster in the list that's on disk, else the logo. A missing file
+	// would stick as a miss in the texture cache, so it's never asked for.
+	static CStrObject* ArtOrLogo(const std::string& a, const std::string& b = "",
+	                             const std::string& c = "")
+	{
+		const std::string* keys[3] = { &a, &b, &c };
+		for (const std::string* k : keys)
+			if (!k->empty() && Plex_ArtReady(*k))
+				return new CStrObject(_T(Plex_ArtCachePath(*k).c_str()));
+		return new CStrObject(_T("E:\\Plex\\plex_logo.png"));
+	}
+
+	void QueueShowArt()
+	{
+		std::vector<PlexItem> items = CurrentItems();
+		if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return;
+		const PlexItem& sh = items[m_currentShow];
+		if (!sh.thumbUrl.empty()) Plex_QueueArtDownload(sh.ratingKey, sh.thumbUrl);
+	}
+
 	CStrObject* GetItemArtPath(int i)
 	{
 		std::vector<PlexItem> items = CurrentItems();
-		if (i < 0 || i >= (int)items.size()) return new CStrObject;
-		return new CStrObject(_T(Plex_ArtCachePath(items[i].ratingKey).c_str()));
+		if (i < 0 || i >= (int)items.size()) return ArtOrLogo("");
+		return ArtOrLogo(items[i].ratingKey);
 	}
 
 	void QueueSeasonArt(int i)
@@ -3599,6 +3797,7 @@ public:
 		Plex_Cache_GetSeasons(showKey, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return;
 		const PlexSeason& s = seasons[i];
+		QueueShowArt();
 		if (!s.thumbUrl.empty()) Plex_QueueArtDownload(s.ratingKey, s.thumbUrl);
 	}
 
@@ -3606,10 +3805,10 @@ public:
 	{
 		std::vector<PlexSeason> seasons;
 		std::string showKey = CurrentShowKey();
-		if (showKey.empty()) return new CStrObject;
+		if (showKey.empty()) return ArtOrLogo("");
 		Plex_Cache_GetSeasons(showKey, seasons);
-		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
-		return new CStrObject(_T(Plex_ArtCachePath(seasons[i].ratingKey).c_str()));
+		if (i < 0 || i >= (int)seasons.size()) return ArtOrLogo("");
+		return ArtOrLogo(seasons[i].ratingKey, showKey);
 	}
 
 	void QueueEpisodeArt(int i)
@@ -3620,6 +3819,7 @@ public:
 		Plex_Cache_GetEpisodes(seasonKey, eps);
 		if (i < 0 || i >= (int)eps.size()) return;
 		const PlexEpisode& e = eps[i];
+		QueueShowArt();
 		if (!e.thumbUrl.empty()) Plex_QueueArtDownload(e.ratingKey, e.thumbUrl);
 	}
 
@@ -3627,15 +3827,16 @@ public:
 	{
 		std::vector<PlexEpisode> eps;
 		std::string seasonKey = CurrentSeasonKey();
-		if (seasonKey.empty()) return new CStrObject;
+		if (seasonKey.empty()) return ArtOrLogo("");
 		Plex_Cache_GetEpisodes(seasonKey, eps);
-		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		return new CStrObject(_T(Plex_ArtCachePath(eps[i].ratingKey).c_str()));
+		if (i < 0 || i >= (int)eps.size()) return ArtOrLogo("");
+		return ArtOrLogo(eps[i].ratingKey, seasonKey, CurrentShowKey());
 	}
 
 	void PlayRatingKey(const std::string& ratingKey,
 	                   const std::string& title,
-	                   const std::string& subtitle)
+	                   const std::string& subtitle,
+	                   int offsetMs = 0)
 	{
 		if (m_serverUri.empty()) m_serverUri = Plex_GetActiveServerUri();
 		if (m_serverUri.empty() || ratingKey.empty()) return;
@@ -3645,9 +3846,10 @@ public:
 				ratingKey.c_str());
 			return;
 		}
-		if (!MediaPlayer_Open(url.c_str())) {
+		double start = m_startOver ? 0.0 : offsetMs / 1000.0;
+		if (!MediaPlayer_OpenAt(url.c_str(), start)) {
 			fprintf(stderr, "[Plex] MediaPlayer_Open failed for %s\n",
-				url.c_str());
+				ratingKey.c_str());
 			return;
 		}
 		extern bool g_mediaFullscreen;
@@ -3669,9 +3871,14 @@ public:
 		std::vector<PlexItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return;
 		const PlexItem& it = items[i];
+		if (IsFolderType(it.type)) return;
 		std::string sub = "Plex";
-		if (!it.year.empty()) { sub += "  •  "; sub += it.year; }
-		PlayRatingKey(it.ratingKey, it.title, sub);
+		if (it.type == "episode" && !it.showTitle.empty()) {
+			sub = it.showTitle;
+			std::string code = EpisodeCode(it.seasonIndex, it.episodeIndex);
+			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
+		} else if (!it.year.empty()) { sub += "  \xC2\xB7  "; sub += it.year; }
+		PlayRatingKey(it.ratingKey, it.title, sub, it.offsetMs);
 	}
 
 	// ----- TV drill: show -> seasons -> episodes -----
@@ -3699,6 +3906,7 @@ public:
 		if (i < 0 || i >= (int)items.size()) return;
 		const PlexItem& it = items[i];
 		if (it.type != "show") return;
+		Plex_RetryFetch(it.ratingKey);
 		m_currentShow   = i;
 		m_currentSeason = -1;
 		std::vector<PlexSeason> dummy;
@@ -3721,7 +3929,7 @@ public:
 		if (showKey.empty()) return new CStrObject;
 		Plex_Cache_GetSeasons(showKey, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
-		return new CStrObject(_T(seasons[i].title.c_str()));
+		return new CStrObject(_T((Mark(seasons[i]) + seasons[i].title).c_str()));
 	}
 
 	void DrillIntoSeason(int i)
@@ -3732,8 +3940,29 @@ public:
 		Plex_Cache_GetSeasons(showKey, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return;
 		m_currentSeason = i;
+		Plex_RetryFetch(seasons[i].ratingKey);
 		std::vector<PlexEpisode> dummy;
 		(void)Plex_Cache_GetEpisodes(seasons[i].ratingKey, dummy);
+	}
+
+	static std::string Mark(const PlexDetails& d) { return WatchMark(d.Played(), d.offsetMs / 1000, d.durationMs / 1000); }
+
+	static std::string LeftLine(const PlexDetails& d)
+	{
+		if (d.Played() || d.Unplayed() <= 0) return d.Played() ? "Watched" : "";
+		char buf[48]; snprintf(buf, sizeof(buf), "%d episode%s left", d.Unplayed(), d.Unplayed() == 1 ? "" : "s");
+		return buf;
+	}
+
+	std::string EpisodeLabel(const std::string& index, const std::string& title)
+	{
+		std::vector<PlexSeason> seasons;
+		Plex_Cache_GetSeasons(CurrentShowKey(), seasons);
+		std::string season;
+		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size())
+			season = seasons[m_currentSeason].index;
+		std::string code = EpisodeCode(season, index);
+		return code.empty() ? title : code + " \xC2\xB7 " + title;
 	}
 
 	int GetEpisodeCount()
@@ -3752,11 +3981,7 @@ public:
 		if (seasonKey.empty()) return new CStrObject;
 		Plex_Cache_GetEpisodes(seasonKey, eps);
 		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		const PlexEpisode& e = eps[i];
-		std::string s;
-		if (!e.index.empty()) { s += e.index; s += ". "; }
-		s += e.title;
-		return new CStrObject(_T(s.c_str()));
+		return new CStrObject(_T((Mark(eps[i]) + EpisodeLabel(eps[i].index, eps[i].title)).c_str()));
 	}
 
 	void PlayEpisode(int i)
@@ -3775,14 +4000,61 @@ public:
 		if (m_currentShow >= 0 && m_currentShow < (int)items.size())
 			sub = items[m_currentShow].title;
 		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size()) {
-			sub += "  •  S";
-			sub += seasons[m_currentSeason].index;
-			if (!e.index.empty()) { sub += "E"; sub += e.index; }
+			std::string code = EpisodeCode(seasons[m_currentSeason].index, e.index);
+			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
 		}
-		PlayRatingKey(e.ratingKey, e.title, sub);
+		PlayRatingKey(e.ratingKey, e.title, sub, e.offsetMs);
 	}
 
 	int IsSignedIn() { return Plex_HasToken() ? 1 : 0; }
+
+	// What an empty list says instead: still loading, the server didn't
+	// answer, or there's nothing there. Empty while there are rows.
+	CStrObject* GetStatus(int view)
+	{
+		return new CStrObject(_T(StatusFor(view).c_str()));
+	}
+
+	static std::string Unreachable()
+	{
+		std::string name = Plex_GetActiveServerName();
+		return "Can't reach " + (name.empty() ? std::string("your Plex server") : name);
+	}
+
+	template <typename T>
+	static std::string Pending(bool cached, const std::vector<T>& rows, const std::string& key, const char* none)
+	{
+		if (cached) return rows.empty() ? none : "";
+		return Plex_FetchFailed(key) ? Unreachable() : "Loading...";
+	}
+
+	std::string StatusFor(int view)
+	{
+		if (!Plex_HasToken()) return "Sign in to Plex in Settings";
+		if (!Plex_SyncReady()) return "Loading...";
+		if (view == 0) {
+			if (Plex_GetActiveServerUri().empty()) return Unreachable();
+			return Plex_Cache_GetLibraries().empty() ? "No libraries" : "";
+		}
+		if (view == 1) {
+			if (m_folders.empty()) return CurrentItems().empty() ? "Nothing here" : "";
+			std::vector<PlexItem> kids;
+			bool cached = Plex_Cache_GetChildren(m_folders.back().key, kids);
+			return Pending(cached, kids, m_folders.back().key, "Nothing here");
+		}
+		if (view == 2) {
+			std::string showKey = CurrentShowKey();
+			if (showKey.empty()) return "";
+			std::vector<PlexSeason> seasons;
+			bool cached = Plex_Cache_GetSeasons(showKey, seasons);
+			return Pending(cached, seasons, showKey, "No seasons");
+		}
+		std::string seasonKey = CurrentSeasonKey();
+		if (seasonKey.empty()) return "Loading...";
+		std::vector<PlexEpisode> eps;
+		bool cached = Plex_Cache_GetEpisodes(seasonKey, eps);
+		return Pending(cached, eps, seasonKey, "No episodes");
+	}
 };
 
 IMPLEMENT_NODE("PlexLibrary", CPlexLibrary, CNode)
@@ -3822,6 +4094,14 @@ START_NODE_FUN(CPlexLibrary, CNode)
 	NODE_FUN_VI(QueueEpisodeArt)
 	NODE_FUN_SI(GetEpisodeArtPath)
 	NODE_FUN_IV(IsSignedIn)
+	NODE_FUN_VI(DrillIntoFolder)
+	NODE_FUN_IV(GetFolderDepth)
+	NODE_FUN_IV(LeaveFolder)
+	NODE_FUN_SV(GetListTitle)
+	NODE_FUN_SI(GetLibraryRow)
+	NODE_FUN_SI(GetStatus)
+	NODE_FUN_SI(GetItemName)
+	NODE_FUN_VI(SetStartOver)
 END_NODE_FUN()
 
 
@@ -3844,6 +4124,10 @@ public:
 	int  m_currentLib;
 	int  m_currentShow;
 	int  m_currentSeason;
+	// Folders opened inside the library, innermost last, with the row to
+	// put the cursor back on when B leaves each one.
+	struct Folder { std::string id, name; int cursor; };
+	std::vector<Folder> m_folders;
 
 	void EnsureLibrariesPending()
 	{
@@ -3864,6 +4148,16 @@ public:
 		return new CStrObject(_T(libs[i].name.c_str()));
 	}
 
+	// Library row: "Movies  \xC2\xB7  12".
+	CStrObject* GetLibraryRow(int i)
+	{
+		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
+		if (i < 0 || i >= (int)libs.size()) return new CStrObject;
+		char buf[32];
+		snprintf(buf, sizeof(buf), "  \xC2\xB7  %d", (int)Jellyfin_Cache_GetItems(libs[i].id).size());
+		return new CStrObject(_T((libs[i].name + buf).c_str()));
+	}
+
 	CStrObject* GetMeta(int i)
 	{
 		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
@@ -3873,6 +4167,7 @@ public:
 
 	void SetCurrent(int i)
 	{
+		m_folders.clear();
 		if (i == m_currentLib) return;
 		m_currentLib    = i;
 		m_currentShow   = -1;
@@ -3895,18 +4190,82 @@ public:
 	{
 		std::vector<JellyfinLibrary> libs = Jellyfin_Cache_GetLibraries();
 		if (m_currentLib < 0 || m_currentLib >= (int)libs.size()) return {};
+		if (!m_folders.empty()) {
+			std::vector<JellyfinItem> kids;
+			Jellyfin_Cache_GetChildren(m_folders.back().id, kids);
+			return kids;
+		}
 		return Jellyfin_Cache_GetItems(libs[m_currentLib].id);
 	}
 
+	void DrillIntoFolder(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size() || !items[i].isFolder) return;
+		m_folders.push_back({ items[i].id, items[i].name, i });
+		Jellyfin_RetryFetch(items[i].id);
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+		std::vector<JellyfinItem> dummy;
+		(void)Jellyfin_Cache_GetChildren(items[i].id, dummy);
+	}
+
+	int GetFolderDepth() { return (int)m_folders.size(); }
+
+	// Steps out of the innermost folder; the row it was opened from.
+	int LeaveFolder()
+	{
+		if (m_folders.empty()) return 0;
+		int cursor = m_folders.back().cursor;
+		m_folders.pop_back();
+		m_currentShow   = -1;
+		m_currentSeason = -1;
+		return cursor;
+	}
+
+	// The library's name, or the folder's once one is open.
+	CStrObject* GetListTitle()
+	{
+		if (!m_folders.empty()) return new CStrObject(_T(m_folders.back().name.c_str()));
+		return GetName(m_currentLib);
+	}
+
 	int GetItemCount() { return (int)CurrentItems().size(); }
+
+	// "Dracula (1931)", or "Pioneer One · S1E02 · The Man From Mars" for an
+	// episode out on the Continue Watching or Next Up shelf.
+	static std::string ItemLabel(const JellyfinItem& it)
+	{
+		if (it.type == "Episode" && !it.seriesName.empty()) {
+			std::string s = it.seriesName;
+			std::string code = EpisodeCode(it.seasonIndex, it.episodeIndex);
+			if (!code.empty()) { s += " \xC2\xB7 "; s += code; }
+			return s + " \xC2\xB7 " + it.name;
+		}
+		std::string s = it.name;
+		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		return s;
+	}
+
+	// Title and year without the watch mark, for the header.
+	CStrObject* GetItemName(int i)
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (i < 0 || i >= (int)items.size()) return new CStrObject;
+		return new CStrObject(_T(ItemLabel(items[i]).c_str()));
+	}
+
+	// X plays from the top instead of the resume point.
+	bool m_startOver = false;
+	void SetStartOver(int on) { m_startOver = on != 0; }
 
 	CStrObject* GetItemTitle(int i)
 	{
 		std::vector<JellyfinItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return new CStrObject;
 		const JellyfinItem& it = items[i];
-		std::string s = it.name;
-		if (!it.year.empty()) { s += " ("; s += it.year; s += ")"; }
+		std::string s = ItemLabel(it);
+		if (!it.isFolder || it.type == "Series") s = Mark(it) + s;
 		return new CStrObject(_T(s.c_str()));
 	}
 
@@ -3918,6 +4277,7 @@ public:
 		std::string t = items[i].type;
 		if (t == "Series") return new CStrObject(_T("show"));
 		if (t == "Movie")  return new CStrObject(_T("movie"));
+		if (items[i].isFolder) return new CStrObject(_T("folder"));
 		std::string lc = t;
 		for (auto& c : lc) c = (char)tolower((unsigned char)c);
 		return new CStrObject(_T(lc.c_str()));
@@ -3930,11 +4290,30 @@ public:
 		Jellyfin_QueueArtDownload(items[i].id, items[i].primaryTag);
 	}
 
+	// First poster in the list that's on disk, else the logo. A missing file
+	// would stick as a miss in the texture cache, so it's never asked for.
+	static CStrObject* ArtOrLogo(const std::string& a, const std::string& b = "",
+	                             const std::string& c = "")
+	{
+		const std::string* ids[3] = { &a, &b, &c };
+		for (const std::string* id : ids)
+			if (!id->empty() && Jellyfin_ArtReady(*id))
+				return new CStrObject(_T(Jellyfin_ArtCachePath(*id).c_str()));
+		return new CStrObject(_T("E:\\Jellyfin\\jellyfin_logo.png"));
+	}
+
+	void QueueShowArt()
+	{
+		std::vector<JellyfinItem> items = CurrentItems();
+		if (m_currentShow < 0 || m_currentShow >= (int)items.size()) return;
+		Jellyfin_QueueArtDownload(items[m_currentShow].id, items[m_currentShow].primaryTag);
+	}
+
 	CStrObject* GetItemArtPath(int i)
 	{
 		std::vector<JellyfinItem> items = CurrentItems();
-		if (i < 0 || i >= (int)items.size()) return new CStrObject;
-		return new CStrObject(_T(Jellyfin_ArtCachePath(items[i].id).c_str()));
+		if (i < 0 || i >= (int)items.size()) return ArtOrLogo("");
+		return ArtOrLogo(items[i].id);
 	}
 
 	std::string CurrentShowId()
@@ -3956,14 +4335,16 @@ public:
 
 	void PlayRatingKey(const std::string& itemId,
 	                   const std::string& title,
-	                   const std::string& subtitle)
+	                   const std::string& subtitle,
+	                   long long posTicks = 0)
 	{
-		std::string url = Jellyfin_StreamUrl(itemId);
+		std::string url = Jellyfin_StreamUrl(itemId, m_playAudio);
 		if (url.empty()) {
 			fprintf(stderr, "[Jellyfin] stream URL build failed for %s\n", itemId.c_str());
 			return;
 		}
-		if (!MediaPlayer_Open(url.c_str())) {
+		double start = m_startOver ? 0.0 : (double)Secs(posTicks);
+		if (!MediaPlayer_OpenAt(url.c_str(), start)) {
 			fprintf(stderr, "[Jellyfin] MediaPlayer_Open failed\n");
 			return;
 		}
@@ -3981,14 +4362,22 @@ public:
 		g_mediaFullscreenSubtitle[sizeof(g_mediaFullscreenSubtitle) - 1] = 0;
 	}
 
+	bool m_playAudio = false;
+
 	void PlayItem(int i)
 	{
 		std::vector<JellyfinItem> items = CurrentItems();
 		if (i < 0 || i >= (int)items.size()) return;
 		const JellyfinItem& it = items[i];
+		if (it.isFolder) return;
+		m_playAudio = (it.type == "Audio");
 		std::string sub = "Jellyfin";
-		if (!it.year.empty()) { sub += "  \xE2\x80\xA2  "; sub += it.year; }
-		PlayRatingKey(it.id, it.name, sub);
+		if (it.type == "Episode" && !it.seriesName.empty()) {
+			sub = it.seriesName;
+			std::string code = EpisodeCode(it.seasonIndex, it.episodeIndex);
+			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
+		} else if (!it.year.empty()) { sub += "  \xC2\xB7  "; sub += it.year; }
+		PlayRatingKey(it.id, it.name, sub, it.posTicks);
 	}
 
 	void DrillIntoShow(int i)
@@ -3997,6 +4386,7 @@ public:
 		if (i < 0 || i >= (int)items.size()) return;
 		const JellyfinItem& it = items[i];
 		if (it.type != "Series") return;
+		Jellyfin_RetryFetch(it.id);
 		m_currentShow   = i;
 		m_currentSeason = -1;
 		std::vector<JellyfinSeason> dummy;
@@ -4019,7 +4409,7 @@ public:
 		if (showId.empty()) return new CStrObject;
 		Jellyfin_Cache_GetSeasons(showId, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
-		return new CStrObject(_T(seasons[i].name.c_str()));
+		return new CStrObject(_T((Mark(seasons[i]) + seasons[i].name).c_str()));
 	}
 
 	void DrillIntoSeason(int i)
@@ -4030,6 +4420,7 @@ public:
 		Jellyfin_Cache_GetSeasons(showId, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return;
 		m_currentSeason = i;
+		Jellyfin_RetryFetch(seasons[i].id);
 		std::vector<JellyfinEpisode> dummy;
 		(void)Jellyfin_Cache_GetEpisodes(seasons[i].id, dummy);
 	}
@@ -4041,17 +4432,34 @@ public:
 		if (showId.empty()) return;
 		Jellyfin_Cache_GetSeasons(showId, seasons);
 		if (i < 0 || i >= (int)seasons.size()) return;
-		Jellyfin_QueueArtDownload(seasons[i].id, seasons[i].primaryTag);
+		QueueShowArt();
+		if (!seasons[i].primaryTag.empty())
+			Jellyfin_QueueArtDownload(seasons[i].id, seasons[i].primaryTag);
 	}
 
 	CStrObject* GetSeasonArtPath(int i)
 	{
 		std::vector<JellyfinSeason> seasons;
 		std::string showId = CurrentShowId();
-		if (showId.empty()) return new CStrObject;
+		if (showId.empty()) return ArtOrLogo("");
 		Jellyfin_Cache_GetSeasons(showId, seasons);
-		if (i < 0 || i >= (int)seasons.size()) return new CStrObject;
-		return new CStrObject(_T(Jellyfin_ArtCachePath(seasons[i].id).c_str()));
+		if (i < 0 || i >= (int)seasons.size()) return ArtOrLogo("");
+		return ArtOrLogo(seasons[i].id, showId);
+	}
+
+	static long long Secs(long long ticks) { return ticks / 10000000; }
+	static std::string Mark(const JellyfinDetails& d) { return WatchMark(d.played, Secs(d.posTicks), Secs(d.runTicks)); }
+
+	std::string EpisodeLabel(const std::string& index, const std::string& title)
+	{
+		std::vector<JellyfinSeason> seasons;
+		std::string showId = CurrentShowId();
+		if (!showId.empty()) Jellyfin_Cache_GetSeasons(showId, seasons);
+		std::string season;
+		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size())
+			season = seasons[m_currentSeason].index;
+		std::string code = EpisodeCode(season, index);
+		return code.empty() ? title : code + " \xC2\xB7 " + title;
 	}
 
 	int GetEpisodeCount()
@@ -4070,11 +4478,7 @@ public:
 		if (seasonId.empty()) return new CStrObject;
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
 		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		const JellyfinEpisode& e = eps[i];
-		std::string s;
-		if (!e.index.empty()) { s += e.index; s += ". "; }
-		s += e.name;
-		return new CStrObject(_T(s.c_str()));
+		return new CStrObject(_T((Mark(eps[i]) + EpisodeLabel(eps[i].index, eps[i].name)).c_str()));
 	}
 
 	void PlayEpisode(int i)
@@ -4085,6 +4489,7 @@ public:
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
 		if (i < 0 || i >= (int)eps.size()) return;
 		const JellyfinEpisode& e = eps[i];
+		m_playAudio = false;
 		std::vector<JellyfinItem>   items = CurrentItems();
 		std::vector<JellyfinSeason> seasons;
 		std::string showId = CurrentShowId();
@@ -4093,11 +4498,10 @@ public:
 		if (m_currentShow >= 0 && m_currentShow < (int)items.size())
 			sub = items[m_currentShow].name;
 		if (m_currentSeason >= 0 && m_currentSeason < (int)seasons.size()) {
-			sub += "  \xE2\x80\xA2  S";
-			sub += seasons[m_currentSeason].index;
-			if (!e.index.empty()) { sub += "E"; sub += e.index; }
+			std::string code = EpisodeCode(seasons[m_currentSeason].index, e.index);
+			if (!code.empty()) { sub += "  \xC2\xB7  "; sub += code; }
 		}
-		PlayRatingKey(e.id, e.name, sub);
+		PlayRatingKey(e.id, e.name, sub, e.posTicks);
 	}
 
 	void QueueEpisodeArt(int i)
@@ -4107,17 +4511,19 @@ public:
 		if (seasonId.empty()) return;
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
 		if (i < 0 || i >= (int)eps.size()) return;
-		Jellyfin_QueueArtDownload(eps[i].id, eps[i].primaryTag);
+		QueueShowArt();
+		if (!eps[i].primaryTag.empty())
+			Jellyfin_QueueArtDownload(eps[i].id, eps[i].primaryTag);
 	}
 
 	CStrObject* GetEpisodeArtPath(int i)
 	{
 		std::vector<JellyfinEpisode> eps;
 		std::string seasonId = CurrentSeasonId();
-		if (seasonId.empty()) return new CStrObject;
+		if (seasonId.empty()) return ArtOrLogo("");
 		Jellyfin_Cache_GetEpisodes(seasonId, eps);
-		if (i < 0 || i >= (int)eps.size()) return new CStrObject;
-		return new CStrObject(_T(Jellyfin_ArtCachePath(eps[i].id).c_str()));
+		if (i < 0 || i >= (int)eps.size()) return ArtOrLogo("");
+		return ArtOrLogo(eps[i].id, seasonId, CurrentShowId());
 	}
 
 	CStrObject* GetSubtitle(int view, int i)
@@ -4131,7 +4537,7 @@ public:
 			std::string t = it.type;
 			for (auto& c : t) c = (char)toupper((unsigned char)c);
 			s = t;
-			if (!it.year.empty()) { s += "  \xE2\x80\xA2  "; s += it.year; }
+			if (!it.year.empty()) { s += "  \xC2\xB7  "; s += it.year; }
 			return new CStrObject(_T(s.c_str()));
 		}
 		if (view == 2) {
@@ -4188,6 +4594,8 @@ public:
 		return new CStrObject(_T(s.c_str()));
 	}
 
+	// Y: the info card. Title, the facts line, genres, where you left off,
+	// then the plot. Seasons show the show's plot.
 	CStrObject* GetInfoText(int view, int i)
 	{
 		if (i < 0) return new CStrObject;
@@ -4197,7 +4605,14 @@ public:
 			if (i >= (int)items.size()) return new CStrObject;
 			const JellyfinItem& it = items[i];
 			body = it.name;
-			if (!it.year.empty()) { body += "  ("; body += it.year; body += ")"; }
+			AppendLine(body, FactsLine(it.year, Secs(it.runTicks), it.rating, it.stars));
+			AppendLine(body, it.genres);
+			if (it.type == "Series" && it.unplayed > 0 && !it.played) {
+				char buf[48]; snprintf(buf, sizeof(buf), "%d episode%s left", it.unplayed, it.unplayed == 1 ? "" : "s");
+				AppendLine(body, buf);
+			} else {
+				AppendLine(body, WatchLine(it.played, Secs(it.posTicks), Secs(it.runTicks)));
+			}
 			if (!it.overview.empty()) { body += "\n\n"; body += it.overview; }
 		}
 		else if (view == 2) {
@@ -4207,7 +4622,15 @@ public:
 			std::vector<JellyfinSeason> seasons;
 			Jellyfin_Cache_GetSeasons(sh.id, seasons);
 			body = sh.name;
-			if (i < (int)seasons.size()) { body += "  -  "; body += seasons[i].name; }
+			if (i < (int)seasons.size()) { body += "  \xC2\xB7  "; body += seasons[i].name; }
+			AppendLine(body, FactsLine(sh.year, 0, sh.rating, sh.stars));
+			AppendLine(body, sh.genres);
+			if (i < (int)seasons.size() && seasons[i].unplayed > 0 && !seasons[i].played) {
+				char buf[48]; snprintf(buf, sizeof(buf), "%d episode%s left", seasons[i].unplayed, seasons[i].unplayed == 1 ? "" : "s");
+				AppendLine(body, buf);
+			} else if (i < (int)seasons.size() && seasons[i].played) {
+				AppendLine(body, "Watched");
+			}
 			if (!sh.overview.empty()) { body += "\n\n"; body += sh.overview; }
 		}
 		else if (view == 3) {
@@ -4217,20 +4640,67 @@ public:
 			Jellyfin_Cache_GetEpisodes(seasonId, eps);
 			if (i >= (int)eps.size()) return new CStrObject;
 			const JellyfinEpisode& e = eps[i];
-			body = "";
-			if (!e.index.empty()) { body += e.index; body += ".  "; }
-			body += e.name;
+			body = EpisodeLabel(e.index, e.name);
+			std::vector<JellyfinItem> items = CurrentItems();
+			if (m_currentShow >= 0 && m_currentShow < (int)items.size())
+				AppendLine(body, items[m_currentShow].name);
+			AppendLine(body, FactsLine("", Secs(e.runTicks), e.rating, e.stars));
+			AppendLine(body, WatchLine(e.played, Secs(e.posTicks), Secs(e.runTicks)));
 			if (!e.overview.empty()) { body += "\n\n"; body += e.overview; }
 		}
-		const size_t kMax = 1200;
-		if (body.size() > kMax) {
-			body.resize(kMax - 1);
-			body += "\xE2\x80\xA6";
-		}
-		return new CStrObject(_T(body.c_str()));
+		return new CStrObject(_T(ClipInfo(body).c_str()));
 	}
 
 	int IsSignedIn() { return Jellyfin_HasToken() ? 1 : 0; }
+
+	// What an empty list says instead: still loading, the server didn't
+	// answer, or there's nothing there. Empty while there are rows.
+	CStrObject* GetStatus(int view)
+	{
+		return new CStrObject(_T(StatusFor(view).c_str()));
+	}
+
+	static std::string Unreachable()
+	{
+		std::string host = Jellyfin_GetServerUrl();
+		size_t scheme = host.find("://");
+		if (scheme != std::string::npos) host = host.substr(scheme + 3);
+		host = host.substr(0, host.find('/'));
+		return "Can't reach " + (host.empty() ? std::string("the server") : host);
+	}
+
+	template <typename T>
+	static std::string Pending(bool cached, const std::vector<T>& rows, const std::string& id, const char* none)
+	{
+		if (cached) return rows.empty() ? none : "";
+		return Jellyfin_FetchFailed(id) ? Unreachable() : "Loading...";
+	}
+
+	std::string StatusFor(int view)
+	{
+		if (!Jellyfin_HasToken()) return "Sign in to Jellyfin in Settings";
+		if (!Jellyfin_SyncReady()) return "Loading...";
+		if (view == 0) {
+			if (Jellyfin_SyncFailed()) return Unreachable();
+			return Jellyfin_Cache_GetLibraries().empty() ? "No libraries" : "";
+		}
+		if (view == 1) {
+			if (m_folders.empty()) return CurrentItems().empty() ? "Nothing here" : "";
+			std::vector<JellyfinItem> kids;
+			bool cached = Jellyfin_Cache_GetChildren(m_folders.back().id, kids);
+			return Pending(cached, kids, m_folders.back().id, "Nothing here");
+		}
+		if (view == 2) {
+			std::string showId = CurrentShowId();
+			std::vector<JellyfinSeason> seasons;
+			bool cached = Jellyfin_Cache_GetSeasons(showId, seasons);
+			return Pending(cached, seasons, showId, "No seasons");
+		}
+		std::string seasonId = CurrentSeasonId();
+		std::vector<JellyfinEpisode> eps;
+		bool cached = Jellyfin_Cache_GetEpisodes(seasonId, eps);
+		return Pending(cached, eps, seasonId, "No episodes");
+	}
 };
 
 IMPLEMENT_NODE("JellyfinLibrary", CJellyfinLibrary, CNode)
@@ -4270,6 +4740,14 @@ START_NODE_FUN(CJellyfinLibrary, CNode)
 	NODE_FUN_VI(QueueEpisodeArt)
 	NODE_FUN_SI(GetEpisodeArtPath)
 	NODE_FUN_IV(IsSignedIn)
+	NODE_FUN_VI(DrillIntoFolder)
+	NODE_FUN_IV(GetFolderDepth)
+	NODE_FUN_IV(LeaveFolder)
+	NODE_FUN_SV(GetListTitle)
+	NODE_FUN_SI(GetLibraryRow)
+	NODE_FUN_SI(GetStatus)
+	NODE_FUN_SI(GetItemName)
+	NODE_FUN_VI(SetStartOver)
 END_NODE_FUN()
 
 

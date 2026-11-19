@@ -6,6 +6,7 @@
 #include "http_util.h"
 #include "json_util.h"
 #include "client_util.h"
+#include "log_redact.h"
 
 #include <cstdio>
 #include <cstring>
@@ -73,6 +74,7 @@ static std::atomic<bool> s_episodesBusy{false};
 // Art download queue
 static std::mutex                                  s_artMtx;
 static std::map<std::string, std::atomic<bool>*>   s_artInFlight;
+static std::map<std::string, bool>                 s_artFailed;
 
 // ---------- Pre-stage cache ----------
 static std::atomic<bool>                              s_syncReady{false};
@@ -87,6 +89,11 @@ static std::vector<PlexLibrary>                       s_cacheLibs;
 static std::map<std::string, std::vector<PlexItem>>   s_cacheItems;        // sectionKey -> items
 static std::map<std::string, std::vector<PlexSeason>> s_cacheSeasons;      // showRk -> seasons
 static std::map<std::string, std::vector<PlexEpisode>> s_cacheEpisodes;    // seasonRk -> episodes
+static std::map<std::string, std::vector<PlexItem>>   s_cacheChildren;     // rk -> items inside it
+static std::map<std::string, bool>                    s_childrenBusy;
+// Seasons, episodes and children whose last fetch failed. Asking again
+// doesn't refetch until the scene drills in again.
+static std::map<std::string, bool>                    s_fetchFailed;
 
 
 // ============================================================================
@@ -131,6 +138,8 @@ void Plex_SignOut()
     s_cacheItems.clear();
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
+    s_cacheChildren.clear();
+    s_fetchFailed.clear();
     s_syncGen++;
     s_syncReady    = false;
     s_syncProgress = 0;
@@ -155,7 +164,7 @@ static void PinAuthWorker()
     int pinId = Json_GetInt(r.body, "id");
     std::string code = Json_GetString(r.body, "code");
     if (pinId == 0 || code.empty()) {
-        fprintf(stderr, "[Plex] pin create returned bad json: %s\n", r.body.c_str());
+        fprintf(stderr, "[Plex] pin create returned bad json: %s\n", Log_RedactSecrets(r.body).c_str());
         s_pinInFlight = false;
         return;
     }
@@ -324,6 +333,91 @@ static std::string BuildAssetUrl(const std::string& serverUri,
     return out;
 }
 
+static void ParseDetails(const std::string& obj, PlexDetails& d)
+{
+    d.durationMs      = Json_GetInt(obj, "duration");
+    d.offsetMs        = Json_GetInt(obj, "viewOffset");
+    d.viewCount       = Json_GetInt(obj, "viewCount");
+    d.leafCount       = Json_GetInt(obj, "leafCount");
+    d.viewedLeafCount = Json_GetInt(obj, "viewedLeafCount");
+    d.rating          = Json_GetString(obj, "contentRating");
+    d.stars           = Json_GetFloat(obj, "audienceRating");
+    if (d.stars <= 0.0f) d.stars = Json_GetFloat(obj, "rating");
+    size_t g = Json_FindArray(obj, "Genre");
+    if (g != std::string::npos) {
+        int n = 0;
+        for (const auto& tag : Json_SplitArray(obj, g)) {
+            if (n++ == 3) break;
+            if (!d.genres.empty()) d.genres += ", ";
+            d.genres += Json_GetString(tag, "tag");
+        }
+    }
+}
+
+static PlexItem ParseItem(const std::string& obj, const std::string& serverUri)
+{
+    PlexItem it;
+    ParseDetails(obj, it);
+    it.ratingKey = Json_GetString(obj, "ratingKey");
+    it.title     = Json_GetString(obj, "title");
+    int y        = Json_GetInt(obj, "year");
+    if (y > 0) {
+        char ybuf[8]; snprintf(ybuf, sizeof(ybuf), "%d", y);
+        it.year = ybuf;
+    }
+    it.summary   = Json_GetString(obj, "summary");
+    it.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
+    it.artUrl    = BuildAssetUrl(serverUri, Json_GetString(obj, "art"));
+    it.type      = Json_GetString(obj, "type");
+    if (it.type == "episode") {
+        it.showTitle = Json_GetString(obj, "grandparentTitle");
+        int sn = Json_GetInt(obj, "parentIndex"), en = Json_GetInt(obj, "index");
+        if (sn > 0) it.seasonIndex  = std::to_string(sn);
+        if (en > 0) it.episodeIndex = std::to_string(en);
+    }
+    return it;
+}
+
+static std::vector<PlexItem> ParseItems(const std::string& body, const std::string& serverUri)
+{
+    std::vector<PlexItem> items;
+    size_t mArr = Json_FindArray(body, "Metadata");
+    if (mArr == std::string::npos) return items;
+    for (const auto& obj : Json_SplitArray(body, mArr)) {
+        PlexItem it = ParseItem(obj, serverUri);
+        if (!it.ratingKey.empty()) items.push_back(it);
+    }
+    return items;
+}
+
+static void ChildrenWorker(unsigned gen, std::string serverUri, std::string rk)
+{
+    HttpResponse r = Http_Get(serverUri + "/library/metadata/" + rk + "/children",
+                              PlexHeaders(true, true));
+    std::vector<PlexItem> items;
+    if (r.ok()) items = ParseItems(r.body, serverUri);
+    else fprintf(stderr, "[Plex] children fetch failed for %s (status %ld)\n", rk.c_str(), r.status);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_childrenBusy.erase(rk);
+    if (gen != s_syncGen) return;
+    if (r.ok()) s_cacheChildren[rk] = std::move(items);
+    else s_fetchFailed[rk] = true;
+}
+
+bool Plex_Cache_GetChildren(const std::string& ratingKey, std::vector<PlexItem>& out)
+{
+    if (ratingKey.empty()) return false;
+    std::string uri = Plex_GetActiveServerUri();
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto it = s_cacheChildren.find(ratingKey);
+    if (it != s_cacheChildren.end()) { out = it->second; return true; }
+    if (!uri.empty() && !s_childrenBusy.count(ratingKey) && !s_fetchFailed.count(ratingKey)) {
+        s_childrenBusy[ratingKey] = true;
+        std::thread(ChildrenWorker, (unsigned)s_syncGen, uri, ratingKey).detach();
+    }
+    return false;
+}
+
 // ============================================================================
 // TV drill: /library/metadata/{rk}/children returns seasons or episodes.
 // ============================================================================
@@ -346,6 +440,7 @@ static void SeasonsWorker(std::string serverUri, std::string showRk)
                 char ibuf[8]; snprintf(ibuf, sizeof(ibuf), "%d", idx);
                 s.index     = ibuf;
                 s.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
+                ParseDetails(obj, s);
                 if (!s.ratingKey.empty()) seasons.push_back(s);
             }
         }
@@ -356,7 +451,8 @@ static void SeasonsWorker(std::string serverUri, std::string showRk)
     size_t n = seasons.size();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheSeasons[showRk] = std::move(seasons);
+        if (r.ok()) s_cacheSeasons[showRk] = std::move(seasons);
+        else s_fetchFailed[showRk] = true;
     }
     fprintf(stderr, "[Plex] %zu season(s) under show %s\n", n, showRk.c_str());
     s_seasonsBusy = false;
@@ -389,6 +485,7 @@ static void EpisodesWorker(std::string serverUri, std::string seasonRk)
                 }
                 e.summary   = Json_GetString(obj, "summary");
                 e.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
+                ParseDetails(obj, e);
                 if (!e.ratingKey.empty()) episodes.push_back(e);
             }
         }
@@ -399,7 +496,8 @@ static void EpisodesWorker(std::string serverUri, std::string seasonRk)
     size_t n = episodes.size();
     {
         std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheEpisodes[seasonRk] = std::move(episodes);
+        if (r.ok()) s_cacheEpisodes[seasonRk] = std::move(episodes);
+        else s_fetchFailed[seasonRk] = true;
     }
     fprintf(stderr, "[Plex] %zu episode(s) under season %s\n", n, seasonRk.c_str());
     s_episodesBusy = false;
@@ -557,27 +655,23 @@ static void SyncWorker()
         std::string url = serverUri + "/library/sections/" + lib.sectionKey + "/all";
         HttpResponse ir = Http_Get(url, PlexHeaders(true, true));
         std::vector<PlexItem> items;
-        if (ir.ok()) {
-            size_t mArr = Json_FindArray(ir.body, "Metadata");
-            if (mArr != std::string::npos) {
-                for (const auto& obj : Json_SplitArray(ir.body, mArr)) {
-                    PlexItem it;
-                    it.ratingKey = Json_GetString(obj, "ratingKey");
-                    it.title     = Json_GetString(obj, "title");
-                    int y        = Json_GetInt(obj, "year");
-                    if (y > 0) {
-                        char ybuf[8]; snprintf(ybuf, sizeof(ybuf), "%d", y);
-                        it.year = ybuf;
-                    }
-                    it.summary   = Json_GetString(obj, "summary");
-                    it.thumbUrl  = BuildAssetUrl(serverUri, Json_GetString(obj, "thumb"));
-                    it.artUrl    = BuildAssetUrl(serverUri, Json_GetString(obj, "art"));
-                    it.type      = Json_GetString(obj, "type");
-                    if (!it.ratingKey.empty()) items.push_back(it);
-                }
-            }
-        }
+        if (ir.ok()) items = ParseItems(ir.body, serverUri);
         itemsByKey[lib.sectionKey] = std::move(items);
+    }
+
+    // On Deck (what you're partway through and the next episodes) goes above
+    // the libraries when there's anything on it.
+    HttpResponse dr = Http_Get(serverUri + "/library/onDeck", PlexHeaders(true, true));
+    if (dr.ok()) {
+        std::vector<PlexItem> deck = ParseItems(dr.body, serverUri);
+        if (!deck.empty() && !libs.empty()) {
+            PlexLibrary shelf;
+            shelf.sectionKey = "uix-ondeck";
+            shelf.title      = "On Deck";
+            shelf.type       = "ondeck";
+            libs.insert(libs.begin(), shelf);
+            itemsByKey[shelf.sectionKey] = std::move(deck);
+        }
     }
 
     // Publish atomically. Readers see old snapshot or whole new one.
@@ -606,6 +700,18 @@ void Plex_StartSync()
 }
 
 bool        Plex_SyncReady()    { return s_syncReady; }
+
+bool Plex_FetchFailed(const std::string& rk)
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_fetchFailed.count(rk) != 0;
+}
+
+void Plex_RetryFetch(const std::string& rk)
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchFailed.erase(rk);
+}
 int         Plex_SyncProgress() { return s_syncProgress; }
 std::string Plex_SyncPhase()
 {
@@ -637,6 +743,7 @@ bool Plex_Cache_GetSeasons(const std::string& showRatingKey,
             out = it->second;
             return true;
         }
+        if (s_fetchFailed.count(showRatingKey)) return false;
     }
     // Not cached, fire a fetch; SeasonsWorker promotes the result.
     // Same server the library came from, not just the first one listed.
@@ -655,6 +762,7 @@ bool Plex_Cache_GetEpisodes(const std::string& seasonRatingKey,
             out = it->second;
             return true;
         }
+        if (s_fetchFailed.count(seasonRatingKey)) return false;
     }
     std::string uri = Plex_GetActiveServerUri();
     if (!uri.empty()) Plex_FetchEpisodes(uri, seasonRatingKey);
@@ -690,6 +798,8 @@ static void ArtWorker(std::string ratingKey, std::string url,
     if (stat(path.c_str(), &st) != 0 || st.st_size == 0) {
         if (!Http_GetToFile(url, path)) {
             fprintf(stderr, "[Plex] art fetch failed for %s\n", ratingKey.c_str());
+            std::lock_guard<std::mutex> lk(s_artMtx);
+            s_artFailed[ratingKey] = true;
         }
     }
     {
@@ -703,13 +813,27 @@ void Plex_QueueArtDownload(const std::string& ratingKey, const std::string& url)
 {
     // The key comes off the server and ends up in a file path.
     if (!Http_IsSafeFileId(ratingKey) || url.empty()) return;
+    // Already here: queueing would only mark it in flight again.
+    struct stat st;
+    if (stat(Plex_ArtCacheHostPath(ratingKey).c_str(), &st) == 0 && st.st_size > 0) return;
     // Workers erase from the map on other threads, so it is only touched under the lock.
     std::atomic<bool>* flag;
     {
         std::lock_guard<std::mutex> lk(s_artMtx);
-        if (s_artInFlight.count(ratingKey)) return;
+        if (s_artInFlight.count(ratingKey) || s_artFailed.count(ratingKey)) return;
         flag = new std::atomic<bool>(false);
         s_artInFlight[ratingKey] = flag;
     }
     std::thread(ArtWorker, ratingKey, url, flag).detach();
+}
+
+bool Plex_ArtReady(const std::string& ratingKey)
+{
+    if (!Http_IsSafeFileId(ratingKey)) return false;
+    {
+        std::lock_guard<std::mutex> lk(s_artMtx);
+        if (s_artInFlight.count(ratingKey)) return false;
+    }
+    struct stat st;
+    return stat(Plex_ArtCacheHostPath(ratingKey).c_str(), &st) == 0 && st.st_size > 0;
 }

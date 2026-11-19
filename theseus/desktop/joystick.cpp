@@ -673,6 +673,33 @@ unsigned Joy_GuideButtons(int* device)
     return bits | keys;
 }
 
+unsigned Joy_PadButtons()
+{
+    JoySnapshot pad;
+    memset(&pad, 0, sizeof(pad));
+    ReadPad(false, &pad);
+    DevPadScript(&pad);
+    unsigned bits = 0;
+    if (pad.analogDown[0]) bits |= GUIDE_A;
+    if (pad.analogDown[1]) bits |= GUIDE_B;
+    if (pad.analogDown[2]) bits |= GUIDE_X;
+    if (pad.analogDown[3]) bits |= GUIDE_Y;
+    if (pad.analogDown[5]) bits |= GUIDE_LB;
+    if (pad.analogDown[4]) bits |= GUIDE_RB;
+    if (pad.digitalDown[0] || pad.thumbLY > 0.5f)  bits |= GUIDE_UP;
+    if (pad.digitalDown[1] || pad.thumbLY < -0.5f) bits |= GUIDE_DOWN;
+    if (pad.digitalDown[2] || pad.thumbLX < -0.5f) bits |= GUIDE_LEFT;
+    if (pad.digitalDown[3] || pad.thumbLX > 0.5f)  bits |= GUIDE_RIGHT;
+    if (pad.digitalDown[4]) bits |= GUIDE_START;
+    if (pad.digitalDown[5]) bits |= GUIDE_BACK;
+    return bits;
+}
+
+void Joy_Rebaseline()
+{
+    if (CJoystick::c_pActivePad) CJoystick::c_pActivePad->m_bFirstPoll = true;
+}
+
 // ============================================================================
 // Media Keys (DVD player controls mapped to keyboard)
 // ============================================================================

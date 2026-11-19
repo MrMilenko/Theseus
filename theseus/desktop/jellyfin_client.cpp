@@ -5,6 +5,7 @@
 #include "http_util.h"
 #include "json_util.h"
 #include "client_util.h"
+#include "log_redact.h"
 
 #include <cstdio>
 #include <cstring>
@@ -67,6 +68,47 @@ static std::string ParsePrimaryTag(const std::string& obj)
 }
 
 
+static long long GetInt64(const std::string& obj, const char* key, size_t from = 0)
+{
+    size_t v = Json_FindKey(obj, key, from);
+    if (v == std::string::npos) return 0;
+    return strtoll(obj.c_str() + v, NULL, 10);
+}
+
+// "Genres": ["Horror", "Thriller"] as "Horror, Thriller".
+static std::string ParseGenres(const std::string& obj)
+{
+    size_t v = Json_FindKey(obj, "Genres");
+    if (v == std::string::npos || v >= obj.size() || obj[v] != '[') return "";
+    size_t end = obj.find(']', v);
+    if (end == std::string::npos) return "";
+    std::string out;
+    int n = 0;
+    for (size_t p = obj.find('"', v); p < end && n < 3; p = obj.find('"', p + 1), n++) {
+        size_t q = obj.find('"', p + 1);
+        if (q == std::string::npos || q > end) break;
+        if (!out.empty()) out += ", ";
+        out.append(obj, p + 1, q - p - 1);
+        p = q;
+    }
+    return out;
+}
+
+static void ParseDetails(const std::string& obj, JellyfinDetails& d)
+{
+    d.runTicks = GetInt64(obj, "RunTimeTicks");
+    d.rating   = Json_GetString(obj, "OfficialRating");
+    d.stars    = Json_GetFloat(obj, "CommunityRating");
+    d.genres   = ParseGenres(obj);
+    size_t ud = Json_FindKey(obj, "UserData");
+    if (ud != std::string::npos) {
+        d.posTicks = GetInt64(obj, "PlaybackPositionTicks", ud);
+        d.played   = Json_GetBool(obj, "Played", ud);
+        d.unplayed = Json_GetInt(obj, "UnplayedItemCount", ud);
+    }
+}
+
+
 // ============================================================================
 // State
 // ============================================================================
@@ -88,14 +130,20 @@ static std::thread                                       s_syncThread;
 // Bumped by sign out. A worker from an older generation finishes on its own
 // but publishes nothing, and owns s_syncRunning until it does.
 static std::atomic<unsigned>                             s_syncGen{0};
+static std::atomic<bool>                                 s_syncFailed{false};
+// Seasons, episodes and folder contents whose last fetch failed. Asking
+// again doesn't refetch until the scene drills in again.
+static std::map<std::string, bool>                       s_fetchFailed;
 static std::vector<JellyfinLibrary>                      s_cacheLibs;
 static std::map<std::string, std::vector<JellyfinItem>>  s_cacheItems;
 static std::map<std::string, std::vector<JellyfinSeason>>  s_cacheSeasons;
 static std::map<std::string, std::vector<JellyfinEpisode>> s_cacheEpisodes;
+static std::map<std::string, std::vector<JellyfinItem>>    s_cacheChildren;
 
 // ---------- Art download queue ----------
 static std::mutex                                  s_artMtx;
 static std::map<std::string, std::atomic<bool>*>   s_artInFlight;
+static std::map<std::string, bool>                 s_artFailed;
 
 
 // ============================================================================
@@ -139,6 +187,9 @@ void Jellyfin_SignOut()
     s_cacheItems.clear();
     s_cacheSeasons.clear();
     s_cacheEpisodes.clear();
+    s_cacheChildren.clear();
+    s_fetchFailed.clear();
+    s_syncFailed = false;
     s_syncGen++;
     s_syncReady    = false;
     s_syncProgress = 0;
@@ -196,7 +247,7 @@ static void QuickConnectWorker()
     std::string code   = Json_GetString(r.body, "Code");
     std::string secret = Json_GetString(r.body, "Secret");
     if (code.empty() || secret.empty()) {
-        fprintf(stderr, "[Jellyfin] QC init bad json: %s\n", r.body.c_str());
+        fprintf(stderr, "[Jellyfin] QC init bad json: %s\n", Log_RedactSecrets(r.body).c_str());
         s_qcInFlight = false;
         return;
     }
@@ -260,7 +311,7 @@ static void QuickConnectWorker()
     }
 
     if (accessToken.empty() || userId.empty()) {
-        fprintf(stderr, "[Jellyfin] auth response missing fields: %s\n", a.body.c_str());
+        fprintf(stderr, "[Jellyfin] auth response missing fields: %s\n", Log_RedactSecrets(a.body).c_str());
     } else {
         strncpy(g_jellyfinToken, accessToken.c_str(), sizeof(g_jellyfinToken) - 1);
         g_jellyfinToken[sizeof(g_jellyfinToken) - 1] = 0;
@@ -316,6 +367,14 @@ static JellyfinItem ParseItem(const std::string& obj)
     it.overview  = Json_GetString(obj, "Overview");
     it.type      = Json_GetString(obj, "Type");
     it.primaryTag = ParsePrimaryTag(obj);
+    it.isFolder  = Json_GetBool(obj, "IsFolder");
+    ParseDetails(obj, it);
+    if (it.type == "Episode") {
+        it.seriesName = Json_GetString(obj, "SeriesName");
+        int sn = Json_GetInt(obj, "ParentIndexNumber"), en = Json_GetInt(obj, "IndexNumber");
+        if (sn > 0) it.seasonIndex  = std::to_string(sn);
+        if (en > 0) it.episodeIndex = std::to_string(en);
+    }
     int y = Json_GetInt(obj, "ProductionYear");
     if (y > 0) {
         char buf[8]; snprintf(buf, sizeof(buf), "%d", y);
@@ -324,26 +383,40 @@ static JellyfinItem ParseItem(const std::string& obj)
     return it;
 }
 
-static std::vector<JellyfinItem> FetchItemsForLibrary(const std::string& libraryId)
+static bool FetchItemList(const std::string& url, std::vector<JellyfinItem>& out)
 {
-    char url[1024];
-    snprintf(url, sizeof(url),
-        "%s/Users/%s/Items?ParentId=%s&Recursive=false&Fields=Overview,ProductionYear",
-        g_jellyfinUrl, g_jellyfinUserId, libraryId.c_str());
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
-    std::vector<JellyfinItem> out;
-    if (!r.ok()) {
-        fprintf(stderr, "[Jellyfin] items fetch failed for %s (status %ld)\n",
-                libraryId.c_str(), r.status);
-        return out;
-    }
+    out.clear();
+    if (!r.ok()) return false;
     size_t arr = Json_FindArray(r.body, "Items");
-    if (arr == std::string::npos) return out;
+    if (arr == std::string::npos) return true;
     for (const auto& obj : Json_SplitArray(r.body, arr)) {
         JellyfinItem it = ParseItem(obj);
         if (!it.id.empty()) out.push_back(it);
     }
-    return out;
+    return true;
+}
+
+static bool FetchItemsForLibrary(const std::string& libraryId, std::vector<JellyfinItem>& out)
+{
+    char url[1024];
+    snprintf(url, sizeof(url),
+        "%s/Users/%s/Items?ParentId=%s&Recursive=false&Fields=Overview,ProductionYear,Genres&EnableUserData=true",
+        g_jellyfinUrl, g_jellyfinUserId, libraryId.c_str());
+    HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
+    out.clear();
+    if (!r.ok()) {
+        fprintf(stderr, "[Jellyfin] items fetch failed for %s (status %ld)\n",
+                libraryId.c_str(), r.status);
+        return false;
+    }
+    size_t arr = Json_FindArray(r.body, "Items");
+    if (arr == std::string::npos) return true;
+    for (const auto& obj : Json_SplitArray(r.body, arr)) {
+        JellyfinItem it = ParseItem(obj);
+        if (!it.id.empty()) out.push_back(it);
+    }
+    return true;
 }
 
 
@@ -369,6 +442,9 @@ static void SyncWorker()
     snprintf(url, sizeof(url), "%s/Users/%s/Views", g_jellyfinUrl, g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
     std::vector<JellyfinLibrary> libs;
+    s_syncFailed = !r.ok();
+    if (!r.ok())
+        fprintf(stderr, "[Jellyfin] library list failed (status %ld)\n", r.status);
     if (r.ok()) {
         size_t arr = Json_FindArray(r.body, "Items");
         if (arr != std::string::npos) {
@@ -390,8 +466,27 @@ static void SyncWorker()
         snprintf(phaseBuf, sizeof(phaseBuf),
                  "Loading %s (%d/%d)", lib.name.c_str(), i + 1, libCount);
         SetSyncPhase(gen, phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
-        itemsById[lib.id] = FetchItemsForLibrary(lib.id);
+        FetchItemsForLibrary(lib.id, itemsById[lib.id]);
     }
+
+    // Continue Watching and Next Up go above the libraries, when there's
+    // anything in them.
+    SetSyncPhase(gen, "Loading Continue Watching", 950);
+    std::string base = std::string(g_jellyfinUrl);
+    const char* fields = "Fields=Overview,ProductionYear,Genres&EnableUserData=true";
+    std::vector<JellyfinItem> resume, nextUp;
+    FetchItemList(base + "/Users/" + g_jellyfinUserId + "/Items/Resume?Limit=24&MediaTypes=Video&" + fields, resume);
+    FetchItemList(base + "/Shows/NextUp?UserId=" + g_jellyfinUserId + "&Limit=24&" + fields, nextUp);
+    std::vector<JellyfinLibrary> shelves;
+    if (!resume.empty()) {
+        shelves.push_back({ "uix-resume", "Continue Watching", "resume" });
+        itemsById["uix-resume"] = std::move(resume);
+    }
+    if (!nextUp.empty()) {
+        shelves.push_back({ "uix-nextup", "Next Up", "nextup" });
+        itemsById["uix-nextup"] = std::move(nextUp);
+    }
+    if (!libs.empty()) libs.insert(libs.begin(), shelves.begin(), shelves.end());
 
     size_t nLibs = libs.size();
     SetSyncPhase(gen, "Jellyfin library ready", 1000);
@@ -419,6 +514,19 @@ void Jellyfin_StartSync()
 }
 
 bool        Jellyfin_SyncReady()    { return s_syncReady; }
+bool        Jellyfin_SyncFailed()   { return s_syncReady && s_syncFailed; }
+
+bool Jellyfin_FetchFailed(const std::string& id)
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    return s_fetchFailed.count(id) != 0;
+}
+
+void Jellyfin_RetryFetch(const std::string& id)
+{
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchFailed.erase(id);
+}
 int         Jellyfin_SyncProgress() { return s_syncProgress; }
 std::string Jellyfin_SyncPhase()
 {
@@ -445,16 +553,15 @@ std::vector<JellyfinItem> Jellyfin_Cache_GetItems(const std::string& libraryId)
 // Seasons + episodes (lazy, fetched on first drill)
 // ============================================================================
 
-static std::vector<JellyfinSeason> FetchSeasonsForShow(const std::string& showId)
+static bool FetchSeasonsForShow(const std::string& showId, std::vector<JellyfinSeason>& out)
 {
     char url[1024];
-    snprintf(url, sizeof(url), "%s/Shows/%s/Seasons?UserId=%s",
+    snprintf(url, sizeof(url), "%s/Shows/%s/Seasons?UserId=%s&EnableUserData=true",
              g_jellyfinUrl, showId.c_str(), g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
-    std::vector<JellyfinSeason> out;
-    if (!r.ok()) return out;
+    if (!r.ok()) return false;
     size_t arr = Json_FindArray(r.body, "Items");
-    if (arr == std::string::npos) return out;
+    if (arr == std::string::npos) return true;
     for (const auto& obj : Json_SplitArray(r.body, arr)) {
         JellyfinSeason s;
         s.id   = Json_GetString(obj, "Id");
@@ -464,23 +571,23 @@ static std::vector<JellyfinSeason> FetchSeasonsForShow(const std::string& showId
         char buf[8]; snprintf(buf, sizeof(buf), "%d", idx);
         s.index = buf;
         s.primaryTag = ParsePrimaryTag(obj);
+        ParseDetails(obj, s);
         if (!s.id.empty()) out.push_back(s);
     }
-    return out;
+    return true;
 }
 
-static std::vector<JellyfinEpisode> FetchEpisodesForSeason(const std::string& seasonId,
-                                                           const std::string& showId)
+static bool FetchEpisodesForSeason(const std::string& seasonId, const std::string& showId,
+                                   std::vector<JellyfinEpisode>& out)
 {
     char url[1024];
     snprintf(url, sizeof(url),
-             "%s/Shows/%s/Episodes?seasonId=%s&UserId=%s&Fields=Overview",
+             "%s/Shows/%s/Episodes?seasonId=%s&UserId=%s&Fields=Overview&EnableUserData=true",
              g_jellyfinUrl, showId.c_str(), seasonId.c_str(), g_jellyfinUserId);
     HttpResponse r = Http_Get(url, JellyfinHeaders(g_jellyfinToken));
-    std::vector<JellyfinEpisode> out;
-    if (!r.ok()) return out;
+    if (!r.ok()) return false;
     size_t arr = Json_FindArray(r.body, "Items");
-    if (arr == std::string::npos) return out;
+    if (arr == std::string::npos) return true;
     for (const auto& obj : Json_SplitArray(r.body, arr)) {
         JellyfinEpisode e;
         e.id       = Json_GetString(obj, "Id");
@@ -492,9 +599,10 @@ static std::vector<JellyfinEpisode> FetchEpisodesForSeason(const std::string& se
             e.index = buf;
         }
         e.primaryTag = ParsePrimaryTag(obj);
+        ParseDetails(obj, e);
         if (!e.id.empty()) out.push_back(e);
     }
-    return out;
+    return true;
 }
 
 // Map from seasonId -> parent showId, populated as we fetch seasons. Lets
@@ -502,52 +610,91 @@ static std::vector<JellyfinEpisode> FetchEpisodesForSeason(const std::string& se
 // with the right show id; we never have to plumb it from the caller.
 static std::map<std::string, std::string> s_seasonToShow;
 
+// One background fetch per id at a time; the scene polls the getters.
+static std::map<std::string, bool> s_fetchBusy;
+
+// True when this id needs a fetch started: not cached, not running, not failed.
+static bool ClaimFetch(const std::string& id)
+{
+    if (s_fetchBusy.count(id) || s_fetchFailed.count(id)) return false;
+    s_fetchBusy[id] = true;
+    return true;
+}
+
+static void SeasonsWorker(unsigned gen, std::string showId)
+{
+    std::vector<JellyfinSeason> seasons;
+    bool ok = FetchSeasonsForShow(showId, seasons);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchBusy.erase(showId);
+    if (gen != s_syncGen) return;
+    if (!ok) { s_fetchFailed[showId] = true; return; }
+    for (const auto& se : seasons) s_seasonToShow[se.id] = showId;
+    s_cacheSeasons[showId] = std::move(seasons);
+}
+
 bool Jellyfin_Cache_GetSeasons(const std::string& showId,
                                std::vector<JellyfinSeason>& out)
 {
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        auto it = s_cacheSeasons.find(showId);
-        if (it != s_cacheSeasons.end()) {
-            out = it->second;
-            return true;
-        }
-    }
-    std::vector<JellyfinSeason> fetched = FetchSeasonsForShow(showId);
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheSeasons[showId] = fetched;
-        for (const auto& s : fetched) s_seasonToShow[s.id] = showId;
-        out = fetched;
-    }
-    return true;
+    if (showId.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto it = s_cacheSeasons.find(showId);
+    if (it != s_cacheSeasons.end()) { out = it->second; return true; }
+    if (ClaimFetch(showId))
+        std::thread(SeasonsWorker, (unsigned)s_syncGen, showId).detach();
+    return false;
+}
+
+static void EpisodesWorker(unsigned gen, std::string seasonId, std::string showId)
+{
+    std::vector<JellyfinEpisode> eps;
+    bool ok = FetchEpisodesForSeason(seasonId, showId, eps);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchBusy.erase(seasonId);
+    if (gen != s_syncGen) return;
+    if (!ok) { s_fetchFailed[seasonId] = true; return; }
+    s_cacheEpisodes[seasonId] = std::move(eps);
 }
 
 bool Jellyfin_Cache_GetEpisodes(const std::string& seasonId,
                                 std::vector<JellyfinEpisode>& out)
 {
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        auto it = s_cacheEpisodes.find(seasonId);
-        if (it != s_cacheEpisodes.end()) {
-            out = it->second;
-            return true;
-        }
-    }
-    std::string showId;
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        auto it = s_seasonToShow.find(seasonId);
-        if (it != s_seasonToShow.end()) showId = it->second;
-    }
-    if (showId.empty()) return false;
-    std::vector<JellyfinEpisode> fetched = FetchEpisodesForSeason(seasonId, showId);
-    {
-        std::lock_guard<std::mutex> lk(g_mtx);
-        s_cacheEpisodes[seasonId] = fetched;
-        out = fetched;
-    }
-    return true;
+    if (seasonId.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto it = s_cacheEpisodes.find(seasonId);
+    if (it != s_cacheEpisodes.end()) { out = it->second; return true; }
+    auto show = s_seasonToShow.find(seasonId);
+    if (show == s_seasonToShow.end()) return false;
+    if (ClaimFetch(seasonId))
+        std::thread(EpisodesWorker, (unsigned)s_syncGen, seasonId, show->second).detach();
+    return false;
+}
+
+
+// ============================================================================
+// Folder contents (lazy, in the background)
+// ============================================================================
+
+static void ChildrenWorker(unsigned gen, std::string parentId)
+{
+    std::vector<JellyfinItem> items;
+    bool ok = FetchItemsForLibrary(parentId, items);
+    std::lock_guard<std::mutex> lk(g_mtx);
+    s_fetchBusy.erase(parentId);
+    if (gen != s_syncGen) return;
+    if (!ok) { s_fetchFailed[parentId] = true; return; }
+    s_cacheChildren[parentId] = std::move(items);
+}
+
+bool Jellyfin_Cache_GetChildren(const std::string& parentId, std::vector<JellyfinItem>& out)
+{
+    if (parentId.empty()) return false;
+    std::lock_guard<std::mutex> lk(g_mtx);
+    auto it = s_cacheChildren.find(parentId);
+    if (it != s_cacheChildren.end()) { out = it->second; return true; }
+    if (ClaimFetch(parentId))
+        std::thread(ChildrenWorker, (unsigned)s_syncGen, parentId).detach();
+    return false;
 }
 
 
@@ -562,11 +709,11 @@ static std::string Base()
     return u;
 }
 
-std::string Jellyfin_StreamUrl(const std::string& itemId)
+std::string Jellyfin_StreamUrl(const std::string& itemId, bool audio)
 {
     if (itemId.empty() || g_jellyfinUrl[0] == 0 || g_jellyfinToken[0] == 0) return "";
     std::string out = Base();
-    out += "/Videos/";
+    out += audio ? "/Audio/" : "/Videos/";
     out += itemId;
     out += "/stream?Static=true&api_key=";
     out += g_jellyfinToken;
@@ -609,6 +756,8 @@ static void ArtWorker(std::string itemId, std::string tag,
         }
         if (!Http_GetToFile(url, path)) {
             fprintf(stderr, "[Jellyfin] art fetch failed for %s\n", itemId.c_str());
+            std::lock_guard<std::mutex> lk(s_artMtx);
+            s_artFailed[itemId] = true;
         }
     }
     {
@@ -622,13 +771,27 @@ void Jellyfin_QueueArtDownload(const std::string& itemId, const std::string& tag
 {
     // The id comes off the server and ends up in a file path.
     if (!Http_IsSafeFileId(itemId)) return;
+    // Already here: queueing would only mark it in flight again.
+    struct stat st;
+    if (stat(ArtHostPath(itemId).c_str(), &st) == 0 && st.st_size > 0) return;
     // Workers erase from the map on other threads, so it is only touched under the lock.
     std::atomic<bool>* flag;
     {
         std::lock_guard<std::mutex> lk(s_artMtx);
-        if (s_artInFlight.count(itemId)) return;
+        if (s_artInFlight.count(itemId) || s_artFailed.count(itemId)) return;
         flag = new std::atomic<bool>(false);
         s_artInFlight[itemId] = flag;
     }
     std::thread(ArtWorker, itemId, tag, flag).detach();
+}
+
+bool Jellyfin_ArtReady(const std::string& itemId)
+{
+    if (!Http_IsSafeFileId(itemId)) return false;
+    {
+        std::lock_guard<std::mutex> lk(s_artMtx);
+        if (s_artInFlight.count(itemId)) return false;
+    }
+    struct stat st;
+    return stat(ArtHostPath(itemId).c_str(), &st) == 0 && st.st_size > 0;
 }

@@ -22,6 +22,7 @@ void MediaPlayer_Shutdown();
 
 // Open a media file for playback
 bool MediaPlayer_Open(const char* path);
+bool MediaPlayer_OpenAt(const char* path, double startSeconds);  // resume partway in
 
 // Transport controls
 void MediaPlayer_Play();

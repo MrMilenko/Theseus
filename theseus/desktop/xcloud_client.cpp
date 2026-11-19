@@ -11,6 +11,7 @@
 #include "http_util.h"
 #include "json_util.h"
 #include "client_util.h"
+#include "log_redact.h"
 
 #include <cstdio>
 #include <cstring>
@@ -100,7 +101,7 @@ static std::string GetPassportToken()
     HttpHeaders h = { { "Content-Type", "application/x-www-form-urlencoded" } };
     HttpResponse r = Http_Post("https://login.live.com/oauth20_token.srf", body, h);
     if (!r.ok()) {
-        fprintf(stderr, "[xCloud] passport token HTTP %ld body=%.200s\n", r.status, r.body.c_str());
+        fprintf(stderr, "[xCloud] passport token HTTP %ld body=%.200s\n", r.status, Log_RedactSecrets(r.body).c_str());
         return "";
     }
     return Json_GetString(r.body, "access_token");
@@ -596,7 +597,7 @@ static void RunWebRtcTransport(const StreamEndpoint& ep, const std::string& sess
         "\"unreliableinput\":{\"minVersion\":9,\"maxVersion\":9}}}"; }
     fprintf(stderr, "[xCloud] offer %zu bytes, POST /sdp...\n", offerSdp.size());
     HttpResponse pr = Http_Post(sdpBase + "/sdp", offBody, hdr);
-    fprintf(stderr, "[xCloud] POST /sdp status=%ld body=%.300s\n", pr.status, pr.body.c_str());
+    fprintf(stderr, "[xCloud] POST /sdp status=%ld body=%.300s\n", pr.status, Log_RedactSecrets(pr.body).c_str());
     if (!pr.ok()) { SetStreamPhase("POST /sdp failed: HTTP " + std::to_string(pr.status)); return; }
 
     // Poll for the answer (204 until ready), then apply it.
@@ -604,12 +605,12 @@ static void RunWebRtcTransport(const StreamEndpoint& ep, const std::string& sess
     for (int i = 0; i < 40 && answerSdp.empty() && !s_streamCancel; i++) {
         HttpResponse r = Http_Get(sdpBase + "/sdp", hdr);
         if (i == 0 || (r.status != 204 && r.status != 200))
-            fprintf(stderr, "[xCloud] GET /sdp status=%ld body=%.300s\n", r.status, r.body.c_str());
+            fprintf(stderr, "[xCloud] GET /sdp status=%ld body=%.300s\n", r.status, Log_RedactSecrets(r.body).c_str());
         if (r.ok() && r.status != 204) {
             std::string ex = Json_GetString(r.body, "exchangeResponse");
             if (!ex.empty()) answerSdp = Json_GetString(ex, "sdp");
             if (answerSdp.empty())
-                fprintf(stderr, "[xCloud] /sdp response had no exchangeResponse.sdp: %.300s\n", r.body.c_str());
+                fprintf(stderr, "[xCloud] /sdp response had no exchangeResponse.sdp: %.300s\n", Log_RedactSecrets(r.body).c_str());
         }
         if (answerSdp.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
@@ -744,7 +745,7 @@ static void StreamSessionWorker(std::string type, std::string id)
         std::string msg  = Json_GetString(pr.body, "message");
         SetStreamPhase(code.empty() ? ("play failed: HTTP " + std::to_string(pr.status))
                                     : (code + (msg.empty() ? "" : ": " + msg)));
-        fprintf(stderr, "[xCloud] play HTTP %ld body=%.400s\n", pr.status, pr.body.c_str());
+        fprintf(stderr, "[xCloud] play HTTP %ld body=%.400s\n", pr.status, Log_RedactSecrets(pr.body).c_str());
         s_streamRunning = false; return;
     }
     std::string sessionPath = Json_GetString(pr.body, "sessionPath");

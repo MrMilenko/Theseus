@@ -10,6 +10,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <map>
+#include <mutex>
 #include <string>
 
 #include "host.h"
@@ -297,16 +298,24 @@ const char* AppPathf(const char* fmt, ...) {
 }
 
 const char* AppPath_Tree(const char* tree) {
-    // One slot per tree; only the drive letter roots land here.
-    static struct { char name[16]; char path[1024]; } s_cache[8];
+    // One slot per tree, kept for the whole run. Art downloads ask from their
+    // own threads, hence the lock.
+    static std::mutex s_mtx;
+    static struct { char name[64]; char path[1024]; } s_cache[32];
     static int s_count = 0;
     if (!tree || !*tree) return "";
 
+    std::lock_guard<std::mutex> lk(s_mtx);
     for (int i = 0; i < s_count; i++)
         if (strcasecmp(s_cache[i].name, tree) == 0) return s_cache[i].path;
-    if (s_count >= 8) return tree;
 
     const char* root = IsUserOwned(tree) ? Plat_UserDataDir() : Plat_ShippedDir();
+    // Out of slots or too long a name: still the right folder, just not kept.
+    if (s_count >= 32 || strlen(tree) >= sizeof(s_cache[0].name)) {
+        static thread_local char t_path[1024];
+        snprintf(t_path, sizeof(t_path), "%s/%s", root, tree);
+        return t_path;
+    }
     snprintf(s_cache[s_count].name, sizeof(s_cache[0].name), "%s", tree);
     snprintf(s_cache[s_count].path, sizeof(s_cache[0].path), "%s/%s", root, tree);
     return s_cache[s_count++].path;

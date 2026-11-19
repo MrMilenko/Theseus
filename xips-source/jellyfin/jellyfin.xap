@@ -14,6 +14,9 @@ var nJfLastCount;       // last count we actually drew; behavior re-renders on m
 var nJfCursorBackup0;   // saved cursor when drilling lib -> items
 var nJfCursorBackup1;   // saved cursor when drilling item -> seasons
 var nJfCursorBackup2;   // saved cursor when drilling season -> episodes
+var sJfPoster;          // poster url on the CD now; behavior swaps it when art lands
+var bJfLoaded;          // the chrome scene is in, so the behavior can touch it
+var sJfStatus;          // what the empty list says (loading, can't reach); "" with rows
 
 
 function initialize()
@@ -27,6 +30,8 @@ function initialize()
 	nJfCursorBackup0  = 0;
 	nJfCursorBackup1  = 0;
 	nJfCursorBackup2  = 0;
+	sJfPoster         = "";
+	sJfStatus         = "";
 }
 
 
@@ -47,7 +52,7 @@ function BindActiveList()
 function GetActiveTitle(absIdx)
 {
 	if (nJfView == 0)
-		return theJellyfinLibrary.GetName(absIdx);
+		return theJellyfinLibrary.GetLibraryRow(absIdx);
 	if (nJfView == 1)
 		return theJellyfinLibrary.GetItemTitle(absIdx);
 	if (nJfView == 2)
@@ -61,12 +66,12 @@ function GetHeaderText()
 {
 	var server = theJellyfinLibrary.GetServerName();
 	if (server == "")
-		server = "PLEX";
+		server = "Jellyfin";
 	if (nJfView == 0)
 		return server;
 	if (nJfView == 1)
-		return server + " / " + theJellyfinLibrary.GetName(nJfCursorBackup0);
-	var showTitle = theJellyfinLibrary.GetItemTitle(nJfCursorBackup1);
+		return server + " / " + theJellyfinLibrary.GetListTitle();
+	var showTitle = theJellyfinLibrary.GetItemName(nJfCursorBackup1);
 	if (nJfView == 2)
 		return showTitle;
 	return showTitle + " / " + theJellyfinLibrary.GetSeasonTitle(nJfCursorBackup2);
@@ -104,6 +109,8 @@ function StartJellyfinLevel()
 	c.MU_cd_04.visible = false;
 	c.MU_cd_05.visible = false;
 
+	sJfPoster = "";
+	bJfLoaded = 1;
 	BindActiveList();
 	UpdateJellyfinList();
 }
@@ -112,6 +119,7 @@ function StartJellyfinLevel()
 function UpdateJellyfinList()
 {
 	var c = theJellyfinMenu.children[0].children[0];
+	var status = theJellyfinLibrary.GetStatus(nJfView);
 
 	if (nJfCursor < nJfScroll)
 		nJfScroll = nJfCursor;
@@ -142,6 +150,17 @@ function UpdateJellyfinList()
 				c.MenuButtons.children[i].children[1].children[0].geometry.scrollDelay = 0;
 			}
 		}
+		else if ((i == 0) & (status != ""))
+		{
+			// Nothing to list yet: the first row says why.
+			c.MenuButtons.children[0].visible = true;
+			c.MenuButtons.children[0].children[1].children[0].geometry.text = status;
+			c.MenuButtons.children[0].children[0].children[0].appearance.material.name = "GameHilite";
+			c.MenuButtons.children[0].children[0].children[0].appearance.texture.url = "outline.tga";
+			c.MenuButtons.children[0].children[1].children[0].appearance.name = "NavType";
+			c.MenuButtons.children[0].children[1].children[0].geometry.scrollRate  = 0;
+			c.MenuButtons.children[0].children[1].children[0].geometry.scrollDelay = 0;
+		}
 		else
 		{
 			c.MenuButtons.children[i].visible = false;
@@ -150,6 +169,9 @@ function UpdateJellyfinList()
 
 	c.MediaHeaderText.text = GetHeaderText();
 	c.MusicCountText.text  = GetCountText();
+	if (status != "")
+		c.MusicCountText.text = "";
+	sJfStatus = status;
 
 	c.MusicType.text = "";
 	c.TimeNum.text   = "";
@@ -165,24 +187,27 @@ function UpdateJellyfinList()
 function UpdatePoster(c)
 {
 	if (nJfView == 1)
-	{
 		theJellyfinLibrary.QueueItemArt(nJfCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = theJellyfinLibrary.GetItemArtPath(nJfCursor);
-	}
 	else if (nJfView == 2)
-	{
 		theJellyfinLibrary.QueueSeasonArt(nJfCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = theJellyfinLibrary.GetSeasonArtPath(nJfCursor);
-	}
 	else if (nJfView == 3)
-	{
 		theJellyfinLibrary.QueueEpisodeArt(nJfCursor);
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = theJellyfinLibrary.GetEpisodeArtPath(nJfCursor);
-	}
-	else
-	{
-		c.MU_cd_01.children[0].children[0].appearance.texture.url = "E:\\Jellyfin\\jellyfin_logo.png";
-	}
+	sJfPoster = GetPosterArt();
+	c.MU_cd_01.children[0].children[0].appearance.texture.url = sJfPoster;
+}
+
+
+// The library hands back the logo until the poster is downloaded; the
+// behavior redraws once the real one lands.
+function GetPosterArt()
+{
+	if (nJfView == 1)
+		return theJellyfinLibrary.GetItemArtPath(nJfCursor);
+	if (nJfView == 2)
+		return theJellyfinLibrary.GetSeasonArtPath(nJfCursor);
+	if (nJfView == 3)
+		return theJellyfinLibrary.GetEpisodeArtPath(nJfCursor);
+	return "E:\\Jellyfin\\jellyfin_logo.png";
 }
 
 
@@ -198,11 +223,20 @@ function EnterLibrary()
 }
 
 
-// Movies/tracks play immediately; TV shows drill into seasons.
+// Movies/tracks play immediately; TV shows drill into seasons and folders
+// (box sets, albums, playlists) open in place.
 function EnterItem()
 {
 	var type = theJellyfinLibrary.GetItemType(nJfCursor);
-	if (type == "show")
+	if (type == "folder")
+	{
+		theJellyfinLibrary.DrillIntoFolder(nJfCursor);
+		nJfCursor = 0;
+		nJfScroll = 0;
+		BindActiveList();
+		UpdateJellyfinList();
+	}
+	else if (type == "show")
 	{
 		theJellyfinLibrary.DrillIntoShow(nJfCursor);
 		nJfCursorBackup1 = nJfCursor;
@@ -252,6 +286,13 @@ function GoBackOne()
 	{
 		nJfView   = 1;
 		nJfCursor = nJfCursorBackup1;
+		nJfScroll = 0;
+		BindActiveList();
+		UpdateJellyfinList();
+	}
+	else if ((nJfView == 1) & (theJellyfinLibrary.GetFolderDepth() > 0))
+	{
+		nJfCursor = theJellyfinLibrary.LeaveFolder();
 		nJfScroll = 0;
 		BindActiveList();
 		UpdateJellyfinList();
@@ -396,7 +437,39 @@ DEF theJellyfinMenu Level
 			UpdateJellyfinList();
 		}
 
-		function OnXDown()    { PlaySoundError(); }
+		// X: play from the beginning instead of the resume point.
+		function OnXDown()
+		{
+			if ((nJfCount <= 0) | (theJellyfinLibrary.IsSyncReady() == 0))
+			{
+				PlaySoundError();
+				return;
+			}
+			if (nJfView == 1)
+			{
+				var type = theJellyfinLibrary.GetItemType(nJfCursor);
+				if ((type == "folder") | (type == "show"))
+				{
+					PlaySoundError();
+					return;
+				}
+				PlaySoundA();
+				theJellyfinLibrary.SetStartOver(1);
+				theJellyfinLibrary.PlayItem(nJfCursor);
+				theJellyfinLibrary.SetStartOver(0);
+			}
+			else if (nJfView == 3)
+			{
+				PlaySoundA();
+				theJellyfinLibrary.SetStartOver(1);
+				theJellyfinLibrary.PlayEpisode(nJfCursor);
+				theJellyfinLibrary.SetStartOver(0);
+			}
+			else
+			{
+				PlaySoundError();
+			}
+		}
 		function OnYDown()
 		{
 			// Y: modal info with full plot. No-op at library view.
@@ -437,7 +510,12 @@ DEF theJellyfinMenu Level
 	{
 		sleep .4;
 		BindActiveList();
-		if (nJfCount != nJfLastCount)
+		if (bJfLoaded == 1)
+		{
+			if ((nJfCount != nJfLastCount) | (GetPosterArt() != sJfPoster) | (theJellyfinLibrary.GetStatus(nJfView) != sJfStatus))
+				UpdateJellyfinList();
+		}
+		else if (nJfCount != nJfLastCount)
 		{
 			UpdateJellyfinList();
 		}
