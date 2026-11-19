@@ -10,6 +10,7 @@
 #include "node.h"
 #include <SDL.h>
 #include "guide.h"
+#include "pads.h"
 
 #define REPEAT_DELAY 0.3f
 #define REPEAT_INTERVAL 0.12f
@@ -85,13 +86,9 @@ public:
 
     void Bind();
 
-    void CheckDevice();
-
     void EnableGlobalInput(int bEnable);
 
     void CallFunction(const char *szFunc, bool bRemote = false);
-
-    static SDL_GameController* c_controller;
 
     static CJoystick *c_pLastActivePad;
     static CJoystick *c_pActivePad;
@@ -117,15 +114,13 @@ protected:
     void ProcessSecretKeySequence(int flags);
     void ButtonEvent(bool down, const char *downName, const char *upName, char key);
     void MoveEvent(char key, const char *name);
-    static void PollSDL(SDL_GameController* gc, JoySnapshot* out);
+    static void PollSDL(JoySnapshot* out);
     void ProcessMediaKeys();
 };
 
-SDL_GameController* CJoystick::c_controller = NULL;
-
 // The keyboard reads the pad itself while up: nav is off for the duration,
 // so ImGui's key state isn't fed.
-SDL_GameController* Joy_GetController() { return CJoystick::c_controller; }
+SDL_GameController* Joy_GetController() { return Pads_Active(); }
 
 CJoystick *CJoystick::c_pActivePad = NULL;
 CJoystick *CJoystick::c_pLastActivePad = NULL;
@@ -272,8 +267,7 @@ void CJoystick::Bind()
     c_pActivePad = this;
     if (m_bFirstPoll)
         return;
-    CheckDevice();
-    PollSDL(c_controller, &m_prevState);
+    PollSDL(&m_prevState);
 }
 
 // CJoystick::OnSetProperty(prd, value)
@@ -344,38 +338,6 @@ bool CJoystick::OnSetProperty(const PRD *pprd, const void *pvValue)
     return false;
 }
 
-// ============================================================================
-// Controller Detection
-// ============================================================================
-void CJoystick::CheckDevice()
-{
-    // Check if current controller was disconnected
-    if (c_controller && !SDL_GameControllerGetAttached(c_controller))
-    {
-        fprintf(stdout, "[Input] Controller disconnected\n");
-        SDL_GameControllerClose(c_controller);
-        c_controller = NULL;
-    }
-
-    // Try to find a controller if we don't have one
-    if (!c_controller)
-    {
-        for (int i = 0; i < SDL_NumJoysticks(); i++)
-        {
-            if (SDL_IsGameController(i))
-            {
-                c_controller = SDL_GameControllerOpen(i);
-                if (c_controller)
-                {
-                    fprintf(stdout, "[Input] SDL controller opened: %s\n",
-                            SDL_GameControllerName(c_controller));
-                    break;
-                }
-            }
-        }
-    }
-}
-
 // CJoystick::EnableGlobalInput(on)   [script fn 'EnableGlobalInput', FND 0x00181fb0, sig 14]
 // Reconstructed from 5960 retail XBE @ 0x00040b70: sets the global input switch.
 void CJoystick::EnableGlobalInput(int bEnable)
@@ -437,8 +399,9 @@ static void ReadPad(SDL_GameController* gc, bool holdB, JoySnapshot* out)
     }
 }
 
-void CJoystick::PollSDL(SDL_GameController* gc, JoySnapshot* out)
+void CJoystick::PollSDL(JoySnapshot* out)
 {
+    SDL_GameController* gc = Pads_Active();
     memset(out, 0, sizeof(*out));
 
     // Tools have the pad: leave it zeroed and the dashboard sits still.
@@ -567,6 +530,11 @@ static void DevPadScript(JoySnapshot* out)
             int used = 0;
             if (sscanf(env, " %f:%15[a-z]%n", &t, name, &used) != 2) break;
             env += used;
+            // "a@2" presses a virtual pad's button and "plug=ps" plugs one
+            // in; pads.cpp does those.
+            bool virtualPad = false;
+            for (; *env && *env != ' '; env++) virtualPad = true;
+            if (virtualPad) continue;
             for (size_t i = 0; i < sizeof(kNames) / sizeof(kNames[0]); i++)
                 if (strcmp(kNames[i].name, name) == 0) {
                     Press p = { (Uint32)(t * 1000.0f), kNames[i].kind, kNames[i].idx };
@@ -673,7 +641,7 @@ unsigned Joy_GuideButtons(int* device)
 {
     extern SDL_Window* g_pSDLWindow;
     extern bool ImGui_WantsKeyboard();
-    SDL_GameController* gc = CJoystick::c_controller;
+    SDL_GameController* gc = Pads_Active();
     const bool holdB = GuideChord(gc);
 
     JoySnapshot pad;
@@ -835,10 +803,9 @@ void CJoystick::Advance(float nSeconds)
     if (!g_bInputEnable || this != c_pActivePad)
         return;
 
-    CheckDevice();
     if (m_bFirstPoll)
     {
-        PollSDL(c_controller, &m_prevState);
+        PollSDL(&m_prevState);
         m_nextPollTime = TheseusGetNow();
         m_bFirstPoll = false;
     }
@@ -849,7 +816,7 @@ void CJoystick::Advance(float nSeconds)
     ProcessMediaKeys();
 
     JoySnapshot now;
-    PollSDL(c_controller, &now);
+    PollSDL(&now);
     if (!EqualSnapshots(&now, &m_prevState) && ResetScreenSaver())
     {
         m_prevState = now;

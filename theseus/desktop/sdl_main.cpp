@@ -9,7 +9,7 @@
 #include "shape_render.h"
 #include "asset_loader.h"
 #include "audio_sdl.h"
-#include "joystick.h"
+#include "pads.h"
 #include "milkdrop_window.h"
 #include "xcloud_client.h"
 #include "xiso.h"
@@ -1405,6 +1405,7 @@ int main(int argc, char* argv[]) {
             // Let ImGui handle events first
             ImGui_ImplSDL2_ProcessEvent(&event);
             Guide_HandleEvent(&event);
+            Pads_HandleEvent(&event);
 
             switch (event.type) {
                 case SDL_QUIT:
@@ -1627,6 +1628,7 @@ int main(int argc, char* argv[]) {
                     break;
             }
         }
+        Pads_Update();
         Frame_PhaseEnd(FP_EVENTS);
 
         // All panels are floating ImGui windows in the main window now.
@@ -1682,17 +1684,15 @@ int main(int argc, char* argv[]) {
 
             if (g_xcloudClosed) {
                 bool leave = (SDL_GetTicks() - g_xcloudClosedAtMs > kXcloudClosedAutoMs);
-                if (CJoystick::c_controller) {
-                    SDL_GameController* gc = CJoystick::c_controller;
+                if (SDL_GameController* gc = Pads_Active()) {
                     if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_A) ||
                         SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) ||
                         SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_START)) leave = true;
                 }
                 if (leave) { g_xcloudFullscreen = false; g_xcloudClosed = false; }
-            } else if (CJoystick::c_controller) {
+            } else if (SDL_GameController* gc = Pads_Active()) {
                 // Streaming: the controller belongs to the game. SDL already
                 // normalizes any pad to the Xbox layout.
-                SDL_GameController* gc = CJoystick::c_controller;
                 auto btn = [gc](SDL_GameControllerButton x){ return SDL_GameControllerGetButton(gc, x) != 0; };
                 auto ax  = [gc](SDL_GameControllerAxis x){ return SDL_GameControllerGetAxis(gc, x) / 32767.0f; };
                 XcloudGamepad gp{};
@@ -1798,9 +1798,9 @@ int main(int argc, char* argv[]) {
             const Uint8* keys = SDL_GetKeyboardState(NULL);
             bool kbXY = keys[SDL_SCANCODE_X] && keys[SDL_SCANCODE_Y];
             bool padXY = false;
-            if (CJoystick::c_controller) {
-                padXY = SDL_GameControllerGetButton(CJoystick::c_controller, SDL_CONTROLLER_BUTTON_X)
-                     && SDL_GameControllerGetButton(CJoystick::c_controller, SDL_CONTROLLER_BUTTON_Y);
+            if (SDL_GameController* gc = Pads_Active()) {
+                padXY = SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_X)
+                     && SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_Y);
             }
             static bool s_prevXY = false;
             bool xy = kbXY || padXY;
@@ -1881,6 +1881,7 @@ int main(int argc, char* argv[]) {
     // Cleanup
     XapEditor_Cleanup();
     Guide_Shutdown();
+    Pads_Shutdown();
     {
         extern void ImGui_ImplBgfx_Shutdown();
         ImGui_ImplBgfx_Shutdown();
