@@ -233,6 +233,7 @@ static const char* SettingHelp(const SettingDef& d)
         { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
         { "Rumble",              "A short buzz when the guide can't do what you asked." },
         { "ButtonStyle",         "The buttons the guide shows. Match the Pad follows the pad you used last." },
+        { "SwapConfirm",         "Nintendo style: the right face button selects and the bottom one goes back." },
     };
     for (size_t i = 0; i < sizeof(kHelp) / sizeof(kHelp[0]); i++)
         if (strcmp(kHelp[i].key, d.key) == 0) return kHelp[i].help;
@@ -1013,6 +1014,8 @@ static bool Adjust(int dir)
     if (d.apply) d.apply();
     SaveDesktopSettings();
     Build();
+    // The button still held can mean something else now (SwapConfirm).
+    g.settle = true;
     return true;
 }
 
@@ -1710,6 +1713,7 @@ void Guide_Render(int width, int height)
         g.targets.clear();
         ui_overlay_set_device(g.device);
         ui_overlay_set_pad_style(Pads_Style());
+        ui_overlay_set_pad_swap(g_padSwapConfirm);
         ui_style_theme(g_guideTheme);
         ui_style_clock(SDL_GetTicks());
         ui_overlay_layer(0);

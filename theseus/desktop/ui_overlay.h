@@ -48,6 +48,8 @@ void  ui_overlay_set_device(int device);
 // bottom face button, so on a Nintendo pad it reads B.
 enum { UI_PAD_XBOX, UI_PAD_PLAYSTATION, UI_PAD_NINTENDO, UI_PAD_STYLE_COUNT };
 void  ui_overlay_set_pad_style(int style);
+// With confirm and back swapped, UI_BUTTON_A draws the right face button.
+void  ui_overlay_set_pad_swap(int swap);
 int   ui_overlay_keyboard();
 float ui_overlay_button(int button, float size, float x, float y, unsigned int color);
 float ui_overlay_button_width(int button, float size);

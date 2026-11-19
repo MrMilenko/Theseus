@@ -14,8 +14,12 @@ SDL_GameController* Pads_Get(int i);
 SDL_GameController* Pads_Active();
 
 // Every pad drives the dashboard: a button counts held on any pad, and a
-// stick or trigger reads off whichever pad pushes it furthest.
+// stick or trigger reads off whichever pad pushes it furthest. A and B
+// here are confirm and back, so they follow SwapConfirm.
 bool   Pads_Button(SDL_GameControllerButton button);
+// The button a pad really has to hold for one of Pads_Button's.
+SDL_GameControllerButton Pads_Map(SDL_GameControllerButton button);
+extern bool g_padSwapConfirm;   // desktop.ini SwapConfirm: right face button confirms
 Sint16 Pads_Axis(SDL_GameControllerAxis axis);
 
 // Which labels the buttons get, in ui_overlay's UI_PAD_* order: the

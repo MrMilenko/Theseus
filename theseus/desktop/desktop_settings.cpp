@@ -163,6 +163,7 @@ static const SettingDef kDefs[] = {
       NOENUM, 0, 0, 0, NULL, ApplyRumble },
     { "ButtonStyle", "Controller", "Controller", "Button Prompts", SK_ENUM, &g_padStyle, 0, "auto", SF_STRICT,
       ENUM(kPadStyleVals, kPadStyleLbl, kPadStyleTok), 0, 0, 0, NULL, NULL },
+    S_BOOL("SwapConfirm", "Controller", "Controller", "Confirm With the Right Button", g_padSwapConfirm, "0", 0),
 
     S_BOOL("CRT_Enabled", "CRT", "Display", "CRT Effect", g_crt.enabled, "0", 0),
     S_CRT("CRT_Scanlines",  "Scanlines",     scanlineIntensity, "0.500", 0.0f, 1.0f),

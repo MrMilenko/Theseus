@@ -485,7 +485,7 @@ static bool GuideChord()
     const bool b = Pads_Button(SDL_CONTROLLER_BUTTON_B);
     for (int i = 0; i < Pads_Count(); i++) {
         SDL_GameController* gc = Pads_Get(i);
-        if (SDL_GameControllerGetButton(gc, SDL_CONTROLLER_BUTTON_B) &&
+        if (SDL_GameControllerGetButton(gc, Pads_Map(SDL_CONTROLLER_BUTTON_B)) &&
             SDL_GameControllerGetAxis(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT) > 8000) chord = true;
     }
     extern bool ImGui_WantsKeyboard();

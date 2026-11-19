@@ -90,7 +90,7 @@ static struct {
     float shift[8];   // second map's place and scale, then the threads' color
     bool plasmaDrawn;
 
-    int device, padStyle;
+    int device, padStyle, padSwap;
     float scale, originX, originY;   // last present's layout -> pixels
 
     Vertex vertices[MAX_QUADS * 6];
@@ -320,6 +320,8 @@ void ui_overlay_set_pad_style(int style)
     ov.padStyle = style >= 0 && style < UI_PAD_STYLE_COUNT ? style : UI_PAD_XBOX;
 }
 
+void ui_overlay_set_pad_swap(int swap) { ov.padSwap = swap != 0; }
+
 static const char* const kKeyLabels[UI_BUTTON_COUNT] = {
     "ENTER", "ESC", "X", "Y", "F7", "BKSP", "Q", "E", "\xE2\x86\x90", "\xE2\x86\x92",
 };
@@ -330,9 +332,15 @@ static const char* const kPadLabels[UI_PAD_STYLE_COUNT][UI_BUTTON_COUNT] = {
     { "B", "A", "Y", "X", "+", "\xE2\x88\x92", "L", "R", "\xE2\x80\xB9", "\xE2\x80\xBA" },
 };
 
+// Where on the pad a button is, with confirm and back swapped or not.
+static int Position(int button)
+{
+    return ov.padSwap && (button == UI_BUTTON_A || button == UI_BUTTON_B) ? button ^ 1 : button;
+}
+
 static const char* Label(int button)
 {
-    return ov.device == 1 ? kPadLabels[ov.padStyle][button] : kKeyLabels[button];
+    return ov.device == 1 ? kPadLabels[ov.padStyle][Position(button)] : kKeyLabels[button];
 }
 
 // The pad's face buttons, lit at the top and deep at the bottom.
@@ -424,6 +432,7 @@ float ui_overlay_button(int button, float size, float x, float y, unsigned int c
 
     // A glossy ball: lit to deep, a sheen on its upper half, its letter in
     // white. Xbox balls wear their colors; the others are dark.
+    button = Position(button);
     float share = (float)(color & 0xFF) / 255.0f;
     float d = size * 0.96f, inset = (size - d) * 0.5f, letter = size * 0.66f;
     const char* label = kPadLabels[ov.padStyle][button];

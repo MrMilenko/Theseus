@@ -18,6 +18,7 @@ struct Pad {
 
 bool g_padRumble = true;
 int  g_padStyle = 0;
+bool g_padSwapConfirm = false;
 
 static std::vector<Pad> s_pads;
 static SDL_JoystickID s_active = -1;
@@ -138,8 +139,17 @@ SDL_GameController* Pads_Get(int i)
     return i < 0 || i >= (int)s_pads.size() ? NULL : s_pads[i].gc;
 }
 
+SDL_GameControllerButton Pads_Map(SDL_GameControllerButton button)
+{
+    if (!g_padSwapConfirm) return button;
+    if (button == SDL_CONTROLLER_BUTTON_A) return SDL_CONTROLLER_BUTTON_B;
+    if (button == SDL_CONTROLLER_BUTTON_B) return SDL_CONTROLLER_BUTTON_A;
+    return button;
+}
+
 bool Pads_Button(SDL_GameControllerButton button)
 {
+    button = Pads_Map(button);
     for (size_t i = 0; i < s_pads.size(); i++)
         if (SDL_GameControllerGetButton(s_pads[i].gc, button)) return true;
     return false;
