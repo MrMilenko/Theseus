@@ -104,16 +104,16 @@ void CCamera::UpdateViewMatrix()
 //     newPos = *p; newRot = *q; oldPos = position; oldRot = orientation;
 //     start = now; duration = secs;
 //     if (secs <= 0.0) { position = newPos; orientation = newRot; }
-void CCamera::Set(const D3DXVECTOR3* pPosition, const D3DXQUATERNION* pOrientation, float nSeconds/*=0.0f*/)
+void CCamera::Set(const D3DXVECTOR3* pos, const D3DXQUATERNION* rot, float dt/*=0.0f*/)
 {
-	m_newPosition = *pPosition;
-	m_newOrientation = *pOrientation;
+	m_newPosition = *pos;
+	m_newOrientation = *rot;
 	m_oldPosition = m_position;
 	m_oldOrientation = m_orientation;
 	m_nStartTime = TheseusGetNow();
-	m_nDeltaTime = nSeconds;
+	m_nDeltaTime = dt;
 
-	if (nSeconds > 0.0f)
+	if (dt > 0.0f)
 		return;
 
 	m_position = m_newPosition;
@@ -130,7 +130,7 @@ void CCamera::Set(const D3DXVECTOR3* pPosition, const D3DXQUATERNION* pOrientati
 //     }
 //     UpdateViewMatrix();
 // It never calls CNode::Advance.
-void CCamera::Advance(float nSeconds)
+void CCamera::Advance(float dt)
 {
 	if (m_nDeltaTime > 0.0f)
 	{
@@ -201,9 +201,9 @@ CCameraPath::~CCameraPath()
 //     if (orientation) rot = orientation->Interpolate(t);
 //     theCamera.Set(&pos, &rot, 0);
 // Paths are authored in the right handed scene, hence the z flip.
-void CCameraPath::Advance(float nSeconds)
+void CCameraPath::Advance(float dt)
 {
-	CNode::Advance(nSeconds);
+	CNode::Advance(dt);
 
 	if (!m_isActive)
 		return;
@@ -237,9 +237,9 @@ void CCameraPath::Advance(float nSeconds)
 // Reconstructed from 5960 retail XBE @ 0x00050c90. Ghidra decompile:
 //     if (prd->offset == 0x20) start = now;   return 1;
 // Writing isActive either way restarts the clock.
-bool CCameraPath::OnSetProperty(const PRD* pprd, const void* pvValue)
+bool CCameraPath::OnSetProperty(const PRD* prop, const void* value)
 {
-	if (PTR2INT(pprd->pbOffset) == offsetof(m_isActive))
+	if (PTR2INT(prop->pbOffset) == offsetof(m_isActive))
 		m_startTime = TheseusGetNow();
 
 	return true;
@@ -248,9 +248,9 @@ bool CCameraPath::OnSetProperty(const PRD* pprd, const void* pvValue)
 // CCameraPath::Activate(bBackwards)
 // The binary inlines this into CLevel's arrival code (see SceneGroups.md):
 //     isActive = 1; start = now; backward = bBackwards;
-void CCameraPath::Activate(bool bBackwards)
+void CCameraPath::Activate(bool backwards)
 {
 	m_isActive = true;
 	m_startTime = TheseusGetNow();
-	m_backward = bBackwards;
+	m_backward = backwards;
 }

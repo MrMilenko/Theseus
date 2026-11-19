@@ -447,46 +447,48 @@ START_NODE_FUN(CPeriodicAudioGroup, CGroup)
 END_NODE_FUN()
 
 // ============================================================================
-// CAudioVisualizer - full port from AudioVisualizer.cpp
-// Uses DashAudio_GetPCMSamples() ring buffer instead of Xbox GetSampleBuffer()
+// CAudioVisualizer
+// 5960 code at 0x63760..0x64630, notes in docs/decomp/AudioVisualizer.md.
+// The desktop reads the mixer's last 256 frames (DashAudio_GetPCMSamples)
+// where 5960 reads its AudioClip source's sample buffer.
 // ============================================================================
 #include "tmap_system.h"
 #include "fft.h"
 
-#define TRANSPORT_PLAY 1
-
 class CAudioVisualizer : public CNode
 {
 	DECLARE_NODE(CAudioVisualizer, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CAudioVisualizer();
 	~CAudioVisualizer();
 
-	TCHAR* m_type;      // "line", "spinner"/"spin", "circle", "analyzer"/"a"
-	TCHAR* m_channel;   // "left"/"l", "center"/"c", "right"/"r"
+	// 5960 layout, 0x834 bytes: m_type 0x1c, m_channel 0x20, m_source 0x24,
+	// m_scale 0x28, m_offset 0x2c, then the sample and spectrum buffers.
+	TCHAR* m_type;		// line (default), spinner, circle, analyzer: first letter counts
+	TCHAR* m_channel;	// r or R picks the right channel, anything else the left
 	CNode* m_source;
 	float m_scale;
 	float m_offset;
 
 protected:
+	void Advance(float dt);
+	void RenderDynamicTexture(CSurfx* surface);
+
 	short* GetMonoPCM();
+	void CalcSpectrum(short* pcm, short* bins);
 	void UpdateSpectrum();
-	void RenderDynamicTexture(CSurfx* pSurfx);
-	void Advance(float nSeconds);
-	void CalcSpectrum(short* pcm, short* fft);
-	void RenderEffect1(CSurfx* pSurfx);
-	void RenderEffect2(CSurfx* pSurfx);
+	void RenderEffect1(CSurfx* surface);
+	void RenderEffect2(CSurfx* surface);
 
-	short m_pcmLeft[256];
-	short m_pcmRight[256];
-	short m_fftLeft[128];
-	short m_fftRight[128];
-	bool m_bFFTValid;
-	short m_pcmMono[256];
-	bool m_bMonoValid;
-
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
+	short m_pcmLeft[256];		// 0x030
+	short m_pcmRight[256];		// 0x230
+	short m_fftLeft[128];		// 0x430
+	short m_fftRight[128];		// 0x530
+	bool m_bFFTValid;			// 0x630
+	short m_pcmMono[256];		// 0x632
+	bool m_bMonoValid;			// 0x832
 };
 
 IMPLEMENT_NODE("AudioVisualizer", CAudioVisualizer, CNode)
@@ -504,510 +506,455 @@ END_NODE_PROPS()
 START_NODE_FUN(CAudioVisualizer, CNode)
 END_NODE_FUN()
 
-CAudioVisualizer::CAudioVisualizer() :
-	m_type(NULL),
-	m_source(NULL),
-	m_scale(1.0f),
-	m_offset(0.0f),
-	m_channel(NULL),
-	m_bFFTValid(false),
-	m_bMonoValid(false)
+// CAudioVisualizer::CAudioVisualizer()
+// Reconstructed from 5960 retail XBE @ 0x00063770 (inlined in CreateNode):
+//     m_type = m_channel = m_source = 0; m_scale = 1.0; m_offset = 0;
+// 5960 leaves the buffers alone; Theseus zeroes them so the first frame is flat.
+CAudioVisualizer::CAudioVisualizer()
 {
-	memset(m_pcmLeft, 0, sizeof(m_pcmLeft));
-	memset(m_pcmRight, 0, sizeof(m_pcmRight));
-	memset(m_fftLeft, 0, sizeof(m_fftLeft));
-	memset(m_fftRight, 0, sizeof(m_fftRight));
-	memset(m_pcmMono, 0, sizeof(m_pcmMono));
+	m_type = NULL;
+	m_channel = NULL;
+	m_source = NULL;
+	m_scale = 1.0f;
+	m_offset = 0.0f;
+	m_bFFTValid = false;
+	m_bMonoValid = false;
+
+	memset(m_pcmLeft, 0, sizeof (m_pcmLeft));
+	memset(m_pcmRight, 0, sizeof (m_pcmRight));
+	memset(m_fftLeft, 0, sizeof (m_fftLeft));
+	memset(m_fftRight, 0, sizeof (m_fftRight));
+	memset(m_pcmMono, 0, sizeof (m_pcmMono));
 }
 
+// CAudioVisualizer::~CAudioVisualizer()
+// Reconstructed from 5960 retail XBE @ 0x00063800:
+//     delete[] m_type; delete[] m_channel; if (m_source) m_source->Release();
 CAudioVisualizer::~CAudioVisualizer()
 {
 	delete [] m_type;
 	delete [] m_channel;
-
-	if (m_source != NULL)
+	if (m_source)
 		m_source->Release();
 }
 
-void CAudioVisualizer::Advance(float nSeconds)
+// CAudioVisualizer::Advance(dt)
+// Reconstructed from 5960 retail XBE @ 0x00063870:
+//     CNode::Advance(dt); if (m_source) m_source->Advance(dt);
+// The source clip is ticked from here because it isn't in the scene itself.
+void CAudioVisualizer::Advance(float dt)
 {
-	CNode::Advance(nSeconds);
-
-	if (m_source != NULL)
-		m_source->Advance(nSeconds);
+	CNode::Advance(dt);
+	if (m_source)
+		m_source->Advance(dt);
 }
 
+// Theseus: 5960 has no mono mix. Average of the two channels, cached per frame.
 short* CAudioVisualizer::GetMonoPCM()
 {
-	if (!m_bMonoValid)
-	{
-		for (int i = 0; i < 256; i += 1)
-			m_pcmMono[i] = (short)(((int)m_pcmLeft[i] + (int)m_pcmRight[i]) / 2);
-		m_bMonoValid = true;
-	}
+	if (m_bMonoValid)
+		return m_pcmMono;
+
+	for (int i = 0; i < 256; i++)
+		m_pcmMono[i] = (short)((m_pcmLeft[i] + m_pcmRight[i]) / 2);
+	m_bMonoValid = true;
 	return m_pcmMono;
 }
 
-void CAudioVisualizer::CalcSpectrum(short* pcm, short* fft)
+// CAudioVisualizer::CalcSpectrum(pcm, bins)
+// Reconstructed from 5960 retail XBE @ 0x000638a0:
+//     if (!state) state = fft_init(); fft_perform(pcm, power, state);
+//     for (i = 0; i < 129; i++) bins[i] = sqrt(power[i]) * (1/256);
+// 129 bins land in a 128 short array, same as 5960: the last one spills into
+// whatever follows (the right channel's first bin, or the valid flag).
+void CAudioVisualizer::CalcSpectrum(short* pcm, short* bins)
 {
-	static fft_state *state = NULL;
-	float buf[FFT_BUFFER_SIZE / 2 + 1];
+	static fft_state* s_fft = NULL;
+	const int nBins = FFT_BUFFER_SIZE / 2 + 1;
+	float power[nBins];
 
-	if (!state)
-		state = fft_init();
+	if (s_fft == NULL)
+		s_fft = fft_init();
+	fft_perform(pcm, power, s_fft);
 
-	fft_perform(pcm, buf, state);
-
-	for (int i = 0; i < FFT_BUFFER_SIZE / 2 + 1; i += 1)
+	for (int i = 0; i < nBins; i++)
 	{
-		buf[i] = sqrtf(buf[i]) / FFT_BUFFER_SIZE;
-		fft[i] = (short)buf[i];
+		power[i] = sqrtf(power[i]) / FFT_BUFFER_SIZE;
+		bins[i] = (short)power[i];
 	}
 }
 
+// CAudioVisualizer::UpdateSpectrum()
+// Reconstructed from 5960 retail XBE @ 0x00063900:
+//     if (!m_bFFTValid) { CalcSpectrum(left); CalcSpectrum(right); m_bFFTValid = 1; }
 void CAudioVisualizer::UpdateSpectrum()
 {
-	if (m_bFFTValid)
-		return;
-
-	CalcSpectrum(m_pcmLeft, m_fftLeft);
-	CalcSpectrum(m_pcmRight, m_fftRight);
-
-	m_bFFTValid = true;
+	if (!m_bFFTValid)
+	{
+		CalcSpectrum(m_pcmLeft, m_fftLeft);
+		CalcSpectrum(m_pcmRight, m_fftRight);
+		m_bFFTValid = true;
+	}
 }
 
-// Helper pixel-set with bounds checking
-static void VizSetPixel(CSurfx* pSurfx, int x, int y, BYTE color)
+// Clipped single pixel. 5960 writes the analyzer's pixels unclipped; the
+// curve overlay's 2x2 dot (0x640a0) clips each of its four the same way.
+static void VizPlot(CSurfx* surface, int x, int y, BYTE color)
 {
-	if (x < 0 || y < 0 || x >= pSurfx->m_nWidth || y >= pSurfx->m_nHeight)
-		return;
-	*pSurfx->Pixel(x, y) = color;
+	if (x >= 0 && y >= 0 && x < surface->m_nWidth && y < surface->m_nHeight)
+		*surface->Pixel(x, y) = color;
 }
 
-static void VizSetPixel2(CSurfx* pSurfx, int x, int y, BYTE color)
+static void VizPlot2x2(CSurfx* surface, int x, int y, BYTE color)
 {
-	VizSetPixel(pSurfx, x, y, color);
-	VizSetPixel(pSurfx, x + 1, y, color);
-	VizSetPixel(pSurfx, x + 1, y + 1, color);
-	VizSetPixel(pSurfx, x, y + 1, color);
+	VizPlot(surface, x, y, color);
+	VizPlot(surface, x + 1, y, color);
+	VizPlot(surface, x + 1, y + 1, color);
+	VizPlot(surface, x, y + 1, color);
 }
 
-#define viz_mag(s) ((float)samples[(int)(s * nSamples) * 2 + lrc] / 32767.0f)
-
-void CAudioVisualizer::RenderDynamicTexture(CSurfx* pSurfx)
+// Clamped byte from a log level, as the analyzer bars use it.
+static BYTE VizLevel(float n)
 {
-	// Desktop music playback goes through Mix_PlayMusic (CMP3Pump /
-	// CMusicCollection), not the CAudioClip API the Xbox path uses, so the
-	// scene's m_source CAudioClip never enters TRANSPORT_PLAY. The
-	// Mix_SetPostMix ring captures every mixed channel anyway; just pull
-	// from it whenever the visualizer ticks. Silence reads as zeros and
-	// draws a flat scope, which is the right behaviour when nothing is
-	// playing.
+	if (n <= 0.0f)
+		return 0;
+	if (n >= 255.0f)
+		return 255;
+	return (BYTE)n;
+}
+
+// CAudioVisualizer::RenderDynamicTexture(surface)
+// Reconstructed from 5960 retail XBE @ 0x00063940 (1363 bytes). 5960 bails
+// unless the source is a playing AudioClip with samples, copies up to 256
+// stereo frames in (zero filling the rest), clears both cache flags, clamps
+// the count to the surface height, picks the channel from m_channel and the
+// style from m_type's first letter, then draws:
+//   line: one Line per row, x = w/2 + (sample * w >> 16).
+//   spinner: a stretched waveform rotated by g_now * 0.2, w steps over [0, 1].
+//   analyzer: log levels of both spectra (left reversed, then right), peaks
+//     that fall 2 a frame, bars fading from 255 down, then RenderEffect1 and 2.
+// Full walk through in docs/decomp/AudioVisualizer.md. Theseus differences:
+// samples come from the desktop mixer every frame, the circle style (absent
+// from 5960) is drawn, the analyzer takes log(level + 1) and clips the peak
+// dot, and the spinner skips 5960's unused rand() call.
+void CAudioVisualizer::RenderDynamicTexture(CSurfx* surface)
+{
 	DashAudio_GetPCMSamples(m_pcmLeft, m_pcmRight, 256);
-
-	int nSamples = 256;
 	m_bMonoValid = false;
 	m_bFFTValid = false;
 
-	// Build interleaved buffer for the mag() macro
-	short samples[512];
-	for (int i = 0; i < nSamples; i++) {
-		samples[i * 2]     = m_pcmLeft[i];
-		samples[i * 2 + 1] = m_pcmRight[i];
-	}
+	const int w = surface->m_nWidth;
+	const int h = surface->m_nHeight;
+	int nFrames = 256;
+	if (nFrames > h)
+		nFrames = h;
 
-	if (nSamples > pSurfx->m_nHeight)
-		nSamples = pSurfx->m_nHeight;
+	// One channel, picked by m_channel.
+	const short* pcm = m_pcmLeft;
+	if (m_channel != NULL && (m_channel[0] == 'r' || m_channel[0] == 'R'))
+		pcm = m_pcmRight;
 
-	int lrc = 0;
-	if (m_channel != NULL)
+	TCHAR style = (m_type != NULL) ? m_type[0] : 0;
+	if (style >= 'A' && style <= 'Z')
+		style += 'a' - 'A';
+
+	const float now = (float)TheseusGetNow();
+
+	if (style == 's')
 	{
-		if (m_channel[0] == 'r' || m_channel[0] == 'R')
-			lrc = 1;
-	}
+		const int xMid = w / 2;
+		const int yMid = h / 2;
+		const float dx = 1.0f / (float)w;
+		const float c = cosf(now * 0.2f);
+		const float s = sinf(now * 0.2f);
+		float xPrev = 0.0f;
+		float yPrev = 0.0f;
 
-	int nType = 0;
-	if (m_type != NULL)
-	{
-		switch (m_type[0])
+		for (float t = 0.0f; t <= 1.0f; t += dx)
 		{
-		case 's': case 'S': nType = 1; break; // spinner
-		case 'c': case 'C': nType = 2; break; // circle
-		case 'a': case 'A': nType = 3; break; // analyzer
+			int iFrame = (int)(t * nFrames);
+			if (iFrame >= nFrames)
+				iFrame = nFrames - 1;	// t can land on exactly 1.0
+			float amp = (float)pcm[iFrame] / 32767.0f * m_scale + m_offset;
+			float along = 2.1f * (t - 0.5f);
+			float x = c * along + s * amp;
+			float y = -c * amp + s * along;
+
+			if (t != 0.0f)
+			{
+				surface->Line(xMid + (int)(xPrev * xMid), yMid + (int)(yPrev * yMid),
+					xMid + (int)(x * xMid), yMid + (int)(y * yMid), 255);
+			}
+			xPrev = x;
+			yPrev = y;
 		}
 	}
-
-	float t = (float)TheseusGetNow();
-
-	switch (nType)
+	else if (style == 'c')
 	{
-	case 0: // Line Scope
+		// Theseus: a half circle of the waveform, mirrored left and right.
+		const int xMid = w / 2;
+		const int yMid = h / 2;
+		const float dx = 1.0f / (float)w;
+		float xPrev = 0.0f;
+		float yPrev = 0.0f;
+		int iFrame = 0;
+
+		for (float t = 0.0f; t <= 1.0f; t += dx, iFrame++)
 		{
-			int xCenter = pSurfx->m_nWidth / 2;
-			int xp = xCenter;
-			int yp = 0;
+			float r = (float)pcm[iFrame < 256 ? iFrame : 255] / 32767.0f * m_scale + m_offset;	// past 256 columns, hold the last frame
+			float angle = t * 3.14159265f;
+			float x = r * sinf(angle);
+			float y = r * cosf(angle);
 
-			for (int y = 0; y < nSamples; y += 1)
+			if (iFrame > 0)
 			{
-				long s = (((long)samples[y * 2 + lrc]) * pSurfx->m_nWidth) >> 16;
-				int x = xCenter + (int)s;
-				pSurfx->Line(xp, yp, x, y, 255);
-				xp = x;
-				yp = y;
+				surface->Line(xMid + (int)(xPrev * xMid), yMid + (int)(yPrev * yMid),
+					xMid + (int)(x * xMid), yMid + (int)(y * yMid), 255);
+				surface->Line(xMid - (int)(xPrev * xMid), yMid + (int)(yPrev * yMid),
+					xMid - (int)(x * xMid), yMid + (int)(y * yMid), 255);
 			}
+			xPrev = x;
+			yPrev = y;
 		}
-		break;
+	}
+	else if (style == 'a')
+	{
+		static int s_peak[256];
+		BYTE level[256];
 
-	case 1: // Spinner Scope
+		UpdateSpectrum();
+
+		// Left spectrum high to low across the first half, right low to high after.
+		for (int i = 0; i < 128; i++)
+			level[i] = VizLevel(logf((float)(m_fftLeft[127 - i] + 1)) * 8.0f);
+		for (int i = 128; i < 256; i++)
+			level[i] = VizLevel(logf((float)(m_fftRight[i - 128] + 1)) * 8.0f);
+
+		for (int i = 0; i < 256; i++)
 		{
-			int xCenter = pSurfx->m_nWidth / 2;
-			int yCenter = pSurfx->m_nHeight / 2;
-			float step = 1.0f / (float)pSurfx->m_nWidth;
-			float firstX = 0, firstY = 0;
-			float prevX = 0, prevY = 0;
-
-			float B0 = cosf(t * 0.2f);
-			float B1 = sinf(t * 0.2f);
-
-			for (float s = 0.0f; s <= 1.0f; s += step)
-			{
-				float C0 = viz_mag(s) * m_scale + m_offset;
-				float C1 = 2.1f * (s - 0.5f);
-
-				float X0 = B0 * C1 + B1 * C0;
-				float Y0 = -B0 * C0 + B1 * C1;
-
-				if (s == 0.0f)
-				{
-					firstX = X0;
-					firstY = Y0;
-				}
-				else
-				{
-					pSurfx->Line(xCenter + (int)(prevX * xCenter), yCenter + (int)(prevY * yCenter),
-						xCenter + (int)(X0 * xCenter), yCenter + (int)(Y0 * yCenter), 255);
-				}
-
-				prevX = X0;
-				prevY = Y0;
-			}
+			s_peak[i] = (s_peak[i] > 2) ? s_peak[i] - 2 : 0;
+			if (s_peak[i] < level[i] * 2)
+				s_peak[i] = level[i] * 2;
 		}
-		break;
 
-	case 2: // Circle Scope (re-enabled from Xbox #if 0)
+		for (int x = 0; x < w; x++)
 		{
-			int xCenter = pSurfx->m_nWidth / 2;
-			int yCenter = pSurfx->m_nHeight / 2;
-			float step = 1.0f / (float)pSurfx->m_nWidth;
-			float prevX2 = 0, prevY2 = 0;
-			bool first = true;
+			int iBand = (x * 256) / w;
 
-			int i2 = 0;
-			for (float s = 0.0f; s <= 1.0f; s += step, i2 += 1)
-			{
-				float sample = (float)samples[i2 * 2 + lrc] / 32767.0f;
-				float C0 = sample * m_scale + m_offset;
-				float C1 = s * 3.14159265f; // PI
+			float bar = ((float)level[iBand] * (float)h) / 256.0f;
+			if ((int)bar > h)
+				bar = (float)h;
+			BYTE shade = 255;
+			for (int y = h - (int)bar; y < h; y++)
+				*surface->Pixel(x, y) = shade--;
 
-				float X0 = C0 * sinf(C1);
-				float Y0 = C0 * cosf(C1);
-
-				if (!first)
-				{
-					pSurfx->Line(xCenter + (int)(prevX2 * xCenter), yCenter + (int)(prevY2 * yCenter),
-						xCenter + (int)(X0 * xCenter), yCenter + (int)(Y0 * yCenter), 255);
-					pSurfx->Line(xCenter - (int)(prevX2 * xCenter), yCenter + (int)(prevY2 * yCenter),
-						xCenter - (int)(X0 * xCenter), yCenter + (int)(Y0 * yCenter), 255);
-				}
-				first = false;
-				prevX2 = X0;
-				prevY2 = Y0;
-			}
+			float peak = (float)s_peak[iBand] / 2.0f;
+			peak = (peak * (float)h) / 256.0f;
+			VizPlot(surface, x, h - (int)peak, 255);
 		}
-		break;
 
-	case 3: // Spectrum Analyzer
+		RenderEffect1(surface);
+		RenderEffect2(surface);
+	}
+	else
+	{
+		const int xMid = w / 2;
+		int xPrev = xMid;
+		int yPrev = 0;
+
+		for (int y = 0; y < nFrames; y++)
 		{
-			UpdateSpectrum();
-
-			static int peak_buf[256];
-			BYTE spectrum[256];
-
-			int i;
-			for (i = 0; i < 128; i += 1)
-			{
-				float n = logf((float)(m_fftLeft[127 - i] + 1)) * 8.0f;
-				if (n <= 0.0f)
-					spectrum[i] = 0;
-				else if (n >= 255.0f)
-					spectrum[i] = 255;
-				else
-					spectrum[i] = (BYTE)n;
-			}
-
-			for (; i < 256; i += 1)
-			{
-				float n = logf((float)(m_fftRight[i - 128] + 1)) * 8.0f;
-				if (n <= 0.0f)
-					spectrum[i] = 0;
-				else if (n >= 255.0f)
-					spectrum[i] = 255;
-				else
-					spectrum[i] = (BYTE)n;
-			}
-
-			for (i = 0; i < 256; i += 1)
-			{
-				if (peak_buf[i] > 2)
-					peak_buf[i] -= 2;
-				else
-					peak_buf[i] = 0;
-
-				int y = spectrum[i] * 2;
-				if (peak_buf[i] < y)
-					peak_buf[i] = y;
-			}
-
-			int nWidth = pSurfx->m_nWidth;
-			for (int x = 0; x < nWidth; x += 1)
-			{
-				float nHeight = ((float)spectrum[(x * 256) / nWidth] * (float)pSurfx->m_nHeight) / 256.0f;
-				if ((int)nHeight > pSurfx->m_nHeight) nHeight = (float)pSurfx->m_nHeight;
-
-				BYTE bColor = 255;
-				for (int y = pSurfx->m_nHeight - (int)nHeight; y < pSurfx->m_nHeight; y += 1, bColor -= 1)
-					*pSurfx->Pixel(x, y) = bColor;
-
-				nHeight = (float)peak_buf[(x * 256) / nWidth];
-				nHeight /= 2.0f;
-				nHeight = (nHeight * (float)pSurfx->m_nHeight) / 256.0f;
-				int peakY = pSurfx->m_nHeight - (int)nHeight;
-				if (peakY >= 0 && peakY < pSurfx->m_nHeight)
-					*pSurfx->Pixel(x, peakY) = 255;
-			}
-
-			RenderEffect1(pSurfx);
-			RenderEffect2(pSurfx);
+			int x = xMid + (int)(((long)pcm[y] * w) >> 16);
+			surface->Line(xPrev, yPrev, x, y, 255);
+			xPrev = x;
+			yPrev = y;
 		}
-		break;
 	}
 }
 
-// Beat detection overlay
-#define BASS_EXT_MEMORY 10
-
-static struct {
-	int max_recent;
-	int max_old;
-	int time_last_max;
-	int min_recent;
-	int min_old;
-	int time_last_min;
-	int activated;
-} s_bass_info = {};
-
-void CAudioVisualizer::RenderEffect1(CSurfx* pSurfx)
+// Bass tracker for the flash. Field order follows the 5960 globals at
+// 0x17e6f4..0x17e70c; the frame counter is 0x188f50.
+static struct
 {
-	static int t = 0;
+	int hiNow, hiPrev, hiFrame;
+	int loNow, loPrev, loFrame;
+	bool lit;
+} s_bass;
+
+// CAudioVisualizer::RenderEffect1(surface)
+// Reconstructed from 5960 retail XBE @ 0x00063ef0. Decompile:
+//     bass = sum(fftRight[0..4] >> 4) + sum(fftLeft[0..4] >> 4)) / 10;
+//     track the max and min, rolling each over every 10 frames;
+//     if (bass > (maxOld*6 + minOld*4)/10 && !lit) { fill surface 0xff; lit = 1; }
+//     frame++; if (bass < (maxOld*4 + minOld*6)/10 && lit) lit = 0;
+// A beat flashes the whole surface white once, then waits for the bass to drop.
+void CAudioVisualizer::RenderEffect1(CSurfx* surface)
+{
+	static int s_frame = 0;
 
 	int bass = 0;
-	const int step = 5;
-	for (int i = 0; i < step; i += 1)
+	for (int i = 0; i < 5; i++)
 		bass += (m_fftLeft[i] >> 4) + (m_fftRight[i] >> 4);
-	bass /= (step * 2);
+	bass /= 10;
 
-	if (bass > s_bass_info.max_recent)
-		s_bass_info.max_recent = bass;
+	if (bass > s_bass.hiNow)
+		s_bass.hiNow = bass;
+	if (bass < s_bass.loNow)
+		s_bass.loNow = bass;
 
-	if (bass < s_bass_info.min_recent)
-		s_bass_info.min_recent = bass;
-
-	if (t - s_bass_info.time_last_max > BASS_EXT_MEMORY)
+	if (s_frame - s_bass.hiFrame > 10)
 	{
-		s_bass_info.max_old = s_bass_info.max_recent;
-		s_bass_info.max_recent = 0;
-		s_bass_info.time_last_max = t;
+		s_bass.hiPrev = s_bass.hiNow;
+		s_bass.hiNow = 0;
+		s_bass.hiFrame = s_frame;
+	}
+	if (s_frame - s_bass.loFrame > 10)
+	{
+		s_bass.loPrev = s_bass.loNow;
+		s_bass.loNow = 0;
+		s_bass.loFrame = s_frame;
 	}
 
-	if (t - s_bass_info.time_last_min > BASS_EXT_MEMORY)
+	int on = (s_bass.hiPrev * 6 + s_bass.loPrev * 4) / 10;
+	int off = (s_bass.hiPrev * 4 + s_bass.loPrev * 6) / 10;
+
+	if (!s_bass.lit && bass > on)
 	{
-		s_bass_info.min_old = s_bass_info.min_recent;
-		s_bass_info.min_recent = 0;
-		s_bass_info.time_last_min = t;
+		memset(surface->m_pels, 0xff, surface->m_nWidth * surface->m_nHeight);
+		s_bass.lit = true;
 	}
-
-	if (bass > (s_bass_info.max_old * 6 + s_bass_info.min_old * 4) / 10 && s_bass_info.activated == 0)
-	{
-		FillMemory(pSurfx->m_pels, pSurfx->m_nWidth * pSurfx->m_nHeight, 255);
-		s_bass_info.activated = 1;
-	}
-
-	if (bass < (s_bass_info.max_old * 4 + s_bass_info.min_old * 6) / 10 && s_bass_info.activated == 1)
-		s_bass_info.activated = 0;
-
-	t += 1;
+	s_frame++;
+	if (s_bass.lit && bass < off)
+		s_bass.lit = false;
 }
 
-// Waveform curve overlay effects
-static struct { int i; float *f; } s_cosw = { 0, NULL };
-static struct { int i; float *f; } s_sinw = { 0, NULL };
+// CAudioVisualizer::RenderEffect2(surface)
+// Reconstructed from 5960 retail XBE @ 0x00064130 (1761 bytes). Every 3 to
+// 8 seconds the style steps through five (0..4, starting from -1). Each
+// style draws the two channels' waveforms (high byte of every fifth frame,
+// scaled by 50 * h >> 12) in color 128 every 4 pixels: 0 one line, 1 two
+// lines apart, 2 four (two across, two down), 3 and 4 bent round a half
+// circle from cos/sin tables of w entries (3 keeps them outside). 3 and 4
+// close the circle with one more line. After that two 64 dot curves (2x2,
+// color 255) trace a slowly turning figure eight from a running counter.
+// Constants from 0x2c124..0x2c160 and 0x176034..0x176040. Theseus picks the
+// next change with rnd() and draws the curves at amplitude 50 / 256.
+static int s_waveStyle = -1;
+static int s_waveTableW = 0;
+static float* s_waveCos = NULL;
+static float* s_waveSin = NULL;
 
-static int s_spectral_amplitude = 50;
-static int s_spectral_shift = 30;
-static int s_mode_spectre = -1;
-static BYTE s_spectral_color = 128;
-
-void CAudioVisualizer::RenderEffect2(CSurfx* pSurfx)
+void CAudioVisualizer::RenderEffect2(CSurfx* surface)
 {
-	int halfheight, halfwidth;
-	float old_y1, old_y2;
-	float y1 = (float)((((m_pcmLeft[0] + m_pcmRight[0]) >> 9) * s_spectral_amplitude * pSurfx->m_nHeight) >> 12);
-	float y2 = (float)((((m_pcmLeft[0] + m_pcmRight[0]) >> 9) * s_spectral_amplitude * pSurfx->m_nHeight) >> 12);
-	const int density_lines = 5;
-	const int step = 4;
-	const int shift = (s_spectral_shift * pSurfx->m_nHeight) >> 8;
+	const int w = surface->m_nWidth;
+	const int h = surface->m_nHeight;
+	const int amp = 50;
+	const int gap = (30 * h) >> 8;
+	const BYTE color = 128;
+	const int dx = 4;
 
-	static XTIME timeToChange = 0.0f;
-	if (s_mode_spectre < 0 || TheseusGetNow() >= timeToChange)
+	static XTIME s_nextStyle = 0.0f;
+	if (s_waveStyle < 0 || TheseusGetNow() >= s_nextStyle)
 	{
-		s_mode_spectre += 1;
-		timeToChange = TheseusGetNow() + 3.0f + rnd(5.0f);
+		s_waveStyle++;
+		s_nextStyle = TheseusGetNow() + 3.0f + rnd(5.0f);
+	}
+	if ((UINT)s_waveStyle > 4)
+		s_waveStyle = 0;
+
+	// Tables are rebuilt when the surface width changes; only every 4th entry is used.
+	if (s_waveTableW != w || s_waveCos == NULL || s_waveSin == NULL)
+	{
+		delete [] s_waveCos;
+		delete [] s_waveSin;
+		s_waveTableW = w;
+		s_waveCos = new float[w];
+		s_waveSin = new float[w];
+		for (int i = 0; i < w; i += dx)
+			s_waveCos[i] = cosf((float)i / w * 3.14159265f + 3.14159265f / 2.0f);
+		for (int i = 0; i < w; i += dx)
+			s_waveSin[i] = sinf((float)i / w * 3.14159265f + 3.14159265f / 2.0f);
 	}
 
-	if ((UINT)s_mode_spectre > 4)
-		s_mode_spectre = 0;
-
-	if (s_cosw.i != pSurfx->m_nWidth || s_sinw.i != pSurfx->m_nWidth)
+	float yA = (float)((((m_pcmLeft[0] + m_pcmRight[0]) >> 9) * amp * h) >> 12);
+	float yB = yA;
+	if (s_waveStyle == 3 && yA < 0)
 	{
-		delete [] s_cosw.f;
-		delete [] s_sinw.f;
-		s_sinw.f = s_cosw.f = NULL;
-		s_sinw.i = s_cosw.i = 0;
+		yA = 0;
+		yB = 0;
 	}
 
-	const float halfPI = 3.14159265f / 2.0f;
-	const float fullPI = 3.14159265f;
+	const int hh = h >> 1;
+	const int hw = w >> 1;
 
-	if (s_cosw.i == 0 || s_cosw.f == NULL)
+	for (int i = dx; i < w; i += dx)
 	{
-		s_cosw.i = pSurfx->m_nWidth;
-		s_cosw.f = new float[pSurfx->m_nWidth];
-		for (int i = 0; i < pSurfx->m_nWidth; i += step)
-			s_cosw.f[i] = cosf((float)i / pSurfx->m_nWidth * fullPI + halfPI);
-	}
+		float yAPrev = yA;
+		float yBPrev = yB;
+		int iFrame = (i << 8) / w / 5;
+		yA = (float)(((m_pcmRight[iFrame] >> 8) * amp * h) >> 12);
+		yB = (float)(((m_pcmLeft[iFrame] >> 8) * amp * h) >> 12);
 
-	if (s_sinw.i == 0 || s_sinw.f == NULL)
-	{
-		s_sinw.i = pSurfx->m_nWidth;
-		s_sinw.f = new float[pSurfx->m_nWidth];
-		for (int i = 0; i < pSurfx->m_nWidth; i += step)
-			s_sinw.f[i] = sinf((float)i / pSurfx->m_nWidth * fullPI + halfPI);
-	}
-
-	if (s_mode_spectre == 3)
-	{
-		if (y1 < 0) y1 = 0;
-		if (y2 < 0) y2 = 0;
-	}
-
-	halfheight = pSurfx->m_nHeight >> 1;
-	halfwidth  = pSurfx->m_nWidth >> 1;
-
-	for (int i = step; i < pSurfx->m_nWidth; i += step)
-	{
-		old_y1 = y1;
-		old_y2 = y2;
-
-		y1 = (float)(((m_pcmRight[(i << 8) / pSurfx->m_nWidth / density_lines] >> 8) * s_spectral_amplitude * pSurfx->m_nHeight) >> 12);
-		y2 = (float)(((m_pcmLeft[(i << 8) / pSurfx->m_nWidth / density_lines] >> 8) * s_spectral_amplitude * pSurfx->m_nHeight) >> 12);
-
-		switch (s_mode_spectre)
+		switch (s_waveStyle)
 		{
 		case 0:
-			pSurfx->Line(i-step,(int)(halfheight+shift+old_y2),
-			     i,(int)(halfheight+shift+y2), s_spectral_color);
+			surface->Line(i - dx, (int)(hh + gap + yBPrev), i, (int)(hh + gap + yB), color);
 			break;
 
 		case 1:
-			pSurfx->Line(i-step,(int)(halfheight+shift+old_y1),
-			     i,(int)(halfheight+shift+y1), s_spectral_color);
-			pSurfx->Line(i-step,(int)(halfheight-shift+old_y2),
-			     i,(int)(halfheight-shift+y2), s_spectral_color);
+			surface->Line(i - dx, (int)(hh + gap + yAPrev), i, (int)(hh + gap + yA), color);
+			surface->Line(i - dx, (int)(hh - gap + yBPrev), i, (int)(hh - gap + yB), color);
 			break;
 
 		case 2:
-			pSurfx->Line(i-step,(int)(halfheight+shift+old_y1),
-			     i,(int)(halfheight+shift+y1), s_spectral_color);
-			pSurfx->Line(i-step,(int)(halfheight-shift+old_y1),
-			     i,(int)(halfheight-shift+y1), s_spectral_color);
-			pSurfx->Line((int)(halfwidth+shift+old_y2),i-step,
-			     (int)(halfwidth+shift+y2),i, s_spectral_color);
-			pSurfx->Line((int)(halfwidth-shift+old_y2),i-step,
-			     (int)(halfwidth-shift+y2),i, s_spectral_color);
+			surface->Line(i - dx, (int)(hh + gap + yAPrev), i, (int)(hh + gap + yA), color);
+			surface->Line(i - dx, (int)(hh - gap + yAPrev), i, (int)(hh - gap + yA), color);
+			surface->Line((int)(hw + gap + yBPrev), i - dx, (int)(hw + gap + yB), i, color);
+			surface->Line((int)(hw - gap + yBPrev), i - dx, (int)(hw - gap + yB), i, color);
 			break;
 
 		case 3:
-			if (y1 < 0) y1 = 0;
-			if (y2 < 0) y2 = 0;
-			// FALL THROUGH
-
+			if (yA < 0)
+				yA = 0;
+			if (yB < 0)
+				yB = 0;
+			// fall through
 		case 4:
-			pSurfx->Line(
-				(int)(halfwidth  + s_cosw.f[i - step] * (shift + old_y1)),
-				(int)(halfheight + s_sinw.f[i - step] * (shift + old_y1)),
-				(int)(halfwidth  + s_cosw.f[i]        * (shift + y1)),
-				(int)(halfheight + s_sinw.f[i]        * (shift + y1)),
-				s_spectral_color);
-			pSurfx->Line(
-				(int)(halfwidth  - s_cosw.f[i - step] * (shift + old_y2)),
-				(int)(halfheight + s_sinw.f[i - step] * (shift + old_y2)),
-				(int)(halfwidth  - s_cosw.f[i]        * (shift + y2)),
-				(int)(halfheight + s_sinw.f[i]        * (shift + y2)),
-				s_spectral_color);
+			surface->Line((int)(hw + s_waveCos[i - dx] * (gap + yAPrev)), (int)(hh + s_waveSin[i - dx] * (gap + yAPrev)),
+				(int)(hw + s_waveCos[i] * (gap + yA)), (int)(hh + s_waveSin[i] * (gap + yA)), color);
+			surface->Line((int)(hw - s_waveCos[i - dx] * (gap + yBPrev)), (int)(hh + s_waveSin[i - dx] * (gap + yBPrev)),
+				(int)(hw - s_waveCos[i] * (gap + yB)), (int)(hh + s_waveSin[i] * (gap + yB)), color);
 			break;
 		}
 	}
 
-	if (s_mode_spectre == 3 || s_mode_spectre == 4)
+	if (s_waveStyle == 3 || s_waveStyle == 4)
 	{
-		pSurfx->Line(
-			(int)(halfwidth  + s_cosw.f[pSurfx->m_nWidth - step] * (shift+y1)),
-			(int)(halfheight + s_sinw.f[pSurfx->m_nWidth - step] * (shift+y1)),
-			(int)(halfwidth  - s_cosw.f[pSurfx->m_nWidth - step] * (shift+y2)),
-			(int)(halfheight + s_sinw.f[pSurfx->m_nWidth - step] * (shift+y2)),
-			s_spectral_color);
+		int iLast = w - dx;
+		surface->Line((int)(hw + s_waveCos[iLast] * (gap + yA)), (int)(hh + s_waveSin[iLast] * (gap + yA)),
+			(int)(hw - s_waveCos[iLast] * (gap + yB)), (int)(hh + s_waveSin[iLast] * (gap + yB)), color);
 	}
 
-#define VIZ_CURVE_COLOR 255
-#define VIZ_CURVE_AMPLITUDE 50
-	static int x_curve = 0;
+	static int s_curveTick = 0;
+	const float size = 50.0f / 256;
+	int tick = s_curveTick;
 
-	// Curve overlay
+	for (int j = 0; j < 2; j++)
 	{
-		int i, j, k;
-		float v, vr;
-		float x, y;
-		float amplitude = (float)VIZ_CURVE_AMPLITUDE / 256;
-
-		for (j = 0; j < 2; j += 1)
+		const float v = 80.0f;
+		tick = s_curveTick;
+		for (int n = 0; n < 64; n++, tick++)
 		{
-			v = 80;
-			vr = 0.001f;
-			k = x_curve;
-			for (i = 0; i < 64; i += 1)
-			{
-				x = cosf((float)(k) / (v + v * j * 1.34f)) * pSurfx->m_nHeight * amplitude;
-				y = sinf((float)(k) / (1.756f * (v + v * j * 0.93f))) * pSurfx->m_nHeight * amplitude;
-				VizSetPixel2(pSurfx,
-					(int)(x * cosf((float)k * vr) + y * sinf((float)k * vr) + pSurfx->m_nWidth / 2),
-					(int)(x * sinf((float)k * vr) - y * cosf((float)k * vr) + pSurfx->m_nHeight / 2),
-					VIZ_CURVE_COLOR);
-				k++;
-			}
+			float cx = cosf((float)tick / (v + v * j * 1.34f)) * h * size;
+			float cy = sinf((float)tick / (1.756f * (v + v * j * 0.93f))) * h * size;
+			float spin = (float)tick * 0.001f;
+			VizPlot2x2(surface,
+				(int)(cx * cosf(spin) + cy * sinf(spin) + w / 2),
+				(int)(cx * sinf(spin) - cy * cosf(spin) + h / 2),
+				255);
 		}
-
-		x_curve = k;
 	}
+	s_curveTick = tick;
 }
 
 // ============================================================================
@@ -1954,28 +1901,50 @@ static void LoadDesktopIcons()
 	}
 }
 
+// The Memory blade's list on the desktop. Titles and saves come from the
+// desktop's UDATA scan (or an xemu image) instead of the console's device
+// enumeration; there's one device, no copies and no deletes. The layout,
+// scrolling and selection are rebuilt from the 5960 grid (vtable 0x000267b0,
+// 0x47e50..0x49840), see docs/decomp/SavedGameGrid.md.
 class CSavedGameGrid : public CNode
 {
 public:
-	CSavedGameGrid() : m_pod(NULL), m_podRing(NULL), m_podXboxLiveAccountsPanel(NULL),
-	                   m_XboxLiveAccountsIconPanel(NULL), m_iconBumpRing(NULL), m_iconArrow(NULL),
-	                   m_iconCheck(NULL), m_curGridItem(-1), m_podSavePanel(NULL), m_podSoundtrackPanel(NULL),
-	                   m_podHilite(NULL), m_MUheader(NULL), m_MUhiliteHeader(NULL), m_firstMURow(NULL),
-	                   m_header(NULL), m_hiliteHeader(NULL), m_firstRow(NULL), m_secondRow(NULL),
-	                   m_otherRow(NULL), m_renderIcons(false), m_iconsPerRow(4),
-	                   m_scroll(0.0f), m_curTitle(-1), m_curSavedGame(-1), m_smallIcon(NULL), m_SavedIconPanel(NULL),
-	                   m_SoundtrackIconPanel(NULL), m_iconRing(NULL), m_smallIconHilite(NULL),
-	                   m_smallIconSpacing(0.0f), m_iconRowScroll(0), m_moreUp(NULL), m_moreDown(NULL),
-	                   m_detachIcon(false), m_isActive(false), m_curDevUnit(-1),
-	                   m_copyProgress(0.0f), m_freeBlocks(0), m_gameBlocks(0), m_nPrefColumn(0),
-	                   m_deleteUserContent(false), m_enumDone(false),
-	                   m_nScrollTo(0.0f), m_timeScroll(0.0f) {}
+	CSavedGameGrid()
+	{
+		m_pod = m_podRing = m_podXboxLiveAccountsPanel = m_XboxLiveAccountsIconPanel = NULL;
+		m_iconBumpRing = m_iconArrow = m_iconCheck = NULL;
+		m_podSavePanel = m_podSoundtrackPanel = m_podHilite = NULL;
+		m_MUheader = m_MUhiliteHeader = m_firstMURow = NULL;
+		m_header = m_hiliteHeader = m_firstRow = m_secondRow = m_otherRow = NULL;
+		m_smallIcon = m_SavedIconPanel = m_SoundtrackIconPanel = NULL;
+		m_iconRing = m_smallIconHilite = m_moreUp = m_moreDown = NULL;
+
+		m_curTitle = -1;
+		m_curGridItem = -1;
+		m_curSavedGame = -1;
+		m_curDevUnit = -1;
+		m_iconsPerRow = 4;
+		m_renderIcons = false;
+		m_scroll = 0.0f;
+		m_smallIconSpacing = 0.0f;
+		m_iconRowScroll = 0;
+		m_detachIcon = false;
+		m_isActive = false;
+		m_copyProgress = 0.0f;
+		m_freeBlocks = 0;
+		m_gameBlocks = 0;
+		m_nPrefColumn = 0;
+		m_deleteUserContent = false;
+		m_enumDone = false;
+		m_nScrollTo = 0.0f;
+		m_timeScroll = 0.0f;
+	}
 
 	DECLARE_NODE(CSavedGameGrid, CNode)
 	DECLARE_NODE_PROPS()
 	DECLARE_NODE_FUNCTIONS()
 
-	// Properties
+	// Scene pieces the XAP hands over.
 	CNode* m_pod;
 	CNode* m_podRing;
 	CNode* m_podXboxLiveAccountsPanel;
@@ -1999,7 +1968,7 @@ public:
 	int m_iconsPerRow;
 	float m_scroll;
 	int m_curTitle;
-	int m_curSavedGame;  // Alpha compat: save index within a title
+	int m_curSavedGame;		// Theseus: alpha dash scripts read this
 	CNode* m_smallIcon;
 	CNode* m_SavedIconPanel;
 	CNode* m_SoundtrackIconPanel;
@@ -2018,15 +1987,24 @@ public:
 	int m_nPrefColumn;
 	bool m_deleteUserContent;
 	bool m_enumDone;
-	float m_nScrollTo;
-	float m_timeScroll;
+	float m_nScrollTo;		// 5960 +0xd4
+	float m_timeScroll;		// 5960 keeps a double at +0xd8; this one is a float
 
+	// CSavedGameGrid::Advance(dt)
+	// From 5960 @ 0x00047e50: nothing without a device or while hidden; the
+	// title list is refreshed (OnUpdatingTitlesBegin / End around it); and a
+	// running scroll eases toward its target over a quarter second,
+	// scroll = (1 - t) * scroll + t * target. The desktop lists once, on the
+	// calling thread, and sums the game blocks itself; 5960's copy, delete,
+	// device and free space upkeep has no desktop counterpart.
 	void Advance(float dt)
 	{
 		CNode::Advance(dt);
 		if (m_curDevUnit == -1 || !m_isActive)
 			return;
-		if (!m_enumDone) {
+
+		if (!m_enumDone)
+		{
 			m_enumDone = true;
 			CallFunction(this, _T("OnUpdatingTitlesBegin"));
 			EnumerateTitles();
@@ -2036,19 +2014,23 @@ public:
 				m_gameBlocks += (int)((s_titles[i].totalSizeBytes + XBOX_BLOCK_SIZE - 1) / XBOX_BLOCK_SIZE);
 			CallFunction(this, _T("OnUpdatingTitlesEnd"));
 		}
-		// Smooth scroll animation (from Xbox Advance)
-		if (m_timeScroll != 0.0f) {
-			float t = (float)(TheseusGetNow() - m_timeScroll) / 0.25f;
-			if (t >= 1.0f) { m_timeScroll = 0.0f; t = 1.0f; }
-			m_scroll = (1.0f - t) * m_scroll + t * m_nScrollTo;
+
+		if (m_timeScroll == 0.0f)
+			return;
+		float t = (float)(TheseusGetNow() - m_timeScroll) / 0.25f;
+		if (t >= 1.0f)
+		{
+			t = 1.0f;
+			m_timeScroll = 0.0f;
 		}
+		m_scroll = (1.0f - t) * m_scroll + t * m_nScrollTo;
 	}
 
-	// --- Rendering (adapted from Xbox CSavedGameGrid::Render/RenderLoop/RenderIconRow) ---
-
+	// Draws pNode under the current world transform times pMatrix.
 	static void RenderNodeAt(CNode* pNode, D3DXMATRIX* pMatrix)
 	{
-		if (!pNode) return;
+		if (pNode == NULL)
+			return;
 		TheseusPushWorld();
 		TheseusMultWorld(pMatrix);
 		TheseusUpdateWorld();
@@ -2056,232 +2038,283 @@ public:
 		TheseusPopWorld();
 	}
 
-	void RenderIconRow(D3DXMATRIX* pBaseMat, float y, int nTitle, int nFirstSave, int nTotalSaves)
+	// CSavedGameGrid::RenderIconRow(frame, y, title, first, count)
+	// From 5960 @ 0x00048690: up to iconsPerRow icons starting at item first,
+	// smallIconSpacing apart, each through SavedIconPanel with its image set
+	// for the texture lookup, and the ring on the selected one unless its
+	// icon is lifted out. The desktop takes a save's own SaveImage.xbx when
+	// the folder has one, else the title's, and rings with iconRing present
+	// (5960 checks smallIconHilite).
+	void RenderIconRow(D3DXMATRIX* pFrame, float y, int nTitle, int nFirst, int nCount)
 	{
-		if (!m_smallIcon || nTitle < 0 || nTitle >= s_titleCount) return;
-		int nLim = nFirstSave + m_iconsPerRow;
-		if (nLim > nTotalSaves) nLim = nTotalSaves;
+		if (m_smallIcon == NULL || nTitle < 0 || nTitle >= s_titleCount)
+			return;
+
+		int nEnd = nFirst + m_iconsPerRow;
+		if (nEnd > nCount)
+			nEnd = nCount;
+
+		DesktopTitle& title = s_titles[nTitle];
 		float x = 0.0f;
-		for (int i = nFirstSave; i < nLim; i++) {
-			D3DXMATRIX mat2;
-			D3DXMatrixTranslation(&mat2, x, y, 0.0f);
-			D3DXMatrixMultiply(&mat2, pBaseMat, &mat2);
-			// Set title image for icon texture lookup
-			// Try save-specific image first, fall back to title-level SaveImage.xbx
-			static char szImgBuf[512];
-			DesktopTitle& t = s_titles[nTitle];
-			if (i < t.saveCount) {
-				snprintf(szImgBuf, sizeof(szImgBuf), "E:\\UDATA\\%s\\%s\\SaveImage.xbx",
-				         t.titleID, t.saves[i].folderName);
-				// Check if save-specific image exists, fall back to title root
-				char hostPath[512];
-				snprintf(hostPath, sizeof(hostPath), "%s/UDATA/%s/%s/SaveImage.xbx", AppPath_Tree("Library"),
-				         t.titleID, t.saves[i].folderName);
-				struct stat _st;
-				if (stat(hostPath, &_st) != 0) {
-					snprintf(szImgBuf, sizeof(szImgBuf), "E:\\UDATA\\%s\\SaveImage.xbx", t.titleID);
-				}
-			} else {
-				strcpy(szImgBuf, "xboxlogo64.xbx");
+		for (int item = nFirst; item < nEnd; item++, x += m_smallIconSpacing)
+		{
+			D3DXMATRIX at;
+			D3DXMatrixTranslation(&at, x, y, 0.0f);
+			D3DXMatrixMultiply(&at, pFrame, &at);
+
+			static char s_szImage[512];
+			if (item >= title.saveCount)
+			{
+				strcpy(s_szImage, "xboxlogo64.xbx");
 			}
-			g_szCurTitleImage = szImgBuf;
-			RenderNodeAt(m_SavedIconPanel, &mat2);
+			else
+			{
+				char szHost[512];
+				snprintf(szHost, sizeof (szHost), "%s/UDATA/%s/%s/SaveImage.xbx", AppPath_Tree("Library"),
+					title.titleID, title.saves[item].folderName);
+				struct stat st;
+				if (stat(szHost, &st) == 0)
+					snprintf(s_szImage, sizeof (s_szImage), "E:\\UDATA\\%s\\%s\\SaveImage.xbx", title.titleID, title.saves[item].folderName);
+				else
+					snprintf(s_szImage, sizeof (s_szImage), "E:\\UDATA\\%s\\SaveImage.xbx", title.titleID);
+			}
+
+			g_szCurTitleImage = s_szImage;
+			RenderNodeAt(m_SavedIconPanel, &at);
 			g_szCurTitleImage = NULL;
-			// Highlight ring on selected icon
-			if (!m_detachIcon && m_iconRing && nTitle == m_curTitle && i == m_curGridItem)
-				RenderNodeAt(m_iconRing, &mat2);
-			x += m_smallIconSpacing;
+
+			if (!m_detachIcon && m_iconRing != NULL && nTitle == m_curTitle && item == m_curGridItem)
+				RenderNodeAt(m_iconRing, &at);
 		}
 	}
 
-	// RenderLoop: bRender=true draws, bRender=false returns Y offset of curTitle
+	// Places pNode at (x, y, z) in the grid's frame.
+	static void RenderInFrame(CNode* pNode, D3DXMATRIX* pFrame, float x, float y, float z)
+	{
+		D3DXMATRIX at;
+		D3DXMatrixTranslation(&at, x, y, z);
+		D3DXMatrixMultiply(&at, pFrame, &at);
+		RenderNodeAt(pNode, &at);
+	}
+
+	// CSavedGameGrid::RenderLoop(render)
+	// From 5960 @ 0x00048910. The frame is a -1.571 turn about -x times a
+	// 0.05942 scale. From y = scroll each title draws its pod (with the save
+	// panel, and podRing when it's selected with no item), its header (the
+	// highlighted one when selected) and name, then y -= 0.0092, the first
+	// icon row at x -0.3292 (y -= 0.2455), the second at -0.3301 and one more
+	// at -0.3412 (y -= 0.24499 each), and y -= 0.09 before the next title.
+	// Rows only draw while y - 0.25 < 0.5, and the loop stops below -1.25.
+	// Unselected titles draw at half strength. With render off it returns
+	// the selected title's offset from the top. The desktop has no device
+	// row, arrows or soundtrack row, swaps the selection ease for a straight
+	// half, draws the name with the stock text node and takes the pod image
+	// from its own title scan.
 	float RenderLoop(bool bRender)
 	{
-		D3DXMATRIX mat, mat2;
-		D3DXVECTOR3 v(-1.0f, 0.0f, 0.0f);
-		D3DXMatrixRotationAxis(&mat, &v, -1.571f);
-		D3DXMatrixScaling(&mat2, 0.05942f, 0.05942f, 0.05942f);
-		D3DXMatrixMultiply(&mat, &mat, &mat2);
+		const float xPod = -0.3292f, zPod = -0.0271f, zRow = 0.01144f;
+		const float scale = 0.05942f;
 
+		D3DXMATRIX frame, scaleMat;
+		D3DXVECTOR3 axis(-1.0f, 0.0f, 0.0f);
+		D3DXMatrixRotationAxis(&frame, &axis, -1.571f);
+		D3DXMatrixScaling(&scaleMat, scale, scale, scale);
+		D3DXMatrixMultiply(&frame, &frame, &scaleMat);
+
+		const float yLimit = -1.25f;
 		float y = m_scroll;
-		float yLimit = -1.25f;
-		int nTitleCount = s_titleCount;
 
-		for (int nTitle = 0; nTitle < nTitleCount && (!bRender || y > yLimit); nTitle++) {
-			float nEffectAlphaSave = g_nEffectAlpha;
-			int nSaves = (nTitle >= 0 && nTitle < s_titleCount) ? s_titles[nTitle].saveCount : 0;
-			int nRowCount = (nSaves + m_iconsPerRow - 1) / m_iconsPerRow;
-			int nIconRowScroll = (nTitle == m_curTitle) ? m_iconRowScroll : 0;
-			if (nTitle < m_curTitle) {
-				nIconRowScroll = nRowCount - 3;
-				if (nIconRowScroll < 0) nIconRowScroll = 0;
+		for (int nTitle = 0; nTitle < s_titleCount && (!bRender || y > yLimit); nTitle++)
+		{
+			const bool bSelected = (nTitle == m_curTitle);
+			const float alphaSave = g_nEffectAlpha;
+
+			const int nSaves = s_titles[nTitle].saveCount;
+			const int nRows = (nSaves + m_iconsPerRow - 1) / m_iconsPerRow;
+			int nRowScroll = 0;
+			if (bSelected)
+				nRowScroll = m_iconRowScroll;
+			else if (nTitle < m_curTitle)
+				nRowScroll = (nRows - 3 > 0) ? nRows - 3 : 0;	// titles above show their last rows
+
+			if (!bRender)
+			{
+				if (bSelected)
+					return y - m_scroll;
+			}
+			else
+			{
+				g_nEffectAlpha *= bSelected ? 1.0f : 0.5f;
 			}
 
-			if (bRender) {
-				// Dim non-selected titles
-				float sel = (nTitle == m_curTitle) ? 1.0f : 0.0f;
-				g_nEffectAlpha *= 0.5f + 0.5f * sel;
-			} else if (nTitle == m_curTitle) {
-				return y - m_scroll;
-			}
+			const bool bVisible = bRender && y - 0.25f < 0.5f;
 
-			// Render title pod
-			if (bRender && y - 0.25f < 0.5f && m_pod) {
-				static char szPodImg[512];
-				if (nTitle >= 0 && nTitle < s_titleCount && s_titles[nTitle].hasImage) {
-					// imagePath is already host-relative (set in
-					// ProcessTitleEntry). either Library/UDATA/.../TitleImage.xbx
-					// for real Xbox saves or Configs/icons/<TitleID>.{jpg,png}
-					// for synthesized title pods. Pass it through directly
-					// instead of rebuilding an Xbox-style path that only
-					// resolves for the .xbx case.
-					strncpy(szPodImg, s_titles[nTitle].imagePath, sizeof(szPodImg) - 1);
-					szPodImg[sizeof(szPodImg) - 1] = 0;
-				} else {
-					strcpy(szPodImg, "xboxlogo128.xbx");
+			if (bVisible && m_pod != NULL)
+			{
+				static char s_szPodImage[512];
+				if (s_titles[nTitle].hasImage)
+				{
+					// Already host relative: the title's TitleImage.xbx or a Configs/icons picture.
+					strncpy(s_szPodImage, s_titles[nTitle].imagePath, sizeof (s_szPodImage) - 1);
+					s_szPodImage[sizeof (s_szPodImage) - 1] = 0;
 				}
-				g_szCurTitleImage = szPodImg;
-				D3DXMatrixTranslation(&mat2, -0.3292f, y, -0.0271f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-				RenderNodeAt(m_pod, &mat2);
-				if (m_podSavePanel) RenderNodeAt(m_podSavePanel, &mat2);
-				if (nTitle == m_curTitle && m_curGridItem == -1 && m_podHilite)
-					RenderNodeAt(m_podRing, &mat2);
+				else
+				{
+					strcpy(s_szPodImage, "xboxlogo128.xbx");
+				}
+
+				g_szCurTitleImage = s_szPodImage;
+				D3DXMATRIX at;
+				D3DXMatrixTranslation(&at, xPod, y, zPod);
+				D3DXMatrixMultiply(&at, &frame, &at);
+				RenderNodeAt(m_pod, &at);
+				if (m_podSavePanel != NULL)
+					RenderNodeAt(m_podSavePanel, &at);
+				if (bSelected && m_curGridItem == -1 && m_podHilite != NULL)
+					RenderNodeAt(m_podRing, &at);
 				g_szCurTitleImage = NULL;
 			}
 
-			// Render header
-			if (bRender && y - 0.25f < 0.5f) {
-				D3DXMatrixTranslation(&mat2, -0.3292f, y, -0.0271f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-				if (nTitle == m_curTitle)
-					RenderNodeAt(m_hiliteHeader, &mat2);
-				else
-					RenderNodeAt(m_header, &mat2);
-				// Draw title name text
-				if (m_renderIcons && nTitle >= 0 && nTitle < s_titleCount) {
-					D3DXMATRIX mat3;
-					D3DXMatrixScaling(&mat3, 0.06442f, 0.06442f, 0.06442f);
-					D3DXMatrixTranslation(&mat2, -0.3292f - 0.05942f, y + 0.05942f, -0.0271f + (0.6f * 0.05942f));
-					D3DXMatrixMultiply(&mat2, &mat3, &mat2);
+			if (bVisible)
+			{
+				RenderInFrame(bSelected ? m_hiliteHeader : m_header, &frame, xPod, y, zPod);
+
+				if (m_renderIcons)
+				{
 					extern CNode* GetTextNode(const char* szText, float nWidth);
-					RenderNodeAt(GetTextNode(s_titles[nTitle].titleName, -11.2f), &mat2);
+					D3DXMATRIX nameScale, at;
+					D3DXMatrixScaling(&nameScale, 0.06442f, 0.06442f, 0.06442f);
+					D3DXMatrixTranslation(&at, xPod - scale, y + scale, zPod + (0.6f * scale));
+					D3DXMatrixMultiply(&at, &nameScale, &at);
+					RenderNodeAt(GetTextNode(s_titles[nTitle].titleName, -11.2f), &at);
 				}
 			}
 			y -= 0.0092f;
 
-			// Render first icon row
-			if (bRender && y - 0.25f < 0.5f) {
-				D3DXMatrixTranslation(&mat2, -0.3292f, y, 0.01144f);
-				D3DXMatrixMultiply(&mat2, &mat, &mat2);
-				RenderNodeAt(m_firstRow, &mat2);
-				RenderIconRow(&mat, y, nTitle, nIconRowScroll * m_iconsPerRow, nSaves);
+			if (bRender && y - 0.25f < 0.5f)
+			{
+				RenderInFrame(m_firstRow, &frame, xPod, y, zRow);
+				RenderIconRow(&frame, y, nTitle, nRowScroll * m_iconsPerRow, nSaves);
 			}
 			y -= 0.2455f;
 
-			// Second row
-			if (nSaves > m_iconsPerRow) {
-				if (bRender && y - 0.25f < 0.5f) {
-					D3DXMatrixTranslation(&mat2, -0.3301f, y, 0.01144f);
-					D3DXMatrixMultiply(&mat2, &mat, &mat2);
-					RenderNodeAt(m_secondRow, &mat2);
-					RenderIconRow(&mat, y, nTitle, (nIconRowScroll + 1) * m_iconsPerRow, nSaves);
+			if (nSaves > m_iconsPerRow)
+			{
+				if (bRender && y - 0.25f < 0.5f)
+				{
+					RenderInFrame(m_secondRow, &frame, -0.3301f, y, zRow);
+					RenderIconRow(&frame, y, nTitle, (nRowScroll + 1) * m_iconsPerRow, nSaves);
 				}
 				y -= 0.24499f;
-				// Third+ rows
-				if (nSaves > m_iconsPerRow * 2) {
-					for (int nRow = 2; nRow < (nRowCount - nIconRowScroll) && nRow < 3 && (!bRender || y > yLimit); nRow++) {
-						if (bRender && y - 0.25f < 0.5f) {
-							D3DXMatrixTranslation(&mat2, -0.3412f, y, 0.01144f);
-							D3DXMatrixMultiply(&mat2, &mat, &mat2);
-							RenderNodeAt(m_otherRow, &mat2);
-							RenderIconRow(&mat, y, nTitle, (nIconRowScroll + nRow) * m_iconsPerRow, nSaves);
-						}
-						y -= 0.24499f;
+
+				// At most three rows show; the third is the only "other" row.
+				if (nSaves > m_iconsPerRow * 2 && nRows - nRowScroll > 2 && (!bRender || y > yLimit))
+				{
+					if (bRender && y - 0.25f < 0.5f)
+					{
+						RenderInFrame(m_otherRow, &frame, -0.3412f, y, zRow);
+						RenderIconRow(&frame, y, nTitle, (nRowScroll + 2) * m_iconsPerRow, nSaves);
 					}
+					y -= 0.24499f;
 				}
 			}
+
 			y -= 0.09f;
-			g_nEffectAlpha = nEffectAlphaSave;
+			g_nEffectAlpha = alphaSave;
 		}
 		return 0.0f;
 	}
 
+	// CSavedGameGrid::Render()
+	// From 5960 @ 0x000488a0: needs the header and the three row pieces, a
+	// device and the blade showing, then runs the loop.
 	void Render()
 	{
-		if (!m_header || !m_firstRow || !m_secondRow || !m_otherRow) return;
-		if (m_curDevUnit == -1 || !m_isActive) return;
+		if (m_header == NULL || m_firstRow == NULL || m_secondRow == NULL || m_otherRow == NULL)
+			return;
+		if (m_curDevUnit == -1 || !m_isActive)
+			return;
 		EnumerateTitles();
-		if (s_titleCount == 0) return;
-		RenderLoop(true);
+		if (s_titleCount > 0)
+			RenderLoop(true);
 	}
 
-	bool OnSetProperty(const PRD* pprd, const void* pvValue)
+	// CSavedGameGrid::OnSetProperty(prop, value)
+	// From 5960 @ 0x00048530: a new curDevUnit lists that device and selects
+	// its first row (none for the memory units), a new curTitle selects it;
+	// both store the value themselves. Everything else is stored as usual.
+	bool OnSetProperty(const PRD* prop, const void* value)
 	{
-		// Match Xbox behavior: only react to specific property changes
-		if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_curDevUnit))
+		intptr_t offset = (intptr_t)prop->pbOffset;
+		if (offset == MEMBER_OFFSET(m_curDevUnit))
 		{
-			m_curDevUnit = *(int*)pvValue;
+			m_curDevUnit = *(const int*)value;
 			EnumerateTitles();
-			if (m_curDevUnit == 8)
-				SelectTitle(0);
-			else
-				SelectTitle(-1);
+			SelectTitle(m_curDevUnit == 8 ? 0 : -1);
 			return false;
 		}
-		else if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_curTitle))
+		if (offset == MEMBER_OFFSET(m_curTitle))
 		{
-			SelectTitle(*(int*)pvValue);
+			SelectTitle(*(const int*)value);
 			return false;
 		}
-		// All other properties: let base class handle
 		return true;
 	}
 
-	void SelectTitle(int idx)
+	// CSavedGameGrid::SelectTitle(n)
+	// From 5960 @ 0x00049410: clamp to the rows, aim the scroll at the row's
+	// offset (RenderLoop with render off) and start the ease. The desktop
+	// rows run past the UDATA titles into its game icon entries, which only
+	// scroll when they're real titles; it always lands on the title itself
+	// (no item, first icon row) instead of 5960's remembered column, and
+	// tells the script with OnSelChange.
+	void SelectTitle(int n)
 	{
 		LoadDesktopIcons();
-		int totalCount = s_titleCount + s_iconCount;
-		if (idx < -1) idx = -1;
-		if (idx >= totalCount) idx = totalCount - 1;
-		m_curTitle = idx;
+		const int nRowsTotal = s_titleCount + s_iconCount;
+		if (n < -1)
+			n = -1;
+		if (n >= nRowsTotal)
+			n = nRowsTotal - 1;
+
+		m_curTitle = n;
 		m_curGridItem = -1;
 		m_iconRowScroll = 0;
-		// Compute scroll target for UDATA titles (icon entries don't render in grid)
+
 		EnumerateTitles();
-		if (idx >= 0 && idx < s_titleCount) {
-			float y = -RenderLoop(false);
-			m_nScrollTo = y;
+		if (n >= 0 && n < s_titleCount)
+		{
+			m_nScrollTo = -RenderLoop(false);
 			m_timeScroll = TheseusGetNow();
 		}
 		CallFunction(this, "OnSelChange");
 	}
 
-	// Navigation
+	// selectUp / selectDown (5960 @ 0x00049590, 0x000495f0) move one title;
+	// selectLeft / selectRight (0x00049680, 0x000497b0) one item along the
+	// row. The desktop stops at the ends and only walks saves, and a sideways
+	// move reports OnSelChange itself.
 	void selectUp()
 	{
 		EnumerateTitles();
-		if (s_titleCount == 0) return;
-		if (m_curTitle > 0) {
+		if (s_titleCount > 0 && m_curTitle > 0)
 			SelectTitle(m_curTitle - 1);
-		}
 	}
 
 	void selectDown()
 	{
 		EnumerateTitles();
-		if (s_titleCount == 0) return;
-		if (m_curTitle < s_titleCount - 1) {
+		if (s_titleCount > 0 && m_curTitle < s_titleCount - 1)
 			SelectTitle(m_curTitle + 1);
-		}
 	}
 
 	void selectLeft()
 	{
 		EnumerateTitles();
-		if (m_curTitle < 0 || m_curTitle >= s_titleCount) return;
-		DesktopTitle& t = s_titles[m_curTitle];
-		if (t.saveCount > 0 && m_curGridItem > 0) {
+		if (m_curTitle < 0 || m_curTitle >= s_titleCount)
+			return;
+		if (s_titles[m_curTitle].saveCount > 0 && m_curGridItem > 0)
+		{
 			m_curGridItem--;
 			CallFunction(this, "OnSelChange");
 		}
@@ -2290,29 +2323,33 @@ public:
 	void selectRight()
 	{
 		EnumerateTitles();
-		if (m_curTitle < 0 || m_curTitle >= s_titleCount) return;
-		DesktopTitle& t = s_titles[m_curTitle];
-		if (t.saveCount > 0 && m_curGridItem < t.saveCount - 1) {
+		if (m_curTitle < 0 || m_curTitle >= s_titleCount)
+			return;
+		if (s_titles[m_curTitle].saveCount > 0 && m_curGridItem < s_titles[m_curTitle].saveCount - 1)
+		{
 			m_curGridItem++;
 			CallFunction(this, "OnSelChange");
 		}
 	}
 
+	// CSavedGameGrid::setSelImage()
+	// From 5960 @ 0x00049840: points the selected-title image at the current
+	// title's picture. The desktop also covers its game icon entries.
 	void setSelImage()
 	{
 		EnumerateTitles();
 		LoadDesktopIcons();
-		static char imgPath[512];
-		if (m_curTitle >= 0 && m_curTitle < s_titleCount && s_titles[m_curTitle].hasImage) {
-			// imagePath was set in ProcessTitleEntry to either the real
-			// TitleImage.xbx or the Configs/icons/<TitleID>.{jpg,png}
-			// fallback. Pass it through directly so synthesized titles
-			// surface their JPG icons here too.
-			strncpy(imgPath, s_titles[m_curTitle].imagePath, sizeof(imgPath) - 1);
-			imgPath[sizeof(imgPath) - 1] = 0;
-			g_szSelTitleImage = imgPath;
-		} else if (m_curTitle >= s_titleCount && m_curTitle < s_titleCount + s_iconCount) {
-			// Desktop icon entry (from Icons.ini via VGames)
+		static char s_szSelImage[512];
+		if (m_curTitle >= 0 && m_curTitle < s_titleCount)
+		{
+			if (!s_titles[m_curTitle].hasImage)
+				return;
+			strncpy(s_szSelImage, s_titles[m_curTitle].imagePath, sizeof (s_szSelImage) - 1);
+			s_szSelImage[sizeof (s_szSelImage) - 1] = 0;
+			g_szSelTitleImage = s_szSelImage;
+		}
+		else if (m_curTitle >= s_titleCount && m_curTitle < s_titleCount + s_iconCount)
+		{
 			g_szSelTitleImage = s_iconEntries[m_curTitle - s_titleCount].iconPath;
 		}
 	}

@@ -76,9 +76,9 @@ CScreen::~CScreen()
 // the size dirty, title the title. A brightness other than 1 isn't stored
 // straight: any running fade is dropped and a 2 second lerp heads there
 // instead. Setting it back to 1 just stops the fade and stores it.
-bool CScreen::OnSetProperty(const PRD* pprd, const void* pvValue)
+bool CScreen::OnSetProperty(const PRD* prop, const void* value)
 {
-	int field = PTR2INT(pprd->pbOffset);
+	int field = PTR2INT(prop->pbOffset);
 	if (field == offsetof(m_width) || field == offsetof(m_height))
 	{
 		m_bSizeDirty = true;
@@ -89,7 +89,7 @@ bool CScreen::OnSetProperty(const PRD* pprd, const void* pvValue)
 	}
 	else if (field == offsetof(m_brightness))
 	{
-		float target = *(const float*)pvValue;
+		float target = *(const float*)value;
 		CLerper::RemoveObject(this);
 		if (target != 1.0f)
 		{
@@ -97,16 +97,16 @@ bool CScreen::OnSetProperty(const PRD* pprd, const void* pvValue)
 			return false;
 		}
 	}
-	return CNode::OnSetProperty(pprd, pvValue);
+	return CNode::OnSetProperty(prop, value);
 }
 
 // CScreen::Advance(dt)
 // Reconstructed from 5960 retail XBE @ 0x0004fb20: clears both dirty flags
 // (nothing else reads them) and pushes a changed brightness to the gamma
 // ramp.
-void CScreen::Advance(float nSeconds)
+void CScreen::Advance(float dt)
 {
-	CNode::Advance(nSeconds);
+	CNode::Advance(dt);
 	m_bSizeDirty = false;
 	m_bTitleDirty = false;
 	if (m_brightness != m_lastBrightness)
@@ -120,13 +120,13 @@ void CScreen::Advance(float nSeconds)
 // Reconstructed from 5960 retail XBE @ 0x0004fb70: all three channels of
 // the gamma ramp get (BYTE)(i * level), set through the device (the binary
 // inlines SetGammaRamp). Desktop has no ramp.
-void CScreen::SetBrightness(float nBrightness)
+void CScreen::SetBrightness(float level)
 {
 #ifdef _XBOX
 	D3DGAMMARAMP ramp;
 	for (int i = 0; i < 256; i++)
 	{
-		BYTE level = (BYTE)(i * nBrightness);
+		BYTE level = (BYTE)(i * level);
 		ramp.red[i] = level;
 		ramp.green[i] = level;
 		ramp.blue[i] = level;

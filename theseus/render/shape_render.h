@@ -1,82 +1,84 @@
-// shape_render.h: shape, mesh, and transform node declarations.
-// CMeshNode, CTransform, CShape, CAppearance, CMaterial, CBox, CSphere.
-// Companion to render/shape_render.cpp.
+// shape_render.h: the drawable scene nodes. Shape pairs an Appearance
+// (Material plus texture) with geometry; Mesh loads geometry from a file;
+// Transform places, scales, spins and fades its children. Bodies in
+// render/shape_render.cpp, binary notes in docs/decomp/ShapeRender.md.
 
 #pragma once
 
+class CMeshCore;
+
+// Geometry from a .xm file. Every mesh node sits on one list so the loader
+// can find nodes still waiting for their file.
 class CMeshNode : public CNode
 {
 	DECLARE_NODE(CMeshNode, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CMeshNode();
 	~CMeshNode();
 
 	void Render();
+	virtual void Init();
+	bool Initialize();
+	DWORD GetFVF();
+
+	void load(const TCHAR* szFile);	// script: swap the mesh file
+
+	static CMeshNode* c_pFirst;
 
 	TCHAR* m_url;
 	float m_falloff;
-
-	void load(const TCHAR* szFile);
-
-	bool Initialize();
-	virtual void Init();
-
 	bool m_dirty;
 	XTIME m_renderTime;
-
-	DWORD GetFVF();
-
-	class CMeshCore* m_mesh;
+	CMeshCore* m_mesh;
 	bool m_ownMesh;
-
-	static CMeshNode* c_pFirst;
 	CMeshNode* m_next;
-
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
 };
 
+// Material and texture that apply to a shape's geometry.
 class CAppearance : public CNode
 {
 	DECLARE_NODE(CAppearance, CNode)
+	DECLARE_NODE_PROPS()
 public:
 	CAppearance();
 	~CAppearance();
 
+	void Advance(float dt);
+	void Render();
+
 	CNode* m_material;
 	CNode* m_texture;
-
-	void Render();
-	void Advance(float nSeconds);
-
-	DECLARE_NODE_PROPS()
 };
 
 class CShape : public CNode
 {
 	DECLARE_NODE(CShape, CNode)
+	DECLARE_NODE_PROPS()
 public:
 	CShape();
 	~CShape();
 
+	void Advance(float dt);
+	void Render();
+	void GetBBox(BBox* box);
+	float GetRadius();
+
 	CNode* m_appearance;
 	CNode* m_geometry;
-
-	void Render();
-	void GetBBox(BBox* pBBox);
-	float GetRadius();
-	void Advance(float nSeconds);
-
 	D3DXVECTOR3 m_position;
-
-	DECLARE_NODE_PROPS()
 };
 
+// VRML style material fields, folded into a D3DMATERIAL8 for drawing.
 class CMaterial : public CNode
 {
 	DECLARE_NODE(CMaterial, CNode)
+	DECLARE_NODE_PROPS()
 public:
 	CMaterial();
+
+	void Render();
 
 	float m_ambientIntensity;
 	D3DXVECTOR3 m_diffuseColor;
@@ -84,24 +86,34 @@ public:
 	float m_shininess;
 	D3DXVECTOR3 m_specularColor;
 	float m_transparency;
-
 	D3DMATERIAL8 m_material;
-
-	void Render();
-
-	DECLARE_NODE_PROPS()
 };
 
-
-
-
+// Each animated field keeps a start and end value and the time its move
+// began; Advance blends them and CalcMatrix rebuilds m_matrix.
 class CTransform : public CGroup
 {
 	DECLARE_NODE(CTransform, CGroup)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CTransform();
 
-	D3DXQUATERNION m_rotation; // axis/angle stored in a D3DXVECTOR4 layout
+	void OnLoad();
+	bool OnSetProperty(const PRD* prop, const void* value);
+	void Advance(float dt);
+	void Render();
+	void CalcMatrix();
+
+	void SetTranslation(float x, float y, float z);
+	void SetRotation(float x, float y, float z, float a);
+	void SetScale(float x, float y, float z);
+	void SetScaleOrientation(float x, float y, float z, float a);
+	void SetCenter(float x, float y, float z);
+	void SetAlpha(float a);
+	void DisappearAfter(float secs);
+
+	D3DXQUATERNION m_rotation;	// the script's axis + angle, not a real quaternion
 
 	D3DXVECTOR3 m_center;
 	D3DXQUATERNION m_scaleOrientation;
@@ -126,25 +138,9 @@ public:
 	float m_alphaEnd;
 
 	bool m_moving;
-
 	BOOL m_dirty;
 	D3DXMATRIX m_matrix;
-
 	float m_fade;
-
-	void CalcMatrix();
-	void Render();
-	void Advance(float nSeconds);
-	bool OnSetProperty(const PRD* pprd, const void* pvValue);
-	void OnLoad();
-
-	void SetScale(float sx, float sy, float sz);
-	void SetScaleOrientation(float x, float y, float z, float a);
-	void SetTranslation(float x, float y, float z);
-	void SetCenter(float x, float y, float z);
-	void SetRotation(float x, float y, float z, float a);
-	void SetAlpha(float a);
-    void DisappearAfter(float t);
 
 	float m_timeCenterStart;
 	float m_timeScaleOrientationStart;
@@ -153,8 +149,4 @@ public:
 	XTIME m_timeTranslationStart;
 	XTIME m_timeAlphaStart;
 	XTIME m_timeToDisappear;
-
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
 };
-

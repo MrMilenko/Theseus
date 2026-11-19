@@ -1,7 +1,10 @@
-// xap_compile.h: tokenizer / parser / bytecode-compiler API surface
-// exposed to the rest of the engine. Forward decls for the VM types and
-// the entry points that drive a compile from XAP text to a CFunction.
-// Companion to xap_compile.cpp.
+// xap_compile.h: turns XAP text into bytecode. The tokenizer and value
+// parsers are free functions; CClassCompiler handles a file's node tree,
+// CFunctionCompiler a function body. Bodies in xap_compile.cpp, binary
+// write-up in docs/decomp/Compiler.md.
+//
+// CCompiler layout matches 5960: vtbl, m_nop 0x04, m_ops 0x08,
+// m_opsSize 0x0c, m_bError 0x10.
 
 #pragma once
 
@@ -9,9 +12,7 @@ class CNodeClass;
 class CClass;
 class CFunction;
 
-void StartParse(const TCHAR* pch, const TCHAR* szFileName, int nLine = 1);
-void EndParse();
-
+// Which comment styles SkipWhite steps over. Bit flags.
 enum COMMENT_TYPE
 {
 	none = 0,
@@ -21,70 +22,31 @@ enum COMMENT_TYPE
 	any = 0xffffffff
 };
 
-const TCHAR* SkipWhite(const TCHAR* pch, COMMENT_TYPE ct = any);
-const TCHAR* Token(const TCHAR* pch, const TCHAR*& pchToken, int& cchToken, bool bAllowPaths = false, COMMENT_TYPE ct = any);
-extern void SyntaxError(const TCHAR* szMsg, ...);
-const TCHAR* ParseBoolean(const TCHAR* pch, bool& b);
-const TCHAR* ParseInteger(const TCHAR* pch, int& i);
-const TCHAR* ParseNumber(const TCHAR* pch, float& n);
-const TCHAR* ParseString(const TCHAR* pch, TCHAR*& sz);
-const TCHAR* ParseVec3(const TCHAR* pch, float v[3]);
-const TCHAR* ParseVec4(const TCHAR* pch, float v[4]);
-const TCHAR* ParseIntArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray);
-const TCHAR* ParseVecArray(const TCHAR* pch, BYTE*& pbArray, int& cbArray, int nVecSize);
-int ExpandCString(TCHAR* szString, int cchMaxString, const TCHAR* pchToken, int cchToken);
+void StartParse(const TCHAR* src, const TCHAR* fileName, int line = 1);
+void EndParse();
+extern void SyntaxError(const TCHAR* fmt, ...);
 
+const TCHAR* SkipWhite(const TCHAR* src, COMMENT_TYPE comments = any);
+const TCHAR* Token(const TCHAR* src, const TCHAR*& tok, int& tokLen, bool paths = false, COMMENT_TYPE comments = any);
 
-class CCompiler
-{
-public:
-	CCompiler();
-	virtual ~CCompiler();
+const TCHAR* ParseBoolean(const TCHAR* src, bool& b);
+const TCHAR* ParseInteger(const TCHAR* src, int& i);
+const TCHAR* ParseNumber(const TCHAR* src, float& n);
+const TCHAR* ParseString(const TCHAR* src, TCHAR*& out);
+const TCHAR* ParseVec3(const TCHAR* src, float v[3]);
+const TCHAR* ParseVec4(const TCHAR* src, float v[4]);
+const TCHAR* ParseIntArray(const TCHAR* src, BYTE*& data, int& size);
+const TCHAR* ParseVecArray(const TCHAR* src, BYTE*& data, int& size, int dims);
+int ExpandCString(TCHAR* out, int outMax, const TCHAR* tok, int tokLen);
 
-	inline void Write(const void* pv, int cb)
-	{
-		if (m_nop + cb >= m_opsSize)
-			GrowTo(m_nop + cb);
-		CopyMemory(&m_ops[m_nop], pv, cb);
-		m_nop += cb;
-	}
-
-	inline void Write(BYTE b) { Write(&b, 1); }
-	inline void WriteInteger(int n) { Write(&n, sizeof (int)); }
-	inline void WriteNumber(float n) { Write(&n, sizeof (float)); }
-	inline void WriteString(const TCHAR* pch, int cch) { WriteInteger(cch); Write(pch, cch * sizeof (TCHAR)); }
-
-	inline UINT GetAddress() { return m_nop; }
-
-	// Patches a jump or frame size written earlier. 5960 stores straight in.
-	inline void Fixup(UINT nAddress, UINT nValue)
-	{
-		if (CHECK(nAddress + sizeof (UINT) <= m_nop))
-			CopyMemory(&m_ops[nAddress], &nValue, sizeof (UINT));
-	}
-
-	CFunction* CreateFunction();
-
-	void SyntaxError(const TCHAR* szMsg, ...);
-	inline void SetError() { m_bError = true; }
-	inline bool HadError() const { return m_bError; }
-
-	void GrowTo(int nNewSize);
-
-protected:
-	UINT m_nop;
-	BYTE* m_ops;
-	UINT m_opsSize;
-	bool m_bError;
-};
-
-
+// Local variable name in a function frame.
 struct ST
 {
 	short cchName;
 	const TCHAR* pchName;
 };
 
+// Operator table row: up to three characters, precedence, and the op it emits.
 struct DOPER
 {
 	TCHAR m_ch1;
@@ -94,62 +56,113 @@ struct DOPER
 	BYTE m_op;
 };
 
-// Per-loop break-fixup record. The function compiler emits a forward
-// jump for every "break" statement and stacks one of these so the
-// jump target can be patched in once the loop's end address is known.
+// A "break" jump waiting for its loop's end address.
 struct BREAK
 {
 	BREAK* m_next;
 	int m_nop;
 };
 
+// Growable op buffer shared by both compilers.
+class CCompiler
+{
+public:
+	CCompiler();
+	virtual ~CCompiler();
+
+	// 5960 grows when the write would reach the end, then copies (0x34440).
+	inline void Write(const void* data, int size)
+	{
+		if (m_nop + size >= m_opsSize)
+			GrowTo(m_nop + size);
+		memcpy(m_ops + m_nop, data, size);
+		m_nop += size;
+	}
+
+	inline void Write(BYTE b) { Write(&b, 1); }
+	inline void WriteInteger(int n) { Write(&n, sizeof (n)); }
+	inline void WriteNumber(float n) { Write(&n, sizeof (n)); }
+
+	// Length, then the characters.
+	inline void WriteString(const TCHAR* src, int len)
+	{
+		WriteInteger(len);
+		Write(src, len * sizeof (TCHAR));
+	}
+
+	inline UINT GetAddress() { return m_nop; }
+
+	// Patches a jump or frame size written earlier. 5960 stores straight in.
+	inline void Fixup(UINT at, UINT value)
+	{
+		if (CHECK(at + sizeof (UINT) <= m_nop))
+			memcpy(m_ops + at, &value, sizeof (value));
+	}
+
+	void GrowTo(int size);
+	CFunction* CreateFunction();
+
+	void SyntaxError(const TCHAR* fmt, ...);
+	inline void SetError() { m_bError = true; }
+	inline bool HadError() const { return m_bError; }
+
+protected:
+	UINT m_nop;
+	BYTE* m_ops;
+	UINT m_opsSize;
+	bool m_bError;
+};
+
+// Compiles one function or behavior body.
 class CFunctionCompiler : public CCompiler
 {
 public:
 	CFunctionCompiler();
 
-	ST m_rgstLocal[100];
-	int m_nFrameSize;
+	const TCHAR* ParseBlock(const TCHAR* src);
+	const TCHAR* ParseStatement(const TCHAR* src);
+	const TCHAR* ParseLocalVar(const TCHAR* src);
+	const TCHAR* ParseIF(const TCHAR* src);
+	const TCHAR* ParseWHILE(const TCHAR* src);
+	const TCHAR* ParseFOR(const TCHAR* src);
+	const TCHAR* ParseDO(const TCHAR* src);
+	const TCHAR* ParseBREAK(const TCHAR* src);
+	const TCHAR* ParseCONTINUE(const TCHAR* src);
+	const TCHAR* ParseRETURN(const TCHAR* src);
+	const TCHAR* ParseSLEEP(const TCHAR* src);
 
-	const TCHAR* ParseOperator(const TCHAR* pch, const DOPER*& pdoper);
-	const TCHAR* ParseExpression(const TCHAR* pch);
-	const TCHAR* ParseStatement(const TCHAR* pch);
-	const TCHAR* ParseTerm(const TCHAR* pch);
-	const TCHAR* ParseBlock(const TCHAR* pch);
-	const TCHAR* ParseLocalVar(const TCHAR* pch);
-	const TCHAR* ParseArray(const TCHAR* pch);
-	const TCHAR* ParseCall(const TCHAR* pch);
-	const TCHAR* ParseExp(const TCHAR* pch, int nPrio);
-	const TCHAR* ParseIF(const TCHAR* pch);
-	const TCHAR* ParseWHILE(const TCHAR* pch);
-	const TCHAR* ParseFOR(const TCHAR* pch);
-	const TCHAR* ParseDO(const TCHAR* pch);
-	const TCHAR* ParseBREAK(const TCHAR* pch);
-	const TCHAR* ParseCONTINUE(const TCHAR* pch);
-	const TCHAR* ParseRETURN(const TCHAR* pch);
-	const TCHAR* ParseSLEEP(const TCHAR* pch);
+	const TCHAR* ParseExpression(const TCHAR* src);
+	const TCHAR* ParseExp(const TCHAR* src, int prio);
+	const TCHAR* ParseOperator(const TCHAR* src, const DOPER*& oper);
+	const TCHAR* ParseTerm(const TCHAR* src);
+	const TCHAR* ParseArray(const TCHAR* src);
+	const TCHAR* ParseCall(const TCHAR* src);
 
 	void FixupBreaks();
+
+	ST m_rgstLocal[100];
+	int m_nFrameSize;
 	BREAK* m_breaks;
 	int m_nBreakables;
 	int m_nopTopOfLoop;
 	bool m_bBehavior;
 };
 
+// Compiles a whole .xap: nodes, props, member vars, classes, functions.
 class CClassCompiler : public CCompiler
 {
 public:
-	CClassCompiler(CClass* pClass);
+	CClassCompiler(CClass* cls);
 
-	const TCHAR* Compile(const TCHAR* pch);
+	const TCHAR* Compile(const TCHAR* src);
 
 protected:
-	const TCHAR* ParseNode(const TCHAR* pch);
-	const TCHAR* ParseProps(const TCHAR* pch, CNodeClass* pNodeClass);
-	const TCHAR* ParseChildren(const TCHAR* pch);
-	const TCHAR* ParseMemberVar(const TCHAR* pch);
-	const TCHAR* ParseClass(const TCHAR* pch);
-	const TCHAR* ParseFunction(const TCHAR* pch, CFunction*& pFunction, bool bBehavior = false);
+	const TCHAR* ParseNode(const TCHAR* src);
+	const TCHAR* ParseProps(const TCHAR* src, CNodeClass* cls);
+	const TCHAR* ParseChildren(const TCHAR* src);
+	const TCHAR* ParseMemberVar(const TCHAR* src);
+	const TCHAR* ParseClass(const TCHAR* src);
+	const TCHAR* ParseFunction(const TCHAR* src, CFunction*& func, bool behavior = false);
 
 	CClass* m_targetClass;
 };

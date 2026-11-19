@@ -1,6 +1,8 @@
-// files.cpp: desktop file_util.h implementation. Maps the dashboard's
-// path / filesystem helpers onto POSIX (or Win32 native on Windows
-// builds). Counterpart to shared/file_util.cpp.
+// files.cpp: the File and Folder script nodes on the desktop. A Folder
+// whose path is set lists that directory into files and subFolders; a File
+// carries its name, extension, path, size and date. Rebuilt from the 5960
+// retail XBE's Files.cpp code (0x317c0..0x32030), on the desktop's char
+// paths and find wrappers.
 
 #include "std.h"
 #include "dashapp.h"
@@ -9,40 +11,36 @@
 #include "date_node.h"
 #include "runner.h"
 
+// 5960 layout, 0x30 bytes: name 0x1c, type 0x20, path 0x24, length 0x28, date 0x2c.
 class CFile : public CNode
 {
 	DECLARE_NODE(CFile, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CFile();
 	~CFile();
 
-	char* m_name;
-	char* m_type;
+	CStrObject* readText();
+
+	char* m_name;		// without the extension
+	char* m_type;		// extension, lower case, no dot
 	char* m_path;
 	int m_length;
 	CDateObject* m_date;
-
-	CStrObject* readText();
-
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
 };
 
-
+// 5960 layout, 0x3c bytes: path 0x1c, name 0x20, files 0x24, subFolders 0x30.
 class CFolder : public CNode
 {
 	DECLARE_NODE(CFolder, CNode)
+	DECLARE_NODE_PROPS()
+	DECLARE_NODE_FUNCTIONS()
 public:
 	CFolder();
 	~CFolder();
 
-	char* m_path;
-	char* m_name;
-	CNodeArray m_files;
-	CNodeArray m_subFolders;
-
-	bool OnSetProperty(const PRD* pprd, const void* pvValue);
-
+	bool OnSetProperty(const PRD* prop, const void* value);
 	void Refresh(const char* szPath);
 
 	void sortByName();
@@ -50,10 +48,11 @@ public:
 	void sortByDate();
 	void sortByLength();
 
-	DECLARE_NODE_PROPS()
-	DECLARE_NODE_FUNCTIONS()
+	char* m_path;
+	char* m_name;
+	CNodeArray m_files;
+	CNodeArray m_subFolders;
 };
-
 
 IMPLEMENT_NODE("File", CFile, CNode)
 
@@ -70,7 +69,6 @@ END_NODE_PROPS()
 START_NODE_FUN(CFile, CNode)
 	NODE_FUN_SV(readText)
 END_NODE_FUN()
-
 
 IMPLEMENT_NODE("Folder", CFolder, CNode)
 
@@ -90,16 +88,21 @@ START_NODE_FUN(CFolder, CNode)
 	NODE_FUN_VV(sortByLength)
 END_NODE_FUN()
 
-
-CFile::CFile() :
-	m_name(NULL),
-	m_type(NULL),
-	m_path(NULL),
-	m_length(-1),
-	m_date(NULL)
+// CFile::CFile()
+// Reconstructed from 5960 retail XBE @ 0x00031800 (inlined in CreateNode):
+//     name = type = path = 0; length = -1; date = 0;
+CFile::CFile()
 {
+	m_name = NULL;
+	m_type = NULL;
+	m_path = NULL;
+	m_length = -1;
+	m_date = NULL;
 }
 
+// CFile::~CFile()
+// Reconstructed from 5960 retail XBE @ 0x000318e0: frees the three strings
+// and deletes the date through its virtual destructor.
 CFile::~CFile()
 {
 	delete [] m_name;
@@ -108,190 +111,169 @@ CFile::~CFile()
 	delete m_date;
 }
 
+// CFile::readText()   [script fn 'readText', FND 0x0017f918, sig 8]
+// Reconstructed from 5960 retail XBE @ 0x00031960: a new empty string; if
+// there's a path, fetch the file and append its contents. 5960 widens the
+// text first (MakeUnicode); desktop strings are already narrow.
 CStrObject* CFile::readText()
 {
-	CStrObject* pStr = new CStrObject;
+	CStrObject* pText = new CStrObject;
+	if (m_path == NULL)
+		return pText;
 
-	if (m_path != NULL)
-	{
-		CActiveFile file;
-		if (file.Fetch(m_path))
-		{
-			pStr->Append((char*)file.GetContent());
-		}
-	}
-
-	return pStr;
+	CActiveFile file;
+	if (file.Fetch(m_path))
+		pText->Append((char*)file.GetContent());
+	return pText;
 }
 
-
-CFolder::CFolder() :
-	m_path(NULL),
-	m_name(NULL)
+// CFolder::CFolder()
+// Reconstructed from 5960 retail XBE @ 0x00031a50: both strings and both
+// arrays start empty.
+CFolder::CFolder()
 {
+	m_path = NULL;
+	m_name = NULL;
 }
 
+// CFolder::~CFolder()
+// Reconstructed from 5960 retail XBE @ 0x00031ab0: frees path and name;
+// the two arrays release their nodes as they go.
 CFolder::~CFolder()
 {
 	delete [] m_path;
 	delete [] m_name;
 }
 
-bool CFolder::OnSetProperty(const PRD* pprd, const void* pvValue)
+// CFolder::OnSetProperty(prop, value)
+// Reconstructed from 5960 retail XBE @ 0x00031b30:
+//     if (prop->offset == 0x1c) Refresh(*value); return true;
+// Setting path is what lists the folder.
+bool CFolder::OnSetProperty(const PRD* prop, const void* value)
 {
-	if ((intptr_t)pprd->pbOffset == MEMBER_OFFSET(m_path))
-	{
-		const char* szPath = *((const char**)pvValue);
-		Refresh(szPath);
-	}
-
+	if ((intptr_t)prop->pbOffset == MEMBER_OFFSET(m_path))
+		Refresh(*(const char* const*)value);
 	return true;
 }
 
+static char* NewCopy(const char* sz, size_t cch)
+{
+	char* copy = new char [cch + 1];
+	memcpy(copy, sz, cch);
+	copy[cch] = 0;
+	return copy;
+}
+
+// "folder\name", the way 5960 joins them.
+static char* NewJoin(const char* szFolder, const char* szName)
+{
+	char* path = new char [strlen(szFolder) + 1 + strlen(szName) + 1];
+	sprintf(path, "%s\\%s", szFolder, szName);
+	return path;
+}
+
+// CFolder::Refresh(path)
+// Reconstructed from 5960 retail XBE @ 0x00031b50 (971 bytes). Lists
+// path\*.*; when the folder can't be read it leaves everything alone. The
+// folder's name becomes whatever follows the last backslash. Hidden, system
+// and temporary entries are skipped. A directory becomes a Folder (path
+// joined, name as is) on subFolders; a file becomes a File on files with
+// its date from the last write time, the name up to the last dot, the type
+// after it in lower case, the joined path and the low 32 bits of the size.
+// Entries are added to what's already there. Theseus reports a folder it
+// can't read through TRACE.
 void CFolder::Refresh(const char* szPath)
 {
-	char szWild [MAX_PATH];
+	char szPattern [MAX_PATH];
+	lstrcpyn(szPattern, szPath, MAX_PATH - sizeof ("\\*.*"));
+	strcat(szPattern, "\\*.*");
+
+	char szPatternA [MAX_PATH];
+	Ansi(szPatternA, szPattern, MAX_PATH);
+
 	WIN32_FIND_DATA fd;
-	HANDLE h;
-
-	lstrcpyn(szWild, szPath, MAX_PATH - sizeof("\\*.*"));
-	strcat(szWild, "\\*.*");
-
-	char szWildA [MAX_PATH];
-	Ansi(szWildA, szWild, MAX_PATH);
-	h = TheseusFindFirstFile(szWildA, &fd);
-
-    if (h == INVALID_HANDLE_VALUE)
+	HANDLE hFind = TheseusFindFirstFile(szPatternA, &fd);
+	if (hFind == INVALID_HANDLE_VALUE)
 	{
 		TRACE("\001Cannot read directory: \"%s\" (%d)\n", szPath, GetLastError());
 		return;
 	}
 
-	{
-		const char* pchName = strrchr(szPath, '\\');
-		if (pchName == NULL)
-			pchName = "";
-		else
-			pchName += 1;
+	const char* pchLeaf = strrchr(szPath, '\\');
+	pchLeaf = (pchLeaf != NULL) ? pchLeaf + 1 : "";
+	delete [] m_name;
+	m_name = NewCopy(pchLeaf, strlen(pchLeaf));
 
-		int cchName = strlen(pchName);
-		delete [] m_name;
-
-		m_name = new char [cchName + 1];
-		strcpy(m_name, pchName);
-	}
-
+	const DWORD dwSkip = FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_TEMPORARY;
 
 	do
 	{
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_SYSTEM)
+		if (fd.dwFileAttributes & dwSkip)
 			continue;
 
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_HIDDEN)
-			continue;
-
-		if (fd.dwFileAttributes & FILE_ATTRIBUTE_TEMPORARY)
-			continue;
-
-		char szFileName [MAX_PATH];
-		Unicode(szFileName, fd.cFileName, countof(szFileName));
+		char szEntry [MAX_PATH];
+		Unicode(szEntry, fd.cFileName, countof(szEntry));
 
 		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
 		{
 			CFolder* pFolder = new CFolder;
 			m_subFolders.AddNode(pFolder);
-
-			pFolder->m_path = new char [strlen(szPath) + 1 + strlen(szFileName) + 1];
-			sprintf(pFolder->m_path, "%s\\%s", szPath, szFileName);
-
-			pFolder->m_name = new char [strlen(szFileName) + 1];
-			strcpy(pFolder->m_name, szFileName);
+			pFolder->m_path = NewJoin(szPath, szEntry);
+			pFolder->m_name = NewCopy(szEntry, strlen(szEntry));
+			continue;
 		}
-		else
-		{
-			CFile* pFile = new CFile;
-			m_files.AddNode(pFile);
 
-			pFile->m_date = new CDateObject;
-			pFile->m_date->m_time = fd.ftLastWriteTime;
+		CFile* pFile = new CFile;
+		m_files.AddNode(pFile);
 
-			const char* pch = strrchr(szFileName, '.');
+		pFile->m_date = new CDateObject;
+		pFile->m_date->m_time = fd.ftLastWriteTime;
 
-			int cchName = strlen(szFileName);
-			if (pch != NULL)
-				cchName -= strlen(pch);
-			pFile->m_name = new char [cchName + 1];
-			memcpy(pFile->m_name, szFileName, cchName);
-			pFile->m_name[cchName] = 0;
+		const char* pchDot = strrchr(szEntry, '.');
+		size_t cchBase = strlen(szEntry) - (pchDot != NULL ? strlen(pchDot) : 0);
+		pFile->m_name = NewCopy(szEntry, cchBase);
 
-			if (pch != NULL)
-				pch += 1;
-			else
-				pch = "";
-			pFile->m_type = new char [strlen(pch) + 1];
-			strcpy(pFile->m_type, pch);
-			for (char* p = pFile->m_type; *p; p++) *p = (char)tolower((unsigned char)*p);
+		const char* pchExt = (pchDot != NULL) ? pchDot + 1 : "";
+		pFile->m_type = NewCopy(pchExt, strlen(pchExt));
+		for (char* pch = pFile->m_type; *pch != 0; pch++)
+			*pch = (char)tolower((unsigned char)*pch);
 
-			pFile->m_path = new char [strlen(szPath) + 1 + strlen(szFileName) + 1];
-			sprintf(pFile->m_path, "%s\\%s", szPath, szFileName);
-
-			pFile->m_length = fd.nFileSizeLow;
-		}
+		pFile->m_path = NewJoin(szPath, szEntry);
+		pFile->m_length = fd.nFileSizeLow;
 	}
-	while (TheseusFindNextFile(h, &fd));
+	while (TheseusFindNextFile(hFind, &fd));
 
-	TheseusFindClose(h);
+	TheseusFindClose(hFind);
 }
 
-static int __cdecl CmpName(const void* p1, const void* p2)
+// The sorts: qsort over files with these compares (0x31f30..0x32010).
+// Name and type ignore case, date is CompareFileTime, length subtracts.
+static inline const CFile* FileAt(const void* pv)
 {
-	const CFile* pFile1 = *(CFile**)p1;
-	const CFile* pFile2 = *(CFile**)p2;
-
-	return strcasecmp(pFile1->m_name, pFile2->m_name);
+	return *(const CFile* const*)pv;
 }
 
-void CFolder::sortByName()
+static int __cdecl CompareNames(const void* a, const void* b)
 {
-	m_files.Sort(&CmpName);
+	return strcasecmp(FileAt(a)->m_name, FileAt(b)->m_name);
 }
 
-static int __cdecl CmpType(const void* p1, const void* p2)
+static int __cdecl CompareTypes(const void* a, const void* b)
 {
-	const CFile* pFile1 = *(CFile**)p1;
-	const CFile* pFile2 = *(CFile**)p2;
-
-	return strcasecmp(pFile1->m_type, pFile2->m_type);
+	return strcasecmp(FileAt(a)->m_type, FileAt(b)->m_type);
 }
 
-void CFolder::sortByType()
+static int __cdecl CompareDates(const void* a, const void* b)
 {
-	m_files.Sort(CmpType);
+	return CompareFileTime(&FileAt(a)->m_date->m_time, &FileAt(b)->m_date->m_time);
 }
 
-static int __cdecl CmpDate(const void* p1, const void* p2)
+static int __cdecl CompareLengths(const void* a, const void* b)
 {
-	const CFile* pFile1 = *(CFile**)p1;
-	const CFile* pFile2 = *(CFile**)p2;
-
-	return CompareFileTime(&pFile1->m_date->m_time, &pFile2->m_date->m_time);
+	return FileAt(a)->m_length - FileAt(b)->m_length;
 }
 
-void CFolder::sortByDate()
-{
-	m_files.Sort(CmpDate);
-}
-
-static int __cdecl CmpLength(const void* p1, const void* p2)
-{
-	const CFile* pFile1 = *(CFile**)p1;
-	const CFile* pFile2 = *(CFile**)p2;
-
-	return pFile1->m_length - pFile2->m_length;
-}
-
-void CFolder::sortByLength()
-{
-	m_files.Sort(CmpLength);
-}
-
+void CFolder::sortByName()		{ m_files.Sort(CompareNames); }
+void CFolder::sortByType()		{ m_files.Sort(CompareTypes); }
+void CFolder::sortByDate()		{ m_files.Sort(CompareDates); }
+void CFolder::sortByLength()	{ m_files.Sort(CompareLengths); }

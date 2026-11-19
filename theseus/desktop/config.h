@@ -1,5 +1,5 @@
-// config.h: desktop CConfig node declarations. Counterpart to
-// xbox/config.h.
+// config.h: the desktop build's Config node. Same script surface as
+// xbox/config.h; console-only answers are stubbed or faked on the PC.
 
 #pragma once
 #include "node.h"
@@ -7,102 +7,105 @@
 
 class CConfig : public CNode
 {
-    DECLARE_NODE(CConfig, CNode)
+	DECLARE_NODE(CConfig, CNode)
+	DECLARE_NODE_FUNCTIONS()
 public:
-    CConfig();
-    ~CConfig();
-    CXBExecutable theXBE;
+	CConfig();
+	~CConfig();
 
-    int GetLanguage();
-    void SetLanguage(int nLanguage);
-    int GetGamePCFlags();
-    void SetGamePCFlags(int nLanguage);
-    int GetMoviePCFlags();
-    void SetMoviePCFlags(int nLanguage);
-    CStrObject *GetLaunchReason();
-    DWORD GetTitleID();
-    int GetLaunchContext();
-    int GetLaunchParameter1();
-    int GetLaunchParameter2();
-    int CanDriveBeCleanup(int Drive);
-    void BackToLauncher();
+	// Launch data
+	CStrObject* GetLaunchReason();
+	DWORD GetTitleID();
+	int GetLaunchContext();
+	int GetLaunchParameter1();
+	int GetLaunchParameter2();
+	void BackToLauncher();
+	void BackToLauncher2();
+	void GoToXOnlineDash();
+	int ForceSetLanguage() { return 0; }	// no launch data on desktop
+	int ForceSetTimeZone() { return 0; }
+	int ForceSetClock() { return 0; }
 
-    uint32_t NetStatus;
+	// Language, region, parental control
+	int GetLanguage();
+	void SetLanguage(int lang);
+	int GetGamePCFlags();
+	void SetGamePCFlags(int flags);
+	int GetMoviePCFlags();
+	void SetMoviePCFlags(int flags);
+	void SetParentPassword(const char* password);
+	int CheckParentPassword(const char* password);
+	CStrObject* GetAVPackType();
+	CStrObject* GetAVRegion();
+	CStrObject* GetGameRegion();
 
-    int NtFileExists(const char* szPath);
+	// Video and audio
+	int GetVideoMode();
+	void SetVideoMode(int mode);
+	int Get480Support();
+	void Set480Support(int on);
+	int Get720Support();
+	void Set720Support(int on);
+	int Get1080Support();
+	void Set1080Support(int on);
+	int GetPAL60Support();
+	void SetPAL60Support(int on);
+	int GetAudioMode();
+	void SetAudioMode(int mode);
+	int GetDolbyDigitalSupport();
+	void SetDolbyDigitalSupport(int on);
+	int GetDTSSupport();
+	void SetDTSSupport(int on);
 
-    void Reset();
-    void PowerOff();
-    void PowerCycle();
-    void XBOXReset();
-    int GetInternalTemp();
-    int GetCPUTemp();
-    void SetFanSpeed(int speed);
-    int GetFanSpeed();
-    void SetLED(int LEDMode);
-    void NetworkShutdown();
-    void NetworkReboot();
-    void NetworkStartup();
+	// Clock
+	int GetTimeZone();
+	void SetTimeZone(int zone);
+	int GetDSTAllowed();
+	int GetDST();
+	void SetDST(int on);
 
-    CStrObject *GetAVPackType();
-    CStrObject *GetAVRegion();
-    CStrObject *GetGameRegion();
-    int GetVideoMode();
-    void SetVideoMode(int nVideoMode);
-    void ApplySkin();
-    void FlushMeshCache();
-    int Get480Support();
-    void Set480Support(int b480Support);
-    int Get720Support();
-    void Set720Support(int b720Support);
-    int Get1080Support();
-    void Set1080Support(int b1080Support);
-    int GetPAL60Support();
-    void SetPAL60Support(int bPAL60Support);
-    int GetAudioMode();
-    void SetAudioMode(int nVideoMode);
-    int GetDolbyDigitalSupport();
-    void SetDolbyDigitalSupport(int bDolbyDigitalSupport);
-    int GetDTSSupport();
-    void SetDTSSupport(int bDTSSupport);
-    int GetAutoOff();
-    void SetAutoOff(int bAutoOff);
-    int GetLiveToday();
-    void SetLiveToday(int bLiveToday);
+	// Dashboard options
+	int GetAutoOff();
+	void SetAutoOff(int on);
+	int GetLiveToday();
+	void SetLiveToday(int on);
+	int GetAcceptedLegalInfo();
+	void SetAcceptedLegalInfo(int value);
+	int GetFontVersion();
+	void ToggleNoisyCamera();
+	void ApplySkin();
+	void FlushMeshCache();
 
-    void SetParentPassword(const char *szNewPassword);
-    int CheckParentPassword(const char *szCheckPassword);
+	// Power, fan, LED, network
+	void Reset();
+	void PowerOff();
+	void PowerCycle();
+	void XBOXReset();
+	int GetInternalTemp();
+	int GetCPUTemp();
+	void SetFanSpeed(int speed);
+	int GetFanSpeed();
+	void SetLED(int mode);
+	void NetworkShutdown();
+	void NetworkReboot();
+	void NetworkStartup();
+	int GetEthernetLinkStatus();
 
-    int GetTimeZone();
-    void SetTimeZone(int nTimeZone);
-    int GetDSTAllowed();
-    int GetDST();
-    void SetDST(int bObserveDST);
+	// Version and identity strings
+	CStrObject* GetRecoveryKey();
+	CStrObject* GetROMVersion();
+	CStrObject* GetXdashVersion();
+	CStrObject* GetXboxIP();
+	CStrObject* GetEncoder();
+	CStrObject* GetXBOXVersion();
+	CStrObject* GetMODCHIPVersion();
+	CStrObject* GetXBETitleID(const char* path);
 
-    int ForceSetLanguage() { return 0; } // No launch data on desktop
-    int ForceSetTimeZone() { return 0; }
-    int ForceSetClock()    { return 0; }
+	// Files and drives
+	int FileExists(const char* path);
+	int NtFileExists(const char* path);
+	int CanDriveBeCleanup(int drive);
 
-    CStrObject *GetRecoveryKey();
-    CStrObject *GetROMVersion();
-    CStrObject *GetXdashVersion();
-    CStrObject *GetXboxIP();
-    CStrObject *GetEncoder();
-    CStrObject *GetXBOXVersion();
-    CStrObject *GetMODCHIPVersion();
-    CStrObject *GetXBETitleID(const char *szXBEPath);
-
-    // 5960 functions (RE'd from retail binary)
-    int GetAcceptedLegalInfo();
-    void SetAcceptedLegalInfo(int value);
-    void BackToLauncher2();
-    void GoToXOnlineDash();
-    int GetFontVersion();
-    void ToggleNoisyCamera();
-    int GetEthernetLinkStatus();
-    int FileExists(const char* szPath);
-
-protected:
-    DECLARE_NODE_FUNCTIONS()
-
+	CXBExecutable theXBE;
+	uint32_t NetStatus;
 };
