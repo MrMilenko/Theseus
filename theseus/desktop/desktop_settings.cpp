@@ -72,6 +72,10 @@ static const char* kStartupTok[]  = { "", "dashboard", "development" };
 // Turning it on buzzes once, so you know it works.
 static void ApplyRumble() { if (g_padRumble) Pads_Rumble(0.5f, 150); }
 
+static const int   kPadStyleVals[] = { 0, 1, 2, 3 };
+static const char* kPadStyleLbl[]  = { "Match the Pad", "Xbox", "PlayStation", "Nintendo" };
+static const char* kPadStyleTok[]  = { "auto", "xbox", "playstation", "nintendo" };
+
 static const int   kMsaaVals[] = { 0, 2, 4, 8 };
 static const char* kMsaaLbl[]  = { "Off", "2x", "4x", "8x" };
 
@@ -157,6 +161,8 @@ static const SettingDef kDefs[] = {
 
     { "Rumble", "Controller", "Controller", "Rumble", SK_BOOL, &g_padRumble, 0, "1", 0,
       NOENUM, 0, 0, 0, NULL, ApplyRumble },
+    { "ButtonStyle", "Controller", "Controller", "Button Prompts", SK_ENUM, &g_padStyle, 0, "auto", SF_STRICT,
+      ENUM(kPadStyleVals, kPadStyleLbl, kPadStyleTok), 0, 0, 0, NULL, NULL },
 
     S_BOOL("CRT_Enabled", "CRT", "Display", "CRT Effect", g_crt.enabled, "0", 0),
     S_CRT("CRT_Scanlines",  "Scanlines",     scanlineIntensity, "0.500", 0.0f, 1.0f),

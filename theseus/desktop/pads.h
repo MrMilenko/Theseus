@@ -18,6 +18,12 @@ SDL_GameController* Pads_Active();
 bool   Pads_Button(SDL_GameControllerButton button);
 Sint16 Pads_Axis(SDL_GameControllerAxis axis);
 
+// Which labels the buttons get, in ui_overlay's UI_PAD_* order: the
+// active pad's own, unless ButtonStyle picks one.
+enum { PAD_STYLE_XBOX, PAD_STYLE_PLAYSTATION, PAD_STYLE_NINTENDO };
+int  Pads_Style();
+extern int g_padStyle;     // desktop.ini ButtonStyle: 0 the pad's own, else style + 1
+
 // A short buzz on the active pad, strength 0 to 1. Nothing with Rumble off.
 void Pads_Rumble(float strength, Uint32 ms);
 extern bool g_padRumble;   // desktop.ini Rumble

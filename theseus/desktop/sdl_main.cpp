@@ -980,6 +980,10 @@ int main(int argc, char* argv[]) {
 
 #undef ASAN_ACTIVE // Clean up
 
+    // Buttons by where they sit, not what's printed on them: the bottom one
+    // is A on every pad, and the guide draws each pad's own labels.
+    SDL_SetHint(SDL_HINT_GAMECONTROLLER_USE_BUTTON_LABELS, "0");
+
     // Initialize SDL
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) < 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());

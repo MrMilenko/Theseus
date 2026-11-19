@@ -17,6 +17,7 @@ struct Pad {
 };
 
 bool g_padRumble = true;
+int  g_padStyle = 0;
 
 static std::vector<Pad> s_pads;
 static SDL_JoystickID s_active = -1;
@@ -142,6 +143,36 @@ bool Pads_Button(SDL_GameControllerButton button)
     for (size_t i = 0; i < s_pads.size(); i++)
         if (SDL_GameControllerGetButton(s_pads[i].gc, button)) return true;
     return false;
+}
+
+int Pads_Style()
+{
+    if (g_padStyle > 0) return g_padStyle - 1;
+    SDL_GameController* gc = Pads_Active();
+    if (!gc) return PAD_STYLE_XBOX;
+    switch (SDL_GameControllerGetType(gc)) {
+    case SDL_CONTROLLER_TYPE_PS3:
+    case SDL_CONTROLLER_TYPE_PS4:
+#if SDL_VERSION_ATLEAST(2, 0, 14)
+    case SDL_CONTROLLER_TYPE_PS5:
+#endif
+        return PAD_STYLE_PLAYSTATION;
+    case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_PRO:
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+    case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
+    case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
+    case SDL_CONTROLLER_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
+#endif
+        return PAD_STYLE_NINTENDO;
+    default:
+        break;
+    }
+    // Pads SDL can't name (third party, virtual) go by who made them.
+    switch (SDL_GameControllerGetVendor(gc)) {
+    case 0x054C: return PAD_STYLE_PLAYSTATION;   // Sony
+    case 0x057E: return PAD_STYLE_NINTENDO;      // Nintendo
+    }
+    return PAD_STYLE_XBOX;
 }
 
 void Pads_Rumble(float strength, Uint32 ms)

@@ -232,6 +232,7 @@ static const char* SettingHelp(const SettingDef& d)
         { "FetchGameArt",        "Box art for games without an icon. Icons you picked are never replaced." },
         { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
         { "Rumble",              "A short buzz when the guide can't do what you asked." },
+        { "ButtonStyle",         "The buttons the guide shows. Match the Pad follows the pad you used last." },
     };
     for (size_t i = 0; i < sizeof(kHelp) / sizeof(kHelp[0]); i++)
         if (strcmp(kHelp[i].key, d.key) == 0) return kHelp[i].help;
@@ -1708,6 +1709,7 @@ void Guide_Render(int width, int height)
         Hover();
         g.targets.clear();
         ui_overlay_set_device(g.device);
+        ui_overlay_set_pad_style(Pads_Style());
         ui_style_theme(g_guideTheme);
         ui_style_clock(SDL_GetTicks());
         ui_overlay_layer(0);
