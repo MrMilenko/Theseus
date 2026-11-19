@@ -364,6 +364,7 @@ static struct Guide {
     char letter;           // GL_LETTER's initial, '#' for digits and the rest
     std::string search;    // GL_SEARCH's text
     std::string collection;              // GL_COLLECTION's name
+    std::string filter;    // the game list's filter, empty for all
     std::vector<std::string> collNames;  // the game page's Collections rows, kept while it's open
     unsigned gameLayout;   // g_vgames.layout when game was picked
 
@@ -399,7 +400,104 @@ static bool NameHas(const char* name, const std::string& part)
     return false;
 }
 
-// The rows of one game list, as DB indices.
+// Where a game comes from, for the game list filter.
+static std::string GameSource(const VirtualGame& vg)
+{
+    if (vg.transient) {
+        // ES-DE rows sit in a folder per system.
+        const char* slash = strchr(vg.group, '/');
+        std::string sys = slash ? std::string(vg.group, slash - vg.group) : std::string(vg.group);
+        return sys.empty() ? "ES-DE" : "ES-DE: " + sys;
+    }
+    if (strncmp(vg.launch, "xcloud://", 9) == 0) return "xCloud";
+    if (strncmp(vg.launch, "xhome://", 8) == 0)  return "Remote Play";
+    static const struct { const char* scheme; const char* name; } kStores[] = {
+        { "steam://", "Steam" }, { "com.epicgames.launcher://", "Epic" }, { "heroic://", "Heroic" },
+        { "goggalaxy://", "GOG" }, { "itch://", "itch.io" }, { "uplay://", "Ubisoft" }, { "origin2://", "EA" },
+        { "link2ea://", "EA" }, { "battlenet://", "Battle.net" }, { "amazon-games://", "Amazon" },
+        { "lutris:", "Lutris" }, { "retroarch://", "RetroArch" },
+    };
+    for (size_t i = 0; i < sizeof(kStores) / sizeof(kStores[0]); i++)
+        if (strncasecmp(vg.launch, kStores[i].scheme, strlen(kStores[i].scheme)) == 0) return kStores[i].name;
+    // The program's own name, quoted or not, minus its folder.
+    const char* p = vg.launch;
+    while (*p == ' ') p++;
+    std::string exe;
+    if (*p == '"') { const char* q = strchr(p + 1, '"'); exe = q ? std::string(p + 1, q - p - 1) : std::string(p + 1); }
+    else           { const char* q = strchr(p, ' ');      exe = q ? std::string(p, q - p) : std::string(p); }
+    size_t slash = exe.find_last_of("/\\");
+    if (slash != std::string::npos) exe = exe.substr(slash + 1);
+    if (strncasecmp(exe.c_str(), "xemu", 4) == 0 || strstr(vg.launch, "-dvd_path")) return "xemu";
+    if (strncasecmp(exe.c_str(), "pcsx2", 5) == 0) return "PCSX2";
+    if (strncasecmp(exe.c_str(), "retroarch", 9) == 0) return "RetroArch";
+    if (strstr(vg.launch, "://")) return "Other Launchers";
+    return "Programs";
+}
+
+// The two filters that aren't a source.
+static const char kMostPlayed[] = "Most Played", kNeverPlayed[] = "Never Played";
+
+static bool PassesFilter(const VirtualGame& vg)
+{
+    if (g.filter.empty()) return true;
+    if (g.filter == kMostPlayed) return vg.playTime > 0;
+    if (g.filter == kNeverPlayed) return !vg.playTime && !vg.lastPlayed;
+    return GameSource(vg) == g.filter;
+}
+
+static void GameListRows(int list, std::vector<int>& out);
+// The filters worth offering on this list: sources it has, A to Z with
+// Programs last, then the play counts. Empty first, for all.
+static void FilterChoices(int list, std::vector<std::string>& out)
+{
+    std::vector<int> rows;
+    GameListRows(list, rows);
+    out.clear();
+    bool programs = false, played = false, never = false;
+    for (size_t i = 0; i < rows.size(); i++) {
+        const VirtualGame& vg = g_vgames.games[rows[i]];
+        std::string src = GameSource(vg);
+        if (src == "Programs") programs = true;
+        else if (std::find(out.begin(), out.end(), src) == out.end()) out.push_back(src);
+        if (vg.playTime > 0) played = true;
+        if (!vg.playTime && !vg.lastPlayed) never = true;
+    }
+    std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) {
+        return strcasecmp(a.c_str(), b.c_str()) < 0;
+    });
+    if (programs) out.push_back("Programs");
+    if (played) out.push_back(kMostPlayed);
+    if (never) out.push_back(kNeverPlayed);
+    out.insert(out.begin(), std::string());
+}
+
+// X steps through FilterChoices, back around to all.
+static void CycleFilter()
+{
+    std::vector<std::string> choices;
+    FilterChoices(g.gameList, choices);
+    size_t at = std::find(choices.begin(), choices.end(), g.filter) - choices.begin();
+    g.filter = choices[(at + 1) % choices.size()];
+    if (choices.size() < 2 && g.device == 1) Pads_Rumble(0.35f, 90);
+    g.cursor = g.scroll = 0;
+}
+
+// A game list as the list view shows it, filter and all.
+static void FilteredRows(int list, std::vector<int>& out)
+{
+    GameListRows(list, out);
+    if (g.filter.empty()) return;
+    std::vector<int> kept;
+    for (size_t i = 0; i < out.size(); i++)
+        if (PassesFilter(g_vgames.games[out[i]])) kept.push_back(out[i]);
+    out.swap(kept);
+    if (g.filter == kMostPlayed)
+        std::stable_sort(out.begin(), out.end(), [](int a, int b) {
+            return g_vgames.games[a].playTime > g_vgames.games[b].playTime;
+        });
+}
+
+// The rows of one game list, as DB indices, before any filter.
 static void GameListRows(int list, std::vector<int>& out)
 {
     out.clear();
@@ -630,10 +728,11 @@ static void Build()
         break;
     case GV_GAMES: {
         std::vector<int> list;
-        GameListRows(g.gameList, list);
+        FilteredRows(g.gameList, list);
         for (size_t i = 0; i < list.size(); i++) {
             const VirtualGame& vg = g_vgames.games[list[i]];
-            std::string value = g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed) : std::string(vg.category);
+            std::string value = g.filter == kMostPlayed ? PlayTime(vg.playTime)
+                              : g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed) : std::string(vg.category);
             Add(vg.name, value.c_str(), vg.group[0] ? vg.group : vg.category, GA_GAME, list[i]);
         }
         if (g.rows.empty())
@@ -818,12 +917,14 @@ static const char* ViewTitle()
     case GV_COLLECTIONS: return "Collections";
     case GV_GAMECOLL:  return "Collections";
     case GV_GAMES: {
-        static char title[32];
+        static char title[32], full[96];
         if (g.gameList == GL_SEARCH) snprintf(title, sizeof(title), "Search: %.20s", g.search.c_str());
         else if (g.gameList == GL_LETTER) snprintf(title, sizeof(title), "Games: %c", g.letter);
         else if (g.gameList == GL_COLLECTION) snprintf(title, sizeof(title), "%.30s", g.collection.c_str());
-        else return kGameListNames[g.gameList];
-        return title;
+        else snprintf(title, sizeof(title), "%s", kGameListNames[g.gameList]);
+        if (g.filter.empty()) return title;
+        snprintf(full, sizeof(full), "%s (%.40s)", title, g.filter.c_str());
+        return full;
     }
     case GV_GAME: {
         VirtualGame* vg = PickedGame();
@@ -1036,6 +1137,7 @@ static void EditDone()
     EditClose();
     if (search) {
         g.gameList = GL_SEARCH;
+        g.filter.clear();
         Push(GV_GAMES);
     }
 }
@@ -1443,6 +1545,7 @@ static void Select()
         break;
     case GA_GAMELIST:
         g.gameList = r.arg;
+        g.filter.clear();
         Push(GV_GAMES);
         break;
     case GA_COLLECTION: {
@@ -1451,6 +1554,7 @@ static void Select()
         if (r.arg < 0 || r.arg >= (int)colls.size()) { Refuse(); break; }
         g.collection = colls[r.arg];
         g.gameList = GL_COLLECTION;
+        g.filter.clear();
         Push(GV_GAMES);
         break;
     }
@@ -1473,6 +1577,7 @@ static void Select()
     case GA_LETTER:
         g.gameList = GL_LETTER;
         g.letter = (char)r.arg;
+        g.filter.clear();
         Push(GV_GAMES);
         break;
     case GA_GAME:
@@ -1552,7 +1657,7 @@ static void LetterStep(int step)
 
 static void PageStep(int step)
 {
-    if (g.view == GV_GAMES && g.gameList == GL_ALL) { LetterStep(step); return; }
+    if (g.view == GV_GAMES && g.gameList == GL_ALL && g.filter != kMostPlayed) { LetterStep(step); return; }
     if (g.view != GV_PAGE) return;
     g.page = (g.page + step + kPageCount) % kPageCount;
     g.cursor = g.scroll = 0;
@@ -1583,6 +1688,7 @@ static void Handle(unsigned pressed)
     }
     if (pressed & GUIDE_UP)   MoveCursor(-1);
     if (pressed & GUIDE_DOWN) MoveCursor(1);
+    if ((pressed & GUIDE_X) && g.view == GV_GAMES) { CycleFilter(); Build(); }
     // Left on a row that doesn't change goes back to the sections.
     if ((pressed & GUIDE_LEFT) && !Adjust(-1) && !g.welcome && g.stack.empty()) g.inPanel = false;
     if (pressed & GUIDE_RIGHT) Adjust(1);
@@ -1994,6 +2100,7 @@ static void DrawPrompts()
     } else if (!g.inPanel) {
         Prompt(p, &n, UI_BUTTON_A, "ENTER", "Open", GUIDE_A);
     }
+    if (!g.edit.on && g.inPanel && g.view == GV_GAMES) Prompt(p, &n, UI_BUTTON_X, "F", "Filter", GUIDE_X);
     if (!g.edit.on) {
         bool back = !g.welcome && g.inPanel;
         Prompt(p, &n, UI_BUTTON_B, "ESC", back ? "Back" : "Close", GUIDE_B);
