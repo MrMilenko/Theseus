@@ -538,6 +538,42 @@ bool Host_RegistryValue(int hive, const char* subKey, const char* value, char* o
 	return ok;
 }
 
+bool Host_RegistrySetString(const char* subKey, const char* value, const char* data) {
+	HKEY hKey;
+	if (RegCreateKeyExA(HKEY_CURRENT_USER, subKey, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS)
+		return false;
+	bool ok = RegSetValueExA(hKey, value, 0, REG_SZ, (const BYTE*)data, (DWORD)strlen(data) + 1) == ERROR_SUCCESS;
+	RegCloseKey(hKey);
+	return ok;
+}
+
+bool Host_RegistryDelete(const char* subKey, const char* value) {
+	HKEY hKey;
+	LONG r = RegOpenKeyExA(HKEY_CURRENT_USER, subKey, 0, KEY_SET_VALUE, &hKey);
+	if (r == ERROR_FILE_NOT_FOUND) return true;
+	if (r != ERROR_SUCCESS) return false;
+	r = RegDeleteValueA(hKey, value);
+	RegCloseKey(hKey);
+	return r == ERROR_SUCCESS || r == ERROR_FILE_NOT_FOUND;
+}
+
+// Start at login: one value under the user's own Run key.
+static const char kRunKey[] = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+static const char kRunValue[] = "UIX Desktop";
+
+bool Host_StartAtLogin() {
+	char cur[MAX_PATH + 32];
+	return Host_RegistryValue(HOST_REG_USER, kRunKey, kRunValue, cur, sizeof(cur));
+}
+
+bool Host_SetStartAtLogin(bool on) {
+	if (!on) return Host_RegistryDelete(kRunKey, kRunValue);
+	char exe[MAX_PATH], cmd[MAX_PATH + 32];
+	if (!Host_ExePath(exe, sizeof(exe))) return false;
+	snprintf(cmd, sizeof(cmd), "\"%s\" --console", exe);
+	return Host_RegistrySetString(kRunKey, kRunValue, cmd);
+}
+
 static HANDLE OpenCdromDevice() {
 	char path[] = "\\\\.\\D:";
 	for (char c = 'D'; c <= 'H'; ++c) {

@@ -586,6 +586,125 @@ void Host_OpenFolder(const char* dir) {
 bool Host_RegistryString(const char*, const char*, char*, size_t) { return false; }
 bool Host_RegistryValue(int, const char*, const char*, char*, size_t) { return false; }
 int Host_RegistrySubkeys(int, const char*, char (*)[256], int) { return 0; }
+bool Host_RegistrySetString(const char*, const char*, const char*) { return false; }
+bool Host_RegistryDelete(const char*, const char*) { return false; }
+
+// Start at login. Both entries live under the user's home, so a run with a
+// throwaway HOME never touches the real account.
+static std::string LoginEntryPath() {
+	const char* home = getenv("HOME");
+	std::string h = home ? home : "";
+#ifdef __APPLE__
+	return h + "/Library/LaunchAgents/com.teamuix.theseus.plist";
+#else
+	const char* xdg = getenv("XDG_CONFIG_HOME");
+	std::string base = (xdg && *xdg == '/') ? std::string(xdg) : h + "/.config";
+	return base + "/autostart/uix-desktop.desktop";
+#endif
+}
+
+static bool MakeDirs(const std::string& dir) {
+	for (size_t i = 1; i <= dir.size(); i++)
+		if (i == dir.size() || dir[i] == '/')
+			if (mkdir(dir.substr(0, i).c_str(), 0755) != 0 && errno != EEXIST) return false;
+	return true;
+}
+
+// Beside it first, then over it, so a half written entry never runs.
+static bool WriteWhole(const std::string& path, const std::string& text) {
+	if (!MakeDirs(path.substr(0, path.rfind('/')))) return false;
+	std::string tmp = path + ".tmp";
+	FILE* f = fopen(tmp.c_str(), "w");
+	if (!f) return false;
+	bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
+	ok = (fclose(f) == 0) && ok;
+	if (ok && rename(tmp.c_str(), path.c_str()) == 0) return true;
+	unlink(tmp.c_str());
+	return false;
+}
+
+#ifdef __APPLE__
+static std::string XmlEscape(const std::string& in) {
+	std::string out;
+	for (char c : in) {
+		if (c == '&') out += "&amp;";
+		else if (c == '<') out += "&lt;";
+		else if (c == '>') out += "&gt;";
+		else out += c;
+	}
+	return out;
+}
+
+static std::string LoginEntryText(const std::string& exe) {
+	return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+	       "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+	       "<plist version=\"1.0\">\n<dict>\n"
+	       "\t<key>Label</key>\n\t<string>com.teamuix.theseus</string>\n"
+	       "\t<key>ProgramArguments</key>\n\t<array>\n"
+	       "\t\t<string>" + XmlEscape(exe) + "</string>\n"
+	       "\t\t<string>--console</string>\n"
+	       "\t</array>\n"
+	       "\t<key>RunAtLoad</key>\n\t<true/>\n"
+	       "\t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n"
+	       "</dict>\n</plist>\n";
+}
+#else
+// Exec= quoting from the desktop entry spec: the argument in double quotes
+// with " ` $ \ backslashed, then every backslash doubled for the string
+// itself, and % as %%.
+static std::string ExecQuote(const std::string& in) {
+	std::string q = "\"";
+	for (char c : in) {
+		if (c == '"' || c == '`' || c == '$' || c == '\\') q += '\\';
+		q += c;
+	}
+	q += '"';
+	std::string out;
+	for (char c : q) {
+		if (c == '\\') out += "\\\\";
+		else if (c == '%') out += "%%";
+		else out += c;
+	}
+	return out;
+}
+
+static std::string LoginEntryText(const std::string& exe) {
+	return "[Desktop Entry]\n"
+	       "Type=Application\n"
+	       "Name=UIX Desktop\n"
+	       "Comment=Starts UIX Desktop in Console Mode\n"
+	       "Exec=" + ExecQuote(exe) + " --console\n"
+	       "Terminal=false\n"
+	       "X-GNOME-Autostart-enabled=true\n";
+}
+#endif
+
+bool Host_StartAtLogin() {
+	struct stat st;
+	return stat(LoginEntryPath().c_str(), &st) == 0;
+}
+
+bool Host_SetStartAtLogin(bool on) {
+	std::string path = LoginEntryPath();
+	if (!on) {
+		if (unlink(path.c_str()) == 0 || errno == ENOENT) {
+			fprintf(stderr, "[Console] login entry removed: %s\n", path.c_str());
+			return true;
+		}
+		return false;
+	}
+	char exe[1024];
+	if (!Host_ExePath(exe, sizeof(exe))) return false;
+	std::string target = exe;
+#ifndef __APPLE__
+	// An AppImage runs from a mount that's gone next login; the file itself stays.
+	const char* appimage = getenv("APPIMAGE");
+	if (appimage && *appimage) target = appimage;
+#endif
+	if (!WriteWhole(path, LoginEntryText(target))) return false;
+	fprintf(stderr, "[Console] login entry written: %s\n", path.c_str());
+	return true;
+}
 
 void Host_SetEnv(const char* name, const char* value) {
 	if (value) setenv(name, value, 1);

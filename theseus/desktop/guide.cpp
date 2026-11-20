@@ -252,6 +252,7 @@ static const char* SettingHelp(const SettingDef& d)
 {
     static const struct { const char* key; const char* help; } kHelp[] = {
         { "StartupMode",         "What happens when UIX Desktop starts." },
+        { "StartAtLogin",        "Starts UIX Desktop in Console Mode when you sign in. Only for you, nothing system wide." },
         { "ConsoleMode",         "Fullscreen with no frame, straight into the dashboard. For a TV or a games machine." },
         { "UseOnScreenKeyboard", "Text fields ignore the physical keyboard and use the pad keyboard." },
         { "ShowBootAnimation",   "Play the Xbox boot animation once at startup." },
@@ -1113,6 +1114,7 @@ static void Open(bool welcome)
     g.held = Joy_GuideButtons(&g.device);
     g.repeatHeld = 0;
     g_padModeActive = false;
+    DesktopSettings_ReadLive();
     if (welcome) {
         g.view = GV_WELCOME;
         g.stack.clear();

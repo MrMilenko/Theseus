@@ -100,6 +100,15 @@ enum { HOST_REG_USER, HOST_REG_MACHINE };
 bool Host_RegistryValue(int hive, const char* subKey, const char* value, char* out, size_t outSize);
 // Names of the keys right under subKey, up to max. 0 when there are none or off Windows.
 int Host_RegistrySubkeys(int hive, const char* subKey, char (*out)[256], int max);
+// Write a text value or delete one, under HKEY_CURRENT_USER only. Always false off Windows.
+bool Host_RegistrySetString(const char* subKey, const char* value, const char* data);
+bool Host_RegistryDelete(const char* subKey, const char* value);
+
+// Start at login, for this user only: a LaunchAgent on macOS, an XDG
+// autostart entry on Linux, the HKCU Run key on Windows. It runs this
+// program with --console. Turning it off removes just that entry.
+bool Host_StartAtLogin();
+bool Host_SetStartAtLogin(bool on);
 // Audio CD in the first optical drive: track count and per-track lengths
 // in seconds. -1 when there's no readable disc.
 int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio);
