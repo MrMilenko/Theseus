@@ -145,7 +145,7 @@ static void DrawItemsPane() {
     ImGui::Separator();
 
     if (movieCount == 0 && showCount == 0) {
-        ImGui::TextWrapped("No media loaded. Set Movies / TV roots in Settings > Media Library, then hit Refresh Library above.");
+        ImGui::TextWrapped("No movies or TV shows yet. Set the Movies and TV Shows folders in Settings > Media, then press Refresh Library above.");
         return;
     }
 

@@ -852,6 +852,7 @@ void RenderTitleMaker() {
 
     if (ImGui::CollapsingHeader("Optional Tabs")) {
         if (ImGui::Checkbox("Steam",     &g_showSteamTab))     SaveDesktopSettings();
+        ImGui::SameLine();
         if (ImGui::Checkbox("RetroArch", &g_showRetroArchTab)) SaveDesktopSettings();
         ImGui::SameLine();
         if (ImGui::Checkbox("ES-DE",     &g_showEsdeTab))      SaveDesktopSettings();
@@ -861,6 +862,7 @@ void RenderTitleMaker() {
 
     // xemu path setting
     {
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("xemu:");
         ImGui::SameLine();
         // Reserve room for [Save][Find] + their gaps + a 12px right margin so
@@ -892,6 +894,7 @@ void RenderTitleMaker() {
 
     // PCSX2 path setting. Empty is fine: PS2 discs find PCSX2 at launch.
     {
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("PCSX2:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 150);
@@ -917,11 +920,13 @@ void RenderTitleMaker() {
 
     // Search and category filter
     {
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Search:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(180);
         ImGui::InputText("##search", s_searchFilter, sizeof(s_searchFilter));
         ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Category:");
         ImGui::SameLine();
         ImGui::SetNextItemWidth(130);
@@ -1025,11 +1030,13 @@ void RenderTitleMaker() {
         ImGui::Spacing();
 
         // Edit fields
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Name:");
         ImGui::SameLine(80);
         ImGui::SetNextItemWidth(-1);
         ImGui::InputText("##editname", s_editName, sizeof(s_editName));
 
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Launch:");
         ImGui::SameLine(80);
         ImGui::SetNextItemWidth(-60);
@@ -1039,6 +1046,7 @@ void RenderTitleMaker() {
             s_appBrowser.Open();
         }
 
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Category:");
         ImGui::SameLine(80);
         ImGui::SetNextItemWidth(150);
@@ -1050,6 +1058,7 @@ void RenderTitleMaker() {
             ImGui::EndCombo();
         }
 
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Title ID:");
         ImGui::SameLine(80);
         ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", s_editTitleID);
@@ -1145,6 +1154,7 @@ void RenderTitleMaker() {
 
     // Bottom bar: new title + ISO import + Steam import
     ImGui::Separator();
+    ImGui::AlignTextToFramePadding();
     ImGui::Text("New:");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(180);
@@ -1433,6 +1443,7 @@ void RenderTitleMaker() {
 
         // Install path
         {
+            ImGui::AlignTextToFramePadding();
             ImGui::Text("Install:");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 220);
@@ -1523,11 +1534,13 @@ void RenderTitleMaker() {
 
         ImGui::Text("Add Game by App ID");
 
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Title:");
         ImGui::SameLine(80);
         ImGui::SetNextItemWidth(300);
         ImGui::InputText("##sttitle", s_stTitle, sizeof(s_stTitle));
 
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("AppID:");
         ImGui::SameLine(80);
         ImGui::SetNextItemWidth(160);
@@ -1782,6 +1795,7 @@ void RenderTitleMaker() {
 
         // Install path setting
         {
+            ImGui::AlignTextToFramePadding();
             ImGui::Text("Install:");
             ImGui::SameLine();
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 220);
@@ -1882,11 +1896,13 @@ void RenderTitleMaker() {
 
         ImGui::Text("Add Game");
 
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Title:");
         ImGui::SameLine(80);
         ImGui::SetNextItemWidth(300);
         ImGui::InputText("##ratitle", s_raTitle, sizeof(s_raTitle));
 
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Core:");
         ImGui::SameLine(80);
         ImGui::SetNextItemWidth(300);
@@ -1909,6 +1925,7 @@ void RenderTitleMaker() {
                 "No cores under %s/cores/. Install one via RetroArch's Online Updater.",
                 s_retroarchPath);
 
+        ImGui::AlignTextToFramePadding();
         ImGui::Text("Content:");
         ImGui::SameLine(80);
         ImGui::SetNextItemWidth(300);

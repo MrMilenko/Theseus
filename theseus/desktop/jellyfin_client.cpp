@@ -167,9 +167,8 @@ void Jellyfin_Init()
         GenerateUUID(g_jellyfinClientId);
         SaveDesktopSettings();
     }
-    fprintf(stderr, "[Jellyfin] init (token=%s, url=%s)\n",
-            g_jellyfinToken[0] ? "yes" : "no",
-            g_jellyfinUrl[0] ? g_jellyfinUrl : "(unset)");
+    fprintf(stderr, "[Jellyfin] %s%s%s\n", g_jellyfinToken[0] ? "Signed in" : "Not signed in",
+            g_jellyfinUrl[0] ? " to " : "", g_jellyfinUrl);
 }
 
 static SerialWorker s_reports;

@@ -762,7 +762,6 @@ bool InitApp()
 	CallFunction(g_pObject, "initialize");
 	PreloadSkinTextures();
 
-	fprintf(stdout, "[InitApp] Done!\n");
 	fflush(stdout);
 	return true;
 }
