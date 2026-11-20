@@ -23,6 +23,7 @@ static const char* ShippedVersionPath() {
 #include "jellyfin_client.h"
 #include "xcloud_client.h"
 #include "launchers/xemu.h"
+#include "launchers/pcsx2.h"
 #include "media_player.h"
 #include "milkdrop_window.h"
 #include "xbox_buttons.h"
@@ -35,6 +36,7 @@ extern float g_masterVolume;
 #include <cstring>
 #include <sys/stat.h>
 #include <cfloat>
+#include <vector>
 
 extern "C" void MediaDB_ScanAndCache();
 extern "C" void MediaDB_RefreshMovies();
@@ -117,9 +119,20 @@ static void SettingChanged(const SettingDef* d)
     SaveDesktopSettings();
 }
 
-static bool SettingCheckbox(const char* key, const char* label = NULL)
+// Rows a tab drew by hand this frame. Whatever's left on its page is drawn
+// straight from the table, so new settings show up here on their own.
+static std::vector<char> s_drawn;
+
+static const SettingDef* FindRow(const char* key)
 {
     const SettingDef* d = DesktopSettings_Find(key);
+    if (d) s_drawn[d - DesktopSettings_Table().defs] = 1;
+    return d;
+}
+
+static bool SettingCheckbox(const char* key, const char* label = NULL)
+{
+    const SettingDef* d = FindRow(key);
     if (!d || d->kind != SK_BOOL) return false;
     if (!ImGui::Checkbox(label ? label : d->label, (bool*)d->ptr)) return false;
     SettingChanged(d);
@@ -128,7 +141,7 @@ static bool SettingCheckbox(const char* key, const char* label = NULL)
 
 static bool SettingCombo(const char* key, const char* id)
 {
-    const SettingDef* d = DesktopSettings_Find(key);
+    const SettingDef* d = FindRow(key);
     if (!d || d->kind != SK_ENUM) return false;
     int idx = Setting_EnumIndex(*d);
     if (idx < 0) idx = 0;
@@ -141,10 +154,99 @@ static bool SettingCombo(const char* key, const char* id)
 // Saves once when the drag ends, not every frame.
 static void SettingSlider(const char* key)
 {
-    const SettingDef* d = DesktopSettings_Find(key);
+    const SettingDef* d = FindRow(key);
     if (!d || d->kind != SK_FLOAT) return;
     ImGui::SliderFloat(d->label, (float*)d->ptr, d->minV, d->maxV, "%.2f");
     if (ImGui::IsItemDeactivatedAfterEdit()) SettingChanged(d);
+}
+
+static const struct { const char* key; bool (*find)(char*, size_t); } kFinders[] = {
+    { "XemuPath",  Xemu_Find },
+    { "Pcsx2Path", Pcsx2_Find },
+};
+
+// One row of any kind, laid out like the hand-built ones.
+static void SettingRow(const SettingDef& d, float labelW)
+{
+    const float kWidgetW = 160.0f;
+    ImGui::PushID(d.key);
+    switch (d.kind) {
+    case SK_BOOL:
+        SettingCheckbox(d.key);
+        break;
+    case SK_ENUM:
+        ImGui::AlignTextToFramePadding(); ImGui::Text("%s:", d.label);
+        ImGui::SameLine(labelW); ImGui::SetNextItemWidth(kWidgetW);
+        SettingCombo(d.key, "##v");
+        break;
+    case SK_INT:
+        ImGui::AlignTextToFramePadding(); ImGui::Text("%s:", d.label);
+        ImGui::SameLine(labelW); ImGui::SetNextItemWidth(kWidgetW);
+        ImGui::InputInt("##v", (int*)d.ptr, d.step > 0 ? (int)d.step : 1);
+        if (ImGui::IsItemDeactivatedAfterEdit()) SettingChanged(&d);
+        break;
+    case SK_FLOAT:
+        SettingSlider(d.key);
+        break;
+    case SK_PATH:
+    case SK_STRING: {
+        bool (*find)(char*, size_t) = NULL;
+        for (size_t i = 0; i < sizeof(kFinders) / sizeof(kFinders[0]); i++)
+            if (!strcmp(kFinders[i].key, d.key)) find = kFinders[i].find;
+        ImGui::Text("%s:", d.label);
+        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - (find ? 50.0f : 0.0f));
+        ImGui::InputText("##v", (char*)d.ptr, (size_t)d.size,
+                         (d.flags & SF_SECRET) ? ImGuiInputTextFlags_Password : 0);
+        if (ImGui::IsItemDeactivatedAfterEdit()) SettingChanged(&d);
+        if (find) {
+            ImGui::SameLine();
+            char found[512];
+            if (ImGui::Button("Find") && find(found, sizeof(found)) && Setting_SetText(d, found))
+                SettingChanged(&d);
+        }
+        break;
+    }
+    }
+    if (d.flags & SF_RESTART) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(next launch)");
+    }
+    ImGui::PopID();
+}
+
+static bool RowLeft(const SettingDef& d, const char* page)
+{
+    return !(d.flags & SF_HIDDEN) && !strcmp(d.page, page) &&
+           !s_drawn[&d - DesktopSettings_Table().defs];
+}
+
+// Draws the rows of a settings page that the tab didn't draw itself.
+static void SettingRowsLeft(const char* page, bool separate = false)
+{
+    const SettingsTable& t = DesktopSettings_Table();
+    float labelW = 110.0f;
+    bool any = false;
+    for (int i = 0; i < t.count; i++) {
+        if (!RowLeft(t.defs[i], page)) continue;
+        any = true;
+        if (t.defs[i].kind == SK_ENUM || t.defs[i].kind == SK_INT) {
+            char lbl[160];
+            snprintf(lbl, sizeof(lbl), "%s:", t.defs[i].label);
+            float w = ImGui::CalcTextSize(lbl).x + ImGui::GetStyle().ItemSpacing.x * 2;
+            if (w > labelW) labelW = w;
+        }
+    }
+    if (!any) return;
+    if (separate) {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+    for (int i = 0; i < t.count; i++) {
+        if (!RowLeft(t.defs[i], page)) continue;
+        if (t.defs[i].kind == SK_PATH || t.defs[i].kind == SK_STRING) ImGui::Spacing();
+        SettingRow(t.defs[i], labelW);
+    }
 }
 
 // ============================================================================
@@ -569,6 +671,7 @@ void RenderSettingsWindow() {
         ImGui::End();
         return;
     }
+    s_drawn.assign(DesktopSettings_Table().count, 0);
 
     if (ImGui::BeginTabBar("SettingsTabs")) {
 
@@ -576,46 +679,33 @@ void RenderSettingsWindow() {
         if (ImGui::BeginTabItem("General")) {
             ImGui::Spacing();
 
-            // Startup mode
-            ImGui::Text("Startup Mode:");
+            ImGui::AlignTextToFramePadding();
+            ImGui::Text("When UIX Desktop Starts:");
             ImGui::SameLine();
+            ImGui::SetNextItemWidth(160.0f);
             SettingCombo("StartupMode", "##startupmode");
 
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
 
-            // Paths
-            ImGui::Text("xemu Path:");
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 120);
-            ImGui::InputText("##xemupath", s_xemuPath, sizeof(s_xemuPath));
+            SettingCheckbox("MenuBarAutoHide", "Auto-hide menu bar");
             ImGui::SameLine();
-            if (ImGui::Button("Save##xemu"))
-                SaveDesktopSettings();
-            ImGui::SameLine();
-            if (ImGui::Button("Find##xemu")) {
-                char found[512];
-                if (Xemu_Find(found, sizeof(found))) {
-                    snprintf(s_xemuPath, sizeof(s_xemuPath), "%s", found);
-                    SaveDesktopSettings();
-                }
-            }
-
-            ImGui::Spacing();
-            ImGui::Text("qcow2 HDD Image:");
-            ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
-            ImGui::InputText("##qcowpath", g_qcowPath, sizeof(g_qcowPath));
-
-            ImGui::Spacing();
-            {
-                SettingCheckbox("MenuBarAutoHide", "Auto-hide menu bar");
-                ImGui::SameLine();
-                ImGui::TextDisabled("(reveals when the pointer reaches the top edge)");
-            }
+            ImGui::TextDisabled("(Development Mode only)");
 
             ImGui::Spacing();
             ImGui::Text("User Directory:");
-            ImGui::TextDisabled("%s", Plat_UserDataDir());
+            {
+                // Home as ~ so the path fits; wrapped in case it still doesn't.
+                const char* dir = Plat_UserDataDir();
+                const char* home = getenv("HOME");
+                if (!home || !*home) home = getenv("USERPROFILE");
+                size_t n = home ? strlen(home) : 0;
+                bool tilde = n > 1 && strncmp(dir, home, n) == 0;
+                ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                ImGui::TextWrapped("%s%s", tilde ? "~" : "", tilde ? dir + n : dir);
+                ImGui::PopStyleColor();
+            }
             if (ImGui::Button("Open User Directory"))
                 Plat_OpenInFileManager(Plat_UserDataDir());
             ImGui::SameLine();
@@ -637,6 +727,8 @@ void RenderSettingsWindow() {
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Plays the original Xbox boot animation once on app startup\nbefore the dashboard initializes. Press Esc/Enter/Space to skip.");
 
+            SettingRowsLeft("General", true);
+
             ImGui::Spacing();
             if (ImGui::Button("Save All Settings"))
                 SaveDesktopSettings();
@@ -649,13 +741,16 @@ void RenderSettingsWindow() {
             ImGui::Spacing();
 
             SettingCheckbox("CRT_Enabled");
-            if (g_crt.enabled) {
+            static const char* kCrtKeys[] = {
+                "CRT_Scanlines", "CRT_Curvature", "CRT_Phosphor", "CRT_Vignette",
+                "CRT_Bloom", "CRT_Flicker", "CRT_ColorBleed", "CRT_Brightness",
+            };
+            const int kCrtCount = (int)(sizeof(kCrtKeys) / sizeof(kCrtKeys[0]));
+            if (!g_crt.enabled) {
+                for (int i = 0; i < kCrtCount; i++) FindRow(kCrtKeys[i]);
+            } else {
                 ImGui::Spacing();
-                static const char* kCrtKeys[] = {
-                    "CRT_Scanlines", "CRT_Curvature", "CRT_Phosphor", "CRT_Vignette",
-                    "CRT_Bloom", "CRT_Flicker", "CRT_ColorBleed", "CRT_Brightness",
-                };
-                for (int i = 0; i < (int)(sizeof(kCrtKeys) / sizeof(kCrtKeys[0])); i++)
+                for (int i = 0; i < kCrtCount; i++)
                     SettingSlider(kCrtKeys[i]);
 
                 ImGui::Spacing();
@@ -683,7 +778,7 @@ void RenderSettingsWindow() {
             ImGui::Spacing();
 
             // Dropdowns: fixed label column + widget column so they line up.
-            const float kLabelX  = 90.0f;
+            const float kLabelX  = 110.0f;
             const float kWidgetW = 160.0f;
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("MSAA:");
@@ -700,7 +795,9 @@ void RenderSettingsWindow() {
 
             SettingCheckbox("EmulateXboxRes");
             ImGui::SameLine();
-            ImGui::TextDisabled("(720x480 design space, keeps XIP scenes framed as authored)");
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Lays scenes out in the Xbox's 720x480 space,\nso they stay framed the way they were made.");
             ImGui::Spacing();
 
             ImGui::AlignTextToFramePadding(); ImGui::Text("Resolution:");
@@ -723,6 +820,8 @@ void RenderSettingsWindow() {
             ImGui::AlignTextToFramePadding(); ImGui::Text("Display Mode:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
             SettingCombo("DisplayMode", "##dispmode");
+
+            SettingRowsLeft("Display");
 
             ImGui::Spacing();
             if (ImGui::Button("Restore Defaults")) {
@@ -758,6 +857,7 @@ void RenderSettingsWindow() {
                 MediaPlayer_SetMasterVolume(v);
             }
             if (ImGui::IsItemDeactivatedAfterEdit()) SaveDesktopSettings();
+            FindRow("MasterVolume");
 
             ImGui::SameLine();
             ImGui::TextDisabled("(?)");
@@ -794,6 +894,7 @@ void RenderSettingsWindow() {
             if (ImGui::Button("Configure projectM...")) {
                 g_projectMConfigOpen = true;
             }
+            SettingRowsLeft("Audio", true);
 
             ImGui::EndTabItem();
         }
@@ -801,6 +902,11 @@ void RenderSettingsWindow() {
         // ---- Media Library ----
         if (ImGui::BeginTabItem("Media")) {
             ImGui::Spacing();
+
+            static const char* kLibraryKeys[] = { "MusicRoot", "MoviesRoot", "TvRoot", "TMDBKey" };
+            for (size_t i = 0; i < sizeof(kLibraryKeys) / sizeof(kLibraryKeys[0]); i++)
+                FindRow(kLibraryKeys[i]);
+            SettingRowsLeft("Media");
 
             if (ImGui::CollapsingHeader("Local Library", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Spacing();
@@ -889,7 +995,7 @@ void RenderSettingsWindow() {
             if (g_tmdbKey[0])
                 ImGui::TextDisabled("(configured)");
             else
-                ImGui::TextDisabled("(empty - plots/posters disabled)");
+                ImGui::TextDisabled("(not set, so no plots or posters)");
             ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
             ImGui::InputTextWithHint("##tmdbkey", "Get a free v3 key at themoviedb.org",
                 g_tmdbKey, sizeof(g_tmdbKey), ImGuiInputTextFlags_Password);
@@ -1179,6 +1285,18 @@ void RenderSettingsWindow() {
             ImGui::EndTabItem();
         }
 
+        if (ImGui::BeginTabItem("Games")) {
+            ImGui::Spacing();
+            SettingRowsLeft("Games");
+            ImGui::EndTabItem();
+        }
+
+        if (ImGui::BeginTabItem("Controller")) {
+            ImGui::Spacing();
+            SettingRowsLeft("Controller");
+            ImGui::EndTabItem();
+        }
+
         ImGui::EndTabBar();
     }
 
@@ -1275,25 +1393,26 @@ void RenderShortcutsWindow() {
 
     ImGui::SetNextWindowSize(ImVec2(360, 360), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Keyboard Shortcuts", &s_shortcutsOpen)) {
+        ImGui::Text("F7       Guide (or Guide button, LT+B)");
+        ImGui::Separator();
         ImGui::Text("F3       Title Maker");
         ImGui::Text("F4       Settings");
         ImGui::Text("F5       HDD Browser");
         ImGui::Text("F6       Playlist Maker");
-        ImGui::Text("F10      Hide Menu Bar");
         ImGui::Text("F11      Toggle Fullscreen");
         ImGui::Text("F12      Toggle Borderless Window");
+        ImGui::Separator();
+        ImGui::Text("Ctrl+M   Toggle Mute");
+        ImGui::Text("Ctrl+R   Restart Dashboard");
+        ImGui::Text("Ctrl+Q   Quit");
         if (g_startupMode == 2 || g_extractedMode) {
             ImGui::Separator();
             ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 0.7f), "Development Mode:");
             ImGui::Text("F1       Inspector");
             ImGui::Text("F2       XAP Editor");
+            ImGui::Text("F10      Hide Menu Bar");
+            ImGui::Text("Escape   Deselect (Inspector)");
         }
-        ImGui::Separator();
-        ImGui::Text("Ctrl+O   Open Media...");
-        ImGui::Text("LT+B     Overlay / Menu Bar (gamepad)"); ImGui::Text("Ctrl+M   Toggle Mute");
-        ImGui::Text("Ctrl+R   Restart Dashboard");
-        ImGui::Text("Ctrl+Q   Quit");
-        ImGui::Text("Escape   Deselect (Inspector)");
         ImGui::Separator();
         ImGui::Text("Gamepad / Arrow Keys navigate the dashboard.");
     }
