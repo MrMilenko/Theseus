@@ -66,6 +66,7 @@ extern char** g_argv;
 // Starts this program over with one mode flag in place of any other.
 static void RestartWithMode(const char* flag)
 {
+    Console_RestartViaWatchdog(flag);
     std::vector<char*> args;
     args.push_back(g_argv[0]);
     for (int i = 1; i < g_argc; i++) {
@@ -82,6 +83,7 @@ static void RestartWithMode(const char* flag)
 // Starts this program over the way it was started.
 static void Restart()
 {
+    Console_RestartViaWatchdog(NULL);
     execv(g_argv[0], g_argv);
     fprintf(stderr, "[Guide] restart failed: %s\n", strerror(errno));
 }

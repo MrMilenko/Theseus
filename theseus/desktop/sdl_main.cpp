@@ -947,6 +947,11 @@ int g_mediaPlaybackExited = 0;
 // Preloader UI and XIP extraction are now in preloader.cpp
 
 int main(int argc, char* argv[]) {
+    // --console: this process only watches over the real one. No log, no SDL, no window.
+    {
+        int code = 0;
+        if (Console_Supervise(argc, argv, &code)) return code;
+    }
     g_argc = argc;
     g_argv = argv;
     s_execPath = argv[0];
@@ -1660,6 +1665,21 @@ int main(int argc, char* argv[]) {
         Pads_Update();
         Frame_PhaseEnd(FP_EVENTS);
 
+        // Development only: UIX_DEV_CRASH_AFTER=<seconds> crashes on purpose,
+        // to try the console watchdog.
+        {
+            static int s_crashMs = -1;
+            if (s_crashMs < 0) {
+                const char* env = getenv("UIX_DEV_CRASH_AFTER");
+                s_crashMs = env ? (int)(atof(env) * 1000.0) : 0;
+            }
+            if (s_crashMs > 0 && SDL_GetTicks() > (Uint32)s_crashMs) {
+                fprintf(stderr, "[Console] UIX_DEV_CRASH_AFTER: crashing on purpose\n");
+                volatile int* nowhere = NULL;
+                *nowhere = 1;
+            }
+        }
+
         // All panels are floating ImGui windows in the main window now.
         {
             SDL_Window* focusedWin = SDL_GetKeyboardFocus();
@@ -1694,6 +1714,7 @@ int main(int argc, char* argv[]) {
 
             // Show window again if it was hidden (game launch)
             if (g_pSDLWindow) SDL_ShowWindow(g_pSDLWindow);
+            Console_RestartViaWatchdog("--preview");
             execv(g_argv[0], newArgv);
             // fallthrough if execv fails
             fprintf(stderr, "[Desktop] execv failed: %s\n", strerror(errno));

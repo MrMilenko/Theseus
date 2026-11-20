@@ -740,6 +740,57 @@ bool Host_Power(int action) {
 	return true;
 }
 
+// The supervisor hands a stop on to the child and keeps waiting for it.
+static volatile pid_t s_selfChild = 0;
+static void ForwardStop(int sig) {
+	if (s_selfChild > 0) kill(s_selfChild, sig);
+}
+
+int Host_RunSelf(const char* const* args, int* code, char* how, size_t howSize) {
+	*code = 0;
+	if (howSize) how[0] = '\0';
+	char exe[1024];
+	if (!Host_ExePath(exe, sizeof(exe))) return HOST_CHILD_FAILED;
+	std::vector<const char*> argv;
+	argv.push_back(exe);
+	for (int i = 1; args[i]; i++) argv.push_back(args[i]);
+	argv.push_back(NULL);
+
+	struct sigaction sa = {}, old[3];
+	sa.sa_handler = ForwardStop;
+	sigemptyset(&sa.sa_mask);
+	static const int kStops[3] = { SIGTERM, SIGINT, SIGHUP };
+	for (int i = 0; i < 3; i++) sigaction(kStops[i], &sa, &old[i]);
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		for (int i = 0; i < 3; i++) sigaction(kStops[i], &old[i], NULL);
+		execv(exe, (char* const*)argv.data());
+		_exit(127);
+	}
+	int result = HOST_CHILD_FAILED;
+	if (pid > 0) {
+		s_selfChild = pid;
+		int status = 0;
+		pid_t r;
+		while ((r = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+		s_selfChild = 0;
+		if (r == pid && WIFSIGNALED(status)) {
+			*code = WTERMSIG(status);
+			snprintf(how, howSize, "%s, signal %d", SignalName(*code), *code);
+			result = HOST_CHILD_CRASHED;
+		} else if (r == pid && WIFEXITED(status)) {
+			*code = WEXITSTATUS(status);
+			snprintf(how, howSize, "exit code %d", *code);
+			result = HOST_CHILD_EXITED;
+		}
+	}
+	for (int i = 0; i < 3; i++) sigaction(kStops[i], &old[i], NULL);
+	return result;
+}
+
+bool Host_ExecKeepsProcess() { return true; }
+
 bool Host_StartAtLogin() {
 	struct stat st;
 	return stat(LoginEntryPath().c_str(), &st) == 0;

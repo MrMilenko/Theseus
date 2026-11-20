@@ -114,6 +114,16 @@ bool Host_SetStartAtLogin(bool on);
 // UIX_DEV_POWER_DRYRUN=1 only logs what it would do. False when the OS refused.
 enum { HOST_POWER_SLEEP, HOST_POWER_RESTART, HOST_POWER_SHUTDOWN };
 bool Host_Power(int action);
+
+// Runs this program again with args (args[0] is skipped; NULL ends them),
+// no shell, and waits for it. HOST_CHILD_EXITED with its exit code, or
+// HOST_CHILD_CRASHED with what killed it in how. Asking us to stop while
+// it runs passes the request on to the child.
+enum { HOST_CHILD_FAILED = -1, HOST_CHILD_EXITED, HOST_CHILD_CRASHED };
+int Host_RunSelf(const char* const* args, int* code, char* how, size_t howSize);
+// True where exec swaps the program in place and keeps the process (macOS,
+// Linux). Windows starts a new one and ends this one instead.
+bool Host_ExecKeepsProcess();
 // Audio CD in the first optical drive: track count and per-track lengths
 // in seconds. -1 when there's no readable disc.
 int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio);

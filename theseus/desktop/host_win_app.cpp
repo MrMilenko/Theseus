@@ -574,6 +574,72 @@ bool Host_SetStartAtLogin(bool on) {
 	return Host_RegistrySetString(kRunKey, kRunValue, cmd);
 }
 
+// One argument the way CommandLineToArgvW will read it back.
+static void AppendArg(std::string& cmd, const char* arg) {
+	if (!cmd.empty()) cmd += ' ';
+	if (*arg && !strpbrk(arg, " \t\n\v\"")) {
+		cmd += arg;
+		return;
+	}
+	cmd += '"';
+	for (const char* p = arg;; p++) {
+		size_t slashes = 0;
+		while (*p == '\\') { p++; slashes++; }
+		if (!*p) {
+			cmd.append(slashes * 2, '\\');
+			break;
+		}
+		if (*p == '"') cmd.append(slashes * 2 + 1, '\\');
+		else           cmd.append(slashes, '\\');
+		cmd += *p;
+	}
+	cmd += '"';
+}
+
+// The supervisor hands Ctrl+C and a console close on to the child.
+static volatile HANDLE s_selfChild = NULL;
+static BOOL WINAPI ForwardStop(DWORD) {
+	HANDLE h = s_selfChild;
+	if (h) TerminateProcess(h, 0);
+	return TRUE;
+}
+
+int Host_RunSelf(const char* const* args, int* code, char* how, size_t howSize) {
+	*code = 0;
+	if (howSize) how[0] = '\0';
+	char exe[MAX_PATH];
+	if (!Host_ExePath(exe, sizeof(exe))) return HOST_CHILD_FAILED;
+	std::string cmd;
+	AppendArg(cmd, exe);
+	for (int i = 1; args[i]; i++) AppendArg(cmd, args[i]);
+	std::vector<char> line(cmd.begin(), cmd.end());
+	line.push_back('\0');
+
+	STARTUPINFOA si = {};
+	si.cb = sizeof(si);
+	PROCESS_INFORMATION pi = {};
+	if (!CreateProcessA(exe, line.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) return HOST_CHILD_FAILED;
+	CloseHandle(pi.hThread);
+	s_selfChild = pi.hProcess;
+	SetConsoleCtrlHandler(ForwardStop, TRUE);
+	WaitForSingleObject(pi.hProcess, INFINITE);
+	SetConsoleCtrlHandler(ForwardStop, FALSE);
+	s_selfChild = NULL;
+	DWORD status = 0;
+	GetExitCodeProcess(pi.hProcess, &status);
+	CloseHandle(pi.hProcess);
+	*code = (int)status;
+	// An unhandled exception ends the process with its NTSTATUS, 0xC...
+	if ((status & 0xF0000000UL) == 0xC0000000UL || status == CRASH_FATAL_APP_EXIT) {
+		snprintf(how, howSize, "%s, 0x%08lX", ExceptionName(status), (unsigned long)status);
+		return HOST_CHILD_CRASHED;
+	}
+	snprintf(how, howSize, "exit code %lu", (unsigned long)status);
+	return HOST_CHILD_EXITED;
+}
+
+bool Host_ExecKeepsProcess() { return false; }
+
 static bool PowerDryRun() {
 	const char* v = getenv("UIX_DEV_POWER_DRYRUN");
 	return v && *v && strcmp(v, "0") != 0;
