@@ -811,6 +811,11 @@ LPDIRECT3DTEXTURE8 LoadTexture(const TCHAR* szURL, UINT width, UINT height)
 	// unresolved background.bmp came out as a giant smear of the menu-hilight
 	// pill). Better to fail loudly so missing assets are obvious during skin
 	// authoring.
+#ifndef _XBOX
+	// Only a skin brings background.xbx, so Stock missing it is normal.
+	if (_tcsicmp(szURL, _T("background.xbx")) == 0)
+		return NULL;
+#endif
 	ALERT(_T("Unable to load texture file (%s)"), szURL);
 	return NULL;
 }

@@ -117,8 +117,7 @@ void Plex_Init()
         GenerateUUID(g_plexClientId);
         SaveDesktopSettings();
     }
-    fprintf(stderr, "[Plex] init (token=%s, clientId=%s)\n",
-            g_plexToken[0] ? "yes" : "no", g_plexClientId);
+    fprintf(stderr, "[Plex] %s\n", g_plexToken[0] ? "Signed in" : "Not signed in");
 }
 
 static SerialWorker s_reports;

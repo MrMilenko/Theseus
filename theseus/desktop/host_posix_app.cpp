@@ -427,6 +427,7 @@ void Host_InstallCrashHandler(const char* userDataDir, const char* shippedDir) {
 	CrashVersion(shippedDir, version, sizeof(version));
 	CrashOsName(os, sizeof(os));
 	snprintf(s_crashHeader, sizeof(s_crashHeader), "Version: %s\nOS: %s\n", version, os);
+	fprintf(stdout, "[Host] UIX Desktop %s on %s\n", version, os);
 
 	time_t now = time(NULL);
 	struct tm lt;

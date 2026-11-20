@@ -6,8 +6,8 @@
 #include "dashapp.h"
 #include "node.h"
 
-// Prints like printf to stderr. A leading \001 (the Xbox's severity mark)
-// is dropped; messages past 511 characters are cut.
+// Prints like printf to stderr. A leading \001 or \007 (the Xbox's severity
+// marks) is dropped; messages past 511 characters are cut.
 extern "C" void Trace(const char* szMsg, ...)
 {
 	char text[512];
@@ -16,7 +16,7 @@ extern "C" void Trace(const char* szMsg, ...)
 	vsnprintf(text, sizeof(text), szMsg, args);
 	va_end(args);
 
-	fputs(text[0] == '\001' ? text + 1 : text, stderr);
+	fputs(text[0] == '\001' || text[0] == '\007' ? text + 1 : text, stderr);
 }
 
 void TheseusGetErrorString(HRESULT hr, char* szErrorBuf, int cchErrorBuf)

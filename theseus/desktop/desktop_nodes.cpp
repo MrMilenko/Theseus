@@ -1809,7 +1809,7 @@ static void EnumerateTitles()
 	};
 
 	HostDir* dir = Host_OpenDir(udataPath);
-	if (!dir) { fprintf(stderr, "[SavedGameGrid] Cannot open %s\n", udataPath); return; }
+	if (!dir) return;   // no saves yet
 	char entry[260];
 	while (Host_ReadDir(dir, entry, sizeof(entry), NULL)) ProcessTitleEntry(entry);
 	Host_CloseDir(dir);
