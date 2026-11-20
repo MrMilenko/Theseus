@@ -37,6 +37,7 @@
 #include "launchers/steam.h"
 #include "settings_backup.h"
 #include "launchers/stores.h"
+#include "console_mode.h"
 #include <algorithm>
 #include <ctype.h>
 #include <strings.h>
@@ -290,7 +291,7 @@ static const char* kSections[SEC_COUNT] = {
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
             GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS, GV_APPS,
-            GV_COLLECTIONS, GV_GAMECOLL, GV_BACKUPS, GV_RESTORE };
+            GV_COLLECTIONS, GV_GAMECOLL, GV_BACKUPS, GV_RESTORE, GV_POWER };
 
 // What a game list shows.
 enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH, GL_COLLECTION };
@@ -311,6 +312,7 @@ enum Act {
     GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT, GA_STORE,
     GA_COLLECTION, GA_GAMECOLL, GA_INCOLL, GA_NEWCOLL,
     GA_BACKUP, GA_BACKUPS, GA_PICKBACKUP, GA_RESTORE, GA_OPENBACKUPS,
+    GA_DESKTOP, GA_POWER, GA_POWERNOW, GA_CANCEL,
     GA_COUNT
 };
 
@@ -400,6 +402,7 @@ static struct Guide {
     int sort;              // All Games' order, a SORT_
     std::vector<std::string> backups;   // GV_BACKUPS' rows, newest first
     std::string backup;                 // the one GV_RESTORE offers
+    int power;                          // the HOST_POWER_ GV_POWER asks about
     std::vector<std::string> collNames;  // the game page's Collections rows, kept while it's open
     unsigned gameLayout;   // g_vgames.layout when game was picked
 
@@ -1048,8 +1051,28 @@ static void Build()
         break;
     case GV_EXIT:
         Add("Back to the Dashboard", "", "Closes the guide.", GA_RESUME);
+        if (!Console_Active()) {
+            Add("Exit UIX Desktop", "", "Quit to your desktop.", GA_QUIT);
+            break;
+        }
+        Add("Go to Desktop", "", "Puts UIX Desktop away. It keeps running.", GA_DESKTOP);
         Add("Exit UIX Desktop", "", "Quit to your desktop.", GA_QUIT);
+        Caption("Power");
+        Add("Sleep", g.result[GA_POWER].c_str(), "Sleeps the machine. UIX Desktop is still here when it wakes.",
+            GA_POWER, HOST_POWER_SLEEP);
+        Add("Restart", "", "Restarts the machine.", GA_POWER, HOST_POWER_RESTART);
+        Add("Shut Down", "", "Turns the machine off.", GA_POWER, HOST_POWER_SHUTDOWN);
         break;
+    case GV_POWER: {
+        bool restart = g.power == HOST_POWER_RESTART;
+        Para(restart ? "This restarts the whole machine. Other apps are asked to close first, and anything "
+                       "unsaved in them could be lost."
+                     : "This turns the whole machine off. Other apps are asked to close first, and anything "
+                       "unsaved in them could be lost.");
+        Add(restart ? "Restart Now" : "Shut Down Now", g.result[GA_POWERNOW].c_str(), NULL, GA_POWERNOW, g.power);
+        Add("Cancel", "", NULL, GA_CANCEL);
+        break;
+    }
     }
     if (g.cursor >= (int)g.rows.size()) g.cursor = g.rows.empty() ? 0 : (int)g.rows.size() - 1;
     if (g.cursor < 0) g.cursor = 0;
@@ -1067,6 +1090,7 @@ static const char* ViewTitle()
     case GV_COLLECTIONS: return "Collections";
     case GV_BACKUPS:   return "Restore a Backup";
     case GV_RESTORE:   return g.backup.c_str();
+    case GV_POWER:     return g.power == HOST_POWER_RESTART ? "Restart" : "Shut Down";
     case GV_GAMECOLL:  return "Collections";
     case GV_GAMES: {
         static char title[32], full[96];
@@ -1820,6 +1844,38 @@ static void Select()
     case GA_COPYLOG:
         if (CopyLog()) g.copied = GA_COPYLOG; else Refuse();
         Build();
+        break;
+    case GA_DESKTOP:
+        Close();
+        Console_GoToDesktop();
+        break;
+    case GA_POWER:
+        g.result[GA_POWER].clear();
+        if (r.arg != HOST_POWER_SLEEP) {
+            g.power = r.arg;
+            g.result[GA_POWERNOW].clear();
+            Push(GV_POWER);
+            // Cancel is the safe place to start.
+            g.cursor = (int)g.rows.size() - 1;
+            break;
+        }
+        if (Console_Power(HOST_POWER_SLEEP)) {
+            Close();
+        } else {
+            g.result[GA_POWER] = "Didn't work";
+            Refuse();
+            Build();
+        }
+        break;
+    case GA_POWERNOW:
+        if (!Console_Power(r.arg)) {
+            g.result[GA_POWERNOW] = "Didn't work";
+            Refuse();
+            Build();
+        }
+        break;
+    case GA_CANCEL:
+        Back();
         break;
     case GA_QUIT: {
         SDL_Event quit;

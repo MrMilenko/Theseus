@@ -679,6 +679,67 @@ static std::string LoginEntryText(const std::string& exe) {
 }
 #endif
 
+static bool PowerDryRun() {
+	const char* v = getenv("UIX_DEV_POWER_DRYRUN");
+	return v && *v && strcmp(v, "0") != 0;
+}
+
+bool Host_Power(int action) {
+	static const char* const kNames[] = { "sleep", "restart", "shut down" };
+	if (action < HOST_POWER_SLEEP || action > HOST_POWER_SHUTDOWN) return false;
+#ifdef __APPLE__
+	// System Events asks every app to quit first, the same as the Apple menu.
+	const char* const kSleep[]    = { "pmset", "sleepnow", NULL };
+	const char* const kRestart[]  = { "osascript", "-e", "tell application \"System Events\" to restart", NULL };
+	const char* const kShutdown[] = { "osascript", "-e", "tell application \"System Events\" to shut down", NULL };
+#else
+	// logind lets the active local session do these without a password.
+	const char* const kSleep[]    = { "systemctl", "suspend", NULL };
+	const char* const kRestart[]  = { "systemctl", "reboot", NULL };
+	const char* const kShutdown[] = { "systemctl", "poweroff", NULL };
+#endif
+	const char* const* argv = action == HOST_POWER_SLEEP ? kSleep : action == HOST_POWER_RESTART ? kRestart : kShutdown;
+	std::string line;
+	for (int i = 0; argv[i]; i++) {
+		if (i) line += ' ';
+		line += strchr(argv[i], ' ') ? "'" + std::string(argv[i]) + "'" : argv[i];
+	}
+	if (PowerDryRun()) {
+		fprintf(stderr, "[Power] would %s: %s\n", kNames[action], line.c_str());
+		return true;
+	}
+	fprintf(stderr, "[Power] %s: %s\n", kNames[action], line.c_str());
+	fflush(stderr);
+	pid_t pid = fork();
+	if (pid == 0) {
+		RestoreHostLibraryPath();
+#ifndef __APPLE__
+		if (getenv("FLATPAK_ID")) {
+			const char* host[8] = { "flatpak-spawn", "--host" };
+			for (int i = 0; argv[i] && i < 5; i++) host[i + 2] = argv[i];
+			execvp(host[0], (char* const*)host);
+		}
+#endif
+		execvp(argv[0], (char* const*)argv);
+		_exit(127);
+	}
+	if (pid < 0) return false;
+	// These answer quickly when they're refused. Still going after a few
+	// seconds means it's happening.
+	for (int i = 0; i < 30; i++) {
+		int status;
+		pid_t r = waitpid(pid, &status, WNOHANG);
+		if (r == pid) {
+			bool ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+			if (!ok) fprintf(stderr, "[Power] %s was refused\n", kNames[action]);
+			return ok;
+		}
+		if (r < 0) return false;
+		usleep(100 * 1000);
+	}
+	return true;
+}
+
 bool Host_StartAtLogin() {
 	struct stat st;
 	return stat(LoginEntryPath().c_str(), &st) == 0;

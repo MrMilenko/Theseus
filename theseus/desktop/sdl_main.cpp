@@ -1454,6 +1454,10 @@ int main(int argc, char* argv[]) {
                         // audible when the window is active. ApplyEffectiveMute
                         // honors the manual g_audioMuted on top, so a user
                         // Ctrl+M still wins.
+                        // Back from Go to Desktop: fullscreen again.
+                        if (event.window.event == SDL_WINDOWEVENT_RESTORED && Console_Active() &&
+                            !(SDL_GetWindowFlags(g_pSDLWindow) & SDL_WINDOW_FULLSCREEN))
+                            g_displayChangeRequested = true;
                         switch (event.window.event) {
                         case SDL_WINDOWEVENT_FOCUS_LOST:
                         case SDL_WINDOWEVENT_MINIMIZED:

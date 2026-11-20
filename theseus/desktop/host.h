@@ -109,6 +109,11 @@ bool Host_RegistryDelete(const char* subKey, const char* value);
 // program with --console. Turning it off removes just that entry.
 bool Host_StartAtLogin();
 bool Host_SetStartAtLogin(bool on);
+
+// Sleep, restart or shut down the machine, the way the OS's own menu does.
+// UIX_DEV_POWER_DRYRUN=1 only logs what it would do. False when the OS refused.
+enum { HOST_POWER_SLEEP, HOST_POWER_RESTART, HOST_POWER_SHUTDOWN };
+bool Host_Power(int action);
 // Audio CD in the first optical drive: track count and per-track lengths
 // in seconds. -1 when there's no readable disc.
 int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio);

@@ -574,6 +574,60 @@ bool Host_SetStartAtLogin(bool on) {
 	return Host_RegistrySetString(kRunKey, kRunValue, cmd);
 }
 
+static bool PowerDryRun() {
+	const char* v = getenv("UIX_DEV_POWER_DRYRUN");
+	return v && *v && strcmp(v, "0") != 0;
+}
+
+// Restart and shut down need the shutdown privilege switched on first.
+static bool EnableShutdownPrivilege() {
+	HANDLE token;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) return false;
+	TOKEN_PRIVILEGES tp = {};
+	tp.PrivilegeCount = 1;
+	tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	bool ok = LookupPrivilegeValueA(NULL, SE_SHUTDOWN_NAME, &tp.Privileges[0].Luid) &&
+	          AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL) && GetLastError() == ERROR_SUCCESS;
+	CloseHandle(token);
+	return ok;
+}
+
+bool Host_Power(int action) {
+	static const char* const kNames[] = { "sleep", "restart", "shut down" };
+	static const char* const kCalls[] = {
+		"SetSuspendState(FALSE, FALSE, FALSE)",
+		"ExitWindowsEx(EWX_REBOOT)",
+		"ExitWindowsEx(EWX_SHUTDOWN | EWX_POWEROFF)",
+	};
+	if (action < HOST_POWER_SLEEP || action > HOST_POWER_SHUTDOWN) return false;
+	if (PowerDryRun()) {
+		fprintf(stderr, "[Power] would %s: %s\n", kNames[action], kCalls[action]);
+		return true;
+	}
+	fprintf(stderr, "[Power] %s: %s\n", kNames[action], kCalls[action]);
+	fflush(stderr);
+	if (action == HOST_POWER_SLEEP) {
+		// powrprof isn't always loaded, so look it up rather than link it.
+		typedef BOOLEAN (WINAPI *SuspendFn)(BOOLEAN, BOOLEAN, BOOLEAN);
+		HMODULE dll = LoadLibraryA("powrprof.dll");
+		SuspendFn suspend = dll ? (SuspendFn)GetProcAddress(dll, "SetSuspendState") : NULL;
+		bool ok = suspend && suspend(FALSE, FALSE, FALSE);
+		if (dll) FreeLibrary(dll);
+		if (!ok) fprintf(stderr, "[Power] sleep was refused (error %lu)\n", GetLastError());
+		return ok;
+	}
+	if (!EnableShutdownPrivilege()) {
+		fprintf(stderr, "[Power] no shutdown privilege (error %lu)\n", GetLastError());
+		return false;
+	}
+	UINT how = action == HOST_POWER_RESTART ? EWX_REBOOT : (EWX_SHUTDOWN | EWX_POWEROFF);
+	if (!ExitWindowsEx(how, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER | SHTDN_REASON_FLAG_PLANNED)) {
+		fprintf(stderr, "[Power] %s was refused (error %lu)\n", kNames[action], GetLastError());
+		return false;
+	}
+	return true;
+}
+
 static HANDLE OpenCdromDevice() {
 	char path[] = "\\\\.\\D:";
 	for (char c = 'D'; c <= 'H'; ++c) {
