@@ -195,7 +195,9 @@ void CFolder::Refresh(const char* szPath)
 	HANDLE hFind = TheseusFindFirstFile(szPatternA, &fd);
 	if (hFind == INVALID_HANDLE_VALUE)
 	{
-		TRACE("\001Cannot read directory: \"%s\" (%d)\n", szPath, GetLastError());
+		// A folder that isn't there is normal: most drives and launcher folders are optional.
+		if (TheseusGetFileAttributes(szPath) != (DWORD)-1)
+			TRACE("\001Cannot read directory: \"%s\" (%d)\n", szPath, GetLastError());
 		return;
 	}
 

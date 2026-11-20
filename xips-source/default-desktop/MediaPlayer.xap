@@ -37,6 +37,8 @@ var gSelectedIndex;        // absolute index into MediaCollection movies or show
 // list switches to playlist items. Picking an item plays from that index.
 var bInPlaylistItemView;
 var nPlaylistCursorBackup; // restore the cursor when backing out of items
+var nMediaLastCount;       // count last drawn; the behavior redraws when a scan changes it
+var sMediaStatus;          // what an empty list says, drawn on its first row
 
 
 function initialize()
@@ -56,6 +58,8 @@ function initialize()
 
 	bInPlaylistItemView   = 0;
 	nPlaylistCursorBackup = 0;
+	nMediaLastCount       = -1;
+	sMediaStatus          = "";
 
 	gSelectedTitle = "";
 	gSelectedPlot  = "";
@@ -105,6 +109,28 @@ function GetActiveTitle(absIdx)
 }
 
 
+function GetMediaStatus()
+{
+	if (bInCategoryView | (nMediaItemCount > 0))
+		return "";
+	if (nCurCategory == 0)
+		return theMediaCollection.GetStatus(0);
+	if (nCurCategory == 1)
+		return theMediaCollection.GetStatus(1);
+	if (bInPlaylistItemView)
+		return "This playlist is empty";
+	return "No playlists yet";
+}
+
+
+function CountText(n, one, many)
+{
+	if (n == 1)
+		return "1 " + one;
+	return n + " " + many;
+}
+
+
 function StartMediaLevel()
 {
 	UpdateMediaList();
@@ -114,6 +140,10 @@ function StartMediaLevel()
 function UpdateMediaList()
 {
 	var c = theMediaMenu.children[0].children[0];
+	// A rescan can shrink the list under the cursor.
+	if (nCurMediaItem >= nMediaItemCount)
+		nCurMediaItem = Math.max(0, nMediaItemCount - 1);
+	sMediaStatus = GetMediaStatus();
 
 	// Keep cursor inside the visible window: if it falls below scroll, raise
 	// scroll; if it exceeds the bottom, drop scroll.
@@ -147,40 +177,54 @@ function UpdateMediaList()
 				c.MenuButtons.children[i].children[1].children[0].geometry.scrollDelay = 0;
 			}
 		}
+		else if ((i == 0) & (sMediaStatus != ""))
+		{
+			// Nothing to list: the first row says why.
+			c.MenuButtons.children[0].visible = true;
+			c.MenuButtons.children[0].children[1].children[0].geometry.text = sMediaStatus;
+			c.MenuButtons.children[0].children[0].children[0].appearance.material.name = "GameHilite";
+			c.MenuButtons.children[0].children[0].children[0].appearance.texture.url = "outline.tga";
+			c.MenuButtons.children[0].children[1].children[0].appearance.name = "NavType";
+			c.MenuButtons.children[0].children[1].children[0].geometry.scrollRate  = 0.1;
+			c.MenuButtons.children[0].children[1].children[0].geometry.scrollDelay = 1;
+		}
 		else
 		{
 			c.MenuButtons.children[i].visible = false;
 		}
 	}
 
+	// More arrows only while there's more to scroll to.
+	c.MU_morearrow_up.visible   = (nMediaListScroll > 0);
+	c.MU_morearrow_down.visible = ((nMediaListScroll + nMediaListVisible) < nMediaItemCount);
+
+	// Just the category in the header; "MEDIA / ..." ran into the count.
 	if (bInCategoryView)
 	{
 		c.MediaHeaderText.text = "MEDIA";
-		c.MusicCountText.text  = nMediaItemCount + " CATEGORIES";
+		c.MusicCountText.text  = CountText(nMediaItemCount, "CATEGORY", "CATEGORIES");
 	}
 	else if (nCurCategory == 0)
 	{
-		c.MediaHeaderText.text = "MEDIA / MOVIES";
-		c.MusicCountText.text  = nMediaItemCount + " MOVIES";
+		c.MediaHeaderText.text = "MOVIES";
+		c.MusicCountText.text  = CountText(nMediaItemCount, "MOVIE", "MOVIES");
 	}
 	else if (nCurCategory == 1)
 	{
-		c.MediaHeaderText.text = "MEDIA / TV SHOWS";
-		c.MusicCountText.text  = nMediaItemCount + " SHOWS";
+		c.MediaHeaderText.text = "TV SHOWS";
+		c.MusicCountText.text  = CountText(nMediaItemCount, "SHOW", "SHOWS");
 	}
 	else
 	{
+		c.MediaHeaderText.text = "PLAYLISTS";
 		if (bInPlaylistItemView)
-		{
-			c.MediaHeaderText.text = "MEDIA / PLAYLISTS";
-			c.MusicCountText.text  = nMediaItemCount + " ITEMS";
-		}
+			c.MusicCountText.text = CountText(nMediaItemCount, "ITEM", "ITEMS");
 		else
-		{
-			c.MediaHeaderText.text = "MEDIA / PLAYLISTS";
-			c.MusicCountText.text  = nMediaItemCount + " PLAYLISTS";
-		}
+			c.MusicCountText.text = CountText(nMediaItemCount, "PLAYLIST", "PLAYLISTS");
 	}
+	if (sMediaStatus != "")
+		c.MusicCountText.text = "";
+	nMediaLastCount = nMediaItemCount;
 }
 
 
@@ -275,6 +319,10 @@ DEF theMediaMenu Level
 				BindActiveList();
 				UpdateMediaList();
 			}
+			else if (nMediaItemCount <= 0)
+			{
+				return;
+			}
 			else if ((nCurCategory == 2) & (bInPlaylistItemView == 0))
 			{
 				// Playlist names -> playlist items.
@@ -361,6 +409,18 @@ DEF theMediaMenu Level
 	{
 		CurrentViewpoint = theMediaViewpoint;
 		EnableInput(true);
+	}
+
+	// A library scan can finish while the list is up. Redraw when it does.
+	behavior
+	{
+		sleep .5;
+		if (nMediaLastCount >= 0)
+		{
+			BindActiveList();
+			if ((nMediaItemCount != nMediaLastCount) | (GetMediaStatus() != sMediaStatus))
+				UpdateMediaList();
+		}
 	}
 }
 
@@ -475,11 +535,16 @@ function UpdateMediaTrackList()
 function ShowMediaActionPanel(bShow)
 {
 	var c = theMediaActionMenu.children[0].children[0];
+	// Only PLAY and INFO do something, so the other three stay hidden.
 	c.GM_L2_menubutton_01.visible    = bShow;
 	c.GM_L2_menubutton_02.visible    = bShow;
-	c.GM_L2_menubutton_03.visible    = bShow;
-	c.GM_L2_menubutton_04.visible    = bShow;
-	c.GM_L2_menubutton_05.visible    = bShow;
+	c.GM_L2_menubutton_03.visible    = false;
+	c.GM_L2_menubutton_04.visible    = false;
+	c.GM_L2_menubutton_05.visible    = false;
+	// The short two button frame, same as the music Audio CD menu.
+	c._button_surround.visible       = (bShow == false);
+	c.New_Line11.visible             = (bShow == false);
+	c._button_surround_0.visible     = true;
 	c.soundtrack_text05.visible      = bShow;
 	c.soundtrack_text06.visible      = bShow;
 	c.New_panel_meta.visible         = bShow;
@@ -537,10 +602,17 @@ function ShowMediaActionMenu()
 
 	c.TitleText.text  = gSelectedTitle.toUpperCase();
 	c.TitleText1.text = gSelectedTitle.toUpperCase();
+	// A show's first button opens its seasons rather than playing.
 	if (gSelectedKind == 1)
+	{
 		c.TrackCountText.text = "EPISODES";
+		c.GM_L2_menubutton_01.children[1].children[0].geometry.text = "EPISODES";
+	}
 	else
-		c.TrackCountText.text = "1 SCENE";
+	{
+		c.TrackCountText.text = "MOVIE";
+		c.GM_L2_menubutton_01.children[1].children[0].geometry.text = "PLAY";
+	}
 	c.MenuMetaText.text = gSelectedMeta + "\n\n" + gSelectedPlot;
 
 	UpdateMediaActionHighlight();
@@ -610,10 +682,31 @@ function StartMediaEpisodes()
 }
 
 
+// INFO: the whole plot in a message, which scrolls when it's long.
+function ShowMediaInfo()
+{
+	var info = gSelectedTitle + "\n" + gSelectedMeta;
+	if (gSelectedPlot != "")
+		info = info + "\n\n" + gSelectedPlot;
+	else if (gSelectedKind == 0)
+	{
+		// No plot to show, so at least which file it is. The full path won't fit.
+		var path = theMediaCollection.GetMoviePath(gSelectedIndex);
+		var cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1;
+		info = info + "\n\n" + path.substr(cut, path.length() - cut);
+	}
+	TellUser(info, "");
+	var mc = theMessageInline.children[0];
+	mc.MessageText.height      = 6.0;
+	mc.MessageText.scrollRate  = 0.15;
+	mc.MessageText.scrollDelay = 2;
+}
+
+
 function StartMediaActionLevel()
 {
 	nCurActionItem    = 0;
-	nActionItemCount  = 5;
+	nActionItemCount  = 2;
 	nPlayVisible      = 9;
 
 	// All title/plot/meta wiring happens in ShowMediaActionMenu now,
@@ -737,7 +830,10 @@ DEF theMediaActionMenu Level
 					else
 						theMediaCollection.PlaySelected();
 				}
-				// INFO / FAVORITE / RENAME / DELETE not yet wired.
+				else
+				{
+					ShowMediaInfo();
+				}
 			}
 			else if (nMediaActionState == 1)
 			{

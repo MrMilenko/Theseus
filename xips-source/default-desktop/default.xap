@@ -624,6 +624,12 @@ function GoToMusic()
 
 ////////////////////////////////////////////////////////////////////////////
 
+// Plex and Jellyfin hide the Media scene while they're up. Showing a loaded
+// Inline again doesn't rerun onLoad, so these flags say to GoTo directly.
+var g_bMediaSceneLoaded;
+var g_bPlexSceneLoaded;
+var g_bJellyfinSceneLoaded;
+
 DEF theMediaInline Inline
 {
 	visible false
@@ -631,6 +637,7 @@ DEF theMediaInline Inline
 
 	function onLoad()
 	{
+		g_bMediaSceneLoaded = true;
 		theMediaInline.children[0].theMediaMenu.GoTo();
 	}
 }
@@ -639,6 +646,11 @@ function GoToMedia()
 {
 	if (theMediaInline.visible)
 		theMediaInline.children[0].theMediaMenu.GoTo();
+	else if (g_bMediaSceneLoaded)
+	{
+		theMediaInline.visible = true;
+		theMediaInline.children[0].theMediaMenu.GoTo();
+	}
 	else
 	{
 		BlockMemoryUnitInsert();
@@ -655,6 +667,7 @@ DEF thePlexInline Inline
 
 	function onLoad()
 	{
+		g_bPlexSceneLoaded = true;
 		thePlexInline.children[0].thePlexMenu.GoTo();
 	}
 }
@@ -665,6 +678,11 @@ function GoToPlex()
 	theMediaInline.visible = false;
 	if (thePlexInline.visible)
 		thePlexInline.children[0].thePlexMenu.GoTo();
+	else if (g_bPlexSceneLoaded)
+	{
+		thePlexInline.visible = true;
+		thePlexInline.children[0].thePlexMenu.GoTo();
+	}
 	else
 	{
 		BlockMemoryUnitInsert();
@@ -681,6 +699,7 @@ DEF theJellyfinInline Inline
 
 	function onLoad()
 	{
+		g_bJellyfinSceneLoaded = true;
 		theJellyfinInline.children[0].theJellyfinMenu.GoTo();
 	}
 }
@@ -690,11 +709,25 @@ function GoToJellyfin()
 	theMediaInline.visible = false;
 	if (theJellyfinInline.visible)
 		theJellyfinInline.children[0].theJellyfinMenu.GoTo();
+	else if (g_bJellyfinSceneLoaded)
+	{
+		theJellyfinInline.visible = true;
+		theJellyfinInline.children[0].theJellyfinMenu.GoTo();
+	}
 	else
 	{
 		BlockMemoryUnitInsert();
 		theJellyfinInline.visible = true;
 	}
+}
+
+// B at the top of Plex or Jellyfin lands back on the Media list.
+function BackToMedia()
+{
+	thePlexInline.visible = false;
+	theJellyfinInline.visible = false;
+	theMediaInline.visible = true;
+	theMediaInline.children[0].theMediaMenu.GoBackTo();
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -2277,6 +2310,9 @@ function initialize()
 	bBackToDVDPlayer = false;
 	bGoToCDPlayer = false;
 	bBackToLauncher = false;
+	g_bMediaSceneLoaded = false;
+	g_bPlexSceneLoaded = false;
+	g_bJellyfinSceneLoaded = false;
 	bShowErrorPanel = false;
 	bShowLegalInfo = false;
 	bShowInvalidDisc = false;

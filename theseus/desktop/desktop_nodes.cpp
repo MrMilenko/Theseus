@@ -1809,7 +1809,7 @@ static void EnumerateTitles()
 	};
 
 	HostDir* dir = Host_OpenDir(udataPath);
-	if (!dir) { fprintf(stderr, "[SavedGameGrid] Cannot open %s\n", udataPath); return; }
+	if (!dir) return;   // no saves yet
 	char entry[260];
 	while (Host_ReadDir(dir, entry, sizeof(entry), NULL)) ProcessTitleEntry(entry);
 	Host_CloseDir(dir);
@@ -4131,7 +4131,7 @@ public:
 
 	std::string StatusFor(int view)
 	{
-		if (!Plex_HasToken()) return "Sign in to Plex in Settings";
+		if (!Plex_HasToken()) return "Sign in from Settings";
 		if (!Plex_SyncReady()) return "Loading...";
 		if (view == 0) {
 			if (Plex_GetActiveServerUri().empty()) return Unreachable();
@@ -4883,7 +4883,7 @@ public:
 
 	std::string StatusFor(int view)
 	{
-		if (!Jellyfin_HasToken()) return "Sign in to Jellyfin in Settings";
+		if (!Jellyfin_HasToken()) return "Sign in from Settings";
 		if (!Jellyfin_SyncReady()) return "Loading...";
 		if (view == 0) {
 			if (Jellyfin_SyncFailed()) return Unreachable();

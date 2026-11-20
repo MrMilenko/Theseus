@@ -37,6 +37,7 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 // Loads Data/shaders/<backend>/<name>.bin. Picks subdir from the active renderer.
 bgfx::ShaderHandle theseus_bgfx_load_shader(const char* name)
@@ -222,6 +223,17 @@ static void DumpGraphicsInfo()
 bool g_desktopRestartRequested = false;
 bool g_desktopRestartMuted = false;
 static char* s_execPath = NULL;
+
+// The home folder shown as ~, so a pasted log doesn't carry a user name.
+static std::string TildePath(const char* path)
+{
+    const char* home = getenv("HOME");
+    if (!home || !*home) home = getenv("USERPROFILE");
+    size_t n = home ? strlen(home) : 0;
+    if (n > 1 && strncmp(path, home, n) == 0 && (path[n] == '/' || path[n] == '\\' || !path[n]))
+        return std::string("~") + (path + n);
+    return path;
+}
 
 // Saved argv/argc for execv restart
 int g_argc = 0;
@@ -696,6 +708,14 @@ int  g_vsyncMode = 0;
 int  g_rendererPref = 0;
 bool g_vsyncChangeRequested = false;
 
+// Minimized, hidden or covered. Video, xCloud and MilkDrop keep full speed.
+static bool WindowOutOfSight()
+{
+    if (!g_pSDLWindow || g_mediaFullscreen || g_xcloudFullscreen || MilkdropWindow_IsOpen()) return false;
+    if (SDL_GetWindowFlags(g_pSDLWindow) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) return true;
+    return Host_WindowOccluded(g_pSDLWindow);
+}
+
 // Manual FPS cap (0 = unlimited). Applied via SDL_Delay before SwapWindow.
 int  g_fpsCap = 0;
 
@@ -973,20 +993,6 @@ int main(int argc, char* argv[]) {
     // Before anything reads a config.
     AppPaths_Init();
 
-    // Which roots we actually resolved, and whether the shipped-only shader
-    // tree survived the install. A missing one is a black screen with no
-    // other symptom, so say so here rather than 200 lines later.
-    {
-        fprintf(stdout, "[Paths] shipped  = %s\n", Plat_ShippedDir());
-        fprintf(stdout, "[Paths] userdata = %s\n", Plat_UserDataDir());
-        fprintf(stdout, "[Paths] games.ini= %s\n", AppPath("Configs/games.ini"));
-        const char* shaderDir = AppPath("Data/shaders");
-        struct stat sst;
-        if (stat(shaderDir, &sst) != 0)
-            fprintf(stderr, "[Paths] MISSING shader tree at %s (install is incomplete)\n", shaderDir);
-    }
-
-
     // This fixes compilation so it works for both GCC and clang
 #if defined(__SANITIZE_ADDRESS__)
     #define ASAN_ACTIVE 1
@@ -1003,6 +1009,19 @@ int main(int argc, char* argv[]) {
 #endif
 
 #undef ASAN_ACTIVE // Clean up
+
+    // Which roots we actually resolved, and whether the shipped-only shader
+    // tree survived the install. A missing one is a black screen with no
+    // other symptom, so say so here rather than 200 lines later.
+    {
+        fprintf(stdout, "[Paths] App:  %s\n", TildePath(Plat_ShippedDir()).c_str());
+        fprintf(stdout, "[Paths] User: %s\n", TildePath(Plat_UserDataDir()).c_str());
+        const char* shaderDir = AppPath("Data/shaders");
+        struct stat sst;
+        if (stat(shaderDir, &sst) != 0)
+            fprintf(stderr, "[Paths] MISSING shader tree at %s (install is incomplete)\n",
+                    TildePath(shaderDir).c_str());
+    }
 
     // Buttons by where they sit, not what's printed on them: the bottom one
     // is A on every pad, and the guide draws each pad's own labels.
@@ -1100,17 +1119,16 @@ int main(int argc, char* argv[]) {
                 default: bgfxInit.type = bgfx::RendererType::Count;     break;
             }
             if (!bgfx::init(bgfxInit)) {
-                fprintf(stderr, "bgfx::init failed\n");
+                fprintf(stderr, "[Render] bgfx::init failed\n");
             } else {
                 const bgfx::Caps* caps = bgfx::getCaps();
-                fprintf(stdout, "bgfx initialized: %s\n",
-                        bgfx::getRendererName(caps->rendererType));
 
                 // Size the views and the projection off the real drawable
                 // before the first frame. This can read low if the window
                 // isn't realised yet, which the per frame check above heals.
                 BgfxApplyReset();
-                fprintf(stdout, "bgfx backbuffer: %dx%d px (scale %.2f)\n",
+                fprintf(stdout, "[Render] %s, %dx%d px (scale %.2f)\n",
+                        bgfx::getRendererName(caps->rendererType),
                         initW, initH, Plat_GetDisplayScale());
 
                 // Link the shader programs we use across the run.
@@ -1119,10 +1137,8 @@ int main(int argc, char* argv[]) {
                     bgfx::ShaderHandle fsh = theseus_bgfx_load_shader("fs_simple");
                     if (bgfx::isValid(vsh) && bgfx::isValid(fsh)) {
                         bgfx::ProgramHandle prog = bgfx::createProgram(vsh, fsh, true);
-                        if (bgfx::isValid(prog))
-                            fprintf(stdout, "bgfx: vs_simple/fs_simple program linked\n");
-                        else
-                            fprintf(stderr, "bgfx: simple program link failed\n");
+                        if (!bgfx::isValid(prog))
+                            fprintf(stderr, "[Render] simple program link failed\n");
                     }
                 }
                 {
@@ -1130,12 +1146,10 @@ int main(int argc, char* argv[]) {
                     bgfx::ShaderHandle fsh = theseus_bgfx_load_shader("fs_ff");
                     if (bgfx::isValid(vsh) && bgfx::isValid(fsh)) {
                         bgfx::ProgramHandle prog = bgfx::createProgram(vsh, fsh, true);
-                        if (bgfx::isValid(prog)) {
+                        if (bgfx::isValid(prog))
                             g_bgfxProgFF = prog;
-                            fprintf(stdout, "bgfx: vs_ff/fs_ff program linked (FF emulator)\n");
-                        } else {
-                            fprintf(stderr, "bgfx: ff program link failed\n");
-                        }
+                        else
+                            fprintf(stderr, "[Render] ff program link failed\n");
                     }
                 }
                 {
@@ -1146,9 +1160,8 @@ int main(int argc, char* argv[]) {
                         if (bgfx::isValid(prog)) {
                             g_bgfxProgBlit = prog;
                             g_bgfxSamplerBlit = bgfx::createUniform("s_blit", bgfx::UniformType::Sampler);
-                            fprintf(stdout, "bgfx: vs_blit/fs_blit program linked\n");
                         } else {
-                            fprintf(stderr, "bgfx: blit program link failed\n");
+                            fprintf(stderr, "[Render] blit program link failed\n");
                         }
                     }
                 }
@@ -1207,8 +1220,6 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    fprintf(stdout, "UIX Desktop Preview Tool\n");
-    fprintf(stdout, "F1: Toggle Debug Tools | F2: XAP Editor | F10: Toggle Menu Bar\n");
     fflush(stdout); fflush(stderr);
 
     // Initialize Dear ImGui
@@ -1391,7 +1402,7 @@ int main(int argc, char* argv[]) {
     // lazily off the generation counter, so arriving late costs nothing.
     if (g_showEsdeTab && s_esdePath[0]) EsdeVGames_Sync(s_esdePath);
 
-    fprintf(stdout, "InitApp() succeeded - entering main loop\n");
+    fprintf(stdout, "[Desktop] Ready\n");
 
     // Register pluggable launcher modules (shell, url, future:
     // xemu, retroarch, steam, ...). Done before the dispatcher
@@ -1697,7 +1708,7 @@ int main(int argc, char* argv[]) {
             bool muted = g_desktopRestartMuted;
             g_desktopRestartRequested = false;
             g_desktopRestartMuted = false;
-            fprintf(stderr, "[Desktop] Restarting preview...%s\n", muted ? " (muted)" : "");
+            fprintf(stderr, "[Desktop] Restarting%s\n", muted ? " (muted)" : "");
 
             // Build argv with --preview appended (if not already present)
             bool hasPreview = false;
@@ -1828,6 +1839,9 @@ int main(int argc, char* argv[]) {
 
         // A game we started is up and we're behind it: stay out of its way.
         if (!g_windowFocused && Launch_GameRunning()) SDL_Delay(100);
+        // Nobody can see the window: the scene keeps its clock, it just draws
+        // a few times a second instead of every refresh.
+        else if (WindowOutOfSight()) SDL_Delay(50);
 
         // FPS cap: sleep until budget elapsed. 0 = unlimited.
         if (g_fpsCap > 0) {

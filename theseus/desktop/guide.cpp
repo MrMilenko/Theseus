@@ -250,24 +250,55 @@ static void SetUpFolders()
     SaveDesktopSettings();
 }
 
-// A few rows need more than their label says.
+// What each row does, past what its label says.
 static const char* SettingHelp(const SettingDef& d)
 {
     static const struct { const char* key; const char* help; } kHelp[] = {
-        { "StartupMode",         "What happens when UIX Desktop starts." },
+        { "StartupMode",         "What happens when UIX Desktop starts. Ask Each Time shows the Welcome screen." },
         { "StartAtLogin",        "Starts UIX Desktop in Console Mode when you sign in. Only for you, nothing system wide." },
         { "ConsoleMode",         "Fullscreen with no frame, straight into the dashboard. For a TV or a games machine." },
-        { "UseOnScreenKeyboard", "Text fields ignore the physical keyboard and use the pad keyboard." },
-        { "ShowBootAnimation",   "Play the Xbox boot animation once at startup." },
-        { "MenuBarAutoHide",     "In Development Mode the tool bar shows when the pointer reaches the top." },
-        { "EmulateXboxRes",      "Keep scenes framed the way they were authored." },
-        { "Hwdec",               "Faster on AMD and NVIDIA. Applies to the next video." },
+        { "UseOnScreenKeyboard", "The dashboard's text fields ignore your keyboard and use the pad keyboard." },
+        { "ShowBootAnimation",   "Plays the Xbox boot animation when UIX Desktop starts." },
+        { "MenuBarAutoHide",     "In Development Mode the menu bar shows when the pointer reaches the top." },
+        { "QcowPath",            "Your xemu hard disk (.qcow2). The dashboard shows the saves on it." },
+        { "DisplayMode",         "Windowed, borderless or fullscreen. F11 switches to fullscreen and back." },
+        { "Resolution",          "The window's size. Native leaves it the size it is." },
+        { "Renderer",            "The graphics API. Auto picks the best one here. Takes effect next start." },
+        { "MSAA",                "Smooths jagged edges. Higher looks cleaner and costs more." },
+        { "Vsync",               "Keeps frames in step with the screen so the picture doesn't tear." },
+        { "FpsCap",              "The most frames a second. A lower cap saves power and heat." },
+        { "EmulateXboxRes",      "Frames scenes like the Xbox's 720x480. Off shows more at the sides." },
+        { "Hwdec",               "Lets the graphics card decode video. Applies to the next video." },
         { "MasterVolume",        "Dashboard sounds, music and videos." },
-        { "UseMilkdropViz",      "Use projectM for the music visualizer." },
-        { "ShowAlbumCover",      "Show album art in the orb when a soundtrack has it." },
+        { "UseMilkdropViz",      "Uses projectM, the Milkdrop visualizer, for music." },
+        { "ShowAlbumCover",      "Shows album art in the orb when a soundtrack has it." },
         { "CRT_Enabled",         "Old TV look over the whole dashboard." },
+        { "CRT_Scanlines",       "Dark lines between rows, like an old TV. Needs CRT Effect on." },
+        { "CRT_Curvature",       "How much the picture bulges. Needs CRT Effect on." },
+        { "CRT_Phosphor",        "The fine color grid of a tube screen. Needs CRT Effect on." },
+        { "CRT_Vignette",        "Darker corners. Needs CRT Effect on." },
+        { "CRT_Bloom",           "Glow around bright things. Needs CRT Effect on." },
+        { "CRT_Flicker",         "A slight flicker in brightness. Needs CRT Effect on." },
+        { "CRT_ColorBleed",      "Colors smearing sideways. Needs CRT Effect on." },
+        { "CRT_Brightness",      "Brightness under the effect. Needs CRT Effect on." },
         { "GuideTheme",          "The guide's colors." },
+        { "MusicRoot",           "Where your music is. It's read again when you change it." },
+        { "MoviesRoot",          "Where your movies are. It's read again when you change it." },
+        { "TvRoot",              "Where your shows are: a folder per show, with Season folders inside." },
+        { "TMDBKey",             "Optional. Gets posters and details from themoviedb.org. It stays hidden." },
+        { "XemuPath",            "The xemu app, for Xbox games. Find xemu fills it in." },
+        { "Pcsx2Path",           "The PCSX2 app, for PS2 games. Find PCSX2 fills it in." },
+        { "RomsDir",             "Where your ROMs and disc images are, for launchers that ask." },
+        { "SteamPath",           "Where Steam is. Empty looks in the usual places." },
+        { "RetroArchPath",       "Where RetroArch is, with its cores and playlists." },
+        { "EsdePath",            "Your ES-DE folder. Its games show up in the launcher." },
+        { "RetroArchFullscreen", "Starts RetroArch games fullscreen." },
+        { "ReturnAfterGame",     "Brings UIX Desktop back to the front when a game closes." },
+        { "ShowSteamTab",        "Shows the Steam tab in the Title Maker (F3)." },
+        { "ShowRetroArchTab",    "Shows the RetroArch tab in the Title Maker (F3)." },
+        { "ShowEsdeTab",         "Shows the ES-DE tab in the Title Maker (F3)." },
         { "FetchGameArt",        "Box art for games without an icon. Icons you picked are never replaced." },
+        { "SteamGridDBKey",      "Optional. Lets Download Game Art look on SteamGridDB too. It stays hidden." },
         { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
         { "Rumble",              "A short buzz when the guide can't do what you asked." },
         { "ButtonStyle",         "The buttons the guide shows. Match the Pad follows the pad you used last." },
@@ -284,6 +315,47 @@ static const char* SettingHelp(const SettingDef& d)
 
 static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games", "Controller" };
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
+
+// Each page's rows in blocks: "#" starts a caption, the rest are keys. A
+// setting left out here still shows, at the end of its own page.
+static const char* const kGeneralRows[] = {
+    "#Startup", "StartupMode", "ConsoleMode", "StartAtLogin", "ShowBootAnimation",
+    "#Keyboard and menu bar", "UseOnScreenKeyboard", "MenuBarAutoHide",
+    "#Xbox hard disk", "QcowPath", NULL,
+};
+static const char* const kDisplayRows[] = {
+    "#Window", "DisplayMode", "Resolution",
+    "#Rendering", "Renderer", "MSAA", "Vsync", "FpsCap", "EmulateXboxRes",
+    "#Guide", "GuideTheme",
+    "#CRT effect", "CRT_Enabled", "CRT_Scanlines", "CRT_Curvature", "CRT_Phosphor", "CRT_Vignette", "CRT_Bloom",
+    "CRT_Flicker", "CRT_ColorBleed", "CRT_Brightness", NULL,
+};
+static const char* const kAudioRows[] = {
+    "MasterVolume", "#Music", "UseMilkdropViz", "ShowAlbumCover", NULL,
+};
+static const char* const kMediaRows[] = {
+    "#Folders", "MusicRoot", "MoviesRoot", "TvRoot",
+    "#Video", "Hwdec",
+    "#Online", "TMDBKey", NULL,
+};
+static const char* const kGamesRows[] = {
+    "#Emulators", "XemuPath", "Pcsx2Path", "RomsDir",
+    "#Launchers", "SteamPath", "RetroArchPath", "EsdePath", "RetroArchFullscreen", "ReturnAfterGame",
+    "#Library", "HideDuplicateGames", "FetchGameArt", "SteamGridDBKey",
+    "#Title Maker tabs", "ShowSteamTab", "ShowRetroArchTab", "ShowEsdeTab", NULL,
+};
+static const char* const kControllerRows[] = { "Rumble", "ButtonStyle", "SwapConfirm", NULL };
+static const char* const* const kPageRows[] = {
+    kGeneralRows, kDisplayRows, kAudioRows, kMediaRows, kGamesRows, kControllerRows,
+};
+
+static bool PageLists(const char* key)
+{
+    for (int p = 0; p < kPageCount; p++)
+        for (const char* const* k = kPageRows[p]; *k; k++)
+            if (strcmp(*k, key) == 0) return true;
+    return false;
+}
 
 enum Section { SEC_SETTINGS, SEC_ACCOUNTS, SEC_LIBRARY, SEC_LOGS, SEC_SHORTCUTS, SEC_ABOUT, SEC_TOOLS, SEC_EXIT,
                SEC_COUNT };
@@ -369,6 +441,7 @@ struct Editor {
     bool on, secret, shift, symbols;
     int what, arg, key;
     std::string title, text;
+    std::string hint;      // shown dim while it's empty
     size_t caret, limit;   // bytes
     Uint32 since;
 };
@@ -512,6 +585,16 @@ static std::string GameSource(const VirtualGame& vg)
     return "Programs";
 }
 
+// A game list row's help: where it files and where it came from.
+static std::string GameFrom(const VirtualGame& vg)
+{
+    std::string where = vg.group[0] ? vg.group : vg.category;
+    std::string src = vg.transient ? "ES-DE" : GameSource(vg);
+    if (src == "Programs") return where;
+    if (src == "Other Launchers") src = "another launcher";
+    return where + ", from " + src;
+}
+
 // All Games' orders. Y steps through them.
 enum { SORT_NAME, SORT_TIME, SORT_LAST, SORT_COUNT };
 static const char* const kSorts[SORT_COUNT] = { "A to Z", "Time Played", "Last Played" };
@@ -633,6 +716,24 @@ static std::string PlayedOn(long long t)
     return buf;
 }
 
+// A backup's folder name, "2026-11-20 08.32.44 before restore", read as
+// "Nov 20, 2026, 08:32 (before restore)". Anything else shows as it is.
+static std::string BackupLabel(const std::string& name)
+{
+    struct tm t = {};
+    int used = 0;
+    if (sscanf(name.c_str(), "%d-%d-%d %d.%d.%d%n", &t.tm_year, &t.tm_mon, &t.tm_mday, &t.tm_hour, &t.tm_min,
+               &t.tm_sec, &used) != 6)
+        return name;
+    t.tm_year -= 1900;
+    t.tm_mon -= 1;
+    char buf[64];
+    strftime(buf, sizeof(buf), "%b %d, %Y, %H:%M", &t);
+    std::string rest = name.substr(used);
+    size_t a = rest.find_first_not_of(' ');
+    return a == std::string::npos ? std::string(buf) : std::string(buf) + " (" + rest.substr(a) + ")";
+}
+
 // The picked game, or NULL once the DB has moved rows around under us.
 static VirtualGame* PickedGame()
 {
@@ -676,24 +777,31 @@ static const struct {
 };
 static const int kEmuCount = (int)(sizeof(kEmus) / sizeof(kEmus[0]));
 
+static void AddSetting(int i)
+{
+    const SettingDef& d = DesktopSettings_Table().defs[i];
+    if (d.flags & SF_HIDDEN) return;
+    char val[512];
+    Setting_Display(d, val, sizeof(val));
+    bool typed = d.kind == SK_PATH || d.kind == SK_STRING;
+    Add(d.label, val, SettingHelp(d), typed ? GA_TEXT : GA_SETTING, i);
+    for (int e = 0; e < kEmuCount; e++)
+        if (strcmp(d.key, kEmus[e].key) == 0)
+            Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
+}
+
 static void Build()
 {
     g.rows.clear();
     switch (g.view) {
     case GV_PAGE: {
         const SettingsTable& t = DesktopSettings_Table();
-        char val[512];
-        for (int i = 0; i < t.count; i++) {
-            const SettingDef& d = t.defs[i];
-            if (d.flags & SF_HIDDEN) continue;
-            if (strcmp(d.page, kPages[g.page]) != 0) continue;
-            Setting_Display(d, val, sizeof(val));
-            bool typed = d.kind == SK_PATH || d.kind == SK_STRING;
-            Add(d.label, val, SettingHelp(d), typed ? GA_TEXT : GA_SETTING, i);
-            for (int e = 0; e < kEmuCount; e++)
-                if (strcmp(d.key, kEmus[e].key) == 0)
-                    Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
+        for (const char* const* k = kPageRows[g.page]; *k; k++) {
+            if (**k == '#') { Caption(*k + 1); continue; }
+            if (const SettingDef* d = DesktopSettings_Find(*k)) AddSetting((int)(d - t.defs));
         }
+        for (int i = 0; i < t.count; i++)
+            if (strcmp(t.defs[i].page, kPages[g.page]) == 0 && !PageLists(t.defs[i].key)) AddSetting(i);
         break;
     }
     case GV_ABOUT:
@@ -705,7 +813,8 @@ static void Build()
             long long total = 0;
             for (int i = 0; i < g_vgames.count; i++)
                 if (g_vgames.games[i].valid) total += g_vgames.games[i].playTime;
-            Add("Time Played", PlayTime(total).c_str(), NULL);
+            Caption("Your games");
+            Add("Total Time Played", PlayTime(total).c_str(), NULL);
         }
         Caption("Made by");
         Add("Created by", "Milenko", NULL);
@@ -718,14 +827,16 @@ static void Build()
         Para("And everyone who contributed, tested and sent in a bug.");
         break;
     case GV_WELCOME: {
-        const char* intro = g_welcomeDone
-            ? (Pads_Style() == UI_PAD_PLAYSTATION ? "Cross or Circle starts the dashboard." : "A or B starts the dashboard.")
-            : "Nothing here is required. It's all in the guide later too.";
+        const char* intro = !g_welcomeDone ? "Nothing here is required. It's all in the guide later too."
+                          : g.device == 0 ? "Enter or Esc starts the dashboard."
+                          : Pads_Style() == UI_PAD_PLAYSTATION ? "Cross or Circle starts the dashboard."
+                          : "A or B starts the dashboard.";
         Add("Start the Dashboard", "", intro, GA_RESUME);
         Add("Development Mode", "", "Edit the scenes live. Restarts UIX Desktop.", GA_DEVMODE);
         if (!g_welcomeDone || g.foldersDone)
             Add("Set Up My Folders", g.foldersDone ? "Done" : "",
                 "Makes Music, Movies, TV Shows and ROMs folders. Fill them when you like.", GA_FOLDERS);
+        Add("Open My Folders", "", "Shows them in your file manager.", GA_OPENFOLDERS);
         // First run: fill the launcher from what's already on this machine.
         if (!g_welcomeDone) {
             char roots[4][512];
@@ -735,11 +846,10 @@ static void Build()
             for (int e = 0; e < kEmuCount; e++)
                 Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
         }
-        Add("Open My Folders", "", "Shows them in your file manager.", GA_OPENFOLDERS);
         if (const SettingDef* mode = DesktopSettings_Find("StartupMode")) {
             char val[64];
             Setting_Display(*mode, val, sizeof(val));
-            Add(mode->label, val, "Ask on launch brings this screen back each time.", GA_SETTING,
+            Add(mode->label, val, "Ask Each Time brings this screen back at every start.", GA_SETTING,
                 (int)(mode - DesktopSettings_Table().defs));
         }
         break;
@@ -814,14 +924,14 @@ static void Build()
         Add("New Collection", g.result[GA_NEWCOLL].c_str(), "Name it and this game goes in.", GA_NEWCOLL);
         for (size_t i = 0; i < g.collNames.size(); i++)
             Add(g.collNames[i].c_str(), VGames_InCollection(*vg, g.collNames[i].c_str()) ? "Yes" : "No",
-                "A puts it in or takes it out.", GA_INCOLL, (int)i);
+                "Puts this game in the collection or takes it out.", GA_INCOLL, (int)i);
         break;
     }
     case GV_ADDGAME: {
         std::string file = g.pickedPath.empty() ? "Choose" : NameOnly(g.pickedPath);
         Add("File", file.c_str(), g.pickedPath.empty() ? "A program, a shortcut or a ROM." : g.pickedPath.c_str(),
             GA_CHOOSEFILE);
-        Add("Name", g.pickedName.c_str(),
+        Add("Name", g.pickedPath.empty() ? "From the file" : g.pickedName.c_str(),
             g.pickedPath.empty() ? "Taken from the file name." : "Taken from the file name. Select it to rename it.",
             g.pickedPath.empty() ? GA_NONE : GA_NAME);
         Add("Category", kCategories[g.category], "Left and right change it.", GA_CATEGORY);
@@ -837,7 +947,8 @@ static void Build()
         if (g.browseStale) { ListDir(g.browseDir, g.entries); g.browseStale = false; }
         Add("Up a Folder", "", g.browseDir.c_str(), GA_BROWSEUP);
         for (size_t i = 0; i < g.entries.size(); i++)
-            Add(g.entries[i].name.c_str(), g.entries[i].dir ? "Folder" : "", g.browseDir.c_str(), GA_BROWSE, (int)i);
+            Add(g.entries[i].name.c_str(), "", g.browseDir.c_str(), GA_BROWSE, (int)i);
+        if (g.entries.empty()) Para("Nothing in this folder. Hidden files aren't listed.");
         break;
     case GV_GAMES: {
         std::vector<int> list;
@@ -848,7 +959,7 @@ static void Build()
             std::string value = sort == SORT_TIME ? PlayTime(vg.playTime)
                               : sort == SORT_LAST || g.gameList == GL_RECENT ? PlayedOn(vg.lastPlayed)
                               : std::string(vg.category);
-            Add(vg.name, value.c_str(), vg.group[0] ? vg.group : vg.category, GA_GAME, list[i]);
+            Add(vg.name, value.c_str(), GameFrom(vg).c_str(), GA_GAME, list[i]);
         }
         if (g.rows.empty())
             Para(g.gameList == GL_HIDDEN ? "Nothing hidden." : g.gameList == GL_SEARCH ? "No matches. Try fewer letters." : "Nothing here yet.");
@@ -877,7 +988,7 @@ static void Build()
         VirtualGame* vg = PickedGame();
         if (!vg) { Para("This game moved. Go back and pick it again."); break; }
         Add("Launch", "", vg->launch, GA_LAUNCH);
-        Caption("Played");
+        Caption("Details");
         Add("Last Played", PlayedOn(vg->lastPlayed).c_str(), NULL);
         Add("Time Played", PlayTime(vg->playTime).c_str(), NULL);
         {
@@ -943,11 +1054,11 @@ static void Build()
         Caption("Plex");
         if (Plex_HasToken()) {
             Add("Account", "Signed in", NULL);
-            Add("Sign Out", "", NULL, GA_PLEXOUT);
+            Add("Sign Out", "", "Forgets this Plex sign-in on this computer.", GA_PLEXOUT);
         } else if (Plex_PinAuthInFlight()) {
             std::string code = Plex_GetPinCode();
             Add("Code", code.empty() ? "Asking..." : code.c_str(),
-                "On any device go to plex.tv/link and enter the code. A cancels.", GA_PLEX);
+                "On any device go to plex.tv/link and enter the code.", GA_PLEX);
         } else {
             Add("Sign In", "", "Gives you a code to enter at plex.tv/link.", GA_PLEX);
         }
@@ -955,9 +1066,9 @@ static void Build()
         Caption("Jellyfin");
         if (Jellyfin_HasToken()) {
             std::string who = Jellyfin_GetUserName();
-            Add("Signed in as", who.empty() ? "Yes" : who.c_str(), NULL);
+            Add("Account", who.empty() ? "Signed in" : who.c_str(), NULL);
             Add("Server", Jellyfin_GetServerUrl().c_str(), NULL);
-            Add("Sign Out", "", NULL, GA_JELLYFINOUT);
+            Add("Sign Out", "", "Forgets this Jellyfin sign-in on this computer.", GA_JELLYFINOUT);
         } else {
             std::string url = Jellyfin_GetServerUrl();
             Add("Server", url.empty() ? "Not set" : url.c_str(),
@@ -975,13 +1086,14 @@ static void Build()
         if (Xcloud_HasToken()) {
             std::string gt = Xcloud_GetGamertag();
             Add(gt.empty() ? "Account" : "Gamertag", gt.empty() ? "Signed in" : gt.c_str(), NULL);
-            Add("Sign Out", "", NULL, GA_XBOXOUT);
+            Add("Sign Out", "", "Forgets this Xbox sign-in on this computer.", GA_XBOXOUT);
         } else if (Xcloud_LoginInFlight()) {
             std::string code = Xcloud_GetUserCode();
-            help = "Go to " + Xcloud_GetVerificationUri() + " and enter the code. A cancels.";
+            help = "Go to " + Xcloud_GetVerificationUri() + " and enter the code.";
             Add("Code", code.empty() ? "Asking..." : code.c_str(), help.c_str(), GA_XBOX);
         } else {
-            Add("Sign In", "", "For cloud gaming and your consoles.", GA_XBOX);
+            Add("Sign In", "", "Gives you a code to enter on Microsoft's site. For cloud gaming and your consoles.",
+                GA_XBOX);
         }
         break;
     }
@@ -1007,12 +1119,14 @@ static void Build()
         break;
     case GV_BACKUPS:
         for (size_t i = 0; i < g.backups.size(); i++)
-            Add(g.backups[i].c_str(), "", "Pick it to see what restoring does.", GA_PICKBACKUP, (int)i);
+            Add(BackupLabel(g.backups[i]).c_str(), "", "Pick it to see what restoring does.", GA_PICKBACKUP, (int)i);
         if (g.rows.empty()) Para("No backups yet. Back Up My Settings makes one.");
         break;
     case GV_RESTORE:
+        Para("Puts back the games, settings, icons and playlists from this backup. What you have now is "
+             "saved as a backup first, so you can always go back.");
         Add("Restore This Backup", g.result[GA_RESTORE].c_str(),
-            "What you have now is backed up first, then UIX Desktop restarts with this one.", GA_RESTORE);
+            "UIX Desktop restarts with this backup in place.", GA_RESTORE);
         Add("Open Backups Folder", "", "Each backup is a plain folder you can look through.", GA_OPENBACKUPS);
         break;
     case GV_SHORTCUTS:
@@ -1027,21 +1141,25 @@ static void Build()
         Add("F11", "Fullscreen", NULL);
         Add("F12", "Borderless Window", NULL);
         Caption("App");
-        Add("Ctrl+M", "Mute", NULL);
-        Add("Ctrl+R", "Restart Dashboard", NULL);
-        Add("Ctrl+Q", "Quit", NULL);
+        {
+            // Ctrl works everywhere, but a Mac reads Cmd.
+            const bool mac = strcmp(Host_Name(), "macOS") == 0;
+            Add(mac ? "Cmd+M" : "Ctrl+M", "Mute", NULL);
+            Add(mac ? "Cmd+R" : "Ctrl+R", "Restart Dashboard", NULL);
+            Add(mac ? "Cmd+Q" : "Ctrl+Q", "Quit", NULL);
+        }
         if (g_startupMode == 2 || g_extractedMode) {
             Caption("Development mode");
             Add("F1",  "Inspector", NULL);
             Add("F2",  "XAP Editor", NULL);
-            Add("F10", "Hide Menu Bar", NULL);
+            Add("F10", "Show or Hide Menu Bar", NULL);
         }
         break;
     case GV_TOOLS:
         Caption("Tool windows");
         Add("Title Maker", "F3", "Names, icons and categories for the launcher.", GA_WINDOW, WIN_TITLEMAKER);
         Add("Settings Window", "F4", "Every setting, in a desktop window.", GA_WINDOW, WIN_SETTINGS);
-        Add("HDD Browser", "F5", "Look through the dashboard's drives.", GA_WINDOW, WIN_HDD);
+        Add("HDD Browser", "F5", "Look through the dashboard's drives and xemu hard disks.", GA_WINDOW, WIN_HDD);
         Add("Playlist Maker", "F6", "Make and edit playlists.", GA_WINDOW, WIN_PLAYLISTS);
         if (g_padModeEnabled)
             Add("Use the Tools with the Pad", "", "The tool windows' own controller menu.", GA_PADTOOLS);
@@ -1052,8 +1170,8 @@ static void Build()
         }
         if (g_startupMode == 2 || g_extractedMode) {
             Caption("Development mode");
-            Add("Inspector", "F1", "Development mode.", GA_WINDOW, WIN_INSPECTOR);
-            Add("XAP Editor", "F2", "Development mode.", GA_WINDOW, WIN_XAPEDITOR);
+            Add("Inspector", "F1", "Click a part of the scene to see its nodes and values.", GA_WINDOW, WIN_INSPECTOR);
+            Add("XAP Editor", "F2", "Edit the dashboard's scene files and see changes live.", GA_WINDOW, WIN_XAPEDITOR);
         }
         break;
     case GV_EXIT:
@@ -1096,7 +1214,11 @@ static const char* ViewTitle()
     case GV_APPS:      return "Linux Apps";
     case GV_COLLECTIONS: return "Collections";
     case GV_BACKUPS:   return "Restore a Backup";
-    case GV_RESTORE:   return g.backup.c_str();
+    case GV_RESTORE: {
+        static std::string s_title;
+        s_title = BackupLabel(g.backup);
+        return s_title.c_str();
+    }
     case GV_POWER:     return g.power == HOST_POWER_RESTART ? "Restart" : "Shut Down";
     case GV_GAMECOLL:  return "Collections";
     case GV_GAMES: {
@@ -1119,8 +1241,22 @@ static const char* ViewTitle()
         const Playlist* pl = Playlist_Get(g.playlist);
         return pl ? pl->name.c_str() : "Playlist";
     }
-    case GV_WELCOME:   return g_welcomeDone ? "Start" : "Welcome";
+    case GV_WELCOME:   return g_welcomeDone ? "Welcome Back" : "Welcome";
     default:           return kSections[g.section];
+    }
+}
+
+// Rows that open another list, so they get a chevron and an Open prompt.
+static bool Opens(const Row& r)
+{
+    switch (r.act) {
+    case GA_VIEW: case GA_GAMECOLL: case GA_COLLECTION: case GA_BACKUPS: case GA_PICKBACKUP:
+    case GA_GAMELIST: case GA_PLAYLIST: case GA_LETTER: case GA_GAME: case GA_APPS: case GA_CHOOSEFILE:
+        return true;
+    case GA_BROWSE:
+        return r.arg >= 0 && r.arg < (int)g.entries.size() && g.entries[r.arg].dir;
+    default:
+        return false;
     }
 }
 
@@ -1235,10 +1371,12 @@ static size_t NextChar(const std::string& t, size_t i)
 
 bool Guide_Typing() { return g.open && g.edit.on; }
 
-static void EditOpen(int what, int arg, const char* title, const std::string& text, size_t limit, bool secret)
+static void EditOpen(int what, int arg, const char* title, const std::string& text, size_t limit, bool secret,
+                     const char* hint = NULL)
 {
     Editor& e = g.edit;
     e.on = true;
+    e.hint = hint ? hint : "";
     e.what = what;
     e.arg = arg;
     e.title = title;
@@ -1502,7 +1640,8 @@ static void Select()
         break;
     case GA_TEXT: {
         const SettingDef& d = DesktopSettings_Table().defs[r.arg];
-        EditOpen(ED_SETTING, r.arg, d.label, (const char*)d.ptr, (size_t)d.size - 1, (d.flags & SF_SECRET) != 0);
+        EditOpen(ED_SETTING, r.arg, d.label, (const char*)d.ptr, (size_t)d.size - 1, (d.flags & SF_SECRET) != 0,
+                 r.help.c_str());
         break;
     }
     case GA_FINDEMU: {
@@ -1521,20 +1660,20 @@ static void Select()
         VirtualGame* vg = PickedGame();
         if (!vg) break;
         const char* text = r.arg == 0 ? vg->args : r.arg == 1 ? vg->workdir : vg->env;
-        EditOpen(ED_GAMEOPT, r.arg, r.label.c_str(), text, sizeof(vg->args) - 1, false);
+        EditOpen(ED_GAMEOPT, r.arg, r.label.c_str(), text, sizeof(vg->args) - 1, false, r.help.c_str());
         break;
     }
     case GA_NAME:
         EditOpen(ED_NAME, 0, "Name", g.pickedName, 100, false);
         break;
     case GA_JELLYFINURL:
-        EditOpen(ED_JELLYFIN, 0, "Jellyfin Server", Jellyfin_GetServerUrl(), 500, false);
+        EditOpen(ED_JELLYFIN, 0, "Jellyfin Server", Jellyfin_GetServerUrl(), 500, false, "Like 192.168.1.20:8096");
         break;
     case GA_SEARCH:
-        EditOpen(ED_SEARCH, 0, "Search by Name", g.search, 60, false);
+        EditOpen(ED_SEARCH, 0, "Search by Name", g.search, 60, false, "Part of a name, like halo");
         break;
     case GA_NEWCOLL:
-        EditOpen(ED_COLLECTION, 0, "New Collection", "", VGAMES_COLLECTION_NAME_MAX, false);
+        EditOpen(ED_COLLECTION, 0, "New Collection", "", VGAMES_COLLECTION_NAME_MAX, false, "Its name, like Weekend");
         break;
     case GA_PADTOOLS:
         Close();
@@ -1585,7 +1724,7 @@ static void Select()
     }
     case GA_ESDE:
         if (!s_esdePath[0]) {
-            g.result[GA_ESDE] = "Set its folder first";
+            g.result[GA_ESDE] = "Set its folder in Settings";
             Refuse();
         } else {
             EsdeVGames_Sync(s_esdePath);
@@ -2289,7 +2428,8 @@ static float RowHeight(const Row& r, float width)
     return ROW_H + ROW_GAP;
 }
 
-static void DrawRows(float left, float right, float top)
+// moreY is where "more above" goes: on the heading's line, or under the tabs.
+static void DrawRows(float left, float right, float top, float moreY)
 {
     float width = right - left;
     float room = BODY_B - top + ROW_GAP;
@@ -2360,7 +2500,7 @@ static void DrawRows(float left, float right, float top)
             y += h[i];
             continue;
         }
-        if (r.act == GA_SETTING || r.act == GA_CATEGORY) {
+        if (r.act == GA_SETTING || r.act == GA_CATEGORY || r.act == GA_RUNNER) {
             const SettingDef* d = r.act == GA_SETTING ? &DesktopSettings_Table().defs[r.arg] : NULL;
             const char* badge = d && (d->flags & SF_RESTART) ? "RESTART" : NULL;
             float labelRoom = width * 0.55f - (badge ? 50.0f : 0.0f);
@@ -2371,8 +2511,7 @@ static void DrawRows(float left, float right, float top)
             ui_style_row(left, y, width, ROW_H, on);
             float ty = y + (ROW_H - 11.0f) * 0.5f;
             float valueW = r.value.empty() ? 0.0f : ui_overlay_text_width(UI_FONT_BOLD, 11.0f, r.value.c_str());
-            float chevron = r.act == GA_VIEW || r.act == GA_GAMECOLL || r.act == GA_COLLECTION ||
-                            r.act == GA_BACKUPS || r.act == GA_PICKBACKUP ? 14.0f : 0.0f;
+            float chevron = Opens(r) ? 14.0f : 0.0f;
             if (valueW > width * 0.45f) valueW = width * 0.45f;
             std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 24 - valueW - chevron - 8);
             ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 12, ty, UI_ALIGN_LEFT, 0xFFFFFFFF, label.c_str());
@@ -2390,7 +2529,7 @@ static void DrawRows(float left, float right, float top)
     }
     // More above or below.
     if (g.scroll > 0)
-        ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, top - 12, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL), "MORE");
+        ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, moreY, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL), "MORE");
     if (i < n)
         ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, y - ROW_GAP + 1, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL),
                         "MORE");
@@ -2409,15 +2548,15 @@ static void DrawPanel(float left, float right)
         float starts[8], ends[8];
         ui_style_tabs(left, right, top, 20, kPages, kPageCount, g.page, "Q", "E", starts, ends);
         for (int i = 0; i < kPageCount; i++) AddTarget(starts[i], top, ends[i], top + 20, T_TAB, i);
-        top += 30;
-    } else {
-        std::string heading = g.view == GV_WELCOME ? "Ways in" : ViewTitle();
-        for (size_t i = 0; i < heading.size(); i++) heading[i] = (char)toupper((unsigned char)heading[i]);
-        heading = Fit(UI_FONT_BOLD, 9.0f, heading, right - left);
-        ui_style_text(UI_TEXT_HEADING, left + 1, top + 2, UI_ALIGN_LEFT, heading.c_str());
-        top += 20;
+        DrawRows(left, right, top + 34, top + 23);
+        return;
     }
-    DrawRows(left, right, top);
+    std::string heading = g.view == GV_WELCOME ? "Ways in" : ViewTitle();
+    for (size_t i = 0; i < heading.size(); i++) heading[i] = (char)toupper((unsigned char)heading[i]);
+    // Room left for MORE on the same line.
+    heading = Fit(UI_FONT_BOLD, 9.0f, heading, right - left - 44);
+    ui_style_text(UI_TEXT_HEADING, left + 1, top + 2, UI_ALIGN_LEFT, heading.c_str());
+    DrawRows(left, right, top + 20, top + 2);
 }
 
 // The field over the keys. Secrets show as dots; a long line slides so
@@ -2451,7 +2590,8 @@ static void DrawEditor()
     const float ty = FIELD_Y + (FIELD_H - size) * 0.5f;
     if (shown.empty())
         ui_overlay_text(UI_FONT_REGULAR, 11.0f, left + pad + 4, FIELD_Y + (FIELD_H - 11.0f) * 0.5f, UI_ALIGN_LEFT,
-                        ui_style_color(UI_COLOR_TEXT_DIM), "Empty");
+                        ui_style_color(UI_COLOR_TEXT_DIM),
+                        e.hint.empty() ? "Empty" : Fit(UI_FONT_REGULAR, 11.0f, e.hint, room - 8).c_str());
     else
         ui_overlay_text(UI_FONT_BOLD, size, left + pad, ty, UI_ALIGN_LEFT, 0xFFFFFFFF,
                         Fit(UI_FONT_BOLD, size, lead + shown.substr(from), room).c_str());
@@ -2490,6 +2630,45 @@ static void DrawEditor()
                                         : (std::string(Shoulders()) + " move the cursor.").c_str());
 }
 
+// What A does on a row, for its prompt.
+static const char* PromptWord(const Row& r)
+{
+    switch (r.act) {
+    case GA_NONE:        return NULL;
+    case GA_SETTING: case GA_CATEGORY: case GA_RUNNER:
+    case GA_FAVORITE: case GA_HIDE: case GA_INCOLL:
+                         return "Change";
+    case GA_TEXT: case GA_NAME: case GA_JELLYFINURL: case GA_GAMEOPT:
+                         return "Edit";
+    case GA_SEARCH:      return "Search";
+    case GA_NEWCOLL:     return "New";
+    case GA_LAUNCH:      return "Launch";
+    case GA_RESTORE:     return "Restore";
+    case GA_COPYVERSION: case GA_COPYLOG:
+                         return "Copy";
+    case GA_BACKUP:      return "Back Up";
+    case GA_ADDGAME: case GA_APP: case GA_APPGAMES:
+                         return "Add";
+    case GA_STEAM: case GA_RETROARCH: case GA_STORE:
+                         return "Import";
+    case GA_ESDE:        return "Refresh";
+    case GA_FINDEMU:     return "Find";
+    case GA_PLEX:        return Plex_PinAuthInFlight() ? "Cancel" : "Sign In";
+    case GA_JELLYFIN:    return Jellyfin_QuickConnectInFlight() ? "Cancel" : "Sign In";
+    case GA_XBOX:        return Xcloud_LoginInFlight() ? "Cancel" : "Sign In";
+    case GA_PLEXOUT: case GA_JELLYFINOUT: case GA_XBOXOUT:
+                         return "Sign Out";
+    case GA_POWER:       return r.arg == HOST_POWER_SLEEP ? "Sleep" : r.arg == HOST_POWER_RESTART ? "Restart" : "Shut Down";
+    case GA_RESUME:      return g.welcome ? "Start" : "Close";
+    case GA_POWERNOW:    return r.arg == HOST_POWER_RESTART ? "Restart" : "Shut Down";
+    case GA_CANCEL:      return "Cancel";
+    case GA_QUIT:        return "Exit";
+    case GA_BROWSEUP:    return "Up";
+    case GA_BROWSE:      return Opens(r) ? "Open" : "Choose";
+    default:             return Opens(r) ? "Open" : "Select";
+    }
+}
+
 static void Prompt(ui_style_prompt* p, int* n, int button, const char* key, const char* word, unsigned bits)
 {
     p[*n].button = button;
@@ -2512,13 +2691,7 @@ static void DrawPrompts()
         Prompt(p, &n, UI_BUTTON_START, "ENTER", "Done", GUIDE_START);
         Prompt(p, &n, UI_BUTTON_B, "ESC", "Cancel", GUIDE_B);
     } else if (g.inPanel && g.cursor >= 0 && g.cursor < (int)g.rows.size()) {
-        int act = g.rows[g.cursor].act;
-        const char* word = act == GA_NONE ? NULL
-                         : act == GA_SETTING || act == GA_CATEGORY ? "Change"
-                         : act == GA_VIEW || act == GA_GAMECOLL || act == GA_COLLECTION ||
-                           act == GA_BACKUPS || act == GA_PICKBACKUP ? "Open"
-                         : act == GA_RESTORE ? "Restore"
-                         : act == GA_TEXT || act == GA_NAME || act == GA_JELLYFINURL ? "Edit" : "Select";
+        const char* word = PromptWord(g.rows[g.cursor]);
         if (word) Prompt(p, &n, UI_BUTTON_A, "ENTER", word, GUIDE_A);
     } else if (!g.inPanel) {
         Prompt(p, &n, UI_BUTTON_A, "ENTER", "Open", GUIDE_A);
@@ -2556,6 +2729,7 @@ void Guide_Render(int width, int height)
             DrawHeader(g.edit.title.c_str());
             DrawEditor();
         } else if (g.welcome) {
+            DrawHeader(ViewTitle());
             DrawPanel(CONTENT_L + 40, CONTENT_R - 40);
         } else {
             DrawHeader("Guide");

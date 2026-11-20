@@ -148,26 +148,31 @@ static int         s_pendingChapter = -1;
 static double      s_timePos        = 0.0;
 static double      s_chapterStart   = 0.0;
 
-static void CdBack_Init()
+// Most sessions never play a disc, so the handle waits for the first one.
+static void CdBack_Init() {}
+
+static bool CdBack_Open()
 {
+    if (s_mpv) return true;
     s_mpv = mpv_create();
-    if (!s_mpv) { fprintf(stderr, "[CdAudio] mpv_create failed\n"); return; }
+    if (!s_mpv) { fprintf(stderr, "[CdAudio] mpv_create failed\n"); return false; }
     mpv_set_option_string(s_mpv, "video",         "no");
     mpv_set_option_string(s_mpv, "audio-display", "no");
     mpv_set_option_string(s_mpv, "keep-open",     "yes");
     mpv_set_option_string(s_mpv, "terminal",      "no");
     if (mpv_initialize(s_mpv) < 0) {
         fprintf(stderr, "[CdAudio] mpv_initialize failed\n");
-        mpv_destroy(s_mpv); s_mpv = nullptr; return;
+        mpv_destroy(s_mpv); s_mpv = nullptr; return false;
     }
     mpv_observe_property(s_mpv, 0, "time-pos", MPV_FORMAT_DOUBLE);
+    return true;
 }
 
 static void CdBack_Shutdown() { if (s_mpv) { mpv_destroy(s_mpv); s_mpv = nullptr; } }
 
 bool CdAudio_Play(int track)
 {
-    if (!s_mpv || track < 1) return false;
+    if (track < 1 || !CdBack_Open()) return false;
     s_pendingChapter = track - 1;
     s_playing = true; s_paused = false; s_timePos = 0.0; s_chapterStart = 0.0;
     for (int i = 0; i < track - 1 && i < s_trackCount; ++i) s_chapterStart += s_trackDurations[i];
