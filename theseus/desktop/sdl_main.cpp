@@ -771,7 +771,9 @@ void ApplyDisplayMode() {
     // fullscreen, and the frame stays off even if fullscreen is refused.
     static bool s_consoleFrame = false;
     int mode = g_windowMode;
-    if (Console_Active()) {
+    // Development only: UIX_DEV_WINDOWED=1 keeps console mode in a window for testing.
+    static const bool s_devWindowed = getenv("UIX_DEV_WINDOWED") != NULL;
+    if (Console_Active() && !s_devWindowed) {
         if (mode == 0) mode = 1;
         SDL_SetWindowBordered(g_pSDLWindow, SDL_FALSE);
         s_consoleFrame = true;
