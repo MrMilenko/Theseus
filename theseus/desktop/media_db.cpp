@@ -131,13 +131,144 @@ static int ParseYearFromTitle(const std::string& s)
 	return y;
 }
 
+// Season and episode out of a bare filename. Takes S01E02, s1e2 and 1x02
+// anywhere in the name, as long as it starts on a word break.
+static bool ParseSeasonEpisode(const char* name, int& season, int& episode, const char** end = NULL)
+{
+	for (const char* p = name; *p; p++)
+	{
+		if (p != name && isalnum((unsigned char)p[-1])) continue;
+		const char* q = p;
+		bool sForm = (*q == 'S' || *q == 's');
+		if (sForm) q++;
+		const char* d = q;
+		int s = 0;
+		while (isdigit((unsigned char)*q)) s = s * 10 + (*q++ - '0');
+		int sDigits = (int)(q - d);
+		if (sDigits < 1 || sDigits > 2) continue;
+		if (sForm ? (*q != 'E' && *q != 'e') : (*q != 'x' && *q != 'X')) continue;
+		q++;
+		d = q;
+		int e = 0;
+		while (isdigit((unsigned char)*q)) e = e * 10 + (*q++ - '0');
+		int eDigits = (int)(q - d);
+		if (eDigits < 1 || eDigits > 3 || (!sForm && eDigits < 2)) continue;
+		season = s; episode = e;
+		if (end) *end = q;
+		return true;
+	}
+	return false;
+}
+
+// Scene names ("Some.Movie.2021.1080p.BluRay") read better as words.
+static void DotsToSpaces(std::string& s)
+{
+	if (s.find(' ') != std::string::npos) return;
+	for (size_t i = 0; i < s.size(); i++)
+		if (s[i] == '.' || s[i] == '_') s[i] = ' ';
+}
+
+static void TrimEnds(std::string& s)
+{
+	const char* junk = " -_.([";
+	size_t a = s.find_first_not_of(junk);
+	size_t b = s.find_last_not_of(junk);
+	s = (a == std::string::npos) ? std::string() : s.substr(a, b - a + 1);
+}
+
+// Cuts at the first word that's a release tag, like 720p, WEB-DL or x264.
+static void CutReleaseTags(std::string& s)
+{
+	static const char* kTags[] = { "480p", "576p", "720p", "1080p", "2160p", "4k", "uhd",
+		"web", "web-dl", "webdl", "webrip", "bluray", "blu-ray", "bdrip", "brrip", "hdtv",
+		"dvdrip", "hdrip", "x264", "x265", "h264", "h265", "hevc", "10bit", "remux",
+		"proper", "repack", "amzn", "nf", "dsnp", "hulu", NULL };
+	size_t i = 0;
+	while (i < s.size())
+	{
+		size_t j = s.find(' ', i);
+		if (j == std::string::npos) j = s.size();
+		std::string w = s.substr(i, j - i);
+		for (size_t k = 0; k < w.size(); k++) w[k] = (char)tolower((unsigned char)w[k]);
+		while (!w.empty() && (w[0] == '[' || w[0] == '(')) w.erase(0, 1);
+		while (!w.empty() && (w.back() == ']' || w.back() == ')')) w.pop_back();
+		for (int t = 0; kTags[t]; t++)
+			if (w == kTags[t]) { s.erase(i); TrimEnds(s); return; }
+		i = j + 1;
+	}
+}
+
+// "The.Matrix.1999.1080p.BluRay" -> "The Matrix (1999)". Names that already
+// read "Title (1999)" are left alone.
+static std::string CleanMovieName(const std::string& raw)
+{
+	std::string s = raw;
+	DotsToSpaces(s);
+	// The last standalone year that isn't the first word, so "2012 (2009)" works.
+	size_t yearAt = std::string::npos;
+	for (size_t i = 1; i + 4 <= s.size(); i++)
+	{
+		if (s[i - 1] != ' ' && s[i - 1] != '(' && s[i - 1] != '[') continue;
+		if (i + 4 < s.size() && s[i + 4] != ' ' && s[i + 4] != ')' && s[i + 4] != ']') continue;
+		bool digits = true;
+		for (int k = 0; k < 4; k++) if (!isdigit((unsigned char)s[i + k])) digits = false;
+		if (!digits) continue;
+		int y = atoi(s.substr(i, 4).c_str());
+		if (y >= 1900 && y <= 2099) yearAt = i;
+	}
+	if (yearAt == std::string::npos)
+	{
+		CutReleaseTags(s);
+		return s.empty() ? raw : s;
+	}
+	std::string title = s.substr(0, yearAt);
+	TrimEnds(title);
+	if (title.empty()) return raw;
+	return title + " (" + s.substr(yearAt, 4) + ")";
+}
+
+// Leading "The", "A" and "An" don't count when sorting, same as most players.
+static const char* SortKey(const std::string& t)
+{
+	const char* p = t.c_str();
+	if (strncasecmp(p, "the ", 4) == 0) return p + 4;
+	if (strncasecmp(p, "an ", 3) == 0) return p + 3;
+	if (strncasecmp(p, "a ", 2) == 0) return p + 2;
+	return p;
+}
+
+// "Show.S01E01.Pilot.720p.mkv" -> "Pilot", or "Episode 1" when there's no
+// name after the number. Anything unnumbered just loses its extension.
+static std::string SceneEpisodeTitle(const std::string& filename, int& seasonOut, int& episodeOut)
+{
+	std::string base = filename;
+	size_t dot = base.find_last_of('.');
+	if (dot != std::string::npos) base.erase(dot);
+	int season = 0, episode = 0;
+	const char* end = NULL;
+	if (!ParseSeasonEpisode(base.c_str(), season, episode, &end))
+	{
+		DotsToSpaces(base);
+		return base;
+	}
+	seasonOut = season; episodeOut = episode;
+	std::string rest = end;
+	DotsToSpaces(rest);
+	CutReleaseTags(rest);
+	TrimEnds(rest);
+	if (!rest.empty()) return rest;
+	char buf[32];
+	snprintf(buf, sizeof(buf), "Episode %d", episode);
+	return buf;
+}
+
 static std::string ParseEpisodeTitle(const std::string& filename, int& seasonOut, int& episodeOut)
 {
 	// "Show - S01E02 - Title WEBDL-1080p.mkv" -> "Title", season=1, episode=2.
 	seasonOut = 0; episodeOut = 0;
 	size_t s = filename.find(" - S");
-	if (s == std::string::npos) return filename;
-	if (s + 8 >= filename.size()) return filename;
+	if (s == std::string::npos || s + 8 >= filename.size())
+		return SceneEpisodeTitle(filename, seasonOut, episodeOut);
 
 	// Parse SxxExx
 	size_t p = s + 4;
@@ -147,7 +278,8 @@ static std::string ParseEpisodeTitle(const std::string& filename, int& seasonOut
 		season = season * 10 + (filename[p] - '0');
 		p++;
 	}
-	if (p >= filename.size() || (filename[p] != 'E' && filename[p] != 'e')) return filename;
+	if (p >= filename.size() || (filename[p] != 'E' && filename[p] != 'e'))
+		return SceneEpisodeTitle(filename, seasonOut, episodeOut);
 	p++;
 	int episode = 0;
 	while (p < filename.size() && filename[p] >= '0' && filename[p] <= '9')
@@ -158,7 +290,7 @@ static std::string ParseEpisodeTitle(const std::string& filename, int& seasonOut
 
 	// Find " - " after SxxExx
 	size_t sep = filename.find(" - ", p);
-	if (sep == std::string::npos) return filename;
+	if (sep == std::string::npos) return SceneEpisodeTitle(filename, seasonOut, episodeOut);
 	size_t titleStart = sep + 3;
 
 	// Strip trailing quality tag and extension. Split at first " WEBDL"/"Bluray"/"BDRip"/"HDTV"/etc., or before final '.'.
@@ -182,34 +314,6 @@ static std::string ParseEpisodeTitle(const std::string& filename, int& seasonOut
 	seasonOut = season;
 	episodeOut = episode;
 	return rest;
-}
-
-// Season and episode out of a bare filename, for ordering only. Takes S01E02,
-// s1e2 and 1x02 anywhere in the name, as long as it starts on a word break.
-static bool ParseSeasonEpisode(const char* name, int& season, int& episode)
-{
-	for (const char* p = name; *p; p++)
-	{
-		if (p != name && isalnum((unsigned char)p[-1])) continue;
-		const char* q = p;
-		bool sForm = (*q == 'S' || *q == 's');
-		if (sForm) q++;
-		const char* d = q;
-		int s = 0;
-		while (isdigit((unsigned char)*q)) s = s * 10 + (*q++ - '0');
-		int sDigits = (int)(q - d);
-		if (sDigits < 1 || sDigits > 2) continue;
-		if (sForm ? (*q != 'E' && *q != 'e') : (*q != 'x' && *q != 'X')) continue;
-		q++;
-		d = q;
-		int e = 0;
-		while (isdigit((unsigned char)*q)) e = e * 10 + (*q++ - '0');
-		int eDigits = (int)(q - d);
-		if (eDigits < 1 || eDigits > 3 || (!sForm && eDigits < 2)) continue;
-		season = s; episode = e;
-		return true;
-	}
-	return false;
 }
 
 // Filename compare where digit runs count as numbers, so "Ep 2" lands before "Ep 10".
@@ -308,7 +412,7 @@ static std::string FindFirstVideoFile(const std::string& dir)
 static void AddMovie(std::vector<MovieRec>& out, const std::string& title, const std::string& path)
 {
 	MovieRec m;
-	m.title = title;
+	m.title = CleanMovieName(title);
 	m.path  = path;
 	m.year  = ParseYearFromTitle(m.title);
 	out.push_back(m);
@@ -363,6 +467,9 @@ static void ScanMoviesInto(std::vector<MovieRec>& out)
 		}
 	}
 	Host_CloseDir(d);
+	std::stable_sort(out.begin(), out.end(), [](const MovieRec& a, const MovieRec& b) {
+		return NaturalCompare(SortKey(a.title), SortKey(b.title)) < 0;
+	});
 	printf("[MediaDB] Movie scan done: %d total\n", (int)out.size());
 }
 
@@ -397,18 +504,13 @@ static void ScanShowSeasons(ShowRec& show)
 		}
 		Host_CloseDir(sd);
 
-		// Sort episodes by episode number.
-		for (size_t i = 1; i < s.episodes.size(); i++)
-			for (size_t j = i; j > 0 && s.episodes[j].episode < s.episodes[j - 1].episode; j--)
-			{
-				EpisodeRec t = s.episodes[j];
-				s.episodes[j] = s.episodes[j - 1];
-				s.episodes[j - 1] = t;
-			}
-
+		SortEpisodes(s.episodes);
 		show.seasons.push_back(s);
 	}
 	Host_CloseDir(d);
+	std::sort(show.seasons.begin(), show.seasons.end(), [](const SeasonRec& a, const SeasonRec& b) {
+		return NaturalCompare(a.name.c_str(), b.name.c_str()) < 0;
+	});
 
 	// Episodes sitting straight in the show folder, no Season dirs. Common
 	// enough that dropping the show entirely just looks like nothing loaded.
@@ -484,6 +586,9 @@ static void ScanShowsInto(std::vector<ShowRec>& out)
 		}
 	}
 	Host_CloseDir(d);
+	std::stable_sort(out.begin(), out.end(), [](const ShowRec& a, const ShowRec& b) {
+		return NaturalCompare(SortKey(a.title), SortKey(b.title)) < 0;
+	});
 	printf("[MediaDB] Show scan done: %d total\n", (int)out.size());
 }
 
@@ -674,6 +779,28 @@ static bool LoadCache()
 
 // Node binding ---------------------------------------------------------------
 
+// One fact per line so the meta panel never wraps mid phrase.
+static std::string MovieMeta(const MovieRec& m)
+{
+	char buf[64];
+	if (m.year > 0) snprintf(buf, sizeof(buf), "Movie\n%d", m.year);
+	else            snprintf(buf, sizeof(buf), "Movie");
+	return buf;
+}
+
+static std::string ShowMeta(const ShowRec& sh)
+{
+	int totalEps = 0;
+	for (size_t s = 0; s < sh.seasons.size(); s++)
+		totalEps += (int)sh.seasons[s].episodes.size();
+	int nSeasons = (int)sh.seasons.size();
+	char buf[96];
+	snprintf(buf, sizeof(buf), "TV Show\n%d %s\n%d %s",
+		nSeasons, nSeasons == 1 ? "Season" : "Seasons",
+		totalEps, totalEps == 1 ? "Episode" : "Episodes");
+	return buf;
+}
+
 extern "C" void MediaDB_ScanAndCache();
 
 class CMediaCollection : public CNode
@@ -682,11 +809,14 @@ public:
 	CMediaCollection() : m_curShowIdx(-1), m_curSeasonIdx(-1),
 	                     m_curSelKind(0), m_curSelIdx(-1)
 	{
-		// Try cache only. Scanning the filesystem can take seconds for
-		// large libraries on network mounts; require an explicit
-		// RefreshLibrary() call from XAP (or out-of-band first run) so
-		// startup never stalls.
+		// The cache shows right away, then one background rescan per run
+		// picks up files added since. Known TMDB matches carry forward.
 		LoadCache();
+		static bool s_rescanned = false;
+		if (!s_rescanned && (g_moviesRoot[0] || g_tvRoot[0])) {
+			s_rescanned = true;
+			MediaDB_ScanAndCache();
+		}
 	}
 
 	DECLARE_NODE(CMediaCollection, CNode)
@@ -718,12 +848,7 @@ public:
 	{
 		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_movies.size()) return new CStrObject;
-		char buf[64];
-		if (g_movies[i].year > 0)
-			sprintf(buf, "%d  Movie", g_movies[i].year);
-		else
-			sprintf(buf, "Movie");
-		return new CStrObject(_T(buf));
+		return new CStrObject(_T(MovieMeta(g_movies[i]).c_str()));
 	}
 	CStrObject* GetMoviePath(int i)
 	{
@@ -746,15 +871,7 @@ public:
 	{
 		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (i < 0 || i >= (int)g_shows.size()) return new CStrObject;
-		int totalEps = 0;
-		for (size_t s = 0; s < g_shows[i].seasons.size(); s++)
-			totalEps += (int)g_shows[i].seasons[s].episodes.size();
-		char buf[96];
-		int nSeasons = (int)g_shows[i].seasons.size();
-		sprintf(buf, "TV  %d %s  %d %s",
-			nSeasons, nSeasons == 1 ? "Season" : "Seasons",
-			totalEps, totalEps == 1 ? "Episode" : "Episodes");
-		return new CStrObject(_T(buf));
+		return new CStrObject(_T(ShowMeta(g_shows[i]).c_str()));
 	}
 
 	void SetCurrentShow(int i)
@@ -801,6 +918,19 @@ public:
 		const std::vector<EpisodeRec>& eps = g_shows[m_curShowIdx].seasons[m_curSeasonIdx].episodes;
 		if (epIdx < 0 || epIdx >= (int)eps.size()) return new CStrObject;
 		return new CStrObject(_T(eps[epIdx].path.c_str()));
+	}
+
+	// What an empty Movies (0) or TV Shows (1) list says. "" once it has rows.
+	CStrObject* GetStatus(int kind)
+	{
+		{
+			std::lock_guard<std::mutex> lock(g_dbMutex);
+			if (!(kind == 1 ? g_shows.empty() : g_movies.empty())) return new CStrObject;
+		}
+		const char* root = kind == 1 ? kTvRoot : kMoviesRoot;
+		if (!root[0]) return new CStrObject(_T(kind == 1 ? "Pick a TV Shows folder in Settings" : "Pick a Movies folder in Settings"));
+		if (g_scanRunning.load()) return new CStrObject(_T("Looking for videos..."));
+		return new CStrObject(_T(kind == 1 ? "No shows found" : "No movies found"));
 	}
 
 	void RefreshLibrary()
@@ -913,23 +1043,10 @@ public:
 		std::lock_guard<std::mutex> lock(g_dbMutex);
 		if (m_curSelKind == 0) {
 			if (m_curSelIdx < 0 || m_curSelIdx >= (int)g_movies.size()) return new CStrObject;
-			char buf[64];
-			if (g_movies[m_curSelIdx].year > 0)
-				sprintf(buf, "%d  Movie", g_movies[m_curSelIdx].year);
-			else
-				sprintf(buf, "Movie");
-			return new CStrObject(_T(buf));
+			return new CStrObject(_T(MovieMeta(g_movies[m_curSelIdx]).c_str()));
 		}
 		if (m_curSelIdx < 0 || m_curSelIdx >= (int)g_shows.size()) return new CStrObject;
-		int totalEps = 0;
-		for (size_t s = 0; s < g_shows[m_curSelIdx].seasons.size(); s++)
-			totalEps += (int)g_shows[m_curSelIdx].seasons[s].episodes.size();
-		char buf[96];
-		int nSeasons = (int)g_shows[m_curSelIdx].seasons.size();
-		sprintf(buf, "TV  %d %s  %d %s",
-			nSeasons, nSeasons == 1 ? "Season" : "Seasons",
-			totalEps, totalEps == 1 ? "Episode" : "Episodes");
-		return new CStrObject(_T(buf));
+		return new CStrObject(_T(ShowMeta(g_shows[m_curSelIdx]).c_str()));
 	}
 	CStrObject* GetSelectedPlot()
 	{
@@ -1426,6 +1543,7 @@ START_NODE_FUN(CMediaCollection, CNode)
 	NODE_FUN_SV(GetSelectedPlot)
 	NODE_FUN_VV(PlaySelected)
 	NODE_FUN_IV(ConsumePlaybackExited)
+	NODE_FUN_SI(GetStatus)
 END_NODE_FUN()
 
 
