@@ -13,6 +13,7 @@ enum SettingFlags {
     SF_STRICT  = 1 << 4,  // enum: refuse values that aren't in the list
     SF_PERCENT = 1 << 5,  // 0..1 float shown as a percentage
     SF_CLAMP   = 1 << 6,  // pull loaded values into minV..maxV
+    SF_LIVE    = 1 << 7,  // the OS holds it; never read from or written to the file
 };
 
 struct SettingDef {
@@ -44,6 +45,8 @@ struct SettingsTable {
 // The desktop table (desktop_settings.cpp).
 const SettingsTable& DesktopSettings_Table();
 const SettingDef*    DesktopSettings_Find(const char* key);
+// Reads the SF_LIVE rows back from the OS.
+void                 DesktopSettings_ReadLive();
 
 // Text <-> value. Parse returns false and leaves the value alone when the
 // text isn't acceptable.

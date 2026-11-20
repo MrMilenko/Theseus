@@ -586,6 +586,302 @@ void Host_OpenFolder(const char* dir) {
 bool Host_RegistryString(const char*, const char*, char*, size_t) { return false; }
 bool Host_RegistryValue(int, const char*, const char*, char*, size_t) { return false; }
 int Host_RegistrySubkeys(int, const char*, char (*)[256], int) { return 0; }
+bool Host_RegistrySetString(const char*, const char*, const char*) { return false; }
+bool Host_RegistryDelete(const char*, const char*) { return false; }
+
+// Start at login. Both entries live under the user's home, so a run with a
+// throwaway HOME never touches the real account.
+static std::string LoginEntryPath() {
+	const char* home = getenv("HOME");
+	std::string h = home ? home : "";
+#ifdef __APPLE__
+	return h + "/Library/LaunchAgents/com.teamuix.theseus.plist";
+#else
+	const char* xdg = getenv("XDG_CONFIG_HOME");
+	std::string base = (xdg && *xdg == '/') ? std::string(xdg) : h + "/.config";
+	return base + "/autostart/uix-desktop.desktop";
+#endif
+}
+
+static bool MakeDirs(const std::string& dir) {
+	for (size_t i = 1; i <= dir.size(); i++)
+		if (i == dir.size() || dir[i] == '/')
+			if (mkdir(dir.substr(0, i).c_str(), 0755) != 0 && errno != EEXIST) return false;
+	return true;
+}
+
+// Beside it first, then over it, so a half written entry never runs.
+static bool WriteWhole(const std::string& path, const std::string& text) {
+	if (!MakeDirs(path.substr(0, path.rfind('/')))) return false;
+	std::string tmp = path + ".tmp";
+	FILE* f = fopen(tmp.c_str(), "w");
+	if (!f) return false;
+	bool ok = fwrite(text.data(), 1, text.size(), f) == text.size();
+	ok = (fclose(f) == 0) && ok;
+	if (ok && rename(tmp.c_str(), path.c_str()) == 0) return true;
+	unlink(tmp.c_str());
+	return false;
+}
+
+#ifdef __APPLE__
+static std::string XmlEscape(const std::string& in) {
+	std::string out;
+	for (char c : in) {
+		if (c == '&') out += "&amp;";
+		else if (c == '<') out += "&lt;";
+		else if (c == '>') out += "&gt;";
+		else out += c;
+	}
+	return out;
+}
+
+static std::string LoginEntryText(const std::string& exe) {
+	return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+	       "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+	       "<plist version=\"1.0\">\n<dict>\n"
+	       "\t<key>Label</key>\n\t<string>com.teamuix.theseus</string>\n"
+	       "\t<key>ProgramArguments</key>\n\t<array>\n"
+	       "\t\t<string>" + XmlEscape(exe) + "</string>\n"
+	       "\t\t<string>--console</string>\n"
+	       "\t</array>\n"
+	       "\t<key>RunAtLoad</key>\n\t<true/>\n"
+	       "\t<key>LimitLoadToSessionType</key>\n\t<string>Aqua</string>\n"
+	       "</dict>\n</plist>\n";
+}
+#else
+// Exec= quoting from the desktop entry spec: the argument in double quotes
+// with " ` $ \ backslashed, then every backslash doubled for the string
+// itself, and % as %%.
+static std::string ExecQuote(const std::string& in) {
+	std::string q = "\"";
+	for (char c : in) {
+		if (c == '"' || c == '`' || c == '$' || c == '\\') q += '\\';
+		q += c;
+	}
+	q += '"';
+	std::string out;
+	for (char c : q) {
+		if (c == '\\') out += "\\\\";
+		else if (c == '%') out += "%%";
+		else out += c;
+	}
+	return out;
+}
+
+static std::string LoginEntryText(const std::string& exe) {
+	return "[Desktop Entry]\n"
+	       "Type=Application\n"
+	       "Name=UIX Desktop\n"
+	       "Comment=Starts UIX Desktop in Console Mode\n"
+	       "Exec=" + ExecQuote(exe) + " --console\n"
+	       "Terminal=false\n"
+	       "X-GNOME-Autostart-enabled=true\n";
+}
+#endif
+
+static bool PowerDryRun() {
+	const char* v = getenv("UIX_DEV_POWER_DRYRUN");
+	return v && *v && strcmp(v, "0") != 0;
+}
+
+bool Host_Power(int action) {
+	static const char* const kNames[] = { "sleep", "restart", "shut down" };
+	if (action < HOST_POWER_SLEEP || action > HOST_POWER_SHUTDOWN) return false;
+#ifdef __APPLE__
+	// System Events asks every app to quit first, the same as the Apple menu.
+	const char* const kSleep[]    = { "pmset", "sleepnow", NULL };
+	const char* const kRestart[]  = { "osascript", "-e", "tell application \"System Events\" to restart", NULL };
+	const char* const kShutdown[] = { "osascript", "-e", "tell application \"System Events\" to shut down", NULL };
+#else
+	// logind lets the active local session do these without a password.
+	const char* const kSleep[]    = { "systemctl", "suspend", NULL };
+	const char* const kRestart[]  = { "systemctl", "reboot", NULL };
+	const char* const kShutdown[] = { "systemctl", "poweroff", NULL };
+#endif
+	const char* const* argv = action == HOST_POWER_SLEEP ? kSleep : action == HOST_POWER_RESTART ? kRestart : kShutdown;
+	std::string line;
+	for (int i = 0; argv[i]; i++) {
+		if (i) line += ' ';
+		line += strchr(argv[i], ' ') ? "'" + std::string(argv[i]) + "'" : argv[i];
+	}
+	if (PowerDryRun()) {
+		fprintf(stderr, "[Power] would %s: %s\n", kNames[action], line.c_str());
+		return true;
+	}
+	fprintf(stderr, "[Power] %s: %s\n", kNames[action], line.c_str());
+	fflush(stderr);
+	pid_t pid = fork();
+	if (pid == 0) {
+		RestoreHostLibraryPath();
+#ifndef __APPLE__
+		if (getenv("FLATPAK_ID")) {
+			const char* host[8] = { "flatpak-spawn", "--host" };
+			for (int i = 0; argv[i] && i < 5; i++) host[i + 2] = argv[i];
+			execvp(host[0], (char* const*)host);
+		}
+#endif
+		execvp(argv[0], (char* const*)argv);
+		_exit(127);
+	}
+	if (pid < 0) return false;
+	// These answer quickly when they're refused. Still going after a few
+	// seconds means it's happening.
+	for (int i = 0; i < 30; i++) {
+		int status;
+		pid_t r = waitpid(pid, &status, WNOHANG);
+		if (r == pid) {
+			bool ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+			if (!ok) fprintf(stderr, "[Power] %s was refused\n", kNames[action]);
+			return ok;
+		}
+		if (r < 0) return false;
+		usleep(100 * 1000);
+	}
+	return true;
+}
+
+// The supervisor hands a stop on to the child and keeps waiting for it.
+static volatile pid_t s_selfChild = 0;
+static void ForwardStop(int sig) {
+	if (s_selfChild > 0) kill(s_selfChild, sig);
+}
+
+int Host_RunSelf(const char* const* args, int* code, char* how, size_t howSize) {
+	*code = 0;
+	if (howSize) how[0] = '\0';
+	char exe[1024];
+	if (!Host_ExePath(exe, sizeof(exe))) return HOST_CHILD_FAILED;
+	std::vector<const char*> argv;
+	argv.push_back(exe);
+	for (int i = 1; args[i]; i++) argv.push_back(args[i]);
+	argv.push_back(NULL);
+
+	struct sigaction sa = {}, old[3];
+	sa.sa_handler = ForwardStop;
+	sigemptyset(&sa.sa_mask);
+	static const int kStops[3] = { SIGTERM, SIGINT, SIGHUP };
+	for (int i = 0; i < 3; i++) sigaction(kStops[i], &sa, &old[i]);
+
+	pid_t pid = fork();
+	if (pid == 0) {
+		for (int i = 0; i < 3; i++) sigaction(kStops[i], &old[i], NULL);
+		execv(exe, (char* const*)argv.data());
+		_exit(127);
+	}
+	int result = HOST_CHILD_FAILED;
+	if (pid > 0) {
+		s_selfChild = pid;
+		int status = 0;
+		pid_t r;
+		while ((r = waitpid(pid, &status, 0)) < 0 && errno == EINTR) {}
+		s_selfChild = 0;
+		if (r == pid && WIFSIGNALED(status)) {
+			*code = WTERMSIG(status);
+			snprintf(how, howSize, "%s, signal %d", SignalName(*code), *code);
+			result = HOST_CHILD_CRASHED;
+		} else if (r == pid && WIFEXITED(status)) {
+			*code = WEXITSTATUS(status);
+			snprintf(how, howSize, "exit code %d", *code);
+			result = HOST_CHILD_EXITED;
+		}
+	}
+	for (int i = 0; i < 3; i++) sigaction(kStops[i], &old[i], NULL);
+	return result;
+}
+
+bool Host_ExecKeepsProcess() { return true; }
+
+#ifndef __APPLE__
+static bool OnPath(const char* name) {
+	const char* path = getenv("PATH");
+	if (!path) return false;
+	std::string dirs = path;
+	size_t at = 0;
+	while (at <= dirs.size()) {
+		size_t end = dirs.find(':', at);
+		if (end == std::string::npos) end = dirs.size();
+		std::string full = dirs.substr(at, end - at) + "/" + name;
+		if (end > at && access(full.c_str(), X_OK) == 0) return true;
+		at = end + 1;
+	}
+	return false;
+}
+
+// What opens the settings: GNOME's, then Plasma's, then whatever claims
+// settings:// links. Empty when none of them is here.
+static const char* const* SettingsCommand() {
+	static const char* const kGnome[] = { "gnome-control-center", NULL };
+	static const char* const kPlasma[] = { "systemsettings", NULL };
+	static const char* const kLink[] = { "xdg-open", "settings://", NULL };
+	static int s_found = -1;
+	if (s_found < 0) {
+		s_found = 0;
+		if (OnPath("gnome-control-center")) s_found = 1;
+		else if (OnPath("systemsettings")) s_found = 2;
+		else if (OnPath("xdg-open") && OnPath("xdg-mime")) {
+			FILE* p = popen("xdg-mime query default x-scheme-handler/settings 2>/dev/null", "r");
+			char line[256] = "";
+			if (p) {
+				if (!fgets(line, sizeof(line), p)) line[0] = '\0';
+				pclose(p);
+			}
+			if (strstr(line, ".desktop")) s_found = 3;
+		}
+	}
+	return s_found == 1 ? kGnome : s_found == 2 ? kPlasma : s_found == 3 ? kLink : NULL;
+}
+#endif
+
+bool Host_HasSystemSettings() {
+#ifdef __APPLE__
+	return true;
+#else
+	return SettingsCommand() != NULL;
+#endif
+}
+
+bool Host_OpenSystemSettings() {
+#ifdef __APPLE__
+	const char* const argv[] = { "open", "x-apple.systempreferences:", NULL };
+#else
+	const char* const* argv = SettingsCommand();
+	if (!argv) return false;
+#endif
+	pid_t pid = fork();
+	if (pid == 0) {
+		RestoreHostLibraryPath();
+		execvp(argv[0], (char* const*)argv);
+		_exit(127);
+	}
+	return pid > 0;
+}
+
+bool Host_StartAtLogin() {
+	struct stat st;
+	return stat(LoginEntryPath().c_str(), &st) == 0;
+}
+
+bool Host_SetStartAtLogin(bool on) {
+	std::string path = LoginEntryPath();
+	if (!on) {
+		if (unlink(path.c_str()) == 0 || errno == ENOENT) {
+			fprintf(stderr, "[Console] login entry removed: %s\n", path.c_str());
+			return true;
+		}
+		return false;
+	}
+	char exe[1024];
+	if (!Host_ExePath(exe, sizeof(exe))) return false;
+	std::string target = exe;
+#ifndef __APPLE__
+	// An AppImage runs from a mount that's gone next login; the file itself stays.
+	const char* appimage = getenv("APPIMAGE");
+	if (appimage && *appimage) target = appimage;
+#endif
+	if (!WriteWhole(path, LoginEntryText(target))) return false;
+	fprintf(stderr, "[Console] login entry written: %s\n", path.c_str());
+	return true;
+}
 
 void Host_SetEnv(const char* name, const char* value) {
 	if (value) setenv(name, value, 1);

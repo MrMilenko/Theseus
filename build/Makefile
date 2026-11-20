@@ -861,6 +861,7 @@ DESKTOP_SRCS_PLATFORM = \
 	$(THESEUS_SRC)/desktop/settings_schema.cpp \
 	$(THESEUS_SRC)/desktop/desktop_settings.cpp \
 	$(THESEUS_SRC)/desktop/guide.cpp \
+	$(THESEUS_SRC)/desktop/console_mode.cpp \
 	$(THESEUS_SRC)/desktop/ui_overlay.cpp \
 	$(THESEUS_SRC)/desktop/ui_overlay_style.cpp \
 	$(THESEUS_SRC)/desktop/ui_font.cpp \

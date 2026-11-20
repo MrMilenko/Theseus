@@ -11,6 +11,8 @@
 #include "media_player.h"
 #include "virtual_games.h"
 #include "pads.h"
+#include "console_mode.h"
+#include "host.h"
 
 extern char s_xemuPath[512];
 extern char s_pcsx2Path[512];
@@ -51,6 +53,15 @@ static void ApplyStartupMode() { g_startupMode = s_startupModeSaved; }
 // The same game from two sources shows once, from the best one.
 bool g_hideDuplicateGames = true;
 static void ApplyDuplicates() { g_vgames.generation++; }
+
+// What the OS says, not desktop.ini: the login entry is the setting.
+static bool s_startAtLogin = false;
+static void ApplyStartAtLogin()
+{
+    if (!Host_SetStartAtLogin(s_startAtLogin))
+        fprintf(stderr, "[Console] couldn't %s the login entry\n", s_startAtLogin ? "add" : "remove");
+    s_startAtLogin = Host_StartAtLogin();
+}
 
 static void ApplyMsaa()       { g_msaaChangeRequested = true; }
 static void ApplyVsync()      { g_vsyncChangeRequested = true; }
@@ -133,6 +144,10 @@ static const SettingDef kDefs[] = {
     S_BOOL("ShowSteamTab",     "Desktop", "Games", "Steam Tab",     g_showSteamTab,     "1", 0),
     { "StartupMode", "Desktop", "General", "When UIX Desktop Starts", SK_ENUM, &s_startupModeSaved, 0, "", 0,
       ENUM(kStartupVals, kStartupLbl, kStartupTok), 0, 0, 0, NULL, ApplyStartupMode },
+    { "ConsoleMode", "Desktop", "General", "Console Mode", SK_BOOL, &g_consoleMode, 0, "0", 0,
+      NOENUM, 0, 0, 0, NULL, ApplyDisplay },
+    { "StartAtLogin", "Desktop", "General", "Start at Login", SK_BOOL, &s_startAtLogin, 0, "0", SF_LIVE,
+      NOENUM, 0, 0, 0, NULL, ApplyStartAtLogin },
     S_BOOL("UseOnScreenKeyboard", "Desktop", "General", "On-Screen Keyboard Only", g_bUseOnScreenKeyboard, "0", 0),
     S_BOOL("ShowBootAnimation",   "Desktop", "General", "Boot Animation",          g_bShowBootAnimation,   "1", 0),
     { "MSAA", "Desktop", "Display", "MSAA", SK_ENUM, &g_msaaSamples, 0, "4", SF_STRICT,
@@ -214,9 +229,15 @@ const SettingDef* DesktopSettings_Find(const char* key)
     return NULL;
 }
 
+void DesktopSettings_ReadLive()
+{
+    s_startAtLogin = Host_StartAtLogin();
+}
+
 void LoadDesktopSettings()
 {
     Settings_Load(DesktopSettings_Table(), AppPath("Configs/desktop.ini"));
+    DesktopSettings_ReadLive();
     ApplyStartupMode();
     TheseusSetProjectionDirty();
 }

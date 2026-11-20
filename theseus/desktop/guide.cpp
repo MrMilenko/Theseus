@@ -37,6 +37,7 @@
 #include "launchers/steam.h"
 #include "settings_backup.h"
 #include "launchers/stores.h"
+#include "console_mode.h"
 #include <algorithm>
 #include <ctype.h>
 #include <strings.h>
@@ -65,6 +66,7 @@ extern char** g_argv;
 // Starts this program over with one mode flag in place of any other.
 static void RestartWithMode(const char* flag)
 {
+    Console_RestartViaWatchdog(flag);
     std::vector<char*> args;
     args.push_back(g_argv[0]);
     for (int i = 1; i < g_argc; i++) {
@@ -81,6 +83,7 @@ static void RestartWithMode(const char* flag)
 // Starts this program over the way it was started.
 static void Restart()
 {
+    Console_RestartViaWatchdog(NULL);
     execv(g_argv[0], g_argv);
     fprintf(stderr, "[Guide] restart failed: %s\n", strerror(errno));
 }
@@ -252,6 +255,8 @@ static const char* SettingHelp(const SettingDef& d)
 {
     static const struct { const char* key; const char* help; } kHelp[] = {
         { "StartupMode",         "What happens when UIX Desktop starts." },
+        { "StartAtLogin",        "Starts UIX Desktop in Console Mode when you sign in. Only for you, nothing system wide." },
+        { "ConsoleMode",         "Fullscreen with no frame, straight into the dashboard. For a TV or a games machine." },
         { "UseOnScreenKeyboard", "Text fields ignore the physical keyboard and use the pad keyboard." },
         { "ShowBootAnimation",   "Play the Xbox boot animation once at startup." },
         { "MenuBarAutoHide",     "In Development Mode the tool bar shows when the pointer reaches the top." },
@@ -288,7 +293,7 @@ static const char* kSections[SEC_COUNT] = {
 
 enum View { GV_PAGE, GV_ACCOUNTS, GV_LIBRARY, GV_ADDGAME, GV_BROWSE, GV_PLAYLISTS, GV_PLAYLIST, GV_LOGS,
             GV_SHORTCUTS, GV_ABOUT, GV_TOOLS, GV_EXIT, GV_WELCOME, GV_GAMES, GV_GAME, GV_LETTERS, GV_APPS,
-            GV_COLLECTIONS, GV_GAMECOLL, GV_BACKUPS, GV_RESTORE };
+            GV_COLLECTIONS, GV_GAMECOLL, GV_BACKUPS, GV_RESTORE, GV_POWER };
 
 // What a game list shows.
 enum GameList { GL_FAVORITES, GL_RECENT, GL_HIDDEN, GL_ALL, GL_LETTER, GL_SEARCH, GL_COLLECTION };
@@ -309,6 +314,7 @@ enum Act {
     GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT, GA_STORE,
     GA_COLLECTION, GA_GAMECOLL, GA_INCOLL, GA_NEWCOLL,
     GA_BACKUP, GA_BACKUPS, GA_PICKBACKUP, GA_RESTORE, GA_OPENBACKUPS,
+    GA_DESKTOP, GA_POWER, GA_POWERNOW, GA_CANCEL, GA_SYSSETTINGS,
     GA_COUNT
 };
 
@@ -398,6 +404,7 @@ static struct Guide {
     int sort;              // All Games' order, a SORT_
     std::vector<std::string> backups;   // GV_BACKUPS' rows, newest first
     std::string backup;                 // the one GV_RESTORE offers
+    int power;                          // the HOST_POWER_ GV_POWER asks about
     std::vector<std::string> collNames;  // the game page's Collections rows, kept while it's open
     unsigned gameLayout;   // g_vgames.layout when game was picked
 
@@ -1038,6 +1045,11 @@ static void Build()
         Add("Playlist Maker", "F6", "Make and edit playlists.", GA_WINDOW, WIN_PLAYLISTS);
         if (g_padModeEnabled)
             Add("Use the Tools with the Pad", "", "The tool windows' own controller menu.", GA_PADTOOLS);
+        if (Host_HasSystemSettings()) {
+            Caption("This machine");
+            Add("System Settings", g.result[GA_SYSSETTINGS].c_str(), "Opens your computer's own settings.",
+                GA_SYSSETTINGS);
+        }
         if (g_startupMode == 2 || g_extractedMode) {
             Caption("Development mode");
             Add("Inspector", "F1", "Development mode.", GA_WINDOW, WIN_INSPECTOR);
@@ -1046,8 +1058,28 @@ static void Build()
         break;
     case GV_EXIT:
         Add("Back to the Dashboard", "", "Closes the guide.", GA_RESUME);
+        if (!Console_Active()) {
+            Add("Exit UIX Desktop", "", "Quit to your desktop.", GA_QUIT);
+            break;
+        }
+        Add("Go to Desktop", "", "Puts UIX Desktop away. It keeps running.", GA_DESKTOP);
         Add("Exit UIX Desktop", "", "Quit to your desktop.", GA_QUIT);
+        Caption("Power");
+        Add("Sleep", g.result[GA_POWER].c_str(), "Sleeps the machine. UIX Desktop is still here when it wakes.",
+            GA_POWER, HOST_POWER_SLEEP);
+        Add("Restart", "", "Restarts the machine.", GA_POWER, HOST_POWER_RESTART);
+        Add("Shut Down", "", "Turns the machine off.", GA_POWER, HOST_POWER_SHUTDOWN);
         break;
+    case GV_POWER: {
+        bool restart = g.power == HOST_POWER_RESTART;
+        Para(restart ? "This restarts the whole machine. Other apps are asked to close first, and anything "
+                       "unsaved in them could be lost."
+                     : "This turns the whole machine off. Other apps are asked to close first, and anything "
+                       "unsaved in them could be lost.");
+        Add(restart ? "Restart Now" : "Shut Down Now", g.result[GA_POWERNOW].c_str(), NULL, GA_POWERNOW, g.power);
+        Add("Cancel", "", NULL, GA_CANCEL);
+        break;
+    }
     }
     if (g.cursor >= (int)g.rows.size()) g.cursor = g.rows.empty() ? 0 : (int)g.rows.size() - 1;
     if (g.cursor < 0) g.cursor = 0;
@@ -1065,6 +1097,7 @@ static const char* ViewTitle()
     case GV_COLLECTIONS: return "Collections";
     case GV_BACKUPS:   return "Restore a Backup";
     case GV_RESTORE:   return g.backup.c_str();
+    case GV_POWER:     return g.power == HOST_POWER_RESTART ? "Restart" : "Shut Down";
     case GV_GAMECOLL:  return "Collections";
     case GV_GAMES: {
         static char title[32], full[96];
@@ -1112,6 +1145,7 @@ static void Open(bool welcome)
     g.held = Joy_GuideButtons(&g.device);
     g.repeatHeld = 0;
     g_padModeActive = false;
+    DesktopSettings_ReadLive();
     if (welcome) {
         g.view = GV_WELCOME;
         g.stack.clear();
@@ -1818,6 +1852,50 @@ static void Select()
         if (CopyLog()) g.copied = GA_COPYLOG; else Refuse();
         Build();
         break;
+    case GA_DESKTOP:
+        Close();
+        Console_GoToDesktop();
+        break;
+    case GA_POWER:
+        g.result[GA_POWER].clear();
+        if (r.arg != HOST_POWER_SLEEP) {
+            g.power = r.arg;
+            g.result[GA_POWERNOW].clear();
+            Push(GV_POWER);
+            // Cancel is the safe place to start.
+            g.cursor = (int)g.rows.size() - 1;
+            break;
+        }
+        if (Console_Power(HOST_POWER_SLEEP)) {
+            Close();
+        } else {
+            g.result[GA_POWER] = "Didn't work";
+            Refuse();
+            Build();
+        }
+        break;
+    case GA_POWERNOW:
+        if (!Console_Power(r.arg)) {
+            g.result[GA_POWERNOW] = "Didn't work";
+            Refuse();
+            Build();
+        }
+        break;
+    case GA_CANCEL:
+        Back();
+        break;
+    case GA_SYSSETTINGS:
+        if (!Host_OpenSystemSettings()) {
+            g.result[GA_SYSSETTINGS] = "Didn't open";
+            Refuse();
+            Build();
+            break;
+        }
+        g.result[GA_SYSSETTINGS].clear();
+        Close();
+        // A fullscreen console would sit on top of it.
+        if (Console_Active()) Console_GoToDesktop();
+        break;
     case GA_QUIT: {
         SDL_Event quit;
         quit.type = SDL_QUIT;
@@ -2109,6 +2187,41 @@ static std::string Fit(int font, float size, const std::string& text, float widt
     return "...";
 }
 
+// Only on battery or charging; a desktop on mains power shows nothing. The
+// OS is asked every half minute, not every frame.
+static void DrawBattery(float right, float y)
+{
+    static Uint32 s_asked = 0;
+    static SDL_PowerState s_state = SDL_POWERSTATE_UNKNOWN;
+    static int s_pct = -1;
+    if (!s_asked || SDL_GetTicks() - s_asked > 30000) {
+        s_asked = SDL_GetTicks();
+        s_state = SDL_GetPowerInfo(NULL, &s_pct);
+        // Development only: UIX_DEV_BATTERY=40, or 40c for charging, pretends there's one.
+        if (const char* fake = getenv("UIX_DEV_BATTERY")) {
+            s_pct = atoi(fake);
+            s_state = strchr(fake, 'c') ? SDL_POWERSTATE_CHARGING : SDL_POWERSTATE_ON_BATTERY;
+        }
+    }
+    if (s_state != SDL_POWERSTATE_ON_BATTERY && s_state != SDL_POWERSTATE_CHARGING) return;
+    char text[32];
+    if (s_pct < 0) snprintf(text, sizeof(text), s_state == SDL_POWERSTATE_CHARGING ? "Charging" : "Battery");
+    else snprintf(text, sizeof(text), s_state == SDL_POWERSTATE_CHARGING ? "%d%%, charging" : "%d%%", s_pct);
+    unsigned int faint = ui_style_color(UI_COLOR_FAINT);
+    float tx = right - ui_overlay_text_width(UI_FONT_REGULAR, 8.5f, text);
+    ui_overlay_text(UI_FONT_REGULAR, 8.5f, right, y, UI_ALIGN_RIGHT, faint, text);
+    // A little battery: outline, nub and how full it is.
+    const float w = 15, h = 7, bx = tx - w - 7, by = y + 2;
+    ui_overlay_rect(bx, by, w, 1, 0, faint);
+    ui_overlay_rect(bx, by + h - 1, w, 1, 0, faint);
+    ui_overlay_rect(bx, by, 1, h, 0, faint);
+    ui_overlay_rect(bx + w - 1, by, 1, h, 0, faint);
+    ui_overlay_rect(bx + w, by + 2, 2, h - 4, 0, faint);
+    int pct = s_pct < 0 ? 100 : s_pct;
+    ui_overlay_rect(bx + 2, by + 2, (w - 4) * pct / 100.0f, h - 4, 0,
+                    pct <= 15 && s_state == SDL_POWERSTATE_ON_BATTERY ? ui_style_color(UI_COLOR_WARNING) : faint);
+}
+
 static void DrawHeader(const char* title)
 {
     ui_overlay_text_glow(UI_FONT_BOLD, 17.0f, CONTENT_L, HEADER_Y + 4, UI_ALIGN_LEFT,
@@ -2118,6 +2231,7 @@ static void DrawHeader(const char* title)
     ui_overlay_text(UI_FONT_BOLD, 10.0f, CONTENT_R, HEADER_Y + 3, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_NAME), line);
     ui_overlay_text(UI_FONT_REGULAR, 8.5f, CONTENT_R, HEADER_Y + 17, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_FAINT),
                     Host_Name());
+    DrawBattery(CONTENT_R - ui_overlay_text_width(UI_FONT_REGULAR, 8.5f, Host_Name()) - 14, HEADER_Y + 17);
     ui_overlay_rect(CONTENT_L - 4, RULE_Y, CONTENT_R - CONTENT_L + 8, 1, 0, ui_style_color(UI_COLOR_RULE));
 }
 

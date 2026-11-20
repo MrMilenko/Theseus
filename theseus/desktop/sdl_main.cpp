@@ -29,6 +29,7 @@
 #include "esde.h"
 #include "esde_vgames.h"
 #include "guide.h"
+#include "console_mode.h"
 
 #include "host.h"
 #include <bgfx/bgfx.h>
@@ -481,7 +482,9 @@ static void PreSwapOverlays() {
             s_lastMove = SDL_GetTicks();
 
         if (!g_mediaFullscreen) {
-            const bool hide = g_padModeActive || (SDL_GetTicks() - s_lastMove > 3000);
+            // Console mode starts with it hidden; it comes back once the mouse moves.
+            const bool hide = g_padModeActive || (Console_Active() && !s_lastMove) ||
+                              (SDL_GetTicks() - s_lastMove > 3000);
             const int want = hide ? SDL_DISABLE : SDL_ENABLE;
             if (want != s_shown) { SDL_ShowCursor(want); s_shown = want; }
         } else {
@@ -764,9 +767,24 @@ void ApplyDisplayMode() {
         SDL_SetWindowPosition(g_pSDLWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
 
+    // Console mode is never a window: a windowed choice becomes borderless
+    // fullscreen, and the frame stays off even if fullscreen is refused.
+    static bool s_consoleFrame = false;
+    int mode = g_windowMode;
+    // Development only: UIX_DEV_WINDOWED=1 keeps console mode in a window for testing.
+    static const bool s_devWindowed = getenv("UIX_DEV_WINDOWED") != NULL;
+    if (Console_Active() && !s_devWindowed) {
+        if (mode == 0) mode = 1;
+        SDL_SetWindowBordered(g_pSDLWindow, SDL_FALSE);
+        s_consoleFrame = true;
+    } else if (s_consoleFrame) {
+        SDL_SetWindowBordered(g_pSDLWindow, SDL_TRUE);
+        s_consoleFrame = false;
+    }
+
     Uint32 flags = 0;
-    if (g_windowMode == 1) flags = SDL_WINDOW_FULLSCREEN_DESKTOP;
-    else if (g_windowMode == 2) flags = SDL_WINDOW_FULLSCREEN;
+    if (mode == 1) flags = SDL_WINDOW_FULLSCREEN_DESKTOP;
+    else if (mode == 2) flags = SDL_WINDOW_FULLSCREEN;
     if (flags) SDL_SetWindowFullscreen(g_pSDLWindow, flags);
 
     // Reset here rather than waiting on SDL_WINDOWEVENT_SIZE_CHANGED, which
@@ -931,6 +949,11 @@ int g_mediaPlaybackExited = 0;
 // Preloader UI and XIP extraction are now in preloader.cpp
 
 int main(int argc, char* argv[]) {
+    // --console: this process only watches over the real one. No log, no SDL, no window.
+    {
+        int code = 0;
+        if (Console_Supervise(argc, argv, &code)) return code;
+    }
     g_argc = argc;
     g_argv = argv;
     s_execPath = argv[0];
@@ -1289,10 +1312,12 @@ int main(int argc, char* argv[]) {
     // Check for CLI flags
     float cliUiScale = 0.0f; // 0 = unset, default 1.0 if not specified
     bool cliFullscreen = false;
+    bool cliMode = false;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--dashboard") == 0) g_startupMode = 1;
-        else if (strcmp(argv[i], "--development") == 0) g_startupMode = 2;
-        else if (strcmp(argv[i], "--preview") == 0) g_startupMode = 1; // legacy compat
+        if (strcmp(argv[i], "--dashboard") == 0) { g_startupMode = 1; cliMode = true; }
+        else if (strcmp(argv[i], "--development") == 0) { g_startupMode = 2; cliMode = true; }
+        else if (strcmp(argv[i], "--preview") == 0) { g_startupMode = 1; cliMode = true; } // legacy compat
+        else if (strcmp(argv[i], "--console") == 0) g_consoleFlag = true;
         else if (strcmp(argv[i], "--muted") == 0) g_audioMuted = true;
         else if (strcmp(argv[i], "--minimized") == 0) g_startMinimized = true;
         else if (strcmp(argv[i], "--graphics-debug") == 0) g_graphicsDebug = true;
@@ -1314,6 +1339,8 @@ int main(int argc, char* argv[]) {
     // otherwise. ApplyDisplayMode handles either path.
     if (cliFullscreen) g_windowMode = 2;
     if (g_pSDLWindow) ApplyDisplayMode();
+    // Console mode goes straight in. Only the very first run still gets the Welcome.
+    if (Console_Active() && !cliMode) g_startupMode = 1;
     if (cliUiScale > 0.0f) {
         ImGui::GetIO().FontGlobalScale = cliUiScale;
         fprintf(stderr, "[ui] FontGlobalScale = %.2f\n", cliUiScale);
@@ -1434,6 +1461,10 @@ int main(int argc, char* argv[]) {
                         // audible when the window is active. ApplyEffectiveMute
                         // honors the manual g_audioMuted on top, so a user
                         // Ctrl+M still wins.
+                        // Back from Go to Desktop: fullscreen again.
+                        if (event.window.event == SDL_WINDOWEVENT_RESTORED && Console_Active() &&
+                            !(SDL_GetWindowFlags(g_pSDLWindow) & SDL_WINDOW_FULLSCREEN))
+                            g_displayChangeRequested = true;
                         switch (event.window.event) {
                         case SDL_WINDOWEVENT_FOCUS_LOST:
                         case SDL_WINDOWEVENT_MINIMIZED:
@@ -1636,6 +1667,21 @@ int main(int argc, char* argv[]) {
         Pads_Update();
         Frame_PhaseEnd(FP_EVENTS);
 
+        // Development only: UIX_DEV_CRASH_AFTER=<seconds> crashes on purpose,
+        // to try the console watchdog.
+        {
+            static int s_crashMs = -1;
+            if (s_crashMs < 0) {
+                const char* env = getenv("UIX_DEV_CRASH_AFTER");
+                s_crashMs = env ? (int)(atof(env) * 1000.0) : 0;
+            }
+            if (s_crashMs > 0 && SDL_GetTicks() > (Uint32)s_crashMs) {
+                fprintf(stderr, "[Console] UIX_DEV_CRASH_AFTER: crashing on purpose\n");
+                volatile int* nowhere = NULL;
+                *nowhere = 1;
+            }
+        }
+
         // All panels are floating ImGui windows in the main window now.
         {
             SDL_Window* focusedWin = SDL_GetKeyboardFocus();
@@ -1670,6 +1716,7 @@ int main(int argc, char* argv[]) {
 
             // Show window again if it was hidden (game launch)
             if (g_pSDLWindow) SDL_ShowWindow(g_pSDLWindow);
+            Console_RestartViaWatchdog("--preview");
             execv(g_argv[0], newArgv);
             // fallthrough if execv fails
             fprintf(stderr, "[Desktop] execv failed: %s\n", strerror(errno));

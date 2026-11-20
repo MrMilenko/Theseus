@@ -262,7 +262,7 @@ bool Settings_Load(const SettingsTable& t, const char* path)
         const char* eq = strchr(s, '=');
         if (!eq) continue;
         const SettingDef* d = FindIn(t, s, (size_t)(eq - s));
-        if (d) Setting_Parse(*d, eq + 1);
+        if (d && !(d->flags & SF_LIVE)) Setting_Parse(*d, eq + 1);
     }
     for (int i = 0; i < t.count; i++)
         if (t.defs[i].flags & SF_SHARED) NoteSynced(t.defs[i]);
@@ -318,6 +318,7 @@ bool Settings_Save(const SettingsTable& t, const char* path)
             int idx = (int)(d - t.defs);
             if (written[idx]) continue;   // a duplicate would shadow the real value
             written[idx] = 1;
+            if (d->flags & SF_LIVE) continue;
             if ((d->flags & SF_SHARED) && !ChangedHere(*d)) {
                 Setting_Parse(*d, line.c_str() + eq + 1);
                 out.push_back(line);
@@ -337,7 +338,7 @@ bool Settings_Save(const SettingsTable& t, const char* path)
     std::vector<std::string> newSecs;
     std::vector<std::vector<std::string> > newSecLines;
     for (int i = 0; i < t.count; i++) {
-        if (written[i]) continue;
+        if (written[i] || (t.defs[i].flags & SF_LIVE)) continue;
         const SettingDef& d = t.defs[i];
         Setting_Format(d, val, sizeof(val));
         std::string kv = std::string(d.key) + "=" + val;

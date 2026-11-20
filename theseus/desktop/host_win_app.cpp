@@ -538,6 +538,168 @@ bool Host_RegistryValue(int hive, const char* subKey, const char* value, char* o
 	return ok;
 }
 
+bool Host_RegistrySetString(const char* subKey, const char* value, const char* data) {
+	HKEY hKey;
+	if (RegCreateKeyExA(HKEY_CURRENT_USER, subKey, 0, NULL, 0, KEY_SET_VALUE, NULL, &hKey, NULL) != ERROR_SUCCESS)
+		return false;
+	bool ok = RegSetValueExA(hKey, value, 0, REG_SZ, (const BYTE*)data, (DWORD)strlen(data) + 1) == ERROR_SUCCESS;
+	RegCloseKey(hKey);
+	return ok;
+}
+
+bool Host_RegistryDelete(const char* subKey, const char* value) {
+	HKEY hKey;
+	LONG r = RegOpenKeyExA(HKEY_CURRENT_USER, subKey, 0, KEY_SET_VALUE, &hKey);
+	if (r == ERROR_FILE_NOT_FOUND) return true;
+	if (r != ERROR_SUCCESS) return false;
+	r = RegDeleteValueA(hKey, value);
+	RegCloseKey(hKey);
+	return r == ERROR_SUCCESS || r == ERROR_FILE_NOT_FOUND;
+}
+
+// Start at login: one value under the user's own Run key.
+static const char kRunKey[] = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+static const char kRunValue[] = "UIX Desktop";
+
+bool Host_StartAtLogin() {
+	char cur[MAX_PATH + 32];
+	return Host_RegistryValue(HOST_REG_USER, kRunKey, kRunValue, cur, sizeof(cur));
+}
+
+bool Host_SetStartAtLogin(bool on) {
+	if (!on) return Host_RegistryDelete(kRunKey, kRunValue);
+	char exe[MAX_PATH], cmd[MAX_PATH + 32];
+	if (!Host_ExePath(exe, sizeof(exe))) return false;
+	snprintf(cmd, sizeof(cmd), "\"%s\" --console", exe);
+	return Host_RegistrySetString(kRunKey, kRunValue, cmd);
+}
+
+// One argument the way CommandLineToArgvW will read it back.
+static void AppendArg(std::string& cmd, const char* arg) {
+	if (!cmd.empty()) cmd += ' ';
+	if (*arg && !strpbrk(arg, " \t\n\v\"")) {
+		cmd += arg;
+		return;
+	}
+	cmd += '"';
+	for (const char* p = arg;; p++) {
+		size_t slashes = 0;
+		while (*p == '\\') { p++; slashes++; }
+		if (!*p) {
+			cmd.append(slashes * 2, '\\');
+			break;
+		}
+		if (*p == '"') cmd.append(slashes * 2 + 1, '\\');
+		else           cmd.append(slashes, '\\');
+		cmd += *p;
+	}
+	cmd += '"';
+}
+
+// The supervisor hands Ctrl+C and a console close on to the child.
+static volatile HANDLE s_selfChild = NULL;
+static BOOL WINAPI ForwardStop(DWORD) {
+	HANDLE h = s_selfChild;
+	if (h) TerminateProcess(h, 0);
+	return TRUE;
+}
+
+int Host_RunSelf(const char* const* args, int* code, char* how, size_t howSize) {
+	*code = 0;
+	if (howSize) how[0] = '\0';
+	char exe[MAX_PATH];
+	if (!Host_ExePath(exe, sizeof(exe))) return HOST_CHILD_FAILED;
+	std::string cmd;
+	AppendArg(cmd, exe);
+	for (int i = 1; args[i]; i++) AppendArg(cmd, args[i]);
+	std::vector<char> line(cmd.begin(), cmd.end());
+	line.push_back('\0');
+
+	STARTUPINFOA si = {};
+	si.cb = sizeof(si);
+	PROCESS_INFORMATION pi = {};
+	if (!CreateProcessA(exe, line.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) return HOST_CHILD_FAILED;
+	CloseHandle(pi.hThread);
+	s_selfChild = pi.hProcess;
+	SetConsoleCtrlHandler(ForwardStop, TRUE);
+	WaitForSingleObject(pi.hProcess, INFINITE);
+	SetConsoleCtrlHandler(ForwardStop, FALSE);
+	s_selfChild = NULL;
+	DWORD status = 0;
+	GetExitCodeProcess(pi.hProcess, &status);
+	CloseHandle(pi.hProcess);
+	*code = (int)status;
+	// An unhandled exception ends the process with its NTSTATUS, 0xC...
+	if ((status & 0xF0000000UL) == 0xC0000000UL || status == CRASH_FATAL_APP_EXIT) {
+		snprintf(how, howSize, "%s, 0x%08lX", ExceptionName(status), (unsigned long)status);
+		return HOST_CHILD_CRASHED;
+	}
+	snprintf(how, howSize, "exit code %lu", (unsigned long)status);
+	return HOST_CHILD_EXITED;
+}
+
+bool Host_ExecKeepsProcess() { return false; }
+
+bool Host_HasSystemSettings() { return true; }
+
+bool Host_OpenSystemSettings() {
+	return (INT_PTR)ShellExecuteA(NULL, "open", "ms-settings:", NULL, NULL, SW_SHOWNORMAL) > 32;
+}
+
+static bool PowerDryRun() {
+	const char* v = getenv("UIX_DEV_POWER_DRYRUN");
+	return v && *v && strcmp(v, "0") != 0;
+}
+
+// Restart and shut down need the shutdown privilege switched on first.
+static bool EnableShutdownPrivilege() {
+	HANDLE token;
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) return false;
+	TOKEN_PRIVILEGES tp = {};
+	tp.PrivilegeCount = 1;
+	tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+	bool ok = LookupPrivilegeValueA(NULL, SE_SHUTDOWN_NAME, &tp.Privileges[0].Luid) &&
+	          AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL) && GetLastError() == ERROR_SUCCESS;
+	CloseHandle(token);
+	return ok;
+}
+
+bool Host_Power(int action) {
+	static const char* const kNames[] = { "sleep", "restart", "shut down" };
+	static const char* const kCalls[] = {
+		"SetSuspendState(FALSE, FALSE, FALSE)",
+		"ExitWindowsEx(EWX_REBOOT)",
+		"ExitWindowsEx(EWX_SHUTDOWN | EWX_POWEROFF)",
+	};
+	if (action < HOST_POWER_SLEEP || action > HOST_POWER_SHUTDOWN) return false;
+	if (PowerDryRun()) {
+		fprintf(stderr, "[Power] would %s: %s\n", kNames[action], kCalls[action]);
+		return true;
+	}
+	fprintf(stderr, "[Power] %s: %s\n", kNames[action], kCalls[action]);
+	fflush(stderr);
+	if (action == HOST_POWER_SLEEP) {
+		// powrprof isn't always loaded, so look it up rather than link it.
+		typedef BOOLEAN (WINAPI *SuspendFn)(BOOLEAN, BOOLEAN, BOOLEAN);
+		HMODULE dll = LoadLibraryA("powrprof.dll");
+		SuspendFn suspend = dll ? (SuspendFn)GetProcAddress(dll, "SetSuspendState") : NULL;
+		bool ok = suspend && suspend(FALSE, FALSE, FALSE);
+		if (dll) FreeLibrary(dll);
+		if (!ok) fprintf(stderr, "[Power] sleep was refused (error %lu)\n", GetLastError());
+		return ok;
+	}
+	if (!EnableShutdownPrivilege()) {
+		fprintf(stderr, "[Power] no shutdown privilege (error %lu)\n", GetLastError());
+		return false;
+	}
+	UINT how = action == HOST_POWER_RESTART ? EWX_REBOOT : (EWX_SHUTDOWN | EWX_POWEROFF);
+	if (!ExitWindowsEx(how, SHTDN_REASON_MAJOR_OTHER | SHTDN_REASON_MINOR_OTHER | SHTDN_REASON_FLAG_PLANNED)) {
+		fprintf(stderr, "[Power] %s was refused (error %lu)\n", kNames[action], GetLastError());
+		return false;
+	}
+	return true;
+}
+
 static HANDLE OpenCdromDevice() {
 	char path[] = "\\\\.\\D:";
 	for (char c = 'D'; c <= 'H'; ++c) {
