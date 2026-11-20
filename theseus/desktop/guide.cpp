@@ -250,24 +250,55 @@ static void SetUpFolders()
     SaveDesktopSettings();
 }
 
-// A few rows need more than their label says.
+// What each row does, past what its label says.
 static const char* SettingHelp(const SettingDef& d)
 {
     static const struct { const char* key; const char* help; } kHelp[] = {
-        { "StartupMode",         "What happens when UIX Desktop starts." },
+        { "StartupMode",         "What happens when UIX Desktop starts. Ask Each Time shows the Welcome screen." },
         { "StartAtLogin",        "Starts UIX Desktop in Console Mode when you sign in. Only for you, nothing system wide." },
         { "ConsoleMode",         "Fullscreen with no frame, straight into the dashboard. For a TV or a games machine." },
-        { "UseOnScreenKeyboard", "Text fields ignore the physical keyboard and use the pad keyboard." },
-        { "ShowBootAnimation",   "Play the Xbox boot animation once at startup." },
-        { "MenuBarAutoHide",     "In Development Mode the tool bar shows when the pointer reaches the top." },
-        { "EmulateXboxRes",      "Keep scenes framed the way they were authored." },
-        { "Hwdec",               "Faster on AMD and NVIDIA. Applies to the next video." },
+        { "UseOnScreenKeyboard", "The dashboard's text fields ignore your keyboard and use the pad keyboard." },
+        { "ShowBootAnimation",   "Plays the Xbox boot animation when UIX Desktop starts." },
+        { "MenuBarAutoHide",     "In Development Mode the menu bar shows when the pointer reaches the top." },
+        { "QcowPath",            "Your xemu hard disk (.qcow2). The dashboard shows the saves on it." },
+        { "DisplayMode",         "Windowed, borderless or fullscreen. F11 switches to fullscreen and back." },
+        { "Resolution",          "The window's size. Native leaves it the size it is." },
+        { "Renderer",            "The graphics API. Auto picks the best one here. Takes effect next start." },
+        { "MSAA",                "Smooths jagged edges. Higher looks cleaner and costs more." },
+        { "Vsync",               "Keeps frames in step with the screen so the picture doesn't tear." },
+        { "FpsCap",              "The most frames a second. A lower cap saves power and heat." },
+        { "EmulateXboxRes",      "Frames scenes like the Xbox's 720x480. Off shows more at the sides." },
+        { "Hwdec",               "Lets the graphics card decode video. Applies to the next video." },
         { "MasterVolume",        "Dashboard sounds, music and videos." },
-        { "UseMilkdropViz",      "Use projectM for the music visualizer." },
-        { "ShowAlbumCover",      "Show album art in the orb when a soundtrack has it." },
+        { "UseMilkdropViz",      "Uses projectM, the Milkdrop visualizer, for music." },
+        { "ShowAlbumCover",      "Shows album art in the orb when a soundtrack has it." },
         { "CRT_Enabled",         "Old TV look over the whole dashboard." },
+        { "CRT_Scanlines",       "Dark lines between rows, like an old TV. Needs CRT Effect on." },
+        { "CRT_Curvature",       "How much the picture bulges. Needs CRT Effect on." },
+        { "CRT_Phosphor",        "The fine color grid of a tube screen. Needs CRT Effect on." },
+        { "CRT_Vignette",        "Darker corners. Needs CRT Effect on." },
+        { "CRT_Bloom",           "Glow around bright things. Needs CRT Effect on." },
+        { "CRT_Flicker",         "A slight flicker in brightness. Needs CRT Effect on." },
+        { "CRT_ColorBleed",      "Colors smearing sideways. Needs CRT Effect on." },
+        { "CRT_Brightness",      "Brightness under the effect. Needs CRT Effect on." },
         { "GuideTheme",          "The guide's colors." },
+        { "MusicRoot",           "Where your music is. It's read again when you change it." },
+        { "MoviesRoot",          "Where your movies are. It's read again when you change it." },
+        { "TvRoot",              "Where your shows are: a folder per show, with Season folders inside." },
+        { "TMDBKey",             "Optional. Gets posters and details from themoviedb.org. It stays hidden." },
+        { "XemuPath",            "The xemu app, for Xbox games. Find xemu fills it in." },
+        { "Pcsx2Path",           "The PCSX2 app, for PS2 games. Find PCSX2 fills it in." },
+        { "RomsDir",             "Where your ROMs and disc images are, for launchers that ask." },
+        { "SteamPath",           "Where Steam is. Empty looks in the usual places." },
+        { "RetroArchPath",       "Where RetroArch is, with its cores and playlists." },
+        { "EsdePath",            "Your ES-DE folder. Its games show up in the launcher." },
+        { "RetroArchFullscreen", "Starts RetroArch games fullscreen." },
+        { "ReturnAfterGame",     "Brings UIX Desktop back to the front when a game closes." },
+        { "ShowSteamTab",        "Shows the Steam tab in the Title Maker (F3)." },
+        { "ShowRetroArchTab",    "Shows the RetroArch tab in the Title Maker (F3)." },
+        { "ShowEsdeTab",         "Shows the ES-DE tab in the Title Maker (F3)." },
         { "FetchGameArt",        "Box art for games without an icon. Icons you picked are never replaced." },
+        { "SteamGridDBKey",      "Optional. Lets Download Game Art look on SteamGridDB too. It stays hidden." },
         { "HideDuplicateGames",  "A game in Steam and ES-DE shows once: Steam first, then yours, then ES-DE." },
         { "Rumble",              "A short buzz when the guide can't do what you asked." },
         { "ButtonStyle",         "The buttons the guide shows. Match the Pad follows the pad you used last." },
@@ -284,6 +315,47 @@ static const char* SettingHelp(const SettingDef& d)
 
 static const char* kPages[] = { "General", "Display", "Audio", "Media", "Games", "Controller" };
 static const int   kPageCount = (int)(sizeof(kPages) / sizeof(kPages[0]));
+
+// Each page's rows in blocks: "#" starts a caption, the rest are keys. A
+// setting left out here still shows, at the end of its own page.
+static const char* const kGeneralRows[] = {
+    "#Startup", "StartupMode", "ConsoleMode", "StartAtLogin", "ShowBootAnimation",
+    "#Keyboard and menu bar", "UseOnScreenKeyboard", "MenuBarAutoHide",
+    "#Xbox hard disk", "QcowPath", NULL,
+};
+static const char* const kDisplayRows[] = {
+    "#Window", "DisplayMode", "Resolution",
+    "#Rendering", "Renderer", "MSAA", "Vsync", "FpsCap", "EmulateXboxRes",
+    "#Guide", "GuideTheme",
+    "#CRT effect", "CRT_Enabled", "CRT_Scanlines", "CRT_Curvature", "CRT_Phosphor", "CRT_Vignette", "CRT_Bloom",
+    "CRT_Flicker", "CRT_ColorBleed", "CRT_Brightness", NULL,
+};
+static const char* const kAudioRows[] = {
+    "MasterVolume", "#Music", "UseMilkdropViz", "ShowAlbumCover", NULL,
+};
+static const char* const kMediaRows[] = {
+    "#Folders", "MusicRoot", "MoviesRoot", "TvRoot",
+    "#Video", "Hwdec",
+    "#Online", "TMDBKey", NULL,
+};
+static const char* const kGamesRows[] = {
+    "#Emulators", "XemuPath", "Pcsx2Path", "RomsDir",
+    "#Launchers", "SteamPath", "RetroArchPath", "EsdePath", "RetroArchFullscreen", "ReturnAfterGame",
+    "#Library", "HideDuplicateGames", "FetchGameArt", "SteamGridDBKey",
+    "#Title Maker tabs", "ShowSteamTab", "ShowRetroArchTab", "ShowEsdeTab", NULL,
+};
+static const char* const kControllerRows[] = { "Rumble", "ButtonStyle", "SwapConfirm", NULL };
+static const char* const* const kPageRows[] = {
+    kGeneralRows, kDisplayRows, kAudioRows, kMediaRows, kGamesRows, kControllerRows,
+};
+
+static bool PageLists(const char* key)
+{
+    for (int p = 0; p < kPageCount; p++)
+        for (const char* const* k = kPageRows[p]; *k; k++)
+            if (strcmp(*k, key) == 0) return true;
+    return false;
+}
 
 enum Section { SEC_SETTINGS, SEC_ACCOUNTS, SEC_LIBRARY, SEC_LOGS, SEC_SHORTCUTS, SEC_ABOUT, SEC_TOOLS, SEC_EXIT,
                SEC_COUNT };
@@ -676,24 +748,31 @@ static const struct {
 };
 static const int kEmuCount = (int)(sizeof(kEmus) / sizeof(kEmus[0]));
 
+static void AddSetting(int i)
+{
+    const SettingDef& d = DesktopSettings_Table().defs[i];
+    if (d.flags & SF_HIDDEN) return;
+    char val[512];
+    Setting_Display(d, val, sizeof(val));
+    bool typed = d.kind == SK_PATH || d.kind == SK_STRING;
+    Add(d.label, val, SettingHelp(d), typed ? GA_TEXT : GA_SETTING, i);
+    for (int e = 0; e < kEmuCount; e++)
+        if (strcmp(d.key, kEmus[e].key) == 0)
+            Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
+}
+
 static void Build()
 {
     g.rows.clear();
     switch (g.view) {
     case GV_PAGE: {
         const SettingsTable& t = DesktopSettings_Table();
-        char val[512];
-        for (int i = 0; i < t.count; i++) {
-            const SettingDef& d = t.defs[i];
-            if (d.flags & SF_HIDDEN) continue;
-            if (strcmp(d.page, kPages[g.page]) != 0) continue;
-            Setting_Display(d, val, sizeof(val));
-            bool typed = d.kind == SK_PATH || d.kind == SK_STRING;
-            Add(d.label, val, SettingHelp(d), typed ? GA_TEXT : GA_SETTING, i);
-            for (int e = 0; e < kEmuCount; e++)
-                if (strcmp(d.key, kEmus[e].key) == 0)
-                    Add(kEmus[e].findLabel, g.found[e].c_str(), kEmus[e].findHelp, GA_FINDEMU, e);
+        for (const char* const* k = kPageRows[g.page]; *k; k++) {
+            if (**k == '#') { Caption(*k + 1); continue; }
+            if (const SettingDef* d = DesktopSettings_Find(*k)) AddSetting((int)(d - t.defs));
         }
+        for (int i = 0; i < t.count; i++)
+            if (strcmp(t.defs[i].page, kPages[g.page]) == 0 && !PageLists(t.defs[i].key)) AddSetting(i);
         break;
     }
     case GV_ABOUT:
@@ -739,7 +818,7 @@ static void Build()
         if (const SettingDef* mode = DesktopSettings_Find("StartupMode")) {
             char val[64];
             Setting_Display(*mode, val, sizeof(val));
-            Add(mode->label, val, "Ask on launch brings this screen back each time.", GA_SETTING,
+            Add(mode->label, val, "Ask Each Time brings this screen back at every start.", GA_SETTING,
                 (int)(mode - DesktopSettings_Table().defs));
         }
         break;

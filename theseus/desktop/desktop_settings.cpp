@@ -78,7 +78,7 @@ static void ApplyVolume()
 }
 
 static const int   kStartupVals[] = { 0, 1, 2 };
-static const char* kStartupLbl[]  = { "Ask on launch", "Dashboard", "Development" };
+static const char* kStartupLbl[]  = { "Ask Each Time", "Dashboard", "Development" };
 static const char* kStartupTok[]  = { "", "dashboard", "development" };
 
 // Turning it on buzzes once, so you know it works.
@@ -131,13 +131,13 @@ static const char* kModeLbl[]  = { "Windowed", "Borderless", "Fullscreen" };
 static const SettingDef kDefs[] = {
     S_PATH("XemuPath",      "Desktop", "Games",   "xemu Path",        s_xemuPath, 0),
     S_PATH("Pcsx2Path",     "Desktop", "Games",   "PCSX2 Path",       s_pcsx2Path, 0),
-    S_PATH("QcowPath",      "Desktop", "General", "qcow2 HDD Image",  g_qcowPath, 0),
+    S_PATH("QcowPath",      "Desktop", "General", "xemu Hard Disk",  g_qcowPath, 0),
     S_PATH("SteamPath",     "Desktop", "Games",   "Steam Folder",     s_steamPath, 0),
     S_PATH("RetroArchPath", "Desktop", "Games",   "RetroArch Folder", s_retroarchPath, 0),
     S_PATH("EsdePath",      "Desktop", "Games",   "ES-DE Folder",     s_esdePath, 0),
-    S_BOOL("ShowEsdeTab",   "Desktop", "Games",   "ES-DE Import Tab", g_showEsdeTab, "1", 0),
+    S_BOOL("ShowEsdeTab",   "Desktop", "Games",   "ES-DE Tab", g_showEsdeTab, "1", 0),
     S_BOOL("RetroArchFullscreen", "Desktop", "Games", "RetroArch Fullscreen", g_retroarchFullscreen, "1", 0),
-    S_BOOL("ReturnAfterGame", "Desktop", "Games", "Back to UIX When a Game Closes", g_returnAfterGame, "1", 0),
+    S_BOOL("ReturnAfterGame", "Desktop", "Games", "Return After a Game", g_returnAfterGame, "1", 0),
     { "AudioBufferFrames", "Desktop", "Audio", "Audio Buffer", SK_INT, &g_audioBufferFrames, 0, "1024",
       SF_RESTART | SF_HIDDEN, NOENUM, 0, 0, 256, NULL, NULL },
     S_BOOL("ShowRetroArchTab", "Desktop", "Games", "RetroArch Tab", g_showRetroArchTab, "1", 0),
@@ -150,16 +150,16 @@ static const SettingDef kDefs[] = {
       NOENUM, 0, 0, 0, NULL, ApplyStartAtLogin },
     S_BOOL("UseOnScreenKeyboard", "Desktop", "General", "On-Screen Keyboard Only", g_bUseOnScreenKeyboard, "0", 0),
     S_BOOL("ShowBootAnimation",   "Desktop", "General", "Boot Animation",          g_bShowBootAnimation,   "1", 0),
-    { "MSAA", "Desktop", "Display", "MSAA", SK_ENUM, &g_msaaSamples, 0, "4", SF_STRICT,
+    { "MSAA", "Desktop", "Display", "Anti-Aliasing", SK_ENUM, &g_msaaSamples, 0, "4", SF_STRICT,
       ENUM(kMsaaVals, kMsaaLbl, NULL), 0, 0, 0, NULL, ApplyMsaa },
     { "Vsync", "Desktop", "Display", "VSync", SK_ENUM, &g_vsyncMode, 0, "0", 0,
       ENUM(kVsyncVals, kVsyncLbl, NULL), 0, 2, 0, NULL, ApplyVsync },
-    S_BOOL("MenuBarAutoHide", "Desktop", "General", "Auto-hide Menu Bar", g_menuBarAutoHide, "1", 0),
+    S_BOOL("MenuBarAutoHide", "Desktop", "General", "Auto-Hide Menu Bar", g_menuBarAutoHide, "1", 0),
     S_BOOL("PadMode",         "Desktop", "General", "Controller Tools",   g_padModeEnabled,  "1", SF_HIDDEN),
     S_BOOL("WelcomeDone",     "Desktop", "General", "Welcome Shown",      g_welcomeDone,     "0", SF_HIDDEN),
     { "EmulateXboxRes", "Desktop", "Display", "Emulate Xbox Resolution", SK_BOOL, &g_bEmulateXboxRes, 0, "1", 0,
       NOENUM, 0, 0, 0, NULL, ApplyProjection },
-    { "FpsCap", "Desktop", "Display", "FPS Cap", SK_ENUM, &g_fpsCap, 0, "0", 0,
+    { "FpsCap", "Desktop", "Display", "Frame Rate Limit", SK_ENUM, &g_fpsCap, 0, "0", 0,
       ENUM(kFpsVals, kFpsLbl, NULL), 0, 100000, 0, NULL, NULL },
     S_BOOL("Hwdec", "Desktop", "Display", "Hardware Video Decode", g_hwdec, "0", 0),
     { "MasterVolume", "Desktop", "Audio", "Master Volume", SK_FLOAT, &g_masterVolume, 0, "1.000",
