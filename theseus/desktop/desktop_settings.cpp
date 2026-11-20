@@ -11,6 +11,7 @@
 #include "media_player.h"
 #include "virtual_games.h"
 #include "pads.h"
+#include "console_mode.h"
 
 extern char s_xemuPath[512];
 extern char s_pcsx2Path[512];
@@ -133,6 +134,8 @@ static const SettingDef kDefs[] = {
     S_BOOL("ShowSteamTab",     "Desktop", "Games", "Steam Tab",     g_showSteamTab,     "1", 0),
     { "StartupMode", "Desktop", "General", "When UIX Desktop Starts", SK_ENUM, &s_startupModeSaved, 0, "", 0,
       ENUM(kStartupVals, kStartupLbl, kStartupTok), 0, 0, 0, NULL, ApplyStartupMode },
+    { "ConsoleMode", "Desktop", "General", "Console Mode", SK_BOOL, &g_consoleMode, 0, "0", 0,
+      NOENUM, 0, 0, 0, NULL, ApplyDisplay },
     S_BOOL("UseOnScreenKeyboard", "Desktop", "General", "On-Screen Keyboard Only", g_bUseOnScreenKeyboard, "0", 0),
     S_BOOL("ShowBootAnimation",   "Desktop", "General", "Boot Animation",          g_bShowBootAnimation,   "1", 0),
     { "MSAA", "Desktop", "Display", "MSAA", SK_ENUM, &g_msaaSamples, 0, "4", SF_STRICT,

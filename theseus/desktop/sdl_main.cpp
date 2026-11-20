@@ -29,6 +29,7 @@
 #include "esde.h"
 #include "esde_vgames.h"
 #include "guide.h"
+#include "console_mode.h"
 
 #include "host.h"
 #include <bgfx/bgfx.h>
@@ -481,7 +482,9 @@ static void PreSwapOverlays() {
             s_lastMove = SDL_GetTicks();
 
         if (!g_mediaFullscreen) {
-            const bool hide = g_padModeActive || (SDL_GetTicks() - s_lastMove > 3000);
+            // Console mode starts with it hidden; it comes back once the mouse moves.
+            const bool hide = g_padModeActive || (Console_Active() && !s_lastMove) ||
+                              (SDL_GetTicks() - s_lastMove > 3000);
             const int want = hide ? SDL_DISABLE : SDL_ENABLE;
             if (want != s_shown) { SDL_ShowCursor(want); s_shown = want; }
         } else {
@@ -764,9 +767,22 @@ void ApplyDisplayMode() {
         SDL_SetWindowPosition(g_pSDLWindow, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     }
 
+    // Console mode is never a window: a windowed choice becomes borderless
+    // fullscreen, and the frame stays off even if fullscreen is refused.
+    static bool s_consoleFrame = false;
+    int mode = g_windowMode;
+    if (Console_Active()) {
+        if (mode == 0) mode = 1;
+        SDL_SetWindowBordered(g_pSDLWindow, SDL_FALSE);
+        s_consoleFrame = true;
+    } else if (s_consoleFrame) {
+        SDL_SetWindowBordered(g_pSDLWindow, SDL_TRUE);
+        s_consoleFrame = false;
+    }
+
     Uint32 flags = 0;
-    if (g_windowMode == 1) flags = SDL_WINDOW_FULLSCREEN_DESKTOP;
-    else if (g_windowMode == 2) flags = SDL_WINDOW_FULLSCREEN;
+    if (mode == 1) flags = SDL_WINDOW_FULLSCREEN_DESKTOP;
+    else if (mode == 2) flags = SDL_WINDOW_FULLSCREEN;
     if (flags) SDL_SetWindowFullscreen(g_pSDLWindow, flags);
 
     // Reset here rather than waiting on SDL_WINDOWEVENT_SIZE_CHANGED, which
@@ -1289,10 +1305,12 @@ int main(int argc, char* argv[]) {
     // Check for CLI flags
     float cliUiScale = 0.0f; // 0 = unset, default 1.0 if not specified
     bool cliFullscreen = false;
+    bool cliMode = false;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--dashboard") == 0) g_startupMode = 1;
-        else if (strcmp(argv[i], "--development") == 0) g_startupMode = 2;
-        else if (strcmp(argv[i], "--preview") == 0) g_startupMode = 1; // legacy compat
+        if (strcmp(argv[i], "--dashboard") == 0) { g_startupMode = 1; cliMode = true; }
+        else if (strcmp(argv[i], "--development") == 0) { g_startupMode = 2; cliMode = true; }
+        else if (strcmp(argv[i], "--preview") == 0) { g_startupMode = 1; cliMode = true; } // legacy compat
+        else if (strcmp(argv[i], "--console") == 0) g_consoleFlag = true;
         else if (strcmp(argv[i], "--muted") == 0) g_audioMuted = true;
         else if (strcmp(argv[i], "--minimized") == 0) g_startMinimized = true;
         else if (strcmp(argv[i], "--graphics-debug") == 0) g_graphicsDebug = true;
@@ -1314,6 +1332,8 @@ int main(int argc, char* argv[]) {
     // otherwise. ApplyDisplayMode handles either path.
     if (cliFullscreen) g_windowMode = 2;
     if (g_pSDLWindow) ApplyDisplayMode();
+    // Console mode goes straight in. Only the very first run still gets the Welcome.
+    if (Console_Active() && !cliMode) g_startupMode = 1;
     if (cliUiScale > 0.0f) {
         ImGui::GetIO().FontGlobalScale = cliUiScale;
         fprintf(stderr, "[ui] FontGlobalScale = %.2f\n", cliUiScale);

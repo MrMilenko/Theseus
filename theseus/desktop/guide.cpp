@@ -252,6 +252,7 @@ static const char* SettingHelp(const SettingDef& d)
 {
     static const struct { const char* key; const char* help; } kHelp[] = {
         { "StartupMode",         "What happens when UIX Desktop starts." },
+        { "ConsoleMode",         "Fullscreen with no frame, straight into the dashboard. For a TV or a games machine." },
         { "UseOnScreenKeyboard", "Text fields ignore the physical keyboard and use the pad keyboard." },
         { "ShowBootAnimation",   "Play the Xbox boot animation once at startup." },
         { "MenuBarAutoHide",     "In Development Mode the tool bar shows when the pointer reaches the top." },
