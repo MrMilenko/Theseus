@@ -165,14 +165,18 @@ function UpdatePlexList()
 			c.MenuButtons.children[0].children[0].children[0].appearance.material.name = "GameHilite";
 			c.MenuButtons.children[0].children[0].children[0].appearance.texture.url = "outline.tga";
 			c.MenuButtons.children[0].children[1].children[0].appearance.name = "NavType";
-			c.MenuButtons.children[0].children[1].children[0].geometry.scrollRate  = 0;
-			c.MenuButtons.children[0].children[1].children[0].geometry.scrollDelay = 0;
+			c.MenuButtons.children[0].children[1].children[0].geometry.scrollRate  = 0.1;
+			c.MenuButtons.children[0].children[1].children[0].geometry.scrollDelay = 1;
 		}
 		else
 		{
 			c.MenuButtons.children[i].visible = false;
 		}
 	}
+
+	// More arrows only while there's more to scroll to.
+	c.MU_morearrow_up.visible   = (nPlexScroll > 0);
+	c.MU_morearrow_down.visible = ((nPlexScroll + nPlexVisible) < nPlexCount);
 
 	c.MediaHeaderText.text = GetHeaderText();
 	c.MusicCountText.text  = GetCountText();
@@ -307,7 +311,7 @@ function PlayCurrentEpisode()
 }
 
 
-// B: pop to parent view (restoring its cursor) or out to main menu.
+// B: pop to parent view (restoring its cursor) or back to the Media list.
 function GoBackOne()
 {
 	if (nPlexView == 3)
@@ -343,7 +347,7 @@ function GoBackOne()
 	}
 	else
 	{
-		theMainMenu.GoBackTo();
+		BackToMedia();
 	}
 }
 

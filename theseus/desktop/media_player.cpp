@@ -144,6 +144,7 @@ bool MediaPlayer_Init() {
     mpv_observe_property(s_mpv, 0, "audio-params/channel-count", MPV_FORMAT_INT64);
     mpv_observe_property(s_mpv, 0, "audio-codec-name", MPV_FORMAT_STRING);
     mpv_observe_property(s_mpv, 0, "sid", MPV_FORMAT_INT64);
+    mpv_observe_property(s_mpv, 0, "eof-reached", MPV_FORMAT_FLAG);
 
     s_state = MP_IDLE;
     fprintf(stderr, "[MediaPlayer] Initialized (libmpv software render + bgfx upload)\n");
@@ -407,6 +408,11 @@ void MediaPlayer_Update() {
                 }
                 else if (strcmp(prop->name, "sid") == 0 && prop->format == MPV_FORMAT_INT64)
                     s_subTrack = (int)*(int64_t*)prop->data;
+                // keep-open parks on the last frame instead of ending the
+                // file, so this is the only sign a video finished.
+                else if (strcmp(prop->name, "eof-reached") == 0 && prop->format == MPV_FORMAT_FLAG
+                         && *(int*)prop->data && s_state == MP_PLAYING)
+                    s_state = MP_STOPPED;
                 break;
             }
             case MPV_EVENT_END_FILE: {

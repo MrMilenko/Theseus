@@ -13,6 +13,7 @@
 #include <vector>
 #include <map>
 #include <algorithm>
+#include <functional>
 #include <sys/stat.h>
 #include "host.h"
 
@@ -819,7 +820,13 @@ static bool ProbeSong(mpv_handle* h, const std::string& path, Song& out)
         mpv_event* ev = mpv_wait_event(h, 5.0);
         if (!ev) break;
         if (ev->event_id == MPV_EVENT_FILE_LOADED) break;
-        if (ev->event_id == MPV_EVENT_END_FILE)   return false;
+        // "replace" ends the previous probe's file first. That one's a stop,
+        // not this file failing.
+        if (ev->event_id == MPV_EVENT_END_FILE) {
+            mpv_event_end_file* ef = (mpv_event_end_file*)ev->data;
+            if (ef && ef->reason == MPV_END_FILE_REASON_STOP) continue;
+            return false;
+        }
         if (ev->event_id == MPV_EVENT_SHUTDOWN)   return false;
         if (ev->event_id == MPV_EVENT_NONE)       return false;
     }
@@ -867,7 +874,7 @@ struct DBEntry {
 typedef std::map<std::string, DBEntry> DBMap;
 
 static const uint32_t kMusicDBMagic   = 0x42444D54; // 'TMDB'
-static const uint32_t kMusicDBVersion = 2;
+static const uint32_t kMusicDBVersion = 3;  // 3: drops entries a broken probe left without tags
 
 static void DB_WriteU32(FILE* fp, uint32_t v) { fwrite(&v, 4, 1, fp); }
 static void DB_WriteI32(FILE* fp, int32_t  v) { fwrite(&v, 4, 1, fp); }
@@ -1075,17 +1082,23 @@ int DashMusic_Scan(const char* musicRoot)
             if (probeMpv && ProbeSong(probeMpv, fullPath, song))
                 probedCount++;
         }
-        DBEntry e;
-        SongToDB(song, e);
-        newDb[fullPath] = e;
+        // A failed probe isn't cached, so it gets another try next scan.
+        if (song.probed) {
+            DBEntry e;
+            SongToDB(song, e);
+            newDb[fullPath] = e;
+        }
         return song;
     };
 
     int nextID = 1;
 
-    auto ProcessSoundtrackDir = [&](const char* dirName) {
+    // A folder of songs is a soundtrack. A folder of folders (Artist/Album)
+    // makes each album one, one level down.
+    std::function<void(const std::string&, const char*, bool)> ProcessSoundtrackDir =
+        [&](const std::string& parent, const char* dirName, bool topLevel) {
         if (dirName[0] == '.') return;
-        std::string stPath = std::string(musicRoot) + "/" + dirName;
+        std::string stPath = parent + "/" + dirName;
         struct stat st;
         if (stat(stPath.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return;
 
@@ -1110,11 +1123,21 @@ int DashMusic_Scan(const char* musicRoot)
             soundtrack.songs.push_back(BuildSong(full, StripExtension(songName)));
         };
 
+        std::vector<std::string> subDirs;
         HostDir* stDir = Host_OpenDir(stPath.c_str());
         if (stDir) {
             char songName[260];
-            while (Host_ReadDir(stDir, songName, sizeof(songName), NULL)) ProcessSongFile(songName);
+            bool subIsDir = false;
+            while (Host_ReadDirType(stDir, songName, sizeof(songName), &subIsDir)) {
+                if (subIsDir) { if (songName[0] != '.') subDirs.push_back(songName); }
+                else ProcessSongFile(songName);
+            }
             Host_CloseDir(stDir);
+        }
+        if (soundtrack.songs.empty() && topLevel) {
+            for (size_t i = 0; i < subDirs.size(); i++)
+                ProcessSoundtrackDir(stPath, subDirs[i].c_str(), false);
+            return;
         }
 
         if (!soundtrack.songs.empty()) {
@@ -1178,7 +1201,7 @@ int DashMusic_Scan(const char* musicRoot)
     bool isDir;
     while (Host_ReadDirType(rootDir, entryName, sizeof(entryName), &isDir)) {
         if (entryName[0] == '.') continue;
-        if (isDir)                         ProcessSoundtrackDir(entryName);
+        if (isDir)                         ProcessSoundtrackDir(musicRoot, entryName, true);
         else if (IsM3UFile(entryName))     ProcessM3UFile(entryName);
         else                               ProcessLooseFile(entryName);
     }
@@ -1209,7 +1232,7 @@ int DashMusic_Scan(const char* musicRoot)
     DB_Save(DB_GetPath().c_str(), newDb);
 
     std::sort(s_soundtracks.begin(), s_soundtracks.end(),
-        [](const Soundtrack& a, const Soundtrack& b) { return a.name < b.name; });
+        [](const Soundtrack& a, const Soundtrack& b) { return strcasecmp(a.name.c_str(), b.name.c_str()) < 0; });
 
     if (s_soundtracks.size() > 0)
         fprintf(stderr, "[Audio] %zu soundtracks loaded (%d cached, %d probed)\n",
