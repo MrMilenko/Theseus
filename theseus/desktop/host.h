@@ -75,6 +75,8 @@ void Host_InstallCrashHandler(const char* userDataDir, const char* shippedDir);
 // What bgfx needs to draw into the SDL window. ndt is the display
 // connection (X11/Wayland), NULL elsewhere.
 bool Host_NativeWindow(SDL_Window* window, void** nwh, void** ndt, bool* wayland);
+// True when other windows cover all of it. Only macOS can tell; elsewhere false.
+bool Host_WindowOccluded(SDL_Window* window);
 // A URL goes to the OS handler, anything else runs as a shell command from
 // workdir (may be NULL). err gets a line on failure. When proc isn't NULL it
 // gets the child to watch, or NULL when there's nothing to watch (a URL on

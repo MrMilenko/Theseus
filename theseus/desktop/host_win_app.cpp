@@ -412,6 +412,8 @@ bool Host_NativeWindow(SDL_Window* window, void** nwh, void** ndt, bool* wayland
 	return true;
 }
 
+bool Host_WindowOccluded(SDL_Window*) { return false; }
+
 // URLs go through ShellExecute. Raw commands run through cmd /C; no /S, so
 // cmd preserves outer quotes for the 2-quote/exists case and strips
 // first/last otherwise.
