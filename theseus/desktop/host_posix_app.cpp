@@ -69,7 +69,33 @@ static void StopTee() {
 	s_teeRunning = false;
 }
 
+// An exec restart keeps our fds but not the tee thread, so the new process
+// would write into a pipe nobody reads. This names the real terminal and the
+// old pipe's read end so it can put stdout/stderr back first.
+#define TEE_ENV "THESEUS_TEE_FDS"
+
+static bool FdOpen(int fd) { return fd > STDERR_FILENO && fcntl(fd, F_GETFD) != -1; }
+
+static bool UndoInheritedTee() {
+	const char* env = getenv(TEE_ENV);
+	if (!env) return false;
+	int term = -1, oldRead = -1;
+	struct stat st;
+	bool ok = sscanf(env, "%d,%d", &term, &oldRead) == 2 && FdOpen(term) && FdOpen(oldRead) &&
+	          fstat(oldRead, &st) == 0 && S_ISFIFO(st.st_mode);
+	if (ok) {
+		dup2(term, STDOUT_FILENO);
+		dup2(term, STDERR_FILENO);
+		close(term);
+		close(oldRead);
+	}
+	unsetenv(TEE_ENV);
+	return ok;
+}
+
 void Host_ConsoleOrLog(const char* logPath) {
+	bool restarted = UndoInheritedTee();
+
 	// First launch: the user data folder doesn't exist yet.
 	std::string dir = logPath;
 	dir = dir.substr(0, dir.rfind('/'));
@@ -77,12 +103,17 @@ void Host_ConsoleOrLog(const char* logPath) {
 		if (i == dir.size() || dir[i] == '/')
 			mkdir(dir.substr(0, i).c_str(), 0755);
 
-	std::string prev = logPath;
-	size_t dot = prev.rfind(".log");
-	prev = (dot == std::string::npos) ? prev + ".prev" : prev.substr(0, dot) + ".prev.log";
-	rename(logPath, prev.c_str());
+	// A restart carries on in the same log unless it's grown big.
+	struct stat st;
+	bool append = restarted && stat(logPath, &st) == 0 && st.st_size < 4 * 1024 * 1024;
+	if (!append) {
+		std::string prev = logPath;
+		size_t dot = prev.rfind(".log");
+		prev = (dot == std::string::npos) ? prev + ".prev" : prev.substr(0, dot) + ".prev.log";
+		rename(logPath, prev.c_str());
+	}
 
-	s_logFd = open(logPath, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	s_logFd = open(logPath, O_WRONLY | O_CREAT | O_CLOEXEC | (append ? O_APPEND : O_TRUNC), 0644);
 	if (s_logFd < 0) return;
 	snprintf(s_logPath, sizeof(s_logPath), "%s", logPath);
 	int p[2];
@@ -94,6 +125,15 @@ void Host_ConsoleOrLog(const char* logPath) {
 	dup2(p[1], STDOUT_FILENO);
 	dup2(p[1], STDERR_FILENO);
 	close(p[1]);
+	// The read end stays open across exec so the new process's first writes
+	// land in the pipe instead of raising SIGPIPE.
+	char fds[32];
+	snprintf(fds, sizeof(fds), "%d,%d", s_termFd, p[0]);
+	setenv(TEE_ENV, fds, 1);
+	if (append) {
+		static const char kMark[] = "[Host] Restarted\n";
+		(void)!write(s_logFd, kMark, sizeof(kMark) - 1);
+	}
 	setvbuf(stdout, NULL, _IOLBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
