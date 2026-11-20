@@ -224,7 +224,7 @@ static bool RowLeft(const SettingDef& d, const char* page)
 static void SettingRowsLeft(const char* page, bool separate = false)
 {
     const SettingsTable& t = DesktopSettings_Table();
-    float labelW = 110.0f;
+    float labelW = 140.0f;
     bool any = false;
     for (int i = 0; i < t.count; i++) {
         if (!RowLeft(t.defs[i], page)) continue;
@@ -778,10 +778,10 @@ void RenderSettingsWindow() {
             ImGui::Spacing();
 
             // Dropdowns: fixed label column + widget column so they line up.
-            const float kLabelX  = 110.0f;
+            const float kLabelX  = 140.0f;
             const float kWidgetW = 160.0f;
 
-            ImGui::AlignTextToFramePadding(); ImGui::Text("MSAA:");
+            ImGui::AlignTextToFramePadding(); ImGui::Text("Anti-Aliasing:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
             SettingCombo("MSAA", "##msaa");
 
@@ -789,7 +789,7 @@ void RenderSettingsWindow() {
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
             SettingCombo("Vsync", "##vsync");
 
-            ImGui::AlignTextToFramePadding(); ImGui::Text("FPS Cap:");
+            ImGui::AlignTextToFramePadding(); ImGui::Text("Frame Rate Limit:");
             ImGui::SameLine(kLabelX); ImGui::SetNextItemWidth(kWidgetW);
             SettingCombo("FpsCap", "##fpscap");
 
