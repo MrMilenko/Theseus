@@ -1198,8 +1198,22 @@ static const char* ViewTitle()
         const Playlist* pl = Playlist_Get(g.playlist);
         return pl ? pl->name.c_str() : "Playlist";
     }
-    case GV_WELCOME:   return g_welcomeDone ? "Start" : "Welcome";
+    case GV_WELCOME:   return g_welcomeDone ? "Welcome Back" : "Welcome";
     default:           return kSections[g.section];
+    }
+}
+
+// Rows that open another list, so they get a chevron and an Open prompt.
+static bool Opens(const Row& r)
+{
+    switch (r.act) {
+    case GA_VIEW: case GA_GAMECOLL: case GA_COLLECTION: case GA_BACKUPS: case GA_PICKBACKUP:
+    case GA_GAMELIST: case GA_PLAYLIST: case GA_LETTER: case GA_GAME: case GA_APPS: case GA_CHOOSEFILE:
+        return true;
+    case GA_BROWSE:
+        return r.arg >= 0 && r.arg < (int)g.entries.size() && g.entries[r.arg].dir;
+    default:
+        return false;
     }
 }
 
@@ -2368,7 +2382,8 @@ static float RowHeight(const Row& r, float width)
     return ROW_H + ROW_GAP;
 }
 
-static void DrawRows(float left, float right, float top)
+// moreY is where "more above" goes: on the heading's line, or under the tabs.
+static void DrawRows(float left, float right, float top, float moreY)
 {
     float width = right - left;
     float room = BODY_B - top + ROW_GAP;
@@ -2439,7 +2454,7 @@ static void DrawRows(float left, float right, float top)
             y += h[i];
             continue;
         }
-        if (r.act == GA_SETTING || r.act == GA_CATEGORY) {
+        if (r.act == GA_SETTING || r.act == GA_CATEGORY || r.act == GA_RUNNER) {
             const SettingDef* d = r.act == GA_SETTING ? &DesktopSettings_Table().defs[r.arg] : NULL;
             const char* badge = d && (d->flags & SF_RESTART) ? "RESTART" : NULL;
             float labelRoom = width * 0.55f - (badge ? 50.0f : 0.0f);
@@ -2450,8 +2465,7 @@ static void DrawRows(float left, float right, float top)
             ui_style_row(left, y, width, ROW_H, on);
             float ty = y + (ROW_H - 11.0f) * 0.5f;
             float valueW = r.value.empty() ? 0.0f : ui_overlay_text_width(UI_FONT_BOLD, 11.0f, r.value.c_str());
-            float chevron = r.act == GA_VIEW || r.act == GA_GAMECOLL || r.act == GA_COLLECTION ||
-                            r.act == GA_BACKUPS || r.act == GA_PICKBACKUP ? 14.0f : 0.0f;
+            float chevron = Opens(r) ? 14.0f : 0.0f;
             if (valueW > width * 0.45f) valueW = width * 0.45f;
             std::string label = Fit(UI_FONT_BOLD, 11.0f, r.label, width - 24 - valueW - chevron - 8);
             ui_overlay_text(UI_FONT_BOLD, 11.0f, left + 12, ty, UI_ALIGN_LEFT, 0xFFFFFFFF, label.c_str());
@@ -2469,7 +2483,7 @@ static void DrawRows(float left, float right, float top)
     }
     // More above or below.
     if (g.scroll > 0)
-        ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, top - 12, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL), "MORE");
+        ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, moreY, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL), "MORE");
     if (i < n)
         ui_overlay_text(UI_FONT_BOLD, 9.0f, right - 6, y - ROW_GAP + 1, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_LABEL),
                         "MORE");
@@ -2488,15 +2502,15 @@ static void DrawPanel(float left, float right)
         float starts[8], ends[8];
         ui_style_tabs(left, right, top, 20, kPages, kPageCount, g.page, "Q", "E", starts, ends);
         for (int i = 0; i < kPageCount; i++) AddTarget(starts[i], top, ends[i], top + 20, T_TAB, i);
-        top += 30;
-    } else {
-        std::string heading = g.view == GV_WELCOME ? "Ways in" : ViewTitle();
-        for (size_t i = 0; i < heading.size(); i++) heading[i] = (char)toupper((unsigned char)heading[i]);
-        heading = Fit(UI_FONT_BOLD, 9.0f, heading, right - left);
-        ui_style_text(UI_TEXT_HEADING, left + 1, top + 2, UI_ALIGN_LEFT, heading.c_str());
-        top += 20;
+        DrawRows(left, right, top + 34, top + 23);
+        return;
     }
-    DrawRows(left, right, top);
+    std::string heading = g.view == GV_WELCOME ? "Ways in" : ViewTitle();
+    for (size_t i = 0; i < heading.size(); i++) heading[i] = (char)toupper((unsigned char)heading[i]);
+    // Room left for MORE on the same line.
+    heading = Fit(UI_FONT_BOLD, 9.0f, heading, right - left - 44);
+    ui_style_text(UI_TEXT_HEADING, left + 1, top + 2, UI_ALIGN_LEFT, heading.c_str());
+    DrawRows(left, right, top + 20, top + 2);
 }
 
 // The field over the keys. Secrets show as dots; a long line slides so
@@ -2569,6 +2583,45 @@ static void DrawEditor()
                                         : (std::string(Shoulders()) + " move the cursor.").c_str());
 }
 
+// What A does on a row, for its prompt.
+static const char* PromptWord(const Row& r)
+{
+    switch (r.act) {
+    case GA_NONE:        return NULL;
+    case GA_SETTING: case GA_CATEGORY: case GA_RUNNER:
+    case GA_FAVORITE: case GA_HIDE: case GA_INCOLL:
+                         return "Change";
+    case GA_TEXT: case GA_NAME: case GA_JELLYFINURL: case GA_GAMEOPT:
+                         return "Edit";
+    case GA_SEARCH:      return "Search";
+    case GA_NEWCOLL:     return "New";
+    case GA_LAUNCH:      return "Launch";
+    case GA_RESTORE:     return "Restore";
+    case GA_COPYVERSION: case GA_COPYLOG:
+                         return "Copy";
+    case GA_BACKUP:      return "Back Up";
+    case GA_ADDGAME: case GA_APP: case GA_APPGAMES:
+                         return "Add";
+    case GA_STEAM: case GA_RETROARCH: case GA_STORE:
+                         return "Import";
+    case GA_ESDE:        return "Refresh";
+    case GA_FINDEMU:     return "Find";
+    case GA_PLEX:        return Plex_PinAuthInFlight() ? "Cancel" : "Sign In";
+    case GA_JELLYFIN:    return Jellyfin_QuickConnectInFlight() ? "Cancel" : "Sign In";
+    case GA_XBOX:        return Xcloud_LoginInFlight() ? "Cancel" : "Sign In";
+    case GA_PLEXOUT: case GA_JELLYFINOUT: case GA_XBOXOUT:
+                         return "Sign Out";
+    case GA_POWER:       return r.arg == HOST_POWER_SLEEP ? "Sleep" : r.arg == HOST_POWER_RESTART ? "Restart" : "Shut Down";
+    case GA_RESUME:      return g.welcome ? "Start" : "Close";
+    case GA_POWERNOW:    return r.arg == HOST_POWER_RESTART ? "Restart" : "Shut Down";
+    case GA_CANCEL:      return "Cancel";
+    case GA_QUIT:        return "Exit";
+    case GA_BROWSEUP:    return "Up";
+    case GA_BROWSE:      return Opens(r) ? "Open" : "Choose";
+    default:             return Opens(r) ? "Open" : "Select";
+    }
+}
+
 static void Prompt(ui_style_prompt* p, int* n, int button, const char* key, const char* word, unsigned bits)
 {
     p[*n].button = button;
@@ -2591,13 +2644,7 @@ static void DrawPrompts()
         Prompt(p, &n, UI_BUTTON_START, "ENTER", "Done", GUIDE_START);
         Prompt(p, &n, UI_BUTTON_B, "ESC", "Cancel", GUIDE_B);
     } else if (g.inPanel && g.cursor >= 0 && g.cursor < (int)g.rows.size()) {
-        int act = g.rows[g.cursor].act;
-        const char* word = act == GA_NONE ? NULL
-                         : act == GA_SETTING || act == GA_CATEGORY ? "Change"
-                         : act == GA_VIEW || act == GA_GAMECOLL || act == GA_COLLECTION ||
-                           act == GA_BACKUPS || act == GA_PICKBACKUP ? "Open"
-                         : act == GA_RESTORE ? "Restore"
-                         : act == GA_TEXT || act == GA_NAME || act == GA_JELLYFINURL ? "Edit" : "Select";
+        const char* word = PromptWord(g.rows[g.cursor]);
         if (word) Prompt(p, &n, UI_BUTTON_A, "ENTER", word, GUIDE_A);
     } else if (!g.inPanel) {
         Prompt(p, &n, UI_BUTTON_A, "ENTER", "Open", GUIDE_A);
@@ -2635,6 +2682,7 @@ void Guide_Render(int width, int height)
             DrawHeader(g.edit.title.c_str());
             DrawEditor();
         } else if (g.welcome) {
+            DrawHeader(ViewTitle());
             DrawPanel(CONTENT_L + 40, CONTENT_R - 40);
         } else {
             DrawHeader("Guide");
