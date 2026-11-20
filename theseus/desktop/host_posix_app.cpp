@@ -27,6 +27,8 @@
 #include <sys/utsname.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
 #include <sys/sysctl.h>
 #include <sys/ucontext.h>
 #else
@@ -447,6 +449,21 @@ bool Host_NativeWindow(SDL_Window* window, void** nwh, void** ndt, bool* wayland
 	}
 #endif
 	return true;
+}
+
+bool Host_WindowOccluded(SDL_Window* window) {
+#ifdef __APPLE__
+	SDL_SysWMinfo wmi;
+	SDL_VERSION(&wmi.version);
+	if (!window || !SDL_GetWindowWMInfo(window, &wmi) || !wmi.info.cocoa.window) return false;
+	// [NSWindow occlusionState], where bit 1 is NSWindowOcclusionStateVisible.
+	unsigned long state = ((unsigned long (*)(id, SEL))objc_msgSend)(
+		(id)wmi.info.cocoa.window, sel_registerName("occlusionState"));
+	return (state & (1ul << 1)) == 0;
+#else
+	(void)window;
+	return false;
+#endif
 }
 
 // Put back the LD_LIBRARY_PATH AppRun stashed, so a spawned /bin/sh doesn't

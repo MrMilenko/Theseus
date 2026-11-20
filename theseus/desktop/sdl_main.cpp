@@ -696,6 +696,14 @@ int  g_vsyncMode = 0;
 int  g_rendererPref = 0;
 bool g_vsyncChangeRequested = false;
 
+// Minimized, hidden or covered. Video, xCloud and MilkDrop keep full speed.
+static bool WindowOutOfSight()
+{
+    if (!g_pSDLWindow || g_mediaFullscreen || g_xcloudFullscreen || MilkdropWindow_IsOpen()) return false;
+    if (SDL_GetWindowFlags(g_pSDLWindow) & (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) return true;
+    return Host_WindowOccluded(g_pSDLWindow);
+}
+
 // Manual FPS cap (0 = unlimited). Applied via SDL_Delay before SwapWindow.
 int  g_fpsCap = 0;
 
@@ -1828,6 +1836,9 @@ int main(int argc, char* argv[]) {
 
         // A game we started is up and we're behind it: stay out of its way.
         if (!g_windowFocused && Launch_GameRunning()) SDL_Delay(100);
+        // Nobody can see the window: the scene keeps its clock, it just draws
+        // a few times a second instead of every refresh.
+        else if (WindowOutOfSight()) SDL_Delay(50);
 
         // FPS cap: sleep until budget elapsed. 0 = unlimited.
         if (g_fpsCap > 0) {
