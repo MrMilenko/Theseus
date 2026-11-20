@@ -791,6 +791,71 @@ int Host_RunSelf(const char* const* args, int* code, char* how, size_t howSize) 
 
 bool Host_ExecKeepsProcess() { return true; }
 
+#ifndef __APPLE__
+static bool OnPath(const char* name) {
+	const char* path = getenv("PATH");
+	if (!path) return false;
+	std::string dirs = path;
+	size_t at = 0;
+	while (at <= dirs.size()) {
+		size_t end = dirs.find(':', at);
+		if (end == std::string::npos) end = dirs.size();
+		std::string full = dirs.substr(at, end - at) + "/" + name;
+		if (end > at && access(full.c_str(), X_OK) == 0) return true;
+		at = end + 1;
+	}
+	return false;
+}
+
+// What opens the settings: GNOME's, then Plasma's, then whatever claims
+// settings:// links. Empty when none of them is here.
+static const char* const* SettingsCommand() {
+	static const char* const kGnome[] = { "gnome-control-center", NULL };
+	static const char* const kPlasma[] = { "systemsettings", NULL };
+	static const char* const kLink[] = { "xdg-open", "settings://", NULL };
+	static int s_found = -1;
+	if (s_found < 0) {
+		s_found = 0;
+		if (OnPath("gnome-control-center")) s_found = 1;
+		else if (OnPath("systemsettings")) s_found = 2;
+		else if (OnPath("xdg-open") && OnPath("xdg-mime")) {
+			FILE* p = popen("xdg-mime query default x-scheme-handler/settings 2>/dev/null", "r");
+			char line[256] = "";
+			if (p) {
+				if (!fgets(line, sizeof(line), p)) line[0] = '\0';
+				pclose(p);
+			}
+			if (strstr(line, ".desktop")) s_found = 3;
+		}
+	}
+	return s_found == 1 ? kGnome : s_found == 2 ? kPlasma : s_found == 3 ? kLink : NULL;
+}
+#endif
+
+bool Host_HasSystemSettings() {
+#ifdef __APPLE__
+	return true;
+#else
+	return SettingsCommand() != NULL;
+#endif
+}
+
+bool Host_OpenSystemSettings() {
+#ifdef __APPLE__
+	const char* const argv[] = { "open", "x-apple.systempreferences:", NULL };
+#else
+	const char* const* argv = SettingsCommand();
+	if (!argv) return false;
+#endif
+	pid_t pid = fork();
+	if (pid == 0) {
+		RestoreHostLibraryPath();
+		execvp(argv[0], (char* const*)argv);
+		_exit(127);
+	}
+	return pid > 0;
+}
+
 bool Host_StartAtLogin() {
 	struct stat st;
 	return stat(LoginEntryPath().c_str(), &st) == 0;

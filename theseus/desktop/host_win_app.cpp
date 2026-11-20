@@ -640,6 +640,12 @@ int Host_RunSelf(const char* const* args, int* code, char* how, size_t howSize) 
 
 bool Host_ExecKeepsProcess() { return false; }
 
+bool Host_HasSystemSettings() { return true; }
+
+bool Host_OpenSystemSettings() {
+	return (INT_PTR)ShellExecuteA(NULL, "open", "ms-settings:", NULL, NULL, SW_SHOWNORMAL) > 32;
+}
+
 static bool PowerDryRun() {
 	const char* v = getenv("UIX_DEV_POWER_DRYRUN");
 	return v && *v && strcmp(v, "0") != 0;

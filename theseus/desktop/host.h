@@ -124,6 +124,10 @@ int Host_RunSelf(const char* const* args, int* code, char* how, size_t howSize);
 // True where exec swaps the program in place and keeps the process (macOS,
 // Linux). Windows starts a new one and ends this one instead.
 bool Host_ExecKeepsProcess();
+
+// The OS's own settings app. Has is false when there isn't one we can open.
+bool Host_HasSystemSettings();
+bool Host_OpenSystemSettings();
 // Audio CD in the first optical drive: track count and per-track lengths
 // in seconds. -1 when there's no readable disc.
 int Host_CdReadToc(int* durations, int maxTracks, bool* allAudio);

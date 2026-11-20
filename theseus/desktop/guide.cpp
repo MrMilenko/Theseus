@@ -314,7 +314,7 @@ enum Act {
     GA_FINDEMU, GA_RUNNER, GA_APPS, GA_APP, GA_APPGAMES, GA_GAMEOPT, GA_STORE,
     GA_COLLECTION, GA_GAMECOLL, GA_INCOLL, GA_NEWCOLL,
     GA_BACKUP, GA_BACKUPS, GA_PICKBACKUP, GA_RESTORE, GA_OPENBACKUPS,
-    GA_DESKTOP, GA_POWER, GA_POWERNOW, GA_CANCEL,
+    GA_DESKTOP, GA_POWER, GA_POWERNOW, GA_CANCEL, GA_SYSSETTINGS,
     GA_COUNT
 };
 
@@ -1045,6 +1045,11 @@ static void Build()
         Add("Playlist Maker", "F6", "Make and edit playlists.", GA_WINDOW, WIN_PLAYLISTS);
         if (g_padModeEnabled)
             Add("Use the Tools with the Pad", "", "The tool windows' own controller menu.", GA_PADTOOLS);
+        if (Host_HasSystemSettings()) {
+            Caption("This machine");
+            Add("System Settings", g.result[GA_SYSSETTINGS].c_str(), "Opens your computer's own settings.",
+                GA_SYSSETTINGS);
+        }
         if (g_startupMode == 2 || g_extractedMode) {
             Caption("Development mode");
             Add("Inspector", "F1", "Development mode.", GA_WINDOW, WIN_INSPECTOR);
@@ -1879,6 +1884,18 @@ static void Select()
     case GA_CANCEL:
         Back();
         break;
+    case GA_SYSSETTINGS:
+        if (!Host_OpenSystemSettings()) {
+            g.result[GA_SYSSETTINGS] = "Didn't open";
+            Refuse();
+            Build();
+            break;
+        }
+        g.result[GA_SYSSETTINGS].clear();
+        Close();
+        // A fullscreen console would sit on top of it.
+        if (Console_Active()) Console_GoToDesktop();
+        break;
     case GA_QUIT: {
         SDL_Event quit;
         quit.type = SDL_QUIT;
@@ -2170,6 +2187,41 @@ static std::string Fit(int font, float size, const std::string& text, float widt
     return "...";
 }
 
+// Only on battery or charging; a desktop on mains power shows nothing. The
+// OS is asked every half minute, not every frame.
+static void DrawBattery(float right, float y)
+{
+    static Uint32 s_asked = 0;
+    static SDL_PowerState s_state = SDL_POWERSTATE_UNKNOWN;
+    static int s_pct = -1;
+    if (!s_asked || SDL_GetTicks() - s_asked > 30000) {
+        s_asked = SDL_GetTicks();
+        s_state = SDL_GetPowerInfo(NULL, &s_pct);
+        // Development only: UIX_DEV_BATTERY=40, or 40c for charging, pretends there's one.
+        if (const char* fake = getenv("UIX_DEV_BATTERY")) {
+            s_pct = atoi(fake);
+            s_state = strchr(fake, 'c') ? SDL_POWERSTATE_CHARGING : SDL_POWERSTATE_ON_BATTERY;
+        }
+    }
+    if (s_state != SDL_POWERSTATE_ON_BATTERY && s_state != SDL_POWERSTATE_CHARGING) return;
+    char text[32];
+    if (s_pct < 0) snprintf(text, sizeof(text), s_state == SDL_POWERSTATE_CHARGING ? "Charging" : "Battery");
+    else snprintf(text, sizeof(text), s_state == SDL_POWERSTATE_CHARGING ? "%d%%, charging" : "%d%%", s_pct);
+    unsigned int faint = ui_style_color(UI_COLOR_FAINT);
+    float tx = right - ui_overlay_text_width(UI_FONT_REGULAR, 8.5f, text);
+    ui_overlay_text(UI_FONT_REGULAR, 8.5f, right, y, UI_ALIGN_RIGHT, faint, text);
+    // A little battery: outline, nub and how full it is.
+    const float w = 15, h = 7, bx = tx - w - 7, by = y + 2;
+    ui_overlay_rect(bx, by, w, 1, 0, faint);
+    ui_overlay_rect(bx, by + h - 1, w, 1, 0, faint);
+    ui_overlay_rect(bx, by, 1, h, 0, faint);
+    ui_overlay_rect(bx + w - 1, by, 1, h, 0, faint);
+    ui_overlay_rect(bx + w, by + 2, 2, h - 4, 0, faint);
+    int pct = s_pct < 0 ? 100 : s_pct;
+    ui_overlay_rect(bx + 2, by + 2, (w - 4) * pct / 100.0f, h - 4, 0,
+                    pct <= 15 && s_state == SDL_POWERSTATE_ON_BATTERY ? ui_style_color(UI_COLOR_WARNING) : faint);
+}
+
 static void DrawHeader(const char* title)
 {
     ui_overlay_text_glow(UI_FONT_BOLD, 17.0f, CONTENT_L, HEADER_Y + 4, UI_ALIGN_LEFT,
@@ -2179,6 +2231,7 @@ static void DrawHeader(const char* title)
     ui_overlay_text(UI_FONT_BOLD, 10.0f, CONTENT_R, HEADER_Y + 3, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_NAME), line);
     ui_overlay_text(UI_FONT_REGULAR, 8.5f, CONTENT_R, HEADER_Y + 17, UI_ALIGN_RIGHT, ui_style_color(UI_COLOR_FAINT),
                     Host_Name());
+    DrawBattery(CONTENT_R - ui_overlay_text_width(UI_FONT_REGULAR, 8.5f, Host_Name()) - 14, HEADER_Y + 17);
     ui_overlay_rect(CONTENT_L - 4, RULE_Y, CONTENT_R - CONTENT_L + 8, 1, 0, ui_style_color(UI_COLOR_RULE));
 }
 
