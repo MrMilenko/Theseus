@@ -29,7 +29,24 @@ extern void SaveDesktopSettings();
 // ============================================================================
 
 
-static HttpHeaders PlexHeaders(bool wantJson, bool withToken)
+// A server shared with you only takes the token plex.tv hands out for it,
+// not your account token (that gets a 401). Keyed by every connection URI
+// the server lists. Own lock, since asset URLs get built under g_mtx.
+static std::mutex                         s_tokenMtx;
+static std::map<std::string, std::string> s_serverTokens;
+
+static std::string TokenFor(const std::string& url)
+{
+    std::lock_guard<std::mutex> lk(s_tokenMtx);
+    for (const auto& kv : s_serverTokens)
+        if (!kv.second.empty() && url.compare(0, kv.first.size(), kv.first) == 0)
+            return kv.second;
+    return g_plexToken;
+}
+
+// forUrl picks the server's own token; empty means plex.tv and the account one.
+static HttpHeaders PlexHeaders(bool wantJson, bool withToken,
+                               const std::string& forUrl = std::string())
 {
     HttpHeaders h;
     if (wantJson) h.push_back({ "Accept", "application/json" });
@@ -39,7 +56,8 @@ static HttpHeaders PlexHeaders(bool wantJson, bool withToken)
     h.push_back({ "X-Plex-Device-Name",       "UIX Desktop" });
     h.push_back({ "X-Plex-Platform",          Host_Name() });
     if (withToken && g_plexToken[0]) {
-        h.push_back({ "X-Plex-Token", g_plexToken });
+        h.push_back({ "X-Plex-Token", forUrl.empty() ? std::string(g_plexToken)
+                                                     : TokenFor(forUrl) });
     }
     return h;
 }
@@ -138,6 +156,10 @@ bool Plex_HasToken() { return g_plexToken[0] != 0; }
 void Plex_SignOut()
 {
     g_plexToken[0] = 0;
+    {
+        std::lock_guard<std::mutex> tk(s_tokenMtx);
+        s_serverTokens.clear();
+    }
     std::lock_guard<std::mutex> lk(g_mtx);
     s_servers.clear();   s_serversReady   = false;
     s_activeServerName.clear();
@@ -242,26 +264,34 @@ std::string Plex_GetPinCode()
 // Server discovery
 // ============================================================================
 
-// Prefer local URIs, fall back to first https, then first http.
-static std::string PickConnection(const std::string& serverJson)
+static bool JsonTrue(const std::string& obj, const char* key)
 {
+    size_t at = Json_FindKey(obj, key);
+    return at != std::string::npos && strncmp(obj.c_str() + at, "true", 4) == 0;
+}
+
+// Every connection plex.tv lists, in the order worth trying: local, then
+// remote https, remote http, and Plex's relay last (slow, but it gets through
+// when nothing else does). Any one of them can be dead from here: a LAN
+// address seen from another network, a plex.direct name a router's DNS
+// rebinding guard refuses, a port that isn't forwarded.
+static std::vector<std::string> RankConnections(const std::string& serverJson)
+{
+    std::vector<std::string> ranked[4];
     size_t arr = Json_FindArray(serverJson, "connections");
-    if (arr == std::string::npos) return "";
-    std::vector<std::string> conns = Json_SplitArray(serverJson, arr);
-    std::string firstHttps, firstHttp;
-    for (const auto& c : conns) {
-        std::string uri      = Json_GetString(c, "uri");
-        std::string addr     = Json_GetString(c, "address");
-        // "local": true is the most reliable signal.
-        size_t lk = Json_FindKey(c, "local");
-        bool isLocal = (lk != std::string::npos &&
-                        strncmp(c.c_str() + lk, "true", 4) == 0);
-        if (isLocal && !uri.empty()) return uri;
-        if (firstHttps.empty() && uri.rfind("https://", 0) == 0) firstHttps = uri;
-        if (firstHttp.empty()  && uri.rfind("http://",  0) == 0) firstHttp  = uri;
+    if (arr == std::string::npos) return {};
+    for (const auto& c : Json_SplitArray(serverJson, arr)) {
+        std::string uri = Json_GetString(c, "uri");
+        if (uri.empty()) continue;
+        int tier = JsonTrue(c, "relay")                 ? 3
+                 : JsonTrue(c, "local")                 ? 0
+                 : uri.rfind("https://", 0) == 0        ? 1
+                 :                                        2;
+        ranked[tier].push_back(uri);
     }
-    if (!firstHttps.empty()) return firstHttps;
-    return firstHttp;
+    std::vector<std::string> out;
+    for (auto& t : ranked) out.insert(out.end(), t.begin(), t.end());
+    return out;
 }
 
 static void ServersWorker()
@@ -282,8 +312,15 @@ static void ServersWorker()
                 PlexServer s;
                 s.name     = Json_GetString(obj, "name");
                 s.clientId = Json_GetString(obj, "clientIdentifier");
-                s.uri      = PickConnection(obj);
-                if (!s.uri.empty()) servers.push_back(s);
+                s.uris     = RankConnections(obj);
+                if (s.uris.empty()) continue;
+                s.uri = s.uris[0];
+                std::string tok = Json_GetString(obj, "accessToken");
+                {
+                    std::lock_guard<std::mutex> lk(s_tokenMtx);
+                    for (const auto& u : s.uris) s_serverTokens[u] = tok;
+                }
+                servers.push_back(s);
             }
         }
     } else {
@@ -339,7 +376,7 @@ static std::string BuildAssetUrl(const std::string& serverUri,
     std::string out = serverUri + path;
     out += (path.find('?') == std::string::npos) ? "?" : "&";
     out += "X-Plex-Token=";
-    out += g_plexToken;
+    out += TokenFor(serverUri);
     return out;
 }
 
@@ -403,7 +440,7 @@ static std::vector<PlexItem> ParseItems(const std::string& body, const std::stri
 static void ChildrenWorker(unsigned gen, std::string serverUri, std::string rk)
 {
     HttpResponse r = Http_Get(serverUri + "/library/metadata/" + rk + "/children",
-                              PlexHeaders(true, true));
+                              PlexHeaders(true, true, serverUri));
     std::vector<PlexItem> items;
     if (r.ok()) items = ParseItems(r.body, serverUri);
     else fprintf(stderr, "[Plex] children fetch failed for %s (status %ld)\n", rk.c_str(), r.status);
@@ -456,7 +493,7 @@ static std::vector<PlexSeason> ParseSeasons(const std::string& body, const std::
 static void SeasonsWorker(std::string serverUri, std::string showRk)
 {
     std::string url = serverUri + "/library/metadata/" + showRk + "/children";
-    HttpResponse r = Http_Get(url, PlexHeaders(true, true));
+    HttpResponse r = Http_Get(url, PlexHeaders(true, true, url));
     std::vector<PlexSeason> seasons;
     if (r.ok()) {
         seasons = ParseSeasons(r.body, serverUri);
@@ -485,7 +522,7 @@ void Plex_FetchSeasons(const std::string& serverUri, const std::string& showRati
 static void EpisodesWorker(std::string serverUri, std::string seasonRk)
 {
     std::string url = serverUri + "/library/metadata/" + seasonRk + "/children";
-    HttpResponse r = Http_Get(url, PlexHeaders(true, true));
+    HttpResponse r = Http_Get(url, PlexHeaders(true, true, url));
     std::vector<PlexEpisode> episodes;
     if (r.ok()) {
         size_t arr = Json_FindArray(r.body, "Metadata");
@@ -538,7 +575,7 @@ std::string Plex_ResolveStreamUrl(const std::string& serverUri,
     if (serverUri.empty() || ratingKey.empty() || g_plexToken[0] == 0) return "";
 
     std::string url = serverUri + "/library/metadata/" + ratingKey;
-    HttpResponse r = Http_Get(url, PlexHeaders(true, true));
+    HttpResponse r = Http_Get(url, PlexHeaders(true, true, url));
     if (!r.ok()) {
         fprintf(stderr, "[Plex] metadata fetch failed for %s (status %ld)\n",
                 ratingKey.c_str(), r.status);
@@ -562,7 +599,7 @@ std::string Plex_ResolveStreamUrl(const std::string& serverUri,
     std::string out = serverUri + partKey;
     out += (partKey.find('?') == std::string::npos) ? "?" : "&";
     out += "X-Plex-Token=";
-    out += g_plexToken;
+    out += TokenFor(serverUri);
     return out;
 }
 
@@ -602,7 +639,7 @@ static PlexLibrary OnDeckShelf()
 
 static bool FetchOnDeck(const std::string& serverUri, std::vector<PlexItem>& out)
 {
-    HttpResponse r = Http_Get(serverUri + "/library/onDeck", PlexHeaders(true, true));
+    HttpResponse r = Http_Get(serverUri + "/library/onDeck", PlexHeaders(true, true, serverUri));
     if (!r.ok()) return false;
     out = ParseItems(r.body, serverUri);
     return true;
@@ -632,30 +669,35 @@ static void SyncWorker()
     // can list a server that's simply unreachable from here (someone else's
     // share, a LAN address while you're remote, a machine that's off), and
     // taking servers[0] on faith renders as "0 libraries" with no complaint.
-    SetSyncPhase(gen, "Loading library list", 50);
     std::string serverUri;
     HttpResponse r;
     std::vector<PlexLibrary> libs;
 
-    for (size_t si = 0; si < servers.size(); si++) {
-        r = Http_Get(servers[si].uri + "/library/sections", PlexHeaders(true, true));
-        if (!r.ok()) {
-            fprintf(stderr, "[Plex] %s unreachable (status %ld), trying next\n",
-                    servers[si].name.c_str(), r.status);
-            continue;
-        }
-        serverUri = servers[si].uri;
-        {
-            std::lock_guard<std::mutex> lk(g_mtx);
-            if (gen == s_syncGen) {
-                s_activeServerName = servers[si].name;
-                s_activeServerUri  = servers[si].uri;
+    for (size_t si = 0; si < servers.size() && serverUri.empty(); si++) {
+        for (const std::string& uri : servers[si].uris) {
+            if (gen != s_syncGen) { s_syncRunning = false; return; }
+            SetSyncPhase(gen, "Reaching " + servers[si].name, 50);
+            r = Http_Get(uri + "/library/sections", PlexHeaders(true, true, uri));
+            if (!r.ok()) {
+                fprintf(stderr, "[Plex] %s: %s gave %s\n", servers[si].name.c_str(),
+                        uri.c_str(),
+                        r.status ? std::to_string(r.status).c_str() : r.error.c_str());
+                continue;
             }
+            serverUri = uri;
+            {
+                std::lock_guard<std::mutex> lk(g_mtx);
+                if (gen == s_syncGen) {
+                    s_activeServerName = servers[si].name;
+                    s_activeServerUri  = uri;
+                }
+            }
+            fprintf(stderr, "[Plex] using %s (%s)\n",
+                    servers[si].name.c_str(), serverUri.c_str());
+            break;
         }
-        fprintf(stderr, "[Plex] using %s (%s)\n",
-                servers[si].name.c_str(), serverUri.c_str());
-        break;
     }
+    SetSyncPhase(gen, "Loading library list", 50);
 
     if (serverUri.empty()) {
         fprintf(stderr, "[Plex] none of the %zu server(s) answered\n", servers.size());
@@ -686,7 +728,7 @@ static void SyncWorker()
         SetSyncPhase(gen, phaseBuf, 100 + (i * 900) / (libCount > 0 ? libCount : 1));
 
         std::string url = serverUri + "/library/sections/" + lib.sectionKey + "/all";
-        HttpResponse ir = Http_Get(url, PlexHeaders(true, true));
+        HttpResponse ir = Http_Get(url, PlexHeaders(true, true, url));
         std::vector<PlexItem> items;
         if (ir.ok()) items = ParseItems(ir.body, serverUri);
         itemsByKey[lib.sectionKey] = std::move(items);
@@ -830,7 +872,7 @@ static void PatchDetails(const std::string& rk, const PlexDetails& d)
 static bool FetchDetails(const std::string& uri, const std::string& rk, PlexDetails& d,
                          std::string* showRk = NULL, std::string* type = NULL)
 {
-    HttpResponse r = Http_Get(uri + "/library/metadata/" + rk, PlexHeaders(true, true));
+    HttpResponse r = Http_Get(uri + "/library/metadata/" + rk, PlexHeaders(true, true, uri));
     if (!r.ok()) return false;
     size_t arr = Json_FindArray(r.body, "Metadata");
     if (arr == std::string::npos) return false;
@@ -855,7 +897,7 @@ static void RefreshWatchState(unsigned gen, const std::string& uri, const std::s
     std::vector<PlexSeason> seasons;
     if (!showRk.empty()) {
         haveShow = showRk == rk ? false : FetchDetails(uri, showRk, show);
-        HttpResponse r = Http_Get(uri + "/library/metadata/" + showRk + "/children", PlexHeaders(true, true));
+        HttpResponse r = Http_Get(uri + "/library/metadata/" + showRk + "/children", PlexHeaders(true, true, uri));
         if (r.ok()) { seasons = ParseSeasons(r.body, uri); haveSeasons = true; }
     }
     std::vector<PlexItem> deck;
@@ -888,7 +930,7 @@ static void RefreshWatchState(unsigned gen, const std::string& uri, const std::s
 
 static void GetReport(const std::string& url)
 {
-    HttpResponse r = Http_Get(url, PlexHeaders(true, true));
+    HttpResponse r = Http_Get(url, PlexHeaders(true, true, url));
     if (!r.ok()) {
         std::string path = url.substr(0, url.find('?'));
         size_t at = path.find("/:/");
@@ -958,7 +1000,7 @@ void Plex_SetPlayed(const std::string& ratingKey, bool played)
 static void SearchWorker(unsigned gen, unsigned seq, std::string uri, std::string term)
 {
     HttpResponse r = Http_Get(uri + "/hubs/search?limit=20&query=" + Http_UrlEncode(term),
-                              PlexHeaders(true, true));
+                              PlexHeaders(true, true, uri));
     std::vector<PlexItem> found;
     if (r.ok()) {
         size_t hubs = Json_FindArray(r.body, "Hub");

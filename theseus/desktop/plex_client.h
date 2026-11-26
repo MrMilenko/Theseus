@@ -9,6 +9,7 @@ struct PlexServer {
     std::string name;          // "Milenko's Plex"
     std::string clientId;      // server-side machineIdentifier
     std::string uri;           // best connection URI (prefer local)
+    std::vector<std::string> uris;  // every way in, best first; uri is uris[0]
 };
 
 struct PlexLibrary {

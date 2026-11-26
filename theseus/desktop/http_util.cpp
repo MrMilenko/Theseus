@@ -31,6 +31,9 @@ static void ApplyCommonOpts(CURL* h, const char* url) {
     curl_easy_setopt(h, CURLOPT_URL, url);
     curl_easy_setopt(h, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(h, CURLOPT_TIMEOUT, 60L);
+    // An address nobody answers on gives up in seconds, not the full minute,
+    // so a caller with another address to try gets to it.
+    curl_easy_setopt(h, CURLOPT_CONNECTTIMEOUT, 8L);
     curl_easy_setopt(h, CURLOPT_USERAGENT, "Theseus-Dashboard/1.0");
 }
 
@@ -63,8 +66,11 @@ HttpResponse Http_Get(const std::string& url, const HttpHeaders& headers) {
     curl_easy_setopt(h, CURLOPT_WRITEDATA, &out.body);
     curl_slist* slist = BuildSlist(headers);
     if (slist) curl_easy_setopt(h, CURLOPT_HTTPHEADER, slist);
-    if (curl_easy_perform(h) == CURLE_OK) {
+    CURLcode rc = curl_easy_perform(h);
+    if (rc == CURLE_OK) {
         curl_easy_getinfo(h, CURLINFO_RESPONSE_CODE, &out.status);
+    } else {
+        out.error = curl_easy_strerror(rc);
     }
     if (slist) curl_slist_free_all(slist);
     curl_easy_cleanup(h);

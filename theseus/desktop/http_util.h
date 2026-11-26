@@ -11,6 +11,7 @@ using HttpHeaders = std::vector<HttpHeader>;
 struct HttpResponse {
     long status = 0;     // 0 on transport failure
     std::string body;
+    std::string error;   // why, when status is 0 (Http_Get only)
     bool ok() const { return status >= 200 && status < 300; }
 };
 
