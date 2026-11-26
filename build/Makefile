@@ -524,7 +524,7 @@ PKG_CONFIG ?= pkg-config
 ifeq ($(UNAME_S),Darwin)
   BREW ?= $(shell command -v brew 2>/dev/null)
   ifneq ($(BREW),)
-    BREW_KEG_PC := $(shell sep=""; for f in openssl@3 curl ffmpeg opus; do \
+    BREW_KEG_PC := $(shell sep=""; for f in openssl@3 curl ffmpeg opus libarchive; do \
                      d=$$($(BREW) --prefix $$f 2>/dev/null)/lib/pkgconfig ; \
                      [ -d "$$d" ] || continue ; \
                      printf '%s%s' "$$sep" "$$d" ; sep=":" ; \
