@@ -86,6 +86,10 @@ bool Host_Spawn(const char* spec, bool isUrl, bool isSteamUrl, const char* workd
                 char* err, size_t errSize, HostProc** proc);
 // True once the child has exited. Never blocks.
 bool Host_ProcDone(HostProc* proc);
+// Runs argv[0] (looked up on PATH) with no shell between, waits for it, and
+// says whether it exited 0. Gets the host's libraries back first, so a tool
+// run from inside the AppImage doesn't load ours. POSIX only.
+bool Host_RunWait(const char* const* argv);
 void Host_ProcFree(HostProc* proc);
 // Native "open file" dialog. False on cancel or when there isn't one.
 bool Host_PickFile(const char* title, char* out, size_t outSize);

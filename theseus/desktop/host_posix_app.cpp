@@ -576,6 +576,21 @@ bool Host_Spawn(const char* spec, bool isUrl, bool isSteamUrl, const char* workd
 	return true;
 }
 
+bool Host_RunWait(const char* const* argv) {
+	pid_t pid = fork();
+	if (pid == 0) {
+		RestoreHostLibraryPath();
+		execvp(argv[0], (char* const*)argv);
+		_exit(127);
+	}
+	if (pid < 0) return false;
+	int status = 0;
+	while (waitpid(pid, &status, 0) < 0) {
+		if (errno != EINTR) return false;
+	}
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 bool Host_ProcDone(HostProc* proc) {
 	if (!proc || proc->done) return true;
 	int status;

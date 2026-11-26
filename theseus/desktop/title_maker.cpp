@@ -537,11 +537,12 @@ static bool TM_DownloadSteamIcon(int appid, const char* titleID, const char* ico
 #elif defined(THESEUS_HOST_WIN)
             bool resizeOk = TM_CopyFile(tmpPath, iconPath);
 #else
-            char cmd[1024];
-            snprintf(cmd, sizeof(cmd),
-                "convert \"%s\" -resize 128x128! -quality 90 \"%s\" 2>/dev/null || cp \"%s\" \"%s\"",
-                tmpPath, iconPath, tmpPath, iconPath);
-            bool resizeOk = (system(cmd) == 0);
+            // No shell: inside the AppImage a host /bin/sh can't start (it
+            // finds our readline), which used to sink the resize and the copy
+            // after it. Without ImageMagick the icon goes in at its own size.
+            const char* resize[] = { "convert", tmpPath, "-resize", "128x128!",
+                                     "-quality", "90", iconPath, NULL };
+            bool resizeOk = Host_RunWait(resize) || TM_CopyFile(tmpPath, iconPath);
 #endif
             if (resizeOk && stat(iconPath, &ist) == 0 && ist.st_size > 500)
                 gotIcon = true;
